@@ -1,0 +1,71 @@
+INITECH SOFTWARE
+1250 Technology Parkway, Suite 400
+Austin, TX 78701
+Phone: (512) 555-0192
+Email: billing@initechsoftware.com
+Web: www.initechsoftware.com
+
+--------------------------------------------------------------------------------
+                                    INVOICE
+--------------------------------------------------------------------------------
+
+BILL TO:                                    INVOICE NUMBER:  INV-2025-00847
+Marbledock & Associates                     DATE:            February 22, 2025
+3300 Harbor View Drive, Floor 12            DUE DATE:        March 24, 2025
+Seattle, WA 98104                           PAYMENT TERMS:   Net 30
+Attn: Accounts Payable
+
+--------------------------------------------------------------------------------
+ ITEM   DESCRIPTION                              QTY    UNIT PRICE     AMOUNT
+--------------------------------------------------------------------------------
+  1     Enterprise License - ProjectFlow Pro      3      $2,400.00    $7,200.00
+        (Annual subscription per seat,
+         Jan 2025 - Dec 2025)
+
+  2     Data Integration Module Add-On            3        $650.00    $1,950.00
+        (Annual subscription per seat)
+
+  3     Professional Services - System            8        $195.00    $1,560.00
+        Configuration & Setup
+        (Hours at standard consulting rate)
+
+  4     Custom API Development -                  1      $4,200.00    $4,200.00
+        Marbledock CRM Connector
+        (Fixed-price deliverable per SOW-0047)
+
+  5     Priority Support Plan                     1      $1,800.00    $1,800.00
+        (Annual, 8x5 with 4-hr response SLA)
+
+  6     Staff Training Session - Remote           2        $450.00      $900.00
+        (Half-day sessions, up to 10 users each)
+
+--------------------------------------------------------------------------------
+                                          SUBTOTAL:               $17,610.00
+                                          TAX (8.25%):             $1,452.83
+                                          TOTAL DUE:              $19,062.83
+--------------------------------------------------------------------------------
+
+PAYMENT INSTRUCTIONS:
+  Bank Wire / ACH:
+    Bank:            First National Bank of Texas
+    Routing Number:  114000093
+    Account Number:  7841056329
+    Account Name:    Initech Software LLC
+
+  Check Payable To: Initech Software
+  Mail To:          Initech Software, PO Box 77210, Austin, TX 78703
+
+Please reference invoice number INV-2025-00847 with all payments.
+
+NOTES:
+  - Annual subscription terms begin March 1, 2025 for license line items.
+  - Custom API development milestone 1 of 1 completed; see attached SOW-0047
+    sign-off document.
+  - Late payments are subject to a 1.5% monthly finance charge.
+
+Thank you for your business. We value our partnership with Marbledock & Associates.
+
+                                        Authorized By: Sandra Holt
+                                        Title:         Director of Finance
+                                        Initech Software
+--------------------------------------------------------------------------------

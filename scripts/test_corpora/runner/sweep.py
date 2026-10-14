@@ -608,7 +608,8 @@ def load_questions(questions_dir: Path | None) -> tuple[dict[str, dict], dict[st
         key_path = q_path.with_suffix(".key.json")
         keys[c] = json.loads(key_path.read_text()) if key_path.exists() else {}
         if keys[c]:
-            log.info("answer key for %s: %d questions from %s", c, len(keys[c]), key_path)
+            n = len([qid for qid in keys[c] if qid != "_generation"])  # the synthetic key's header is not a question
+            log.info("answer key for %s: %d questions from %s", c, n, key_path)
     return questions, keys
 
 
@@ -618,7 +619,11 @@ def key_score_cell(key_entry: dict | None, result: dict | None, status: Status |
     of that row are blank too, and a reader of the CSV must not count it as 0)."""
     if not key_entry or status not in (Status.DONE, Status.DEGRADED):
         return ""
-    return f"{answer_key.score(key_entry, (result or {}).get('answer') or '')['score']:.3f}"
+    try:
+        return f"{answer_key.score(key_entry, (result or {}).get('answer') or '')['score']:.3f}"
+    except answer_key.CorpusMismatch as exc:  # refused at the start of a run; here only if the corpus changed since
+        log.error("answer key not scored: %s", exc)
+        return ""
 
 
 def _question_ids(corpus_questions: dict) -> list[str]:
@@ -1457,6 +1462,14 @@ def main(argv: list[str] | None = None) -> int:
                 )
             questions_by_corpus = {c: q for c, q in questions_by_corpus.items() if c in requested}
             log.info("--corpora filter: %s", sorted(questions_by_corpus))
+
+        # A key written for another generation of its corpus (the synthetic key) is refused here, before any unit,
+        # not at the first scored answer after that unit ran (review of #812).
+        try:
+            answer_key.refuse_foreign_keys(answer_keys, questions_by_corpus, workdir)
+        except answer_key.CorpusMismatch as exc:
+            log.error("not starting: %s", exc)
+            return 4
 
         # Apply --models filter: scope phase 2-6 model loops to listed models. Used for
         # splitting Phase 4 across machines (32 GB Mac mini for the smaller models, a

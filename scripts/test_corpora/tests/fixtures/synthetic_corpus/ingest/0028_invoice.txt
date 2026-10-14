@@ -1,0 +1,67 @@
+CYBERDYNE IT
+1842 Silicon Boulevard, Suite 400
+Austin, TX 78701
+Phone: (512) 555-0192
+Email: billing@cyberdyneit.com
+Web: www.cyberdyneit.com
+
+================================================================================
+                                    INVOICE
+================================================================================
+
+BILL TO:                                    INVOICE NUMBER: CDI-2025-04471
+Marbledock & Associates                     INVOICE DATE:   August 1, 2025
+3300 Harbor View Drive, Floor 12            DUE DATE:       August 31, 2025
+Chicago, IL 60601                           PAYMENT TERMS:  Net 30
+Attn: Accounts Payable
+
+================================================================================
+ DESCRIPTION                          QTY    UNIT PRICE       AMOUNT
+================================================================================
+
+ Managed IT Support Services           1     $2,500.00       $2,500.00
+ (Monthly retainer - August 2025)
+
+ Microsoft 365 Business Premium         22      $22.00         $484.00
+ Licenses (per user/month)
+
+ Cisco Meraki MX68 Security            1     $1,295.00       $1,295.00
+ Appliance (hardware supply)
+
+ Network Infrastructure Audit          1     $3,800.00       $3,800.00
+ and Remediation Report
+
+ On-Site Technician Labor             14       $145.00       $2,030.00
+ (hours @ standard rate)
+
+ SSL Certificate Renewal               2       $189.00         $378.00
+ (2-year term, per domain)
+
+ Backup & Disaster Recovery            1       $650.00         $650.00
+ Solution - Monthly Fee
+
+ Structured Cabling Installation       1     $1,840.00       $1,840.00
+ (Cat6, 12-drop, materials incl.)
+
+================================================================================
+                                          SUBTOTAL:         $12,977.00
+                                          TAX (8.25%):       $1,070.60
+================================================================================
+                                          TOTAL DUE:        $14,047.60
+================================================================================
+
+PAYMENT INSTRUCTIONS:
+Please make checks payable to Cyberdyne IT
+ACH/Wire Transfer:
+  Bank:           First National Technology Bank
+  Routing Number: 111000025
+  Account Number: 7734-009-2281
+
+REMITTANCE: Please reference invoice number CDI-2025-04471 on all payments.
+
+Late payments are subject to a 1.5% monthly finance charge on outstanding
+balances. For billing inquiries, contact billing@cyberdyneit.com or call
+(512) 555-0192, ext. 3.
+
+Thank you for your continued partnership with Cyberdyne IT.
+================================================================================

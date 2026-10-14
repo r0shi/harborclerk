@@ -1,0 +1,74 @@
+CYBERDYNE IT
+1847 Silicon Blvd, Suite 400
+Austin, TX 78701
+Phone: (512) 555-0192
+Email: billing@cyberdyneit.com
+Web: www.cyberdyneit.com
+
+========================================
+                 INVOICE
+========================================
+
+Bill To:
+Marbledock & Associates
+330 Harbor View Plaza, Floor 12
+Boston, MA 02110
+Attn: Accounts Payable
+
+Invoice Number : CDI-2025-4471
+Invoice Date   : October 3, 2025
+Due Date       : November 2, 2025
+Payment Terms  : Net 30
+Currency       : USD
+
+----------------------------------------
+DESCRIPTION                  QTY   UNIT PRICE    AMOUNT
+----------------------------------------
+Managed Cloud Infrastructure   1    $4,200.00    $4,200.00
+Monitoring & Support (monthly)
+
+Cybersecurity Assessment &     1    $3,500.00    $3,500.00
+Vulnerability Report
+
+Network Hardware Installation  2    $1,850.00    $3,700.00
+(Cisco Meraki MX67 Firewall)
+
+Microsoft 365 Business        15      $220.00    $3,300.00
+Licenses (Annual, per seat)
+
+On-Site IT Technician         16      $125.00    $2,000.00
+Hours (8 hrs x 2 days)
+
+Data Backup & Disaster         1    $1,100.00    $1,100.00
+Recovery Setup
+
+Project Management Fee         1      $750.00      $750.00
+----------------------------------------
+
+Subtotal                                        $18,550.00
+Tax (8.25% - Travis County)                      $1,530.38
+----------------------------------------
+TOTAL DUE                                       $20,080.38
+========================================
+
+Payment Instructions:
+Please make checks payable to Cyberdyne IT
+or use the following wire/ACH details:
+  Bank: First National Tech Bank
+  Routing: 111000025
+  Account: 7834902211
+  Ref: CDI-2025-4471
+
+Notes:
+Thank you for choosing Cyberdyne IT as your
+technology partner. Please reference invoice
+number CDI-2025-4471 on all payments.
+For billing inquiries, contact us at
+billing@cyberdyneit.com or (512) 555-0192.
+
+Late payments are subject to a 1.5%
+monthly finance charge after the due date.
+
+========================================
+Cyberdyne IT  |  CDI-2025-4471  |  2025-10-03
+========================================

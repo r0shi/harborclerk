@@ -1,0 +1,89 @@
+================================================================================
+                              GLOBEX SUPPLIES
+                        14 Commerce Park Way, Suite 300
+                          Springfield, IL 62704, USA
+                    Phone: (217) 555-0182 | Fax: (217) 555-0199
+                         Email: billing@globexsupplies.com
+================================================================================
+
+INVOICE
+
+Invoice Number : GS-2025-04817
+Invoice Date   : September 24, 2025
+Due Date       : October 24, 2025
+Payment Terms  : Net 30
+
+--------------------------------------------------------------------------------
+BILL TO:
+  Marbledock & Associates
+  88 Harborview Plaza, 12th Floor
+  Boston, MA 02110, USA
+  Attn: Accounts Payable
+  Phone: (617) 555-0344
+--------------------------------------------------------------------------------
+
+PURCHASE ORDER #: MA-PO-9923
+SHIP VIA        : UPS Ground
+SHIPPING DATE   : September 24, 2025
+
+--------------------------------------------------------------------------------
+ ITEM   DESCRIPTION                          QTY    UNIT PRICE     AMOUNT
+--------------------------------------------------------------------------------
+  1     Heavy-Duty Filing Cabinets            8      $215.00       $1,720.00
+        (4-Drawer, Steel, Charcoal Gray)
+
+  2     Ergonomic Mesh Office Chairs         12      $349.50       $4,194.00
+        (Adjustable Lumbar, Model EM-7)
+
+  3     Office Desk Organizer Sets           20       $47.25         $945.00
+        (6-Piece, Bamboo Finish)
+
+  4     HP LaserJet Pro Toner Cartridges     30       $89.00       $2,670.00
+        (Black, High-Yield, CF258X)
+
+  5     Whiteboard / Corkboard Combo Units    5      $178.00         $890.00
+        (48" x 36", Aluminum Frame)
+
+  6     Premium Copy Paper                   40       $52.75       $2,110.00
+        (Case, 8.5" x 11", 20 lb, 5000 sheets)
+
+  7     Wireless Keyboard & Mouse Bundles    15       $64.00         $960.00
+        (Logitech MK295, Quiet Touch)
+
+  8     Breakroom Appliance Package           3      $412.00       $1,236.00
+        (Coffee Maker, Microwave, Toaster Oven)
+
+  9     Industrial Shelving Units             4      $285.00       $1,140.00
+        (72" H x 48" W x 18" D, 5-Shelf)
+
+ 10     First Aid & Safety Compliance Kits   10       $93.50         $935.00
+        (OSHA 10-Person Deluxe Kit)
+--------------------------------------------------------------------------------
+
+                                          SUBTOTAL :       $16,800.00
+                                 SHIPPING & HANDLING :          $185.00
+                                    TAX (8.75% IL) :         $1,470.00
+                                                      -------------------
+                                        TOTAL DUE  :       $18,455.00
+================================================================================
+
+PAYMENT INSTRUCTIONS:
+  Please make checks payable to: Globex Supplies
+  ACH / Wire Transfer:
+    Bank: Midwest First National Bank
+    Routing: 071000505
+    Account: 4482019367
+  Credit Card: Visit billing.globexsupplies.com/pay
+  Reference Invoice # GS-2025-04817 on all payments.
+
+REMARKS:
+  Thank you for your continued business, Marbledock & Associates.
+  All items shipped from our Springfield distribution center.
+  For questions, contact your account rep: Dana Kowalski
+  dkowalski@globexsupplies.com | (217) 555-0182 ext. 204
+
+================================================================================
+  GLOBEX SUPPLIES | Terms & Conditions apply. Late payments subject to 1.5%
+  monthly finance charge. Goods remain property of Globex Supplies until
+  payment is received in full.
+================================================================================

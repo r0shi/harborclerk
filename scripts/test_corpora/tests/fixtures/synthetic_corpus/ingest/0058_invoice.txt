@@ -1,0 +1,89 @@
+================================================================================
+                              CYBERDYNE IT
+                   Advanced Technology Solutions & Services
+         4821 Silicon Blvd, Suite 300, San Jose, CA 95110
+         Phone: (408) 555-0192  |  Email: billing@cyberdyneit.com
+         Website: www.cyberdyneit.com  |  EIN: 47-3829104
+================================================================================
+
+INVOICE
+
+Invoice Number : CDI-2025-04872
+Invoice Date   : April 19, 2025
+Due Date       : May 19, 2025
+Payment Terms  : Net 30
+
+--------------------------------------------------------------------------------
+BILL TO:
+  Marbledock & Associates
+  Attn: Accounts Payable
+  1120 Harbor View Drive, Suite 210
+  Boston, MA 02110
+--------------------------------------------------------------------------------
+
+SERVICES & PRODUCTS
+
++------+------------------------------------------+-------+----------+-----------+
+| Line | Description                              |  Qty  | Unit     | Amount    |
++------+------------------------------------------+-------+----------+-----------+
+|  1   | Managed Cloud Infrastructure (Monthly    |   1   |$3,200.00 | $3,200.00 |
+|      | Subscription - April 2025)               |       |          |           |
++------+------------------------------------------+-------+----------+-----------+
+|  2   | Cybersecurity Monitoring & Threat        |   1   |$1,850.00 | $1,850.00 |
+|      | Detection Service (April 2025)           |       |          |           |
++------+------------------------------------------+-------+----------+-----------+
+|  3   | On-Site IT Support & Maintenance         |  14   |  $125.00 | $1,750.00 |
+|      | (Hours - April 2 & April 11, 2025)       |       |          |           |
++------+------------------------------------------+-------+----------+-----------+
+|  4   | Microsoft 365 Business Premium Licenses  |  12   |   $22.00 |   $264.00 |
+|      | (Monthly, per seat)                      |       |          |           |
++------+------------------------------------------+-------+----------+-----------+
+|  5   | Network Hardware - Cisco Meraki MX68     |   1   |$1,495.00 | $1,495.00 |
+|      | Security Appliance                       |       |          |           |
++------+------------------------------------------+-------+----------+-----------+
+|  6   | Hardware Installation & Configuration    |   4   |  $150.00 |   $600.00 |
+|      | (Hours - April 14, 2025)                 |       |          |           |
++------+------------------------------------------+-------+----------+-----------+
+|  7   | Data Backup & Disaster Recovery          |   1   |  $475.00 |   $475.00 |
+|      | Solution (Monthly - April 2025)          |       |          |           |
++------+------------------------------------------+-------+----------+-----------+
+|  8   | Help Desk Support Package - Standard     |   1   |  $650.00 |   $650.00 |
+|      | (20-Ticket Block, April 2025)            |       |          |           |
++------+------------------------------------------+-------+----------+-----------+
+
+                                              Subtotal :         $10,284.00
+                                              Tax (8.5%):            $874.14
+                                              Shipping :              $35.00
+                                              ---------------------------
+                                              TOTAL DUE :         $11,193.14
+
+================================================================================
+PAYMENT INSTRUCTIONS
+
+Please remit payment within 30 days of the invoice date.
+
+  ACH / Wire Transfer:
+    Bank Name    : First Republic Bank
+    Account Name : Cyberdyne IT LLC
+    Routing No.  : 321081669
+    Account No.  : 7740293815
+
+  Check Payable To: Cyberdyne IT
+  Mail To: 4821 Silicon Blvd, Suite 300, San Jose, CA 95110
+
+  Credit Card: Please contact billing@cyberdyneit.com to process via secure link.
+
+================================================================================
+NOTES & TERMS
+
+- A late fee of 1.5% per month will be applied to balances outstanding beyond
+  30 days.
+- All hardware sales are final. Software licenses subject to vendor terms.
+- For billing inquiries, contact billing@cyberdyneit.com or (408) 555-0192
+  Mon-Fri, 8:00 AM - 6:00 PM PT.
+- Thank you for your continued partnership with Cyberdyne IT!
+================================================================================
+
+Authorized By: Michael R. Torres, Billing Department
+Cyberdyne IT  |  CDI-2025-04872  |  April 19, 2025
+================================================================================

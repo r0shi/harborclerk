@@ -1,0 +1,72 @@
+CYBERDYNE IT
+1842 Skynet Boulevard, Suite 400
+Silicon Valley, CA 94025
+Phone: (408) 555-0192
+Email: billing@cyberdyneit.com
+Web: www.cyberdyneit.com
+
+========================================
+                 INVOICE
+========================================
+
+Bill To:
+Marbledock & Associates
+330 Harbor Crest Drive, Floor 12
+Boston, MA 02110
+Attn: Accounts Payable
+
+----------------------------------------
+Invoice Number : CDI-2025-04782
+Invoice Date   : April 8, 2025
+Due Date       : May 8, 2025
+Payment Terms  : Net 30
+Currency       : USD
+----------------------------------------
+
+SERVICES & PRODUCTS
+
++------------------------------------------+------+------------+------------+
+| Description                              | Qty  | Unit Price |   Total    |
++------------------------------------------+------+------------+------------+
+| Managed Cloud Infrastructure (monthly)   |    1 |  $2,850.00 |  $2,850.00 |
+| Microsoft 365 Business Premium Licenses  |   18 |    $22.00  |    $396.00 |
+| Cybersecurity Endpoint Protection (seats)|   18 |    $14.50  |    $261.00 |
+| On-Site IT Support – Senior Engineer     |   12 |   $175.00  |  $2,100.00 |
+| Network Switch Replacement (Cisco C9200) |    2 |  $1,847.00 |  $3,694.00 |
+| Structured Cabling & Installation Labor  |    1 |  $1,320.00 |  $1,320.00 |
+| Data Backup & Disaster Recovery Setup    |    1 |    $950.00 |    $950.00 |
+| Remote Help Desk Support Block (10 hrs)  |    1 |    $650.00 |    $650.00 |
++------------------------------------------+------+------------+------------+
+
+Subtotal                                                        $12,221.00
+Tax (8.25%)                                                      $1,008.23
+                                                              ------------
+INVOICE TOTAL                                                   $13,229.23
+                                                              ============
+
+PAYMENT INSTRUCTIONS
+--------------------
+Bank Name    : First Pacific Commerce Bank
+Account Name : Cyberdyne IT LLC
+Account No.  : 7741-002-883-01
+Routing No.  : 121000248
+Reference    : CDI-2025-04782
+
+Alternatively, pay online at: pay.cyberdyneit.com/invoice/CDI-2025-04782
+
+Late payments are subject to a 1.5% monthly finance charge.
+
+NOTES
+-----
+- On-site support hours logged March 24 – April 7, 2025.
+- Cisco C9200 units include 1-year manufacturer warranty.
+- Cloud infrastructure billing cycle: April 1 – April 30, 2025.
+- Microsoft 365 licenses auto-renew monthly.
+
+Thank you for your continued business, Marbledock & Associates.
+Questions? Contact your account manager:
+Derek Holt | derek.holt@cyberdyneit.com | (408) 555-0199
+
+========================================
+ Cyberdyne IT  |  CDI-2025-04782
+========================================

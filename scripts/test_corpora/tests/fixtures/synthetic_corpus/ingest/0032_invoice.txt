@@ -1,0 +1,81 @@
+================================================================================
+                              GLOBEX SUPPLIES
+                         742 Westfield Industrial Park
+                           Columbus, OH 43215
+                        Phone: (614) 555-0192
+                        Email: billing@globexsupplies.com
+                        Tax ID: 47-3821059
+================================================================================
+
+                                  INVOICE
+
+--------------------------------------------------------------------------------
+Bill To:                                        Invoice Number: GS-2025-04817
+Marbledock & Associates                         Invoice Date:   June 27, 2025
+1100 Harbor View Boulevard                      Due Date:       July 27, 2025
+Suite 340                                       Payment Terms:  Net 30
+Boston, MA 02210                                PO Number:      MA-PO-88234
+--------------------------------------------------------------------------------
+
+ ITEM #   DESCRIPTION                          QTY    UNIT PRICE     AMOUNT
+------------------------------------------------------------------------
+ 1       Heavy-Duty Shelving Units (48"x18"    12     $189.50        $2,274.00
+         x72") - Powder Coated Steel
+
+ 2       Commercial Office Chair - Ergonomic   20     $224.00        $4,480.00
+         Mesh Back, Adjustable Armrests
+
+ 3       Letter-Size Filing Cabinet,           8      $312.75        $2,502.00
+         4-Drawer Lateral, Lockable
+
+ 4       Thermal Receipt Paper Rolls           150    $4.20          $630.00
+         (80mm x 80m), Box of 10
+
+ 5       Industrial Floor Cleaner -            24     $38.90         $933.60
+         Concentrated, 1-Gallon Jugs
+
+ 6       Multi-Port USB-C Docking Station      15     $145.00        $2,175.00
+         (10-in-1, 4K HDMI)
+
+ 7       Bubble Wrap Roll - 12" x 100 ft,      10     $27.50         $275.00
+         3/16" Perforated
+
+ 8       Wireless Presentation Clicker         6      $54.99         $329.94
+         with Laser Pointer, USB Receiver
+
+ 9       Safety Gloves - Cut-Resistant         40     $14.75         $590.00
+         Level A4, Size M/L (Pairs)
+
+ 10      Janitorial Supply Cart - 3-Tier       4      $189.00        $756.00
+         With Bucket and Mop Holder
+
+------------------------------------------------------------------------
+                                          SUBTOTAL:          $14,945.54
+                                          SHIPPING:             $185.00
+                                          TAX (7.5%):         $1,135.92
+                                         --------------------
+                                          TOTAL DUE:         $16,266.46
+------------------------------------------------------------------------
+
+PAYMENT INSTRUCTIONS:
+  Bank:           First National Bank of Ohio
+  Account Name:   Globex Supplies LLC
+  Account Number: 00487231965
+  Routing Number: 044000037
+  Reference:      GS-2025-04817
+
+  Checks payable to: Globex Supplies
+  Mail to: 742 Westfield Industrial Park, Columbus, OH 43215
+
+NOTES:
+  - All items shipped via FedEx Ground. Tracking numbers provided separately.
+  - Returns accepted within 30 days of receipt in original, unopened condition.
+  - A late fee of 1.5% per month will be applied to overdue balances.
+  - Questions? Contact your account rep: Sarah Kimball | s.kimball@globexsupplies.com
+
+Thank you for your business, Marbledock & Associates!
+We appreciate your continued partnership.
+================================================================================
+                            GLOBEX SUPPLIES
+                  "Quality Products. Reliable Service."
+================================================================================

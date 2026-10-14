@@ -1,0 +1,86 @@
+================================================================================
+                              CYBERDYNE IT
+                        Advanced Technology Solutions
+         1847 Silicon Parkway, Suite 400 | San Jose, CA 95110
+              Phone: (408) 555-0193 | Fax: (408) 555-0194
+                    billing@cyberdyneit.com
+                      www.cyberdyneit.com
+================================================================================
+
+INVOICE
+
+Invoice Number : CYB-2025-04872
+Invoice Date   : April 18, 2025
+Due Date       : May 18, 2025
+Payment Terms  : Net 30
+
+--------------------------------------------------------------------------------
+BILL TO:
+  Marbledock & Associates
+  Attn: Accounts Payable
+  3310 Harbor View Drive, Floor 9
+  Boston, MA 02210
+--------------------------------------------------------------------------------
+
+DESCRIPTION OF SERVICES & PRODUCTS
+
++------+------------------------------------------+------+----------+----------+
+| Item | Description                              | Qty  | Unit     | Amount   |
+|      |                                          |      | Price    |          |
++------+------------------------------------------+------+----------+----------+
+|  1   | Managed IT Support - Monthly Retainer    |  1   | $3,200.00| $3,200.00|
+|      | (April 2025 - Tier 2 Support Package)    |      |          |          |
++------+------------------------------------------+------+----------+----------+
+|  2   | Microsoft 365 Business Premium Licenses  |  18  |   $22.00 |   $396.00|
+|      | (Monthly subscription, per seat)         |      |          |          |
++------+------------------------------------------+------+----------+----------+
+|  3   | Network Security Audit & Vulnerability   |  1   | $4,750.00| $4,750.00|
+|      | Assessment - Full Infrastructure Scan    |      |          |          |
++------+------------------------------------------+------+----------+----------+
+|  4   | Cisco Meraki MX68 Security Appliance     |  2   | $1,840.00| $3,680.00|
+|      | (Hardware - includes 1-yr Advanced Lic.) |      |          |          |
++------+------------------------------------------+------+----------+----------+
+|  5   | On-Site Engineer Labor - Server Room     | 6 hr |  $185.00 | $1,110.00|
+|      | UPS Replacement & Cable Management       |      |          |          |
++------+------------------------------------------+------+----------+----------+
+|  6   | Cloud Backup Solution Setup & Config     |  1   |   $650.00|   $650.00|
+|      | (Veeam Cloud Connect - Initial Deploy)   |      |          |          |
++------+------------------------------------------+------+----------+----------+
+|  7   | Endpoint Detection & Response (EDR)      |  18  |    $12.50|   $225.00|
+|      | Agent Licensing - Monthly, per device    |      |          |          |
++------+------------------------------------------+------+----------+----------+
+
+--------------------------------------------------------------------------------
+
+                                        Subtotal :          $14,011.00
+                                     Tax (8.75%) :           $1,225.96
+                                                   ----------------------
+                                  TOTAL DUE (USD):          $15,236.96
+                                                   ======================
+
+--------------------------------------------------------------------------------
+PAYMENT INSTRUCTIONS:
+
+  Wire Transfer / ACH:
+    Bank: Pacific Commerce Bank
+    Routing Number: 121000248
+    Account Number: 8847203315
+    Account Name: Cyberdyne IT LLC
+
+  Check Payable To: Cyberdyne IT
+  Mail To: 1847 Silicon Parkway, Suite 400, San Jose, CA 95110
+
+  Reference Invoice Number on all payments: CYB-2025-04872
+
+--------------------------------------------------------------------------------
+NOTES:
+  - All hardware carries a 1-year manufacturer warranty.
+  - Managed services renew automatically unless 30-day written notice is given.
+  - Late payments are subject to a 1.5% monthly finance charge.
+  - For billing inquiries contact billing@cyberdyneit.com or (408) 555-0193.
+
+Thank you for your continued business!
+================================================================================
+                Cyberdyne IT | CA Business License #: 3847291
+                         Federal EIN: 47-2839104
+================================================================================

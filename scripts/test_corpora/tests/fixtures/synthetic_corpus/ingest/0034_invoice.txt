@@ -1,0 +1,75 @@
+================================================================================
+                             GLOBEX SUPPLIES
+                        1847 Industrial Parkway, Suite 300
+                          Columbus, OH 43215
+                          Phone: (614) 555-0192
+                          Email: billing@globexsupplies.com
+                          Tax ID: 47-3821094
+================================================================================
+
+                                  INVOICE
+
+--------------------------------------------------------------------------------
+Bill To:                                     Invoice Number:  GS-2025-04817
+Marbledock & Associates                      Invoice Date:    September 25, 2025
+402 Harbor View Drive, Floor 7               Due Date:        October 25, 2025
+Portland, OR 97201                           Payment Terms:   Net 30
+Attn: Accounts Payable
+--------------------------------------------------------------------------------
+
+ITEM #   DESCRIPTION                          QTY    UNIT PRICE     AMOUNT
+--------------------------------------------------------------------------------
+001      Heavy-Duty Storage Shelving Units      8      $189.99      $1,519.92
+         (Steel, 6-Tier, 72" x 36" x 18")
+
+002      Industrial Packing Tape Dispenser     12       $34.50        $414.00
+         (Heavy-Duty, Ergonomic Handle)
+
+003      Corrugated Shipping Boxes              5      $148.00        $740.00
+         (Bundle/100, 18x12x10 in)
+
+004      Commercial Label Printer               2      $629.00      $1,258.00
+         (Thermal Transfer, 300 dpi)
+
+005      Pallet Jack, Manual Standard           3      $875.00      $2,625.00
+         (5,500 lb Capacity, 48" x 27")
+
+006      Safety Work Gloves, Pack/12           10       $52.75        $527.50
+         (Cut-Resistant, Level A4)
+
+007      Stretch Wrap Film, Case/4 Rolls        6       $89.90        $539.40
+         (18" x 1,500 ft, 80 Gauge)
+
+008      Office Copy Paper, Case/10 Reams      15       $62.00        $930.00
+         (8.5x11, 20 lb, 92 Bright)
+
+009      Nitrile Disposable Gloves, Box/100    20       $18.45        $369.00
+         (Powder-Free, Medium)
+
+010      Bubble Wrap Roll, 3/16" Perforated     4      $112.00        $448.00
+         (12" x 175 ft per roll)
+
+--------------------------------------------------------------------------------
+                                              SUBTOTAL:         $9,370.82
+                                              SHIPPING:           $185.00
+                                              TAX (7.25%):        $679.38
+                                             -----------
+                                              TOTAL DUE:       $10,235.20
+================================================================================
+
+PAYMENT INSTRUCTIONS:
+Please make checks payable to: Globex Supplies
+ACH/Wire Transfer:
+  Bank: First Midwest Commercial Bank
+  Routing: 071000013
+  Account: 8834210956
+  Ref: GS-2025-04817
+
+NOTES:
+- All items shipped FOB Origin via preferred carrier.
+- Returns accepted within 30 days with prior authorization (RMA required).
+- Late payments subject to 1.5% monthly finance charge.
+- Questions? Contact your account rep: Dana Forsythe | (614) 555-0201
+
+Thank you for your business with Globex Supplies!
+================================================================================

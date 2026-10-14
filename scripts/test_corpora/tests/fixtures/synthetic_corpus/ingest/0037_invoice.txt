@@ -1,0 +1,84 @@
+INITECH SOFTWARE
+123 Technology Parkway, Suite 400
+Austin, TX 78701
+Phone: (512) 555-0192
+Email: billing@initechsoftware.com
+www.initechsoftware.com
+
+========================================
+                INVOICE
+========================================
+
+Bill To:
+Marbledock & Associates
+88 Harbor View Drive, Floor 12
+Boston, MA 02110
+Attn: Accounts Payable
+
+Invoice Number:  INV-2025-04817
+Invoice Date:    November 21, 2025
+Due Date:        December 21, 2025
+Payment Terms:   Net 30
+
+----------------------------------------
+DESCRIPTION                QTY   UNIT PRICE    AMOUNT
+----------------------------------------
+Enterprise License –        1    $8,500.00    $8,500.00
+  Project Management
+  Suite (Annual)
+
+Professional Services –    16       $195.00    $3,120.00
+  System Configuration
+  & Onboarding (hrs)
+
+Data Migration Package      1    $2,750.00    $2,750.00
+  (Legacy System to
+  Initech Cloud)
+
+Premium Support Plan        1    $1,800.00    $1,800.00
+  (12-Month Subscription)
+
+User Training Workshop –    5       $350.00    $1,750.00
+  Remote Sessions
+  (per attendee)
+
+Custom API Integration      1    $4,200.00    $4,200.00
+  Development
+
+----------------------------------------
+Subtotal:                              $22,120.00
+Discount (5% – Preferred
+  Client):                             -$1,106.00
+Taxable Amount:                        $21,014.00
+Sales Tax (8.25% – TX):                $1,733.66
+----------------------------------------
+TOTAL DUE:                            $22,747.66
+========================================
+
+Payment Instructions:
+  Bank:          First National Bank of Texas
+  Account Name:  Initech Software LLC
+  Account No.:   7741029384
+  Routing No.:   111000614
+  Reference:     INV-2025-04817
+
+  Alternatively, pay online at:
+  https://pay.initechsoftware.com/invoice/INV-2025-04817
+
+Notes:
+  - License keys and access credentials will be delivered
+    electronically within 2 business days of payment receipt.
+  - Professional Services hours are to be scheduled in
+    advance with your dedicated account manager.
+  - Late payments are subject to a 1.5% monthly finance
+    charge after the due date.
+
+Thank you for your business!
+We appreciate the continued partnership with
+Marbledock & Associates.
+
+Initech Software – Authorized Signatory
+_________________________
+Rachel Kominsky
+Director of Finance
+Initech Software

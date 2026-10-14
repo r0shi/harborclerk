@@ -1,0 +1,83 @@
+================================================================================
+                              GLOBEX SUPPLIES
+                        4821 Industrial Parkway, Suite 300
+                            Columbus, OH 43215
+                        Phone: (614) 555-0192
+                        Email: billing@globexsupplies.com
+                        Tax ID: 47-3829104
+================================================================================
+
+                                  INVOICE
+
+--------------------------------------------------------------------------------
+Bill To:                                    Invoice Number:  GS-2025-04417
+Marbledock & Associates                     Invoice Date:    March 12, 2025
+1102 Harbor View Blvd, Floor 7              Due Date:        April 11, 2025
+Portland, OR 97201                          Payment Terms:   Net 30
+Attn: Accounts Payable
+--------------------------------------------------------------------------------
+
+ITEMS & SERVICES
+
+--------------------------------------------------------------------------------
+#   Description                         Qty    Unit Price      Amount
+--------------------------------------------------------------------------------
+1   Heavy-Duty Storage Shelving Units    6      $284.99        $1,709.94
+    (Model: HDS-2400, Steel Frame,
+    5-Tier, 72"H x 48"W x 24"D)
+
+2   Industrial Label Printer             2      $449.50          $899.00
+    (Zebra ZT230, USB/Ethernet)
+
+3   Thermal Label Rolls (Case)           10      $62.75          $627.50
+    (4" x 6", 500 Labels/Roll,
+    Compatible ZT230)
+
+4   Office Chair - Ergonomic             8      $319.00        $2,552.00
+    (Mesh Back, Adjustable Lumbar,
+    Model: EC-7700)
+
+5   Standing Desk Converter              4      $198.50          $794.00
+    (Sit-Stand, 36" Wide,
+    Black Matte Finish)
+
+6   Multi-Function Printer Paper        20       $54.25        $1,085.00
+    (Case of 10 Reams, 8.5"x11",
+    20 lb, 92 Brightness)
+
+7   Cable Management Tray Kit           12       $38.99          $467.88
+    (Under-Desk Mount, Steel,
+    Includes Hardware)
+
+8   Safety First Aid Cabinet             3      $212.00          $636.00
+    (Fully Stocked, ANSI Class A,
+    Wall-Mount)
+
+9   Delivery & Handling Fee              1      $175.00          $175.00
+
+--------------------------------------------------------------------------------
+                                          Subtotal:           $8,946.32
+                                          Tax (7.25%):          $648.61
+                                          Shipping:             $175.00
+                                          TOTAL DUE:          $9,594.93
+--------------------------------------------------------------------------------
+
+PAYMENT INSTRUCTIONS
+--------------------------------------------------------------------------------
+Please remit payment by April 11, 2025.
+
+ACH / Wire Transfer:
+  Bank:           FirstMerit Business Bank
+  Routing No.:    041200555
+  Account No.:    7730029184
+  Account Name:   Globex Supplies LLC
+
+Check: Payable to "Globex Supplies" — mail to address above.
+Online: portal.globexsupplies.com/pay  (Invoice # required)
+
+Questions? Contact billing@globexsupplies.com or (614) 555-0192 ext. 4.
+
+--------------------------------------------------------------------------------
+Late payments are subject to a 1.5% monthly finance charge.
+Thank you for your business, Marbledock & Associates!
+================================================================================

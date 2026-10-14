@@ -1,0 +1,72 @@
+CYBERDYNE IT
+1847 Skynet Boulevard, Suite 400
+Silver Creek, CA 94108
+Phone: (415) 882-3901
+Email: billing@cyberdyneit.com
+Web: www.cyberdyneit.com
+
+================================================================================
+                                   INVOICE
+================================================================================
+
+Bill To:                                    Invoice Number:  CDI-2025-04471
+Marbledock & Associates                     Invoice Date:    May 26, 2025
+320 Harbor Pointe Drive, Floor 12           Due Date:        June 25, 2025
+Boston, MA 02110                            Payment Terms:   Net 30
+Attn: Accounts Payable
+
+================================================================================
+ DESCRIPTION                          QTY      UNIT PRICE        AMOUNT
+================================================================================
+
+ Managed IT Support Services           1       $2,800.00        $2,800.00
+ (Monthly Retainer – May 2025)
+ Help Desk, remote monitoring,
+ patch management & incident response
+
+ Network Security Audit &              1       $3,500.00        $3,500.00
+ Vulnerability Assessment
+ Comprehensive review of perimeter
+ firewall, VPN, and endpoint security
+
+ Microsoft 365 Business Premium        12      $  22.00         $  264.00
+ Licenses (12 users x 1 month)
+
+ Cisco Meraki MX68 Firewall            1       $1,195.00        $1,195.00
+ Appliance (hardware supply)
+
+ Cloud Backup Solution Setup &         1       $  975.00        $  975.00
+ Configuration
+ Azure-based incremental backup,
+ 1 TB storage provisioned
+
+ On-Site Engineer Visit                4 hrs  $  185.00        $  740.00
+ Server room cable management &
+ switch stack reconfiguration
+
+ Annual SSL Certificate Renewal        3       $   89.00        $  267.00
+ (3 domains)
+
+================================================================================
+
+                                        SUBTOTAL:          $9,741.00
+                                        TAX (8.25%):       $  803.63
+                                        ─────────────────────────────
+                                        TOTAL DUE:        $10,544.63
+
+================================================================================
+
+Payment Instructions:
+  Bank Wire / ACH:
+    Bank:           First Pacific Commercial Bank
+    Account Name:   Cyberdyne IT LLC
+    Routing:        121000248
+    Account:        7740293815
+  Check payable to: Cyberdyne IT
+  Online Payment:   www.cyberdyneit.com/pay  (reference invoice CDI-2025-04471)
+
+Late payments are subject to a 1.5% monthly finance charge.
+For billing inquiries contact billing@cyberdyneit.com or (415) 882-3901 ext. 2.
+
+Thank you for your business, Marbledock & Associates!
+================================================================================

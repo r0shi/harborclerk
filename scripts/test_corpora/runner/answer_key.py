@@ -20,23 +20,28 @@ states the parties first and the absence second scores 1.0. The phrasings are th
 
 Key entries (see `corpora/cuad_key.py` and `corpora/synthetic_key.py`, which write them):
     {"kind": "fact",   "all_of": [["california"], ["exxonmobil", "exxon mobil"]]}   every group, any spelling in it
-    {"kind": "date",   "date": "2022-03-15"}                                        + "day_first": true for 15/03/2022
-    {"kind": "count",  "count": 15}                                                 a standalone integer, or its word
-    {"kind": "amount", "amount": 364107.38}                                         a money amount, to the cent
+    {"kind": "date",   "date": "2022-03-15"}            + "day_first": true for 15/03/2022, "year_optional": true
+                                                          for "March 15" when the question says which year
+    {"kind": "count",  "count": 15}                     the first standalone integer the answer states, or its word
+    {"kind": "amount", "amount": 364107.38}             a money amount, to the cent
     {"kind": "list",   "positives": ["<title>", ...], "universe": ["<every title>", ...],
                        "aliases": {"<title>": ["<other way the answer may name it>", ...]}}   aliases optional
 
-Letters are compared with their accents folded (`normalize`): "Remi Thibodeau" is "Rémi Thibodeau", because the
-synthetic corpus is bilingual and a model answering in English drops them. Dates are read in English and French
-spellings, and in day-first numerals when the entry says so; counts and amounts in either language's digit
-grouping. `counts_in` and `amounts_in` say what they strip and why.
+A count is the first number the answer states: "Initech issued 14 invoices; Globex 20, and 15 for someone else"
+scores 0 against 15, and "Of the 60 invoices, 15 are Initech's" scores 0 too, which is the rule's cost, pinned in
+the tests. A key appearing anywhere was the alternative, and it scored a wrong answer right whenever the right
+number came up for another reason (review of #812). Letters are compared with their accents folded (`normalize`):
+"Remi Thibodeau" is "Rémi Thibodeau", because the synthetic corpus is bilingual and a model answering in English
+drops them. Dates are read in English and French spellings, and in day-first numerals when the entry says so;
+counts and amounts in either language's digit grouping. `counts_in` and `amounts_in` say what they strip and why.
 
 A synthetic key entry also carries `"generation"`: the first sixteen hex digits of a SHA-256 over the corpus's fact
 sidecars (`generation_id`). An entry with one is scored only against that corpus: `score` looks for the synthetic
 corpus under the sweep's workdir, and refuses (`CorpusMismatch`) when it is missing or is another generation,
-because a count of invoices is only true of the documents it was counted over. The workdir is the one bound with
-`bind_corpus_root`, else `$HC_EVAL_WORKDIR`, else the `--workdir` on this process's command line (the sweep's
-flag; read here so the sweep needs no hook), else the harness default.
+because a count of invoices is only true of the documents it was counted over. The sweep asks before it starts
+(`refuse_foreign_keys`), so a foreign key stops the run before any unit, not at the first scored answer. The
+workdir is the one bound with `bind_corpus_root` (the sweep binds its own), else `$HC_EVAL_WORKDIR`, else the
+`--workdir` on this process's command line, else the harness default.
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ import os
 import re
 import sys
 import unicodedata
+from collections.abc import Iterable
 from datetime import date
 from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
@@ -113,38 +119,62 @@ def _words(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", fold(text).lower())
 
 
+# ── dates ──
+
+
+def _month_names(d: date) -> tuple[str, ...]:
+    return (_MONTHS[d.month - 1], _MONTHS[d.month - 1][:3], _MONTHS_FR[d.month - 1], _MONTHS_FR_SHORT[d.month - 1])
+
+
 def date_spellings(iso: str, *, day_first: bool = False) -> set[str]:
     """Normalised ways an answer may write `iso`: March 15, 2022; 15 March 2022; Mar 15 2022; 15 mars 2022;
-    2022-03-15; 3/15/2022; 03/15/22. Ordinals ("15th", "1er") are handled by the caller stripping them. Day-first
-    numeric forms (15/03/2022, 15.03.2022) are included only with `day_first`: 3/4/2022 is two different days, and
-    CUAD is American; the synthetic corpus is Canadian and bilingual, and its key asks for them."""
+    2022-03-15; 3/15/2022; 03/15/22; 03-15-2022. Ordinals ("15th", "1er") are handled by the caller stripping them.
+    Day-first numeric forms (15/03/2022, 15-03-2022, 15.03.2022) are included only with `day_first`: 3/4/2022 is
+    two different days, and CUAD is American; the synthetic corpus is Canadian and bilingual, and its key asks for
+    them."""
     d = date.fromisoformat(iso)
     forms = {f"{d.year}{d.month:02d}{d.day:02d}"}
-    names = (_MONTHS[d.month - 1], _MONTHS[d.month - 1][:3], _MONTHS_FR[d.month - 1], _MONTHS_FR_SHORT[d.month - 1])
-    for name in names:
+    for name in _month_names(d):
         for day in {f"{d.day}", f"{d.day:02d}"}:  # contracts write "Nov. 02, 2019" as readily as "Nov. 2, 2019"
             forms |= {f"{name}{day}{d.year}", f"{day}{name}{d.year}"}
     for m in {f"{d.month}", f"{d.month:02d}"}:
         for day in {f"{d.day}", f"{d.day:02d}"}:
-            forms |= {f"{m}/{day}/{d.year}", f"{m}/{day}/{d.year % 100:02d}"}
-            if day_first:
-                forms |= {f"{day}/{m}/{d.year}", f"{day}/{m}/{d.year % 100:02d}", f"{day}.{m}.{d.year}"}
+            for year in (f"{d.year}", f"{d.year % 100:02d}"):
+                forms |= {f"{m}/{day}/{year}", f"{m}-{day}-{year}"}
+                if day_first:
+                    forms |= {f"{day}/{m}/{year}", f"{day}-{m}-{year}", f"{day}.{m}.{year}"}
     return forms
 
 
-def _has_date(text: str, iso: str, *, day_first: bool = False) -> bool:
+def month_day_spellings(iso: str) -> set[str]:
+    """The word forms of `iso` without its year ("march15", "15mars"), for an entry with `year_optional`: the
+    question named the year, so "The board met on January 12." is the answer. Numerals without a year are not
+    read: 1/12 is two days."""
+    d = date.fromisoformat(iso)
+    forms = set()
+    for name in _month_names(d):
+        for day in {f"{d.day}", f"{d.day:02d}"}:
+            forms |= {f"{name}{day}", f"{day}{name}"}
+    return forms
+
+
+def _has_date(text: str, iso: str, *, day_first: bool = False, year_optional: bool = False) -> bool:
     low = fold(text).lower()
     low = re.sub(r"(?<=\d)(st|nd|rd|th|er|re|e)\b", "", low)  # "15th", "1er décembre"
     low = re.sub(r"(?<=\d)\s+(day\s+)?of\s+(?=[a-z])", " ", low)  # "the 15th day of March, 2022"
     words = re.sub(r"[^a-z0-9]+", " ", low)
     for form in date_spellings(iso, day_first=day_first):
-        if "/" in form or "." in form:
+        if re.search(r"[/.-]", form):
             # A numeral form is read in the text itself, between non-digits: "13/15/2022" is not "3/15/2022", and
             # a trailing full stop ("on 15.03.2022.") is a sentence end, not another digit group.
-            if re.search(rf"(?<!\d)(?<!\d[/.])(?<!\d[/.]\d)(?<!\d[/.]\d\d){re.escape(form)}(?![/.]?\d)", low):
+            if re.search(rf"(?<!\d)(?<!\d[/.-])(?<!\d[/.-]\d)(?<!\d[/.-]\d\d){re.escape(form)}(?![/.-]?\d)", low):
                 return True
         elif re.search(rf"(?<![a-z0-9])(?:{_spaced(form)})(?![a-z0-9])", words):
             return True
+    if year_optional:
+        for form in month_day_spellings(iso):  # not followed by a year, which would be another date's
+            if re.search(rf"(?<![a-z0-9])(?:{_spaced(form)})(?![a-z0-9])(?!\s*(?:19|20)\d\d\b)", words):
+                return True
     return False
 
 
@@ -152,6 +182,9 @@ def _spaced(form: str) -> str:
     """A squeezed form as a pattern over `_words` text: optional single spaces between its parts (`march152022`
     matches "march 15 2022", "march 15, 2022" and "march15 2022")."""
     return r" ?".join(re.escape(ch) for ch in form)
+
+
+# ── lists ──
 
 
 def company(title: str) -> str:
@@ -162,9 +195,10 @@ def company(title: str) -> str:
 def named_contracts(text: str, universe: list[str], aliases: dict[str, list[str]] | None = None) -> set[str]:
     """Which items of `universe` an answer names, in its text: an item is named if its whole title appears, or if
     its filer's name appears and that filer has exactly one contract in the universe and a name of eight
-    characters or more, or if one of its `aliases` appears between word boundaries (the synthetic key names an
-    invoice by its file stem, and aliases it by its invoice number or its total when those are unique in the
-    corpus; `corpora/synthetic_key.py` says which). It misses an item referred to only by paraphrase ("the Papa
+    characters or more, or if one of its `aliases` appears: a word alias between word boundaries, a numeric alias
+    as a number the answer states, to the value ("$1,200.80" does not state 20080; review of #812). The synthetic
+    key names an invoice by its file stem and aliases it by its invoice number and its total, where unique in the
+    corpus; `corpora/synthetic_key.py` says which. It misses an item referred to only by paraphrase ("the Papa
     John's deal") and cannot tell an item listed as a match from one listed as a non-match.
 
     The answer's `citations` are deliberately not consulted. The app's citations field is every hit any tool
@@ -172,6 +206,7 @@ def named_contracts(text: str, universe: list[str], aliases: dict[str, list[str]
     list answer here), not what the answer refers to. Counting them would score search volume, and an answer
     saying "none" after one search would score like one that listed the hits (review of #697)."""
     squeezed, words = normalize(text), _words(text)
+    amounts = amounts_in(text) if aliases else set()
     filers: dict[str, list[str]] = {}
     for title in universe:
         filers.setdefault(company(title), []).append(title)
@@ -179,13 +214,20 @@ def named_contracts(text: str, universe: list[str], aliases: dict[str, list[str]
     for title in universe:
         whole, filer = normalize(title), company(title)
         by_filer = len(filer) >= 8 and len(filers[filer]) == 1 and filer in squeezed
-        if whole in squeezed or by_filer or any(_mentions(words, alias) for alias in (aliases or {}).get(title, ())):
+        by_alias = any(_mentions(words, amounts, alias) for alias in (aliases or {}).get(title, ()))
+        if whole in squeezed or by_filer or by_alias:
             found.add(title)
     return found
 
 
-def _mentions(words: str, alias: str) -> bool:
-    """`alias` in `_words` text, between boundaries: "$17,195.51" mentions "17195" and "17195.51"; "117195" neither."""
+def mentions(text: str, alias: str) -> bool:
+    """Whether `text` names `alias` as `named_contracts` would read it."""
+    return _mentions(_words(text), amounts_in(text), alias)
+
+
+def _mentions(words: str, amounts: set[Decimal], alias: str) -> bool:
+    if re.fullmatch(r"\d+(?:\.\d+)?", alias):
+        return Decimal(alias) in amounts
     form = normalize(alias)
     return bool(form) and re.search(rf"(?<![a-z0-9])(?:{_spaced(form)})(?![a-z0-9])", words) is not None
 
@@ -199,11 +241,14 @@ _UNITS_FR = ("zero", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "hu
 _UNITS_FR += ("treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf")
 _TENS_FR = {"vingt": 20, "trente": 30, "quarante": 40, "cinquante": 50, "soixante": 60}
 NUMBER_WORDS: dict[str, int] = {w: i for i, w in enumerate(_UNITS)} | {w: i for i, w in enumerate(_UNITS_FR)}
-NUMBER_WORDS |= {"une": 1} | _TENS | _TENS_FR
+NUMBER_WORDS |= _TENS | _TENS_FR
+# "one", "un" and "une" are read only inside a compound ("twenty-one", "vingt-et-un"): on their own they are a
+# pronoun and the French articles far more often than a number, and no key asks for a count of one.
+_STANDALONE_WORDS = {w: n for w, n in NUMBER_WORDS.items() if n != 1}
 _TENS_UNITS = re.compile(
     rf"\b({'|'.join(_TENS | _TENS_FR)})[ -](?:et[ -])?({'|'.join(_UNITS[1:10] + _UNITS_FR[1:10])})\b"
 )
-_NUMBER_WORD = re.compile(r"\b(" + "|".join(sorted(NUMBER_WORDS, key=len, reverse=True)) + r")\b")
+_NUMBER_WORD = re.compile(r"\b(" + "|".join(sorted(_STANDALONE_WORDS, key=len, reverse=True)) + r")\b")
 # A month as a whole word, full or abbreviated, in either language ("nov", "sept", "juil"); not a prefix, so that
 # "market 15" and "decided 5" keep their numbers.
 _MONTH_WORD = "|".join(
@@ -211,35 +256,43 @@ _MONTH_WORD = "|".join(
 )
 _MONTH_DAY = re.compile(rf"\b(?:{_MONTH_WORD})\b\.?\s+\d{{1,2}}\b(?:,?\s*\d{{4}})?")
 _DAY_MONTH = re.compile(rf"\b\d{{1,2}}\s+(?:{_MONTH_WORD})\b\.?(?:,?\s*\d{{4}})?")
+_MONTH_YEAR = re.compile(rf"\b(?:{_MONTH_WORD})\b\.?,?\s*(?:19|20)\d{{2}}\b")  # "Sept 2025" is a month, not seven
 _NUMERIC_DATE = re.compile(r"\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b")
 _RANGE = re.compile(r"\b\d+\s*[-–]\s*\d+\b")
 _YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
 _MONEY = re.compile(r"[$€£]\s*\d[\d,.\s]*|\d[\d,.\s]*\s*(?:[$€£]|\b(?:usd|cad|eur|dollars?)\b)")
+# A list marker is a number at the start of a line with text after it on that line; "15." alone is an answer.
+_LINE_MARKER = re.compile(r"(?m)^\s*(?:[-*•]|\d+[.)])[ \t]+(?=\S)")
 # A standalone integer: digits, or digit groups of three with a comma, not touching a letter, an underscore, a
 # colon or more digits through a separator ("0012_invoice", "9:00", "15.5", "141b4469" are not counts), not a
 # percentage.
 _INT = re.compile(r"(?<![\w,./:-])(\d{1,3}(?:,\d{3})+|\d+)(?![\w,.:]*\d)(?!\w)(?!\s?%)")
 
 
-def counts_in(text: str) -> set[int]:
-    """Every integer an answer states on its own, as digits ("15", "1,234") or as a word up to ninety-nine in
-    English or French ("fifteen", "quinze", "vingt-cinq"). Read after stripping what carries digits without being a
-    count: list markers at line starts (the fifteenth item of a list is not "15"), dates in any spelling, years,
-    numeric ranges, money, decimals and percentages. What it cannot strip is stated: a day number beside a month
-    survives when the month is misspelt, "une" and "un" are French articles before they are "one", so a key of 1
-    in a French answer is matched by any noun phrase; the synthetic key asks for no count under 2."""
+def counts_in(text: str) -> list[int]:
+    """Every integer an answer states on its own, in the order stated, each once: as digits ("15", "1,234") or as a
+    word up to ninety-nine in English or sixty-nine in French ("fifteen", "quinze", "vingt-cinq"). Read after
+    stripping what carries digits without being a count: list markers at line starts (the fifteenth item of a list
+    is not "15"), dates in any spelling, a month with a year ("Sept 2025" is not seven), years, numeric ranges,
+    money, decimals and percentages. What it cannot strip is stated: a day number beside a misspelt month survives,
+    and "one", "un" and "une" are not read on their own (see `_STANDALONE_WORDS`)."""
     low = fold(text).lower()
-    low = re.sub(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+", " ", low)
+    low = _LINE_MARKER.sub(" ", low)
     low = re.sub(r"(?<=\d)(st|nd|rd|th|er|re|e)\b", "", low)
-    for pattern in (_MONTH_DAY, _DAY_MONTH, _NUMERIC_DATE, _RANGE, _YEAR, _MONEY):
+    for pattern in (_MONTH_DAY, _DAY_MONTH, _MONTH_YEAR, _NUMERIC_DATE, _RANGE, _YEAR, _MONEY):
         low = pattern.sub(" ", low)
-    found = {int(m.group(1).replace(",", "")) for m in _INT.finditer(low)}
-    words = re.sub(r"[^a-z -]+", " ", low)
-    for m in _TENS_UNITS.finditer(words):  # "vingt-cinq" is 25, and neither 20 nor 5
-        found.add(_TENS.get(m.group(1), _TENS_FR.get(m.group(1), 0)) + NUMBER_WORDS[m.group(2)])
-    words = _TENS_UNITS.sub(" ", words)
-    found |= {NUMBER_WORDS[m.group(1)] for m in _NUMBER_WORD.finditer(words)}
-    return found
+    found: list[tuple[int, int]] = [(m.start(), int(m.group(1).replace(",", ""))) for m in _INT.finditer(low)]
+    compounds = list(_TENS_UNITS.finditer(low))  # "vingt-cinq" is 25, and neither 20 nor 5
+    found += [(m.start(), NUMBER_WORDS[m.group(1)] + NUMBER_WORDS[m.group(2)]) for m in compounds]
+    spans = [m.span() for m in compounds]
+    for m in _NUMBER_WORD.finditer(low):
+        if not any(a <= m.start() < b for a, b in spans):
+            found.append((m.start(), _STANDALONE_WORDS[m.group(1)]))
+    ordered: list[int] = []
+    for _, value in sorted(found):
+        if value not in ordered:
+            ordered.append(value)
+    return ordered
 
 
 # ── amounts ──
@@ -349,23 +402,34 @@ def _workdir_from_argv() -> Path | None:
     return Path(known.workdir).expanduser() if known.workdir else None
 
 
-def check_generation(expected: str) -> None:
-    """Refuse (`CorpusMismatch`) unless the synthetic corpus under `corpus_root()` is generation `expected`."""
-    facts = corpus_root() / "synthetic" / "facts"
+def check_generation(expected: str, corpus: str = "synthetic") -> None:
+    """Refuse (`CorpusMismatch`) unless `<corpus_root()>/<corpus>/facts` is generation `expected`."""
+    facts = corpus_root() / corpus / "facts"
     if facts not in _generations:
         try:
             _generations[facts] = generation_id(facts)
         except FileNotFoundError as exc:
             raise CorpusMismatch(
-                f"the key is for synthetic generation {expected}, but there is no synthetic corpus to score it "
+                f"the key is for {corpus} generation {expected}, but there is no {corpus} corpus to score it "
                 f"against ({exc}); bind the workdir (answer_key.bind_corpus_root, ${WORKDIR_ENV} or --workdir)"
             ) from None
     if _generations[facts] != expected:
         raise CorpusMismatch(
-            f"the key is for synthetic generation {expected}; the corpus under {facts} is generation "
+            f"the key is for {corpus} generation {expected}; the corpus under {facts} is generation "
             f"{_generations[facts]}. Regenerate the key from this corpus (corpora/synthetic_key.py --redo) or "
             "score against the corpus it was written for; a count is only true of the documents it counted."
         )
+
+
+def refuse_foreign_keys(keys_by_corpus: dict[str, dict], corpora: Iterable[str], workdir: Path | str) -> None:
+    """Before a run: bind `workdir`, and for every corpus in the run whose key carries a `_generation` header, check
+    that the corpus under the workdir is that generation. Raises `CorpusMismatch` so the sweep can refuse to start,
+    instead of dying at the first scored answer with the unit done and nothing to show for it (review of #812)."""
+    bind_corpus_root(workdir)
+    for corpus in corpora:
+        header = (keys_by_corpus.get(corpus) or {}).get("_generation")
+        if header:
+            check_generation(header["generation"], header.get("corpus", corpus))
 
 
 def score(entry: dict, answer: str) -> dict:
@@ -388,10 +452,16 @@ def score(entry: dict, answer: str) -> dict:
         hits = [any(normalize(alt) in squeezed for alt in group) for group in entry["all_of"]]
         return {"score": sum(hits) / len(hits), "groups_found": sum(hits), "groups": len(hits)}
     if kind == "date":
-        return {"score": 1.0 if _has_date(answer, entry["date"], day_first=bool(entry.get("day_first"))) else 0.0}
+        found = _has_date(
+            answer,
+            entry["date"],
+            day_first=bool(entry.get("day_first")),
+            year_optional=bool(entry.get("year_optional")),
+        )
+        return {"score": 1.0 if found else 0.0}
     if kind == "count":
         found = counts_in(answer)
-        return {"score": 1.0 if int(entry["count"]) in found else 0.0, "numbers": sorted(found)[:12]}
+        return {"score": 1.0 if found and found[0] == int(entry["count"]) else 0.0, "numbers": found[:12]}
     if kind == "amount":
         return {"score": 1.0 if _has_amount(answer, entry["amount"]) else 0.0}
     if kind == "list":

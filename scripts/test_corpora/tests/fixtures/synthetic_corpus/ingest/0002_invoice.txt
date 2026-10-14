@@ -1,0 +1,81 @@
+CYBERDYNE IT
+123 Silicon Boulevard, Suite 400
+San Jose, CA 95110
+Phone: (408) 555-0192
+Email: billing@cyberdyneit.com
+Web: www.cyberdyneit.com
+
+================================================================
+INVOICE
+================================================================
+
+Bill To:
+Marbledock & Associates
+88 Harbor View Drive, Floor 12
+Boston, MA 02110
+Attn: Accounts Payable
+
+Invoice Number:  CDI-2025-04872
+Invoice Date:    April 5, 2025
+Due Date:        May 5, 2025
+Payment Terms:   Net 30
+Currency:        USD
+
+----------------------------------------------------------------
+SERVICES & PRODUCTS
+----------------------------------------------------------------
+
+Line  Description                              Qty   Unit Price    Amount
+----  ---------------------------------------  ----  ----------  ----------
+ 1    Managed Cloud Infrastructure             1     $4,800.00   $4,800.00
+      (Monthly managed hosting, AWS east       
+       region, 3 servers, Apr 2025)            
+
+ 2    IT Help Desk Support – Standard Plan     1     $2,250.00   $2,250.00
+      (50 support hours @ $45/hr,              
+       March billing cycle)                    
+
+ 3    Cisco Catalyst 9200 Switch (24-Port)     2     $1,875.00   $3,750.00
+
+ 4    Network Security Audit & Penetration     1     $3,500.00   $3,500.00
+      Testing (Q1 2025 Assessment Report)      
+
+ 5    Microsoft 365 Business Premium           15      $220.00   $3,300.00
+      (Annual license per seat, prorated       
+       Apr–Jun 2025, 15 users)                 
+
+ 6    On-Site Technician Deployment            8      $185.00   $1,480.00
+      (8 hours on-site, March 28–29, 2025)     
+
+ 7    Backup & Disaster Recovery Config        1     $1,200.00   $1,200.00
+      (Veeam Cloud Connect setup & config)     
+
+----------------------------------------------------------------
+
+Subtotal:                                                       $20,280.00
+Sales Tax (CA 8.75%):                                            $1,774.50
+                                                            ------------
+TOTAL DUE:                                                      $22,054.50
+================================================================
+
+Payment Instructions:
+  Bank:          Pacific West Commerce Bank
+  Account Name:  Cyberdyne IT LLC
+  Account No.:   4471-882-09
+  Routing No.:   121000248
+  Reference:     CDI-2025-04872
+
+Alternatively, pay online at: www.cyberdyneit.com/pay
+
+Please include the invoice number in all payment correspondence.
+Late payments are subject to a 1.5% monthly finance charge.
+
+Thank you for your business!
+
+For billing inquiries, contact:
+Sophia Reyes, Billing Manager
+billing@cyberdyneit.com | (408) 555-0192 ext. 204
+
+================================================================
+Cyberdyne IT | CA Business Lic. #2018-SJC-004471
+================================================================

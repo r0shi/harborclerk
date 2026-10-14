@@ -1,0 +1,60 @@
+INITECH SOFTWARE
+1407 Office Park Drive, Suite 300
+Austin, TX 78701
+Phone: (512) 555-0192
+Email: billing@initechsoftware.com
+www.initechsoftware.com
+
+------------------------------------------------------------------------
+INVOICE
+------------------------------------------------------------------------
+
+Bill To:
+Marbledock & Associates
+88 Harbor View Plaza, Floor 4
+Boston, MA 02110
+Attn: Accounts Payable
+
+Invoice Number:   INV-2025-00847
+Invoice Date:     February 22, 2025
+Due Date:         March 24, 2025
+Payment Terms:    Net 30
+
+------------------------------------------------------------------------
+DESCRIPTION                          QTY    UNIT PRICE      AMOUNT
+------------------------------------------------------------------------
+Enterprise License - ProjectFlow       1    $8,500.00     $8,500.00
+Software Suite (Annual)
+
+Professional Implementation            16      $175.00     $2,800.00
+Services (hours)
+
+Data Migration & Integration            8      $195.00     $1,560.00
+Consulting (hours)
+
+Premium Support Package                 1    $1,200.00     $1,200.00
+(12 months)
+
+On-Site Training Session               1      $950.00       $950.00
+(half-day, up to 10 users)
+
+------------------------------------------------------------------------
+                                            SUBTOTAL:    $15,010.00
+                                            TAX (8%):     $1,200.80
+                                            TOTAL:       $16,210.80
+------------------------------------------------------------------------
+
+Payment Instructions:
+Please make checks payable to Initech Software.
+ACH / Wire Transfer:
+  Bank: First Commerce Bank
+  Routing: 111000025
+  Account: 4072839156
+
+Please reference Invoice Number INV-2025-00847 with your payment.
+
+Late payments are subject to a 1.5% monthly finance charge.
+
+Thank you for your business!
+
+Questions? Contact us at billing@initechsoftware.com or (512) 555-0192.

@@ -1,0 +1,70 @@
+================================================================================
+                              GLOBEX SUPPLIES
+                       147 Industrial Parkway, Suite 300
+                         Columbus, OH 43215
+                         Phone: (614) 555-0192
+                         Email: billing@globexsupplies.com
+                         Tax ID: 47-3821904
+================================================================================
+
+                                   INVOICE
+
+--------------------------------------------------------------------------------
+Bill To:                                        Invoice Number:  GS-2025-04817
+Marbledock & Associates                         Invoice Date:    July 21, 2025
+88 Commerce Boulevard, Floor 12                 Due Date:        August 20, 2025
+Boston, MA 02110                                Payment Terms:   Net 30
+Attn: Accounts Payable
+--------------------------------------------------------------------------------
+
+ITEM   DESCRIPTION                          QTY    UNIT PRICE      AMOUNT
+--------------------------------------------------------------------------------
+1      Heavy-Duty Storage Shelving Units      6     $  312.50    $  1,875.00
+       (Steel, 5-tier, 72" x 36" x 18")
+
+2      Multi-Function Office Printer          2     $  649.00    $  1,298.00
+       (Laser, Color, Duplex, Network-Ready)
+
+3      Premium Copy Paper - Case              18    $   52.75    $    949.50
+       (8.5" x 11", 20lb, 10 reams/case)
+
+4      Ergonomic Office Chair                 8     $  387.00    $  3,096.00
+       (Adjustable lumbar, armrests, mesh back)
+
+5      Industrial Cleaning Supplies Kit       4     $  148.25    $    593.00
+       (Mop, broom, sanitizer, 12-item set)
+
+6      LED Panel Light Fixtures               20    $   89.99    $  1,799.80
+       (2x4 ft, 5000K, Drop Ceiling Mount)
+
+7      First Aid Cabinet - Wall Mount         3     $  214.50    $    643.50
+       (OSHA Compliant, 150-piece kit)
+
+8      Packing & Shipping Supplies Bundle     5     $  176.00    $    880.00
+       (Tape, bubble wrap, boxes, labels)
+
+--------------------------------------------------------------------------------
+                                             SUBTOTAL:         $ 11,134.80
+                                             SHIPPING:         $    185.00
+                                             TAX (7.5%):       $    835.11
+                                             --------------------------------
+                                             TOTAL DUE:        $ 12,154.91
+--------------------------------------------------------------------------------
+
+Payment Instructions:
+  Please remit payment by August 20, 2025.
+  Check payable to: Globex Supplies
+  ACH / Wire Transfer:
+    Bank:            First National Commerce Bank
+    Routing Number:  041000124
+    Account Number:  7830294415
+  Reference Invoice Number GS-2025-04817 on all payments.
+
+Notes:
+  All sales are subject to Globex Supplies standard terms and conditions.
+  A late fee of 1.5% per month will be applied to balances past due.
+  For billing inquiries, contact billing@globexsupplies.com or (614) 555-0192.
+
+Thank you for your business, Marbledock & Associates!
+We appreciate the opportunity to serve you.
+================================================================================

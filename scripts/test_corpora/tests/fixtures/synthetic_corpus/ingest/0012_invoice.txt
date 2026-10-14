@@ -1,0 +1,66 @@
+INITECH SOFTWARE
+1400 Preston Road, Suite 300
+Plano, TX 75093
+Phone: (972) 555-0182
+Email: billing@initechsoftware.com
+www.initechsoftware.com
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INVOICE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Bill To:                              Invoice Number: INV-2025-00847
+Marbledock & Associates               Invoice Date:   February 2, 2025
+88 Harbor View Drive, Suite 210       Due Date:       March 4, 2025
+Boston, MA 02210                      Terms:          Net 30
+Attn: Accounts Payable
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LINE ITEMS
+
+┌─────────────────────────────────────────┬──────┬────────────┬────────────┐
+│ Description                             │  Qty │ Unit Price │   Amount   │
+├─────────────────────────────────────────┼──────┼────────────┼────────────┤
+│ Enterprise License - Document           │      │            │            │
+│ Management Suite (Annual)               │    1 │  $7,500.00 │  $7,500.00 │
+├─────────────────────────────────────────┼──────┼────────────┼────────────┤
+│ Professional Services - System          │      │            │            │
+│ Configuration & Onboarding              │   12 │    $175.00 │  $2,100.00 │
+├─────────────────────────────────────────┼──────┼────────────┼────────────┤
+│ User Seat Licenses (additional)         │   15 │     $45.00 │    $675.00 │
+├─────────────────────────────────────────┼──────┼────────────┼────────────┤
+│ Priority Support & Maintenance Plan     │      │            │            │
+│ (12-month subscription)                 │    1 │  $1,200.00 │  $1,200.00 │
+├─────────────────────────────────────────┼──────┼────────────┼────────────┤
+│ Data Migration Services                 │    8 │    $195.00 │  $1,560.00 │
+├─────────────────────────────────────────┼──────┼────────────┼────────────┤
+│ Custom API Integration Module           │    1 │  $2,850.00 │  $2,850.00 │
+└─────────────────────────────────────────┴──────┴────────────┴────────────┘
+
+                                         Subtotal:        $15,885.00
+                                         Tax (8.25%):      $1,310.51
+                                         ─────────────────────────
+                                         TOTAL DUE:       $17,195.51
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PAYMENT INSTRUCTIONS
+Please remit payment by March 4, 2025.
+
+ACH / Wire Transfer:
+  Bank: First National Business Bank
+  Routing Number: 111000025
+  Account Number: 7734920158
+  Account Name: Initech Software LLC
+
+Check: Make payable to "Initech Software" and mail to address above.
+Online: Pay at portal.initechsoftware.com/pay using Invoice No. INV-2025-00847
+
+Late payments are subject to a 1.5% monthly finance charge.
+
+Thank you for your business!
+Questions? Contact billing@initechsoftware.com or (972) 555-0182.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Initech Software | Tax ID: 75-3849201

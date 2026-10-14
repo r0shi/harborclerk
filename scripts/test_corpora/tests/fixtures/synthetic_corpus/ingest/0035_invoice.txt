@@ -1,0 +1,91 @@
+CYBERDYNE IT
+1847 Nexus Boulevard, Suite 400
+San Jose, CA 95110
+Phone: (408) 555-0192
+Email: billing@cyberdyneit.com
+Web: www.cyberdyneit.com
+
+========================================
+                 INVOICE
+========================================
+
+Bill To:
+Marbledock & Associates
+320 Harbor View Drive, Floor 12
+Boston, MA 02210
+Attn: Accounts Payable
+
+Invoice Number:  CDI-2025-04817
+Invoice Date:    September 6, 2025
+Due Date:        October 6, 2025
+Payment Terms:   Net 30
+
+----------------------------------------
+SERVICES & PRODUCTS
+----------------------------------------
+
+Item  Description                          Qty    Unit Price     Amount
+----  -----------------------------------  -----  -----------  ----------
+1     Managed IT Support - Standard Tier   1 mo   $2,850.00    $2,850.00
+      (Monthly helpdesk & remote support,
+       up to 25 end users, SLA 4-hr resp.)
+
+2     Cloud Infrastructure Management      1 mo   $1,975.00    $1,975.00
+      (Azure VM monitoring, patch mgmt,
+       backup verification & reporting)
+
+3     Cybersecurity Threat Monitoring      1 mo   $1,400.00    $1,400.00
+      (24/7 SIEM monitoring, alerting,
+       monthly threat summary report)
+
+4     Network Switch Replacement           2 ea   $1,245.00    $2,490.00
+      (Cisco Catalyst 2960-X 48-port
+       PoE+, incl. installation & config)
+
+5     SSL Certificate Renewal              3 ea     $189.00      $567.00
+      (Wildcard SSL, 1-year term,
+       installation included)
+
+6     On-Site Engineer - Project Work      6 hr     $195.00    $1,170.00
+      (Server room audit & cable mgmt
+       remediation, September 3, 2025)
+
+7     Microsoft 365 Business Premium       5 lic     $22.00      $110.00
+      License - Monthly (new seats)
+
+----------------------------------------
+
+Subtotal:                                                      $10,562.00
+Discount (5% - Preferred Client):                               ($528.10)
+                                                             -----------
+Taxable Amount:                                                $10,033.90
+Sales Tax (0% - B2B Services, MA):                                 $0.00
+                                                             -----------
+INVOICE TOTAL:                                                $10,033.90
+
+========================================
+PAYMENT INSTRUCTIONS
+========================================
+
+Bank Wire / ACH Transfer:
+  Bank:          First National Technology Bank
+  Routing No.:   121000358
+  Account No.:   8847201936
+  Account Name:  Cyberdyne IT LLC
+
+Check Payable To: Cyberdyne IT
+Memo: Invoice CDI-2025-04817
+
+For billing questions, contact:
+billing@cyberdyneit.com | (408) 555-0192 ext. 2
+
+Late payments are subject to a 1.5% monthly
+finance charge after the due date.
+
+Thank you for your continued partnership.
+We appreciate your business!
+
+========================================
+Cyberdyne IT | EIN: 47-3829104
+Licensed & Insured | SOC 2 Type II Certified
+========================================

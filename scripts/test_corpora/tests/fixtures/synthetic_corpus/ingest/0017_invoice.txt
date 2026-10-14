@@ -1,0 +1,79 @@
+CYBERDYNE IT
+123 Silicon Drive, Suite 400
+Austin, TX 78701
+Phone: (512) 555-0198
+Email: billing@cyberdyneit.com
+Website: www.cyberdyneit.com
+
+========================================
+                 INVOICE
+========================================
+
+BILL TO:
+Marbledock & Associates
+850 Harbor View Plaza, Floor 12
+Boston, MA 02110
+Attn: Accounts Payable
+
+----------------------------------------
+Invoice Number : CDI-2025-04417
+Invoice Date   : May 21, 2025
+Due Date       : June 20, 2025
+Payment Terms  : Net 30
+----------------------------------------
+
+SERVICES & PRODUCTS:
+
++------------------------------------------+------+----------+----------+
+| Description                              | Qty  | Unit Price|  Amount  |
++------------------------------------------+------+-----------+----------+
+| Managed IT Support - Monthly Retainer    |    1 |  2,500.00 |  2,500.00|
+| Microsoft 365 Business Premium Licenses  |   25 |     22.00 |    550.00|
+| Network Security Audit & Penetration     |    1 |  4,800.00 |  4,800.00|
+|   Testing (On-Site, May 12-14 2025)      |      |           |          |
+| Cisco Meraki MX68 Firewall (Hardware)    |    2 |    895.00 |  1,790.00|
+| Remote Backup Solution - Annual License  |    1 |  1,200.00 |  1,200.00|
+| Help Desk Support Hours (Senior Tier)    |   18 |     95.00 |  1,710.00|
+| SSL Certificate Installation & Config    |    3 |     75.00 |    225.00|
++------------------------------------------+------+-----------+----------+
+
+SUBTOTAL                                                       12,775.00
+DISCOUNT (5% - Preferred Client)                                 (638.75)
+TAXABLE SUBTOTAL                                               12,136.25
+SALES TAX (8.25% - Travis County, TX)                           1,001.24
+----------------------------------------
+TOTAL DUE                                                     $13,137.49
+========================================
+
+PAYMENT INSTRUCTIONS:
+Please remit payment by June 20, 2025 to avoid a 1.5% monthly
+late fee on outstanding balances.
+
+Wire Transfer / ACH:
+  Bank: First National Business Bank
+  Routing: 021000089
+  Account: 7734-002-558819
+  Reference: CDI-2025-04417
+
+Check Payable To: Cyberdyne IT
+Mail To: 123 Silicon Drive, Suite 400, Austin, TX 78701
+
+Credit Card: Pay online at www.cyberdyneit.com/pay
+  (A 2.9% processing fee applies to card payments)
+
+----------------------------------------
+NOTES:
+- All hardware is covered by a 1-year manufacturer warranty.
+- Managed support services commence June 1, 2025.
+- Security audit report will be delivered within 10 business days
+  of the assessment completion date.
+- Please reference invoice number CDI-2025-04417 on all payments.
+
+Thank you for your continued partnership.
+We appreciate the trust Marbledock & Associates places in Cyberdyne IT.
+
+Questions? Contact your account manager:
+Derek Holt | dholt@cyberdyneit.com | (512) 555-0198 ext. 204
+
+Cyberdyne IT | Tax ID: 47-3829154
+========================================

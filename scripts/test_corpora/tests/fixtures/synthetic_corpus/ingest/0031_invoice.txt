@@ -1,0 +1,83 @@
+INITECH SOFTWARE
+1402 Riverside Business Park, Suite 300
+Austin, TX 78701
+Phone: (512) 555-0193
+Email: billing@initechsoftware.com
+www.initechsoftware.com
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INVOICE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Invoice Number : INV-2025-00847
+Invoice Date   : January 20, 2025
+Due Date       : February 19, 2025
+Payment Terms  : Net 30
+
+BILL TO:
+Marbledock & Associates
+88 Harborview Plaza, Floor 12
+Boston, MA 02110
+Attn: Accounts Payable
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LINE ITEMS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+No.  Description                                    Qty    Unit Price    Amount
+───  ─────────────────────────────────────────────  ───    ──────────    ──────────
+1    Enterprise License – DataBridge Pro v4.2         1    $8,500.00     $8,500.00
+     (Annual subscription, Jan 2025 – Jan 2026)
+
+2    Professional Services – System Integration       16    $195.00      $3,120.00
+     (API configuration & workflow setup)
+
+3    Custom Report Module Development                  1    $2,750.00    $2,750.00
+     (Per SOW dated 2024-12-10)
+
+4    Priority Support Package – Q1 2025                1    $1,200.00    $1,200.00
+     (Jan – Mar 2025, 8x5 phone & email support)
+
+5    Onboarding & Training Session (4 hrs)             2    $375.00        $750.00
+     (Remote, conducted Jan 15–16, 2025)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+                                         Subtotal :   $16,320.00
+                                    Tax (8.25%) :    $1,346.40
+                                   ─────────────────────────────
+                                    TOTAL DUE :   $17,666.40
+                                   ─────────────────────────────
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PAYMENT INSTRUCTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Bank Wire / ACH Transfer:
+  Bank Name    : First National Business Bank
+  Account Name : Initech Software LLC
+  Routing No.  : 111000025
+  Account No.  : 8847203916
+  Reference    : INV-2025-00847
+
+Check payable to: Initech Software LLC
+Mail to: 1402 Riverside Business Park, Suite 300, Austin, TX 78701
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NOTES & TERMS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Payment is due within 30 days of invoice date.
+- A late fee of 1.5% per month will be applied to balances outstanding
+  beyond the due date.
+- All software licenses are subject to Initech Software's End User
+  License Agreement (EULA) available at www.initechsoftware.com/eula.
+- For billing inquiries, contact billing@initechsoftware.com or
+  call (512) 555-0193, option 2.
+
+Thank you for your business, Marbledock & Associates.
+We appreciate the continued partnership.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Initech Software LLC  |  EIN: 74-3821056  |  www.initechsoftware.com
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

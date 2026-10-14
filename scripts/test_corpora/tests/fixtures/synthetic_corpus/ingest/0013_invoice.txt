@@ -1,0 +1,59 @@
+INITECH SOFTWARE
+1250 Westlake Parkway, Suite 400
+Austin, TX 78746
+Phone: (512) 555-0182
+Email: billing@initechsoftware.com
+www.initechsoftware.com
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INVOICE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Bill To:                              Invoice #: INV-2025-00847
+Marbledock & Associates               Invoice Date: February 13, 2025
+88 Harbor View Blvd, Floor 3          Due Date: March 15, 2025
+Boston, MA 02110                      Payment Terms: Net 30
+Attn: Accounts Payable
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DESCRIPTION                          QTY    UNIT PRICE    AMOUNT
+─────────────────────────────────────────────────────────────────
+Enterprise License - DataBridge Pro   1      $8,500.00    $8,500.00
+(Annual subscription, seats 1-50)
+
+Professional Services - System        12 hrs   $175.00    $2,100.00
+Integration Consulting
+
+Custom API Development -              1      $4,200.00    $4,200.00
+Salesforce Connector Module
+
+On-Site Implementation Support        8 hrs    $195.00    $1,560.00
+(Feb 6-7, 2025)
+
+Priority Support Plan - Q1 2025       1        $750.00      $750.00
+(January - March)
+
+Training Session - Admin Users        1      $1,100.00    $1,100.00
+(4-hour remote workshop, 10 attendees)
+─────────────────────────────────────────────────────────────────
+
+                                              Subtotal:  $18,210.00
+                                       Tax (8.25%):      $1,502.33
+                                    ─────────────────────────────
+                                          TOTAL DUE:    $19,712.33
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PAYMENT INSTRUCTIONS:
+Please make checks payable to Initech Software or pay via ACH:
+  Bank: First National Bank of Texas
+  Routing: 111000614
+  Account: 7823049156
+  Reference: INV-2025-00847
+
+Late payments are subject to a 1.5% monthly finance charge.
+Questions? Contact billing@initechsoftware.com or (512) 555-0182.
+
+Thank you for your business!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

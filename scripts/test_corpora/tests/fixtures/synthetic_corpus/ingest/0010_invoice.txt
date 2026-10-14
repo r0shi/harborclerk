@@ -1,0 +1,76 @@
+CYBERDYNE IT
+1847 Nexus Boulevard, Suite 400
+San Jose, CA 95110
+Phone: (408) 555-0192
+Email: billing@cyberdyneit.com
+Web: www.cyberdyneit.com
+
+================================================================================
+                                   INVOICE
+================================================================================
+
+Bill To:                                    Invoice Number: CDI-2025-04471
+Marbledock & Associates                     Invoice Date:   February 13, 2025
+320 Harbor View Drive, Floor 7              Due Date:       March 15, 2025
+Boston, MA 02210                            Payment Terms:  Net 30
+Attn: Accounts Payable
+
+================================================================================
+ DESCRIPTION                          QTY     UNIT PRICE        AMOUNT
+================================================================================
+
+ Managed IT Support Services           1      $2,800.00        $2,800.00
+ (Monthly retainer - February 2025)
+
+ Network Security Monitoring           1      $1,250.00        $1,250.00
+ (Firewall management & threat         
+  detection - February 2025)           
+
+ Microsoft 365 Business Premium       18         $22.00          $396.00
+ User Licenses (monthly)              
+
+ Cloud Backup & Disaster Recovery      1        $480.00          $480.00
+ (500 GB managed backup - Feb 2025)   
+
+ On-Site Technician Visit             4 hrs    $185.00          $740.00
+ (Network infrastructure audit,        
+  January 28, 2025)                   
+
+ Hardware Supply - Cisco Catalyst      2      $1,340.00        $2,680.00
+ 1000-24T Network Switch              
+
+ Structured Cabling & Installation     1        $920.00          $920.00
+ (Conference room A & B patch panel   
+  termination, Jan 30, 2025)          
+
+ Security Awareness Training           1        $650.00          $650.00
+ Platform License (Annual - prorated  
+  1 month)                            
+
+================================================================================
+                                             SUBTOTAL:        $9,916.00
+                                             TAX (8.25%):       $818.07
+                                          ------------------------------------
+                                             TOTAL DUE:      $10,734.07
+================================================================================
+
+Payment Methods:
+  ACH/Wire Transfer:
+    Bank: First National Commercial Bank
+    Routing: 121000248
+    Account: 7740293815
+    Reference: CDI-2025-04471
+
+  Check payable to: Cyberdyne IT
+  Mail to: 1847 Nexus Boulevard, Suite 400, San Jose, CA 95110
+
+Notes:
+  - Please reference invoice number CDI-2025-04471 on all payments.
+  - A late fee of 1.5% per month will be applied to overdue balances.
+  - For billing inquiries, contact billing@cyberdyneit.com or (408) 555-0192.
+
+Thank you for your business. We appreciate your continued partnership.
+
+================================================================================
+Cyberdyne IT  |  CA Business License #2204789  |  EIN: 47-3821605
+================================================================================

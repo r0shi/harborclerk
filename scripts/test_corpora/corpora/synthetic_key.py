@@ -53,7 +53,7 @@ from pathlib import Path
 
 import yaml
 
-from scripts.test_corpora.runner.answer_key import generation_id, normalize, score
+from scripts.test_corpora.runner.answer_key import generation_id, mentions, normalize, score
 
 log = logging.getLogger(__name__)
 
@@ -193,12 +193,54 @@ def _name_key(value) -> str:
 
 
 def _owner_alternatives(owner: str) -> list[str]:
+    """The owner as written, with "&" as "and", without the company after the comma, and with "Human Resources"
+    as "HR", in every combination that differs."""
     forms = []
     for base in (owner, owner.split(f", {COMPANY}")[0]):
         for alt in (base, base.replace("&", "and")):
-            if alt.strip() and alt not in forms:
-                forms.append(alt.strip())
+            for form in (alt, re.sub(r"\bHuman Resources\b", "HR", alt)):
+                if form.strip() and form.strip() not in forms:
+                    forms.append(form.strip())
     return forms
+
+
+def _name_alternatives(name: str) -> list[str]:
+    """A person as written, without a middle initial ("Victoria L. Hargrove" is "Victoria Hargrove"), and by a
+    surname of six letters or more ("Mme Côté-Renaud") when every word is capitalised as a person's are. An office
+    ("Office of the Managing Partner") is itself, and "Partner" is nobody's surname."""
+    forms = [name]
+    without_initial = re.sub(r"\s+[A-Z]\.?(?=\s)", "", name)
+    if without_initial != name:
+        forms.append(without_initial)
+    words = name.split()
+    surname = words[-1]
+    if 2 <= len(words) <= 4 and all(w[:1].isupper() for w in words) and len(normalize(surname)) >= 6:
+        forms.append(surname)
+    return forms
+
+
+_SPELLINGS = (("harbour", "harbor"), ("colour", "color"), ("centre", "center"))
+
+
+def _respell(name: str, this: str, that: str) -> str:
+    """`this` as `that` wherever it occurs in `name`, keeping the capital: "Harbour Lights" -> "Harbor Lights"."""
+    return re.sub(this, lambda m: that.capitalize() if m.group(0)[:1].isupper() else that, name, flags=re.I)
+
+
+def _spelling_aliases(names: list[str]) -> dict[str, list[str]]:
+    """The other side of the Atlantic for a name: "Harbour Lights" is also "Harbor Lights"."""
+    aliases = {}
+    for name in names:
+        other = name
+        for british, american in _SPELLINGS:
+            other = (
+                _respell(_respell(other, british, american), american, british)
+                if american.lower() in name.lower()
+                else _respell(other, british, american)
+            )
+        if other != name:
+            aliases[name] = [other]
+    return aliases
 
 
 def _vendor_alternatives(vendor: str, vendors: list[str]) -> list[str]:
@@ -237,6 +279,12 @@ class _Builder:
                 return False
             self.asked.add(document)
             entry = {**entry, "document": document}
+        if entry["kind"] == "fact":  # an alternative the question states is credited to any answer that repeats it
+            asked_text = normalize(text + (fr or ""))
+            entry = {
+                **entry,
+                "all_of": [[a for a in group if normalize(a) not in asked_text] or group for group in entry["all_of"]],
+            }
         qid = f"{ID_PREFIX}-{len(self.questions) + 1}"
         entry = {**entry, "generation": self.generation}
         if fr is None:
@@ -290,7 +338,7 @@ class _Builder:
                 else:
                     asked = self.add(
                         f"On what date was invoice {number} from {vendor} issued?",
-                        {"kind": "date", "date": f["date"], "day_first": True},
+                        {"kind": "date", "date": f["date"], "day_first": True, "year_optional": True},
                         f"date = {f['date']} in facts/{stem}.json; invoice_number is unique in the corpus",
                         document=stem,
                     )
@@ -334,7 +382,7 @@ class _Builder:
                 f"the fewest invoices, two or more) = {_plain(total)}",
             )
         universe = sorted(invoices)
-        aliases = _invoice_aliases(invoices)
+        aliases = _invoice_aliases(invoices, c)
         self.add(
             f"List every invoice {fewest} issued to {COMPANY}{when_en}, with its invoice number and total.",
             {
@@ -406,7 +454,7 @@ class _Builder:
             if roles[i % 2] == "date" and _iso(f.get("start_date")):
                 self.add(
                     f"On what date does {who} start at {COMPANY}, according to the onboarding letter?",
-                    {"kind": "date", "date": f["start_date"], "day_first": True},
+                    {"kind": "date", "date": f["start_date"], "day_first": True, "year_optional": True},
                     f"start_date = {f['start_date']} in facts/{stem}.json; the one letter addressed to a named person"
                     " of that name",
                     fr=f"À quelle date {who} entre-t-elle en fonction chez {COMPANY}, selon la lettre d'accueil ?",
@@ -415,7 +463,7 @@ class _Builder:
             elif (signer := _name(f.get("signing_manager"))) is not None:
                 self.add(
                     f"Who signed the onboarding letter addressed to {who}?",
-                    {"kind": "fact", "all_of": [[signer]]},
+                    {"kind": "fact", "all_of": [_name_alternatives(signer)]},
                     f"signing_manager = {signer!r} in facts/{stem}.json; the one letter addressed to {who}",
                     document=stem,
                 )
@@ -444,7 +492,7 @@ class _Builder:
             elif _iso(f.get("effective_date")):
                 asked += self.add(
                     f"On what date did {about} take effect?",
-                    {"kind": "date", "date": f["effective_date"], "day_first": True},
+                    {"kind": "date", "date": f["effective_date"], "day_first": True, "year_optional": True},
                     f"effective_date = {f['effective_date']} in facts/{stem}.json; no other policy has that name and version",
                     document=stem,
                 )
@@ -459,8 +507,8 @@ class _Builder:
             if subjects[normalize(f["subject"])] != 1 or sender is None:
                 continue
             if self.add(
-                f"Who sent the internal memo with the subject “{f['subject'].strip()}”?",
-                {"kind": "fact", "all_of": [[sender]]},
+                f"Who signed the internal memo with the subject “{f['subject'].strip()}”?",
+                {"kind": "fact", "all_of": [_name_alternatives(sender)]},
                 f"from = {f['from']!r} in facts/{stem}.json, read as {sender!r}; the one memo with that subject",
                 document=stem,
             ):
@@ -479,7 +527,7 @@ class _Builder:
             (stem,) = by_month[month]
             asked += self.add(
                 f"On what date did the board of {COMPANY} meet in {_month_name(month)}?",
-                {"kind": "date", "date": minutes[stem]["date"], "day_first": True},
+                {"kind": "date", "date": minutes[stem]["date"], "day_first": True, "year_optional": True},
                 f"date = {minutes[stem]['date']} in facts/{stem}.json; the only board minutes dated {month}",
                 document=stem,
             )
@@ -541,6 +589,7 @@ class _Builder:
                     "kind": "list",
                     "positives": sorted(by_client[client]),
                     "universe": sorted(by_campaign),
+                    "aliases": _spelling_aliases(sorted(by_campaign)),
                     "field": "campaign_name",
                     "documents": [st for st in sorted(briefs) if briefs[st]["target"].strip() == client],
                 },
@@ -568,9 +617,12 @@ class _Builder:
         return {"research": [], "ask": self.questions}, {"_generation": header, **self.key}
 
 
-def _invoice_aliases(invoices: dict[str, dict]) -> dict[str, list[str]]:
+def _invoice_aliases(invoices: dict[str, dict], corpus: Corpus) -> dict[str, list[str]]:
     """How an answer may name an invoice other than by its file stem: its invoice number, its total to the cent,
-    its total in whole dollars, each only when no other invoice shares it."""
+    its total in whole dollars, each only when no other invoice shares it and no other invoice's text states it
+    (a subtotal that happens to equal another invoice's total would name the wrong invoice; review of #812). An
+    invoice rendered to PDF cannot be read and is not consulted."""
+    texts = {s: corpus.text(s) for s in invoices if corpus.is_text(s)}
     numbers = Counter(normalize(str(f.get("invoice_number"))) for f in invoices.values())
     cents = Counter(f"{_number(f['total_usd']):.2f}" for f in invoices.values())
     dollars = Counter(str(int(_number(f["total_usd"]))) for f in invoices.values())
@@ -584,7 +636,7 @@ def _invoice_aliases(invoices: dict[str, dict]) -> dict[str, list[str]]:
             candidates.append(f"{total:.2f}")
         if dollars[str(int(total))] == 1:
             candidates.append(str(int(total)))
-        aliases[stem] = candidates
+        aliases[stem] = [a for a in candidates if not any(mentions(t, a) for s, t in texts.items() if s != stem)]
     return aliases
 
 

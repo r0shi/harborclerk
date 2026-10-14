@@ -1,0 +1,92 @@
+================================================================================
+                              CYBERDYNE IT
+                         Advanced Technology Solutions
+            1847 Silicon Parkway, Suite 300, San Jose, CA 95110
+              Phone: (408) 555-0192  |  Email: billing@cyberdyneit.com
+                          Tax ID: 47-3829104
+================================================================================
+
+INVOICE
+
+Invoice Number : CYB-2025-04782
+Invoice Date   : April 2, 2025
+Due Date       : May 2, 2025
+Payment Terms  : Net 30
+
+--------------------------------------------------------------------------------
+BILL TO:
+  Marbledock & Associates
+  Attn: Accounts Payable
+  920 Harbor View Boulevard, Floor 12
+  Boston, MA 02110
+--------------------------------------------------------------------------------
+
+SERVICES & PRODUCTS
+
++----+----------------------------------------+------+----------+------------+
+| #  | Description                            | Qty  | Unit     | Total      |
+|    |                                        |      | Price    |            |
++----+----------------------------------------+------+----------+------------+
+| 1  | Managed IT Support Services            | 1    | $3,200.00| $3,200.00  |
+|    | (Monthly retainer – April 2025)        |      |          |            |
++----+----------------------------------------+------+----------+------------+
+| 2  | Microsoft 365 Business Premium         | 18   |   $22.00 |   $396.00  |
+|    | User Licenses (monthly, per seat)      |      |          |            |
++----+----------------------------------------+------+----------+------------+
+| 3  | Endpoint Security & EDR Solution       | 1    | $1,450.00| $1,450.00  |
+|    | (CrowdStrike Falcon – Q2 deployment)   |      |          |            |
++----+----------------------------------------+------+----------+------------+
+| 4  | Network Infrastructure Assessment      | 12   |   $185.00| $2,220.00  |
+|    | (On-site consulting hours)             |      |          |            |
++----+----------------------------------------+------+----------+------------+
+| 5  | Cloud Backup Configuration &           | 1    |   $875.00|   $875.00  |
+|    | Migration (Azure Blob Storage setup)   |      |          |            |
++----+----------------------------------------+------+----------+------------+
+| 6  | Hardware – Cisco Catalyst 1000         | 2    |   $940.00| $1,880.00  |
+|    | Series 24-Port PoE Switch              |      |          |            |
++----+----------------------------------------+------+----------+------------+
+| 7  | Cabling & Installation Labor           | 6    |    $95.00|   $570.00  |
+|    | (Structured cabling, patch panel)      |      |          |            |
++----+----------------------------------------+------+----------+------------+
+| 8  | Cybersecurity Awareness Training       | 18   |    $45.00|   $810.00  |
+|    | (Per-user online platform, 12 months)  |      |          |            |
++----+----------------------------------------+------+----------+------------+
+| 9  | Help Desk Overage Hours – March 2025   | 8    |   $110.00|   $880.00  |
+|    | (Beyond contracted 40-hr block)        |      |          |            |
++----+----------------------------------------+------+----------+------------+
+
+                                          +---------------------------------+
+                                          | Subtotal          : $12,281.00  |
+                                          | Sales Tax (8.25%) :  $1,013.18  |
+                                          +---------------------------------+
+                                          | TOTAL DUE         : $13,294.18  |
+                                          +---------------------------------+
+
+--------------------------------------------------------------------------------
+PAYMENT INSTRUCTIONS
+
+  Wire Transfer / ACH:
+    Bank Name    : First National Business Bank
+    Routing No.  : 121000248
+    Account No.  : 8840039271
+    Account Name : Cyberdyne IT LLC
+
+  Check payable to: Cyberdyne IT
+  Mail to: 1847 Silicon Parkway, Suite 300, San Jose, CA 95110
+
+  Online Payment: pay.cyberdyneit.com/invoice/CYB-2025-04782
+
+--------------------------------------------------------------------------------
+NOTES & TERMS
+
+  - Payment is due within 30 days of invoice date (by May 2, 2025).
+  - A late fee of 1.5% per month will be applied to overdue balances.
+  - All hardware sales are final; software licenses subject to vendor terms.
+  - For billing inquiries, contact billing@cyberdyneit.com or (408) 555-0192.
+
+Thank you for your continued business, Marbledock & Associates!
+We appreciate the opportunity to support your technology needs.
+
+================================================================================
+                    Cyberdyne IT  |  www.cyberdyneit.com
+================================================================================

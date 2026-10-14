@@ -1,0 +1,68 @@
+CYBERDYNE IT
+1847 Silicon Blvd, Suite 300
+Austin, TX 78701
+Phone: (512) 555-0192
+Email: billing@cyberdyneit.com
+Web: www.cyberdyneit.com
+
+--------------------------------------------------------------------------------
+INVOICE
+--------------------------------------------------------------------------------
+
+Bill To:
+Marbledock & Associates
+422 Harbor View Drive, Floor 8
+Boston, MA 02210
+Attn: Accounts Payable
+
+Invoice Number:  CDI-2025-04871
+Invoice Date:    April 24, 2025
+Due Date:        May 24, 2025
+Payment Terms:   Net 30
+Currency:        USD
+
+--------------------------------------------------------------------------------
+LINE ITEMS
+--------------------------------------------------------------------------------
+
+#   Description                                   Qty    Unit Price     Amount
+--- --------------------------------------------- ------ ------------ ----------
+1   Managed Cloud Hosting (Monthly Fee)            3 mo   $1,200.00    $3,600.00
+2   Cybersecurity Assessment & Penetration Test    1      $4,500.00    $4,500.00
+3   Microsoft 365 Business Premium Licenses        12     $22.00         $264.00
+4   Network Infrastructure Upgrade – Labor         16 hr  $185.00      $2,960.00
+5   Firewall Appliance (Fortinet FortiGate 60F)    1      $1,895.00    $1,895.00
+6   On-Site IT Support – April Retainer            1      $1,750.00    $1,750.00
+7   Data Backup & Disaster Recovery Setup          1      $2,100.00    $2,100.00
+
+--------------------------------------------------------------------------------
+
+Subtotal:                                                              $17,069.00
+Discount (5% – Preferred Client):                                      -$853.45
+Taxable Subtotal:                                                      $16,215.55
+Sales Tax (8.25% – Travis County, TX):                                 $1,337.78
+
+--------------------------------------------------------------------------------
+TOTAL DUE:                                                             $17,553.33
+--------------------------------------------------------------------------------
+
+Payment Instructions:
+  Bank Name:       Lone Star National Bank
+  Account Name:    Cyberdyne IT LLC
+  Routing Number:  111000614
+  Account Number:  8847203391
+  Reference:       CDI-2025-04871
+
+Alternatively, pay online at: www.cyberdyneit.com/pay
+
+Notes:
+  - Please include the invoice number in all payment correspondence.
+  - A late fee of 1.5% per month will be applied to balances outstanding
+    beyond the due date.
+  - All hardware sales are final. Services are subject to our standard
+    Service Level Agreement on file.
+
+Thank you for your continued business, Marbledock & Associates!
+We appreciate the opportunity to support your technology needs.
+
+Cyberdyne IT – Empowering Your Digital Infrastructure

@@ -362,30 +362,47 @@ def test_a_count_is_found_as_digits_or_as_a_word_in_either_language(answer, _no_
         "quatorze factures",
         "1. INV-2025-00847\n2. INV-2025-04417\n" + "".join(f"{i}. INV-2025-0{i}\n" for i in range(3, 16)),
         "The total was $15,192.33 across 2025-02-15 and February 15, 2025; 15% was tax; see 0015_invoice.txt at 9:15.",
+        "Initech issued 14 invoices; Globex 20, Cyberdyne 25 and 15 for someone else.",
+        "Of the 60 invoices, 15 are Initech's.",
         "",
     ],
 )
 def test_another_number_is_not_the_count(answer, _no_corpus_lookup):
     """A list of fifteen items ends in "15." and is not a count of 15; neither is a day, a percentage, an amount, a
-    time or a file name."""
+    time or a file name. The count is the first number stated (review of #812): a wrong answer that mentions the
+    right number later is wrong, and so, as the rule's cost, is a right answer that states another number first."""
     assert score({"kind": "count", "count": 15}, answer)["score"] == 0.0, answer
+
+
+def test_the_first_number_is_the_count_whoever_it_belongs_to(_no_corpus_lookup):
+    """Two campaigns with seven briefs each: the rule cannot tell them apart, and says so."""
+    seven = {"kind": "count", "count": 7}
+    assert score(seven, "Harbour Lights has 6 briefs and Skylight has 7.")["score"] == 0.0
+    assert score(seven, "Skylight has 7 briefs and Harbour Lights 6.")["score"] == 1.0, "the cost, pinned"
+    assert score(seven, "Five briefs for Harbour Lights, the last dated Sept 2025.") == {"score": 0.0, "numbers": [5]}
+    assert score(seven, "Sept briefs pour Harbour Lights, le dernier daté de sept. 2025.")["score"] == 1.0
 
 
 def test_what_counts_in_reads_and_what_it_strips(_no_corpus_lookup):
     from scripts.test_corpora.runner.answer_key import counts_in
 
-    assert counts_in("Twenty-five invoices; thirty one documents; 1,234 pages; vingt-cinq réunions; dix-sept") == {
+    assert counts_in("Twenty-five invoices; thirty one documents; 1,234 pages; vingt-cinq réunions; dix-sept; 25") == [
         25,
         31,
         1234,
         17,
-    }, "a compound word is one number, not its parts"
-    assert counts_in("In 2025 there were 11 board meetings, the last on November 26, 2025 (26 Nov 2025).") == {11}
-    assert counts_in("The market 15 and decided 5: 15 factures pour 275 926,50 $.") == {15, 5}, (
+    ], "a compound word is one number, not its parts; in order of appearance, each once"
+    assert counts_in("In 2025 there were 11 board meetings, the last on November 26, 2025 (26 Nov 2025).") == [11]
+    assert counts_in("The market 15 and decided 5: 15 factures pour 275 926,50 $.") == [15, 5], (
         "a month is a whole word"
     )
-    assert counts_in("Oct 29-30, 2025; invoice CDI-2025-08841; ref 【141b4469-c5c0】; 24x5") == set()
-    assert counts_in("une réunion") == {1}, "the French article is the French one: a key of 1 is not asked in French"
+    assert counts_in("Oct 29-30, 2025; invoice CDI-2025-08841; ref 【141b4469-c5c0】; 24x5; Sept 2025; sept. 15") == []
+    assert counts_in("une réunion, one of them, un seul; vingt-et-un, twenty-one") == [21], (
+        "one, un and une are an article and a pronoun before they are a number; inside a compound they count"
+    )
+    assert counts_in("15.") == [15] and counts_in("15.\n") == [15] and counts_in("1. INV-2025-00847\n2. B") == [], (
+        "a list marker has text after it on its line; a bare number with a full stop is the answer"
+    )
 
 
 @pytest.mark.parametrize(
@@ -456,7 +473,9 @@ def test_the_absent_opening_rule_covers_counts_and_amounts_in_both_languages(_no
         "1 déc. 2025",
         "01/12/2025",
         "1.12.2025",
+        "01-12-2025",
         "12/1/2025",
+        "12-01-2025",
         "2025-12-01",
     ],
 )
@@ -464,9 +483,22 @@ def test_a_canadian_date_is_found_in_french_in_english_and_in_either_numeric_con
     assert score({"kind": "date", "date": "2025-12-01", "day_first": True}, text)["score"] == 1.0
 
 
-@pytest.mark.parametrize("text", ["11/12/2025", "December 10, 2025", "le 2 décembre 2025", "1er novembre 2025"])
+@pytest.mark.parametrize(
+    "text", ["11/12/2025", "December 10, 2025", "le 2 décembre 2025", "1er novembre 2025", "December 1.", "le 1er déc."]
+)
 def test_another_canadian_date_is_not_it(text, _no_corpus_lookup):
+    """Without `year_optional`, a month and day are not the date."""
     assert score({"kind": "date", "date": "2025-12-01", "day_first": True}, text)["score"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "text", ["December 1.", "The board met on December 1st.", "Le 1er décembre.", "1 December", "1er déc.", "Dec. 01"]
+)
+def test_a_month_and_day_are_the_date_when_the_question_named_the_year(text, _no_corpus_lookup):
+    entry = {"kind": "date", "date": "2025-12-01", "day_first": True, "year_optional": True}
+    assert score(entry, text)["score"] == 1.0, text
+    # Followed by another year, it is another date; numerals without a year are two days and are not read.
+    assert score(entry, "December 1, 2024")["score"] == 0.0 and score(entry, "on 1/12")["score"] == 0.0
 
 
 def test_day_first_numerals_are_read_only_when_the_entry_says_so(_no_corpus_lookup):
@@ -498,8 +530,18 @@ def test_a_list_item_is_also_named_by_an_alias_between_word_boundaries(_no_corpu
     table = "| CDI-2025-08841 | Nov 4 | $10,725.41 |\n| INV-2025-00847 | Feb 2 | $17,195.51 |\n| 0044_invoice.txt | $19,062 |"
     assert named_contracts(table, universe, aliases) == {"0001_invoice", "0012_invoice", "0044_invoice"}
     assert named_contracts("117195 and 1211722 and 12 117 22", universe, aliases) == {"0053_invoice"}, (
-        "a longer number is not the alias; the cents form is, however spaced"
+        "a longer number is not the alias; a grouped one is"
     )
+    # A numeric alias is a number the answer states, to the value: a larger amount ending in the same digits is not
+    # it, and neither is the same whole-dollar figure with other cents (review of #812: 0057's tax line named 0033).
+    assert (
+        named_contracts("tax $1,200.80; subtotal $16,215.55", ["0033", "0027"], {"0033": ["20080"], "0027": ["16215"]})
+        == set()
+    )
+    assert named_contracts("$20,080.00 and 16 215 $", ["0033", "0027"], {"0033": ["20080"], "0027": ["16215"]}) == {
+        "0033",
+        "0027",
+    }
     assert named_contracts("$10 725,41", universe, aliases) == {"0001_invoice"}
     assert named_contracts("", universe, aliases) == set() and named_contracts("nothing", universe) == set()
     entry = {"kind": "list", "positives": ["0001_invoice", "0012_invoice"], "universe": universe, "aliases": aliases}

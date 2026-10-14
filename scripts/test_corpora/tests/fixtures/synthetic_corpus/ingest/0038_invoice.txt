@@ -1,0 +1,81 @@
+================================================================================
+                          GLOBEX SUPPLIES
+                    1247 Industrial Parkway, Suite 300
+                        Columbus, OH 43215
+                    Phone: (614) 555-0192
+                    Email: billing@globexsupplies.com
+                    Tax ID: 47-3821056
+================================================================================
+
+                                  INVOICE
+
+--------------------------------------------------------------------------------
+Bill To:                                    Invoice Number:  GS-2025-04817
+Marbledock & Associates                     Invoice Date:    February 8, 2025
+88 Harbor View Boulevard                    Due Date:        March 10, 2025
+Suite 210                                   Payment Terms:   Net 30
+Portland, ME 04101
+Attn: Accounts Payable
+--------------------------------------------------------------------------------
+
+ ITEM #   DESCRIPTION                          QTY    UNIT PRICE      AMOUNT
+---------------------------------------------------------------------------- 
+ 001      Heavy-Duty Storage Shelving Units      12      $189.99      $2,279.88
+          (Model: SHF-HD-72, 72"H x 36"W x 18"D,
+           Powder-Coated Steel)
+
+ 002      Industrial Label Printer               2      $349.50        $699.00
+          (Zebra ZD421, Thermal Transfer,
+           USB & Bluetooth)
+
+ 003      Printer Label Rolls - 4"x6"           50       $18.75        $937.50
+          (Box of 250, Compatible ZD421)
+
+ 004      Heavy-Duty Plastic Storage Bins       100        $6.40        $640.00
+          (12"x8"x6", Stackable, Blue)
+
+ 005      Commercial-Grade Floor Mats             8       $74.99        $599.92
+          (Anti-Fatigue, 3'x5', Black)
+
+ 006      LED High-Bay Warehouse Lighting         6      $212.00      $1,272.00
+          (100W, 5000K, UFO Style, DLC Listed)
+
+ 007      Office Paper - Case                    20       $52.50      $1,050.00
+          (8.5"x11", 20 lb, 10 Reams/Case,
+           Multipurpose)
+
+ 008      Packing Tape Rolls - 48mm x 100m       30        $3.85        $115.50
+          (Heavy Duty, Clear, 2.0 mil)
+
+ 009      Bubble Wrap Roll - 12"x100ft            5       $28.60        $143.00
+          (3/16" Perforated, Clear)
+
+ 010      Ergonomic Office Chair                  4      $315.00      $1,260.00
+          (Mesh Back, Lumbar Support,
+           Adjustable Arms, Black)
+
+----------------------------------------------------------------------------
+                                            SUBTOTAL:          $8,997.80
+                                            SHIPPING & HANDLING:  $125.00
+                                            DISCOUNT (2%):       ($180.46)
+                                            TAX (6.5%):           $578.96
+                                            ============================
+                                            TOTAL DUE:         $9,521.30
+----------------------------------------------------------------------------
+
+NOTES:
+  - Please reference Invoice # GS-2025-04817 on all payments.
+  - Accepted payment methods: Check, ACH Transfer, Credit Card
+  - ACH Details: Routing 041215663 | Account 7730049182
+  - Make checks payable to: Globex Supplies
+  - Late payments are subject to a 1.5% monthly finance charge.
+
+Shipping Method: UPS Ground
+Expected Delivery: February 12-14, 2025
+Ship To: Same as Bill To
+
+Thank you for your business!
+For billing inquiries, contact billing@globexsupplies.com or (614) 555-0192.
+================================================================================
+                    Globex Supplies | globexsupplies.com
+================================================================================

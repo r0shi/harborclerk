@@ -1,0 +1,50 @@
+================================================================================
+                              GLOBEX SUPPLIES
+                         1847 Industrial Parkway
+                        Columbus, OH 43215
+                        Phone: (614) 555-0192
+                        Email: billing@globexsupplies.com
+                        Tax ID: 47-3821905
+================================================================================
+
+                                  INVOICE
+
+--------------------------------------------------------------------------------
+Bill To:                                    Invoice Number:  GS-2025-04817
+Marbledock & Associates                     Invoice Date:    February 7, 2025
+320 Harbor View Drive, Suite 400            Due Date:        March 9, 2025
+Portland, OR 97201                          Payment Terms:   Net 30
+--------------------------------------------------------------------------------
+
+ITEM #    DESCRIPTION                          QTY    UNIT PRICE    AMOUNT
+--------------------------------------------------------------------------------
+1         Premium Copy Paper (Case, 10 Reams)   18     $42.50       $765.00
+2         Toner Cartridges - HP LaserJet         12    $89.99      $1,079.88
+3         Heavy-Duty Stapler (Box of 6)           4    $67.25       $269.00
+4         Ergonomic Desk Chair                    5   $314.00      $1,570.00
+5         Whiteboard Markers Set (12-Pack)       20     $11.75       $235.00
+6         Filing Cabinets (4-Drawer, Steel)       3   $428.50      $1,285.50
+7         Bubble Wrap Roll (100 ft)               8     $24.99       $199.92
+8         Packing Tape Dispenser + 6 Rolls       10     $18.40       $184.00
+9         Sticky Notes Bulk Pack (12 Pads)       15      $9.80       $147.00
+10        Printer Paper - Legal Size (Case)      22     $38.60       $849.20
+--------------------------------------------------------------------------------
+
+                                           SUBTOTAL:        $6,584.50
+                                           SHIPPING:          $185.00
+                                           TAX (7.5%):        $494.34
+                                           ----------------------
+                                           TOTAL DUE:       $7,263.84
+
+--------------------------------------------------------------------------------
+Payment Instructions:
+  Please make checks payable to: Globex Supplies
+  ACH / Wire Transfer:
+    Bank: First Midwest Bank
+    Routing: 071901604
+    Account: 880042317
+  Reference Invoice Number GS-2025-04817 on all payments.
+
+Thank you for your business!
+Questions? Contact us at billing@globexsupplies.com or (614) 555-0192.
+================================================================================

@@ -1,0 +1,82 @@
+CYBERDYNE IT
+1847 Silicon Valley Blvd, Suite 300
+San Jose, CA 95134
+Phone: (408) 555-0192
+Email: billing@cyberdyneit.com
+Web: www.cyberdyneit.com
+
+================================================================================
+INVOICE
+================================================================================
+
+BILL TO:                                    INVOICE NUMBER: CDI-2025-04817
+Marbledock & Associates                     INVOICE DATE:   January 22, 2025
+2200 Harbor View Plaza, Floor 12            DUE DATE:       February 21, 2025
+Boston, MA 02210                            PAYMENT TERMS:  Net 30
+Attn: Accounts Payable
+
+================================================================================
+LINE ITEMS
+================================================================================
+
+ Item  Description                              Qty    Unit Price     Amount
+ ----  ---------------------------------------  -----  -----------  ----------
+  1    Managed IT Support Services              16 hr    $ 145.00   $ 2,320.00
+       (On-site & Remote - January 2025)
+
+  2    Microsoft 365 Business Premium           12 usr   $  22.00   $   264.00
+       (Monthly License - January 2025)
+
+  3    Cisco Meraki MX68 Firewall Appliance      1 ea   $1,850.00   $ 1,850.00
+       (Hardware Supply & Delivery)
+
+  4    Network Infrastructure Setup &            8 hr   $ 175.00    $ 1,400.00
+       Configuration (Firewall + VLAN
+       Segmentation)
+
+  5    Endpoint Detection & Response (EDR)      25 dev  $   8.50    $   212.50
+       - SentinelOne Agent Licensing
+       (Monthly, January 2025)
+
+  6    Cloud Backup Solution - Veeam             1 mo   $ 395.00    $   395.00
+       (50 TB Tier, Monthly Subscription)
+
+  7    IT Security Audit & Vulnerability         1 ea   $2,200.00   $ 2,200.00
+       Assessment Report
+
+  8    Emergency After-Hours Support Call        3 hr   $ 215.00    $   645.00
+       (January 9, 2025 - Server Outage)
+
+================================================================================
+
+                                             SUBTOTAL:          $  9,286.50
+                                             TAX (8.5%):        $    789.35
+                                             -------------------------
+                                             TOTAL DUE:         $ 10,075.85
+                                             =========================
+
+================================================================================
+PAYMENT INSTRUCTIONS
+================================================================================
+
+Please remit payment by February 21, 2025 to avoid late fees.
+
+ACH / Wire Transfer:
+  Bank Name:      First Pacific Commerce Bank
+  Routing No.:    121000358
+  Account No.:    7740293816
+  Account Name:   Cyberdyne IT LLC
+
+Check Payable To: Cyberdyne IT
+Mail To: 1847 Silicon Valley Blvd, Suite 300, San Jose, CA 95134
+
+For billing inquiries, contact: billing@cyberdyneit.com | (408) 555-0192
+
+================================================================================
+TERMS & CONDITIONS
+================================================================================
+Payment is due within 30 days of invoice date. A late fee of 1.5% per month
+will be applied to overdue balances. All services rendered per Master Services
+Agreement (MSA) dated March 15, 2024 between Cyberdyne IT and Marbledock &
+Associates. Hardware sales are final. Thank you for your business.
+================================================================================

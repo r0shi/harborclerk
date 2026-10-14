@@ -1,0 +1,74 @@
+================================================================================
+                              GLOBEX SUPPLIES
+                         1847 Industrial Parkway, Suite 300
+                           Columbus, OH 43215
+                           Phone: (614) 555-0192
+                           Email: billing@globexsupplies.com
+                           Tax ID: 47-3821056
+================================================================================
+
+                                   INVOICE
+
+--------------------------------------------------------------------------------
+Bill To:                                    Invoice Number:  GS-2025-04417
+Marbledock & Associates                     Invoice Date:    January 17, 2025
+412 Harborview Boulevard                    Due Date:        February 16, 2025
+Boston, MA 02110                            Payment Terms:   Net 30
+Attn: Accounts Payable
+--------------------------------------------------------------------------------
+
+ITEMS & SERVICES
+
++-------+---------------------------------------+-------+----------+-----------+
+| Line  | Description                           |  Qty  | Unit     | Amount    |
++-------+---------------------------------------+-------+----------+-----------+
+|  1    | Heavy-Duty Shelving Units (48"x24"x72")| 12    | $189.00  | $2,268.00 |
+|  2    | Industrial Label Printer - Model LP-9 |  2    | $435.50  |   $871.00 |
+|  3    | Thermal Label Rolls (Case of 500)      |  8    |  $54.75  |   $438.00 |
+|  4    | Safety Cabinet - Flammable Storage    |  1    | $978.00  |   $978.00 |
+|  5    | Nitrile Gloves, Box of 100 (Large)    | 24    |  $18.40  |   $441.60 |
+|  6    | Industrial Floor Cleaner - 5 Gal Drum |  6    |  $67.25  |   $403.50 |
+|  7    | Packing Tape Dispenser w/ 12 Rolls     | 10    |  $22.00  |   $220.00 |
+|  8    | Wire Management Raceways - 6 ft (10pk)|  5    |  $44.80  |   $224.00 |
+|  9    | First Aid Cabinet - Wall Mount, Deluxe |  3    | $156.00  |   $468.00 |
+| 10    | Quarterly Maintenance Service - Q1    |  1    | $750.00  |   $750.00 |
++-------+---------------------------------------+-------+----------+-----------+
+
+                                              Subtotal:       $7,062.10
+                                              Freight/Ship:     $185.00
+                                              Tax (6.5%):       $470.04
+                                              -------------------------
+                                              TOTAL DUE:      $7,717.14
+
+--------------------------------------------------------------------------------
+PAYMENT INSTRUCTIONS
+
+Please remit payment within 30 days of invoice date.
+
+Check payable to: Globex Supplies
+Mail to: 1847 Industrial Parkway, Suite 300, Columbus, OH 43215
+
+ACH / Wire Transfer:
+  Bank:            Midwest First National Bank
+  Routing Number:  044000037
+  Account Number:  7823901654
+  Memo:            Invoice GS-2025-04417
+
+Credit Card: Contact billing@globexsupplies.com for secure payment link.
+
+--------------------------------------------------------------------------------
+NOTES
+
+- Shelving units (Line 1) will ship in two separate deliveries; second delivery
+  estimated January 24, 2025.
+- Quarterly Maintenance Service (Line 10) is scheduled for January 28, 2025.
+  A technician will contact your facilities manager to confirm the appointment.
+- All returns must be authorized within 15 days of receipt. Restocking fee of
+  15% applies to non-defective returns.
+- Questions? Contact your account representative:
+  Dana Kowalski | dkowalski@globexsupplies.com | (614) 555-0201
+
+--------------------------------------------------------------------------------
+Thank you for your business, Marbledock & Associates!
+           We appreciate your continued partnership.
+================================================================================

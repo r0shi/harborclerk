@@ -1,0 +1,84 @@
+================================================================================
+                              CYBERDYNE IT
+                       Advanced Technology Solutions
+         1847 Silicon Blvd, Suite 400 | Austin, TX 78701
+         Phone: (512) 904-3300 | Email: billing@cyberdyneit.com
+         EIN: 47-2938561 | www.cyberdyneit.com
+================================================================================
+
+INVOICE
+
+Bill To:                                    Invoice Number: CDI-2025-08471
+Marbledock & Associates                     Invoice Date:   August 28, 2025
+3200 Harbor View Plaza, Floor 12            Due Date:       September 27, 2025
+Charleston, SC 29403                        Payment Terms:  Net 30
+Attn: Accounts Payable
+
+--------------------------------------------------------------------------------
+
+ ITEM #  DESCRIPTION                              QTY    UNIT PRICE    AMOUNT
+--------------------------------------------------------------------------------
+
+  1      Managed IT Support Services               1      $3,200.00    $3,200.00
+         (Monthly retainer - September 2025)
+         Includes 24/7 helpdesk, remote monitoring,
+         and tier-1/tier-2 support coverage
+
+  2      Cisco Meraki MX68 Security Appliance      2      $1,475.00    $2,950.00
+         Hardware supply and 1-year licensing
+         (Part No. MX68-HW)
+
+  3      Network Infrastructure Audit &            1      $2,800.00    $2,800.00
+         Vulnerability Assessment
+         Full internal/external network scan,
+         executive report, and remediation roadmap
+
+  4      Microsoft 365 Business Premium            15       $220.00    $3,300.00
+         License provisioning & onboarding
+         (per-seat annual, prorated Aug–Sep 2025)
+
+  5      On-Site Technician Labor                  6       $185.00    $1,110.00
+         Network re-cabling and switch
+         configuration at Charleston HQ
+         (6 hours @ $185/hr, performed 2025-08-22)
+
+  6      Cloud Backup Solution - Setup Fee         1        $750.00      $750.00
+         Veeam Cloud Connect initial deployment
+         and configuration for 5 virtual machines
+
+--------------------------------------------------------------------------------
+
+                                            SUBTOTAL:          $14,110.00
+                                            SALES TAX (6%):       $846.60
+                                            SHIPPING & HANDLING:   $35.00
+                                                              ---------------
+                                            TOTAL DUE:         $14,991.60
+
+================================================================================
+
+PAYMENT INSTRUCTIONS
+
+  Bank Wire / ACH:
+    Bank Name:      First National Business Bank
+    Account Name:   Cyberdyne IT LLC
+    Routing Number: 111000025
+    Account Number: 8874503291
+
+  Check Payable To: Cyberdyne IT
+  Mail To: 1847 Silicon Blvd, Suite 400, Austin, TX 78701
+
+  Online Payment: portal.cyberdyneit.com/pay
+  Reference Invoice Number CDI-2025-08471 on all payments.
+
+================================================================================
+
+NOTES & TERMS
+  - Payment is due within 30 days of invoice date (by September 27, 2025).
+  - A late fee of 1.5% per month will be applied to balances past due.
+  - All hardware sales are final. Support services subject to MSA dated
+    2024-03-15 between Cyberdyne IT and Marbledock & Associates.
+  - Please contact your account manager, Dana Kowalski, with any questions:
+    d.kowalski@cyberdyneit.com | Direct: (512) 904-3318
+
+Thank you for your continued business!
+================================================================================

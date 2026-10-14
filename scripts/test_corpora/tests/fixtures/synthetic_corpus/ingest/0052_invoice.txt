@@ -1,0 +1,65 @@
+INITECH SOFTWARE
+1200 Westlake Avenue North, Suite 400
+Seattle, WA 98109
+Phone: (206) 555-0182
+Email: billing@initechsoftware.com
+www.initechsoftware.com
+
+--------------------------------------------------------------------------------
+                                   INVOICE
+--------------------------------------------------------------------------------
+
+Bill To:                                        Invoice Number: INV-2025-00847
+Marbledock & Associates                         Invoice Date:   January 13, 2025
+4501 Harbor View Drive, Suite 210               Due Date:       February 12, 2025
+Portland, OR 97201                              Payment Terms:  Net 30
+
+--------------------------------------------------------------------------------
+
+DESCRIPTION                          QTY     UNIT PRICE        AMOUNT
+--------------------------------------------------------------------------------
+
+Enterprise License - DataBridge Pro
+  Annual subscription (Tier 3)         1       $8,400.00       $8,400.00
+
+Professional Services - System
+  Integration & Configuration          12 hrs    $175.00       $2,100.00
+
+Custom API Development
+  REST API endpoint build-out           8 hrs    $195.00       $1,560.00
+
+Cloud Hosting & Infrastructure
+  Managed cloud environment (Jan)       1         $620.00        $620.00
+
+Technical Support Package
+  Priority support tier (Q1 2025)       1         $950.00        $950.00
+
+Onboarding & Training
+  Remote training sessions (2 x 2hr)    4 hrs    $150.00        $600.00
+
+--------------------------------------------------------------------------------
+
+                                              Subtotal:        $14,230.00
+                                              Tax (0%)*:            $0.00
+                                              TOTAL DUE:       $14,230.00
+
+--------------------------------------------------------------------------------
+
+* Services are non-taxable per Oregon Revised Statutes Chapter 307.
+
+PAYMENT INSTRUCTIONS:
+Please remit payment by February 12, 2025 to avoid a 1.5% monthly late fee.
+
+ACH / Wire Transfer:
+  Bank:           Pacific Commerce Bank
+  Routing No.:    125000024
+  Account No.:    7741029384
+  Account Name:   Initech Software LLC
+
+Check Payable To: Initech Software
+Memo: INV-2025-00847
+
+--------------------------------------------------------------------------------
+Thank you for your business. Questions? Contact billing@initechsoftware.com
+or call (206) 555-0182, Mon–Fri 8am–5pm PT.
+--------------------------------------------------------------------------------

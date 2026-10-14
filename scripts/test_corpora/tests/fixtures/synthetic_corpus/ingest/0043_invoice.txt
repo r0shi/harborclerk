@@ -1,0 +1,78 @@
+INITECH SOFTWARE
+1400 Lakewood Business Park, Suite 300
+Austin, TX 78701
+Phone: (512) 555-0192
+Email: billing@initechsoftware.com
+Website: www.initechsoftware.com
+
+========================================
+                 INVOICE
+========================================
+
+Bill To:
+Marbledock & Associates
+88 Harbor View Plaza, Floor 12
+Boston, MA 02110
+Attn: Accounts Payable
+
+Invoice Number:  INV-2025-04471
+Invoice Date:    August 8, 2025
+Due Date:        September 7, 2025
+Payment Terms:   Net 30
+
+----------------------------------------
+DESCRIPTION                QTY   UNIT PRICE    AMOUNT
+----------------------------------------
+Enterprise License -         1    $8,500.00    $8,500.00
+  Initech CRM Suite
+  (Annual Subscription)
+
+Professional Services -     16      $195.00    $3,120.00
+  Implementation &
+  Configuration (hrs)
+
+Custom API Integration       1    $2,750.00    $2,750.00
+  Development Package
+
+Data Migration Service       1    $1,200.00    $1,200.00
+  (Legacy System to
+   Initech CRM)
+
+User Training Session -      5      $350.00    $1,750.00
+  On-Site (sessions)
+
+Annual Support &             1    $1,800.00    $1,800.00
+  Maintenance Plan
+----------------------------------------
+
+Subtotal:                               $19,120.00
+Discount (5% Preferred):               -$956.00
+Taxable Subtotal:                       $18,164.00
+Sales Tax (0%):                             $0.00
+----------------------------------------
+TOTAL DUE:                             $18,164.00
+========================================
+
+Payment Instructions:
+Please remit payment by September 7, 2025.
+
+ACH / Wire Transfer:
+  Bank:            Lone Star National Bank
+  Routing Number:  113000023
+  Account Number:  8847201956
+  Account Name:    Initech Software LLC
+
+Check Payable To: Initech Software
+Mail To: 1400 Lakewood Business Park, Suite 300, Austin, TX 78701
+
+Please reference Invoice Number INV-2025-04471 on all payments.
+
+----------------------------------------
+Notes:
+Thank you for choosing Initech Software. We appreciate your
+business and look forward to a continued partnership with
+Marbledock & Associates. For billing questions, please contact
+billing@initechsoftware.com or call (512) 555-0192 ext. 4.
+
+Late payments are subject to a 1.5% monthly finance charge.
+========================================

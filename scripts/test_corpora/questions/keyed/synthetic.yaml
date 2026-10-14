@@ -64,7 +64,7 @@ ask:
   notes: owner = 'Human Resources & Information Security Department, Marbledock & Associates' in facts/0197_policy_doc.json;
     no other policy has that name and version
 - id: synthetic-key-14
-  text: Who sent the internal memo with the subject “Implementation of Revised Remote Work and Flexible Scheduling
+  text: Who signed the internal memo with the subject “Implementation of Revised Remote Work and Flexible Scheduling
     Policy”?
   notes: from = 'Victoria L. Hargrove, Managing Director, Marbledock & Associates' in facts/0161_internal_memo.json,
     read as 'Victoria L. Hargrove'; the one memo with that subject

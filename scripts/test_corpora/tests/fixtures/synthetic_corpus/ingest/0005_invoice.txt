@@ -1,0 +1,90 @@
+================================================================================
+                              GLOBEX SUPPLIES
+                         1847 Industrial Parkway, Suite 300
+                            Chicago, IL 60614
+                        Phone: (312) 555-0192
+                        Email: billing@globexsupplies.com
+                        Tax ID: 47-3829104
+================================================================================
+
+                                    INVOICE
+
+--------------------------------------------------------------------------------
+Bill To:                                    Invoice Number:  GS-2025-08841
+Marbledock & Associates                     Invoice Date:    November 23, 2025
+4220 Commerce Blvd, Floor 7                 Due Date:        December 23, 2025
+Boston, MA 02110                            Payment Terms:   Net 30
+Attn: Accounts Payable
+--------------------------------------------------------------------------------
+
+ ITEM #   DESCRIPTION                          QTY    UNIT PRICE     AMOUNT
+------------------------------------------------------------------------
+ 1        Heavy-Duty Storage Shelving Units      8       $214.50     $1,716.00
+          (Model: HD-SHELF-2400, Steel Frame,
+          72"H x 36"W x 18"D, Includes
+          mounting hardware)
+
+ 2        Commercial Grade Label Printer         3       $389.00     $1,167.00
+          (Zebra ZD421, Thermal Transfer,
+          300 DPI, USB + Ethernet)
+
+ 3        Thermal Label Rolls - 4"x6"           20        $34.75       $695.00
+          (500 labels/roll, Compatible with
+          Zebra ZD421 series)
+
+ 4        Industrial Packing Tape Dispenser      6        $47.20       $283.20
+          (Heavy-duty steel, adjustable
+          tension, 2" core)
+
+ 5        Stretch Wrap Film - 80 Gauge           15        $28.90       $433.50
+          (18" x 1500 ft per roll,
+          Cast stretch wrap, clear)
+
+ 6        Ergonomic Office Chair                 5       $512.00     $2,560.00
+          (Mesh back, lumbar support,
+          adjustable armrests, Model EC-700)
+
+ 7        Multi-Function Laser Printer           2     $1,149.00     $2,298.00
+          (HP LaserJet Pro 4301fdw,
+          Duplex, Wireless, 40 ppm)
+
+ 8        Copy Paper - Case (8.5"x11")          25        $52.40     $1,310.00
+          (10 reams/case, 20lb, 92 bright,
+          500 sheets/ream)
+
+ 9        Dry Erase Whiteboard                   4       $189.75       $759.00
+          (48"x36", Aluminum frame,
+          includes tray and markers)
+
+10        Safety First Aid Cabinet               2       $268.50       $537.00
+          (Wall-mounted, ANSI compliant,
+          fully stocked, 200-piece kit)
+
+------------------------------------------------------------------------
+
+                                        Subtotal:          $11,758.70
+                                        Shipping:             $185.00
+                                        Tax (8.25%):          $970.10
+                                        TOTAL DUE:         $12,913.80
+
+------------------------------------------------------------------------
+
+Payment Instructions:
+  Check payable to: Globex Supplies
+  ACH / Wire Transfer:
+    Bank: First Midwest Bank
+    Routing: 071921891
+    Account: 4402837650
+  Reference Invoice Number on all payments.
+
+Notes:
+  - All items shipped via Globex Freight. Expected delivery: Nov 26-28, 2025.
+  - Returns accepted within 30 days with prior authorization (RMA required).
+  - Late payments subject to 1.5% monthly finance charge.
+
+Thank you for your business!
+
+================================================================================
+                    Questions? Contact billing@globexsupplies.com
+                      or call (312) 555-0192, Mon-Fri 8am-5pm CT
+================================================================================

@@ -1,0 +1,59 @@
+================================================================================
+                              GLOBEX SUPPLIES
+                         14 Industrial Parkway, Suite 300
+                           Columbus, OH 43215
+                           Phone: (614) 555-0192
+                           Email: billing@globexsupplies.com
+                           Tax ID: 47-3821056
+================================================================================
+
+INVOICE
+
+Invoice Number:  GS-2025-08841
+Invoice Date:    October 13, 2025
+Due Date:        November 12, 2025
+Payment Terms:   Net 30
+
+--------------------------------------------------------------------------------
+BILL TO:
+  Marbledock & Associates
+  Attn: Accounts Payable
+  88 Harbor View Boulevard, Floor 4
+  Portland, ME 04101
+--------------------------------------------------------------------------------
+
+ ITEM #   DESCRIPTION                            QTY    UNIT PRICE     AMOUNT
+--------  -------------------------------------  -----  -----------  ----------
+ 1        Heavy-Duty Shelving Units (48"x72")      12      $189.99    $2,279.88
+ 2        Industrial Packing Tape (36-Roll Box)    20       $34.50      $690.00
+ 3        Safety Gloves, Cut-Resistant (Box/12)    15       $58.00      $870.00
+ 4        Wireless Barcode Scanner, USB/BT          6      $212.75    $1,276.50
+ 5        Thermal Label Roll 4"x6" (500/roll)      40       $18.25      $730.00
+ 6        Office Chair, Ergonomic Mesh              8      $345.00    $2,760.00
+ 7        Steel-Toe Work Boots, Asst. Sizes        10       $124.99    $1,249.90
+ 8        A4 Copy Paper, 80gsm (Case of 5 Reams)  25       $42.00    $1,050.00
+ 9        First Aid Kit, OSHA Compliant (Large)     4       $87.50      $350.00
+10        Portable Work Light, LED 5000LM           5      $156.00      $780.00
+
+--------------------------------------------------------------------------------
+
+                                            SUBTOTAL:          $12,036.28
+                                            TAX (7.5%):           $902.72
+                                            SHIPPING & HANDLING:  $185.00
+                                            -------------------------
+                                            TOTAL DUE:         $13,124.00
+
+================================================================================
+PAYMENT INSTRUCTIONS:
+  Please remit payment by November 12, 2025.
+  Checks payable to: Globex Supplies
+  ACH / Wire Transfer:
+    Bank: First Midwest Bank
+    Routing: 071901604
+    Account: 8834210097
+  Reference Invoice Number GS-2025-08841 on all payments.
+
+Late payments are subject to a 1.5% monthly finance charge.
+
+Thank you for your business!
+================================================================================

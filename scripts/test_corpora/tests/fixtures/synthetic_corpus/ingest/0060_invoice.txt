@@ -1,0 +1,75 @@
+INITECH SOFTWARE
+1407 Office Park Drive, Suite 300
+Austin, TX 78701
+Phone: (512) 555-0192
+Email: billing@initechsoftware.com
+Web: www.initechsoftware.com
+
+----------------------------------------------------------------
+INVOICE
+----------------------------------------------------------------
+Invoice Number:  INV-2025-04817
+Invoice Date:    December 11, 2025
+Due Date:        January 10, 2026
+Payment Terms:   Net 30
+
+BILL TO:
+Marbledock & Associates
+88 Harbor View Plaza, Floor 12
+Boston, MA 02210
+Attn: Accounts Payable
+
+----------------------------------------------------------------
+LINE ITEMS
+----------------------------------------------------------------
+
+  #   Description                              Qty    Unit Price    Amount
+  --  ---------------------------------------  -----  ----------  ----------
+  1   Enterprise License – Initech CRM Suite    3     $2,400.00    $7,200.00
+      (Annual subscription, per seat)
+
+  2   Professional Services – System Config     16 hr   $185.00    $2,960.00
+      & Initial Setup
+
+  3   Data Migration & Integration Package       1     $3,750.00    $3,750.00
+      (Legacy system to Initech CRM)
+
+  4   Custom Report Development                  8 hr   $195.00    $1,560.00
+
+  5   Priority Support Package – 12 Months       1     $1,800.00    $1,800.00
+
+  6   Staff Training Sessions (On-site, 2 days)  1     $2,200.00    $2,200.00
+
+----------------------------------------------------------------
+
+Subtotal:                                                        $19,470.00
+Discount (5% – Preferred Partner):                               -$973.50
+Taxable Amount:                                                  $18,496.50
+Sales Tax (8.25% – TX):                                          $1,525.96
+
+----------------------------------------------------------------
+TOTAL DUE:                                                       $20,022.46
+----------------------------------------------------------------
+
+PAYMENT INSTRUCTIONS:
+Please remit payment by January 10, 2026.
+
+Wire Transfer:
+  Bank:          First Central Bank of Texas
+  Routing:       111000025
+  Account:       7734920016
+  Account Name:  Initech Software LLC
+
+Check Payable To: Initech Software
+Memo: INV-2025-04817
+
+ACH / Zelle: billing@initechsoftware.com
+
+----------------------------------------------------------------
+NOTES:
+Thank you for choosing Initech Software. Late payments are subject
+to a 1.5% monthly finance charge. For billing questions, please
+contact billing@initechsoftware.com or call (512) 555-0192.
+
+Please reference invoice number INV-2025-04817 with all payments.
+----------------------------------------------------------------

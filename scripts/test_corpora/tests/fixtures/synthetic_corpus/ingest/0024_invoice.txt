@@ -1,0 +1,69 @@
+CYBERDYNE IT
+1842 Skynet Boulevard, Suite 400
+San Jose, CA 95110
+Phone: (408) 555-0192
+Email: billing@cyberdyneit.com
+Web: www.cyberdyneit.com
+
+================================================================
+INVOICE
+================================================================
+
+Bill To:
+Marbledock & Associates
+320 Harbor View Drive, Floor 7
+Boston, MA 02210
+Attn: Accounts Payable
+
+----------------------------------------------------------------
+Invoice Number : CDI-2025-04471
+Invoice Date   : March 26, 2025
+Due Date       : April 25, 2025
+Payment Terms  : Net 30
+Currency       : USD
+----------------------------------------------------------------
+
+LINE ITEMS
+
++----+----------------------------------------------+------+----------+----------+
+| #  | Description                                  | Qty  | Unit ($) | Total ($)|
++----+----------------------------------------------+------+----------+----------+
+| 1  | Managed Cloud Infrastructure (Monthly)       |   1  | 3,200.00 | 3,200.00 |
+| 2  | Cybersecurity Monitoring & Threat Response   |   1  | 1,850.00 | 1,850.00 |
+| 3  | Help Desk Support - Tier 1 & 2 (40 hrs)     |  40  |    95.00 | 3,800.00 |
+| 4  | Microsoft 365 Business Premium - Licenses    |  25  |    22.00 |   550.00 |
+| 5  | Network Infrastructure Audit                  |   1  | 2,400.00 | 2,400.00 |
+| 6  | On-Site Technician Visit (8 hrs @ $145/hr)   |   8  |   145.00 | 1,160.00 |
+| 7  | Backup & Disaster Recovery Setup             |   1  | 1,975.00 | 1,975.00 |
+| 8  | Hardware Procurement - Cisco Switch 48-Port  |   2  |   890.00 | 1,780.00 |
++----+----------------------------------------------+------+----------+----------+
+
+Subtotal                                                        $ 16,715.00
+Discount (5% - Preferred Client)                               $   -835.75
+Taxable Amount                                                  $ 15,879.25
+Sales Tax (0% - B2B Service Exemption)                         $      0.00
+                                                               -----------
+TOTAL DUE                                                      $ 15,879.25
+================================================================
+
+PAYMENT INSTRUCTIONS
+Please remit payment within 30 days of invoice date.
+
+ACH / Wire Transfer:
+  Bank Name    : Pacific Commerce Bank
+  Routing No.  : 121042882
+  Account No.  : 7740038821
+  Account Name : Cyberdyne IT LLC
+
+Check Payable To: Cyberdyne IT
+Mail To: 1842 Skynet Boulevard, Suite 400, San Jose, CA 95110
+
+For billing inquiries, contact billing@cyberdyneit.com
+or call (408) 555-0192 ext. 3.
+
+----------------------------------------------------------------
+Late payments are subject to a 1.5% monthly finance charge.
+Thank you for your business, Marbledock & Associates!
+----------------------------------------------------------------
+
+Cyberdyne IT LLC | EIN: 47-3821094 | DUNS: 08-291-7743

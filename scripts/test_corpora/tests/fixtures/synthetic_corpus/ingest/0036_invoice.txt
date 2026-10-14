@@ -1,0 +1,97 @@
+================================================================================
+                              CYBERDYNE IT
+                   Advanced Technology Solutions & Services
+--------------------------------------------------------------------------------
+  123 Nexus Boulevard, Suite 400
+  San Francisco, CA 94105
+  Phone: (415) 882-0047
+  Email: billing@cyberdyneit.com
+  Website: www.cyberdyneit.com
+  EIN: 47-3291084
+================================================================================
+
+  INVOICE
+
+  Invoice Number : CDY-2025-04187
+  Invoice Date   : April 18, 2025
+  Due Date       : May 18, 2025
+  Payment Terms  : Net 30
+
+--------------------------------------------------------------------------------
+  BILL TO:
+
+  Marbledock & Associates
+  Attn: Accounts Payable
+  890 Harbor View Drive, Floor 12
+  Seattle, WA 98101
+================================================================================
+
+  DESCRIPTION OF SERVICES & GOODS
+
+--------------------------------------------------------------------------------
+  #   Description                              Qty    Unit Price     Amount
+--------------------------------------------------------------------------------
+  1   Managed IT Support Services                4    $1,250.00    $5,000.00
+      (Monthly blocks, Q2 2025 – April
+      through July coverage prepayment)
+
+  2   Microsoft 365 Business Premium             15      $22.00      $330.00
+      License Procurement & Setup
+      (Per seat, monthly rate)
+
+  3   Network Infrastructure Audit               1    $3,800.00    $3,800.00
+      (On-site assessment, firewall review,
+      vulnerability scan, written report)
+
+  4   Cybersecurity Awareness Training           25      $45.00    $1,125.00
+      (Per-user online course bundle,
+      phishing simulation included)
+
+  5   Cloud Backup Configuration &               2      $650.00    $1,300.00
+      Migration (Azure Blob Storage,
+      two server environments)
+
+  6   On-Site Technician Labor                   8      $175.00    $1,400.00
+      (8 hours @ $175/hr, April 14–15
+      hardware installation & cabling)
+
+  7   Cisco Catalyst 2960-X 24-Port Switch       1    $1,295.00    $1,295.00
+      (Hardware supply & staging)
+
+  8   Structured Cabling – Cat6                 320       $3.75    $1,200.00
+      (Per linear foot, materials only;
+      labor included in line item 6)
+
+--------------------------------------------------------------------------------
+                                               SUBTOTAL:          $15,450.00
+                                               TAX (8.5%):         $1,313.25
+                                               SHIPPING/FREIGHT:      $75.00
+                                               DISCOUNT:            ($200.00)
+                                               ─────────────────────────────
+                                               TOTAL DUE:         $16,638.25
+================================================================================
+
+  PAYMENT INSTRUCTIONS
+
+  Please remit payment by May 18, 2025 to avoid a 1.5% monthly late fee.
+
+  Wire / ACH Transfer:
+    Bank Name    : Pacific Commerce Bank
+    Routing No.  : 121042882
+    Account No.  : 7730049512
+    Account Name : Cyberdyne IT LLC
+
+  Check Payable To: Cyberdyne IT
+  Mail To: 123 Nexus Boulevard, Suite 400, San Francisco, CA 94105
+
+  Reference: CDY-2025-04187 / Marbledock & Associates
+
+--------------------------------------------------------------------------------
+  NOTES:
+  - All hardware warranties are manufacturer-backed (1–3 years as applicable).
+  - Managed IT Support Services contract terms on file (Agreement #MBA-2025-03).
+  - Questions? Contact your account manager: Jordan Ellis | jellis@cyberdyneit.com
+
+================================================================================
+  Thank you for your continued business, Marbledock & Associates!
+================================================================================
