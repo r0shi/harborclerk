@@ -73,8 +73,8 @@ uv run python -m acceptance.report --junit $WORK/$RUN.xml --out docs/reports/ \
 ```
 
 It prints the path it wrote (one file per run, never overwritten). `--probe`
-logs in and records the instance build, the active model and the platform in
-the header.
+logs in and records the instance version and build, the active model and the
+platform in the header.
 
 The generator redacts every `HC_*` value before writing. Read the report once
 before committing it: it is the durable trace of this run.

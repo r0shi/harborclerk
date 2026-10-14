@@ -1261,6 +1261,14 @@ class ServiceManager: ObservableObject {
         let hashFile = bundle.appendingPathComponent("venv/build-hash.txt")
         let buildHash = (try? String(contentsOf: hashFile, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+        // The tag-derived version package.sh writes beside the hash (see
+        // scripts/build-version.sh): "0.9.3" for the tagged commit, otherwise
+        // "0.9.3+2.g887c3fb[.dirty]". Absent from a bundle assembled before the
+        // stamp existed and from plain Xcode builds; exported empty then, which
+        // the API treats as "no stamp" and answers with the package version.
+        let versionFile = bundle.appendingPathComponent("venv/build-version.txt")
+        let buildVersion = (try? String(contentsOf: versionFile, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         // Master encryption key for secret storage. See MasterKeyManager and the
         // Python harbor_clerk.secrets module. Read from Keychain (the bootstrap
@@ -1272,6 +1280,7 @@ class ServiceManager: ObservableObject {
 
         return [
             "BUILD_HASH": buildHash,
+            "BUILD_VERSION": buildVersion,
             "PYTHONDONTWRITEBYTECODE": "1",
             "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
             "STORAGE_BACKEND": "filesystem",

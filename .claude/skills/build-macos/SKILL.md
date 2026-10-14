@@ -17,6 +17,11 @@ repository root.
    - Whether each app (HarborClerkServer, HarborClerk) built successfully
    - Any build errors (show the actual error lines)
    - App sizes from the "Server app" / "Client app" lines
+   - The `==> Version` line: `package.sh` derives it from `git describe`
+     (`scripts/build-version.sh`), so an untagged commit builds as
+     `<last tag> (<commits since>)` and a dirty tree adds `.dirty` to the
+     stamp. Report it as printed; never "fix" it in the pbxproj
+     (see `docs/releasing.md`).
 4. If the user said "and run" or "and launch", open the server app:
    `open macos/build/output/HarborClerkServer.app`
 

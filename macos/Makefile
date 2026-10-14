@@ -39,10 +39,12 @@ caddy:
 
 # ── Python ──
 
+# The venv is not stamped here: package.sh writes build-hash.txt and
+# build-version.txt into it when it assembles the bundle, so the stamps and the
+# Info.plist always describe the same commit (scripts/build-version.sh).
 venv:
 	@echo "==> Building Python + venv"
 	DEST_DIR=$(BUILD) PROJECT_ROOT=$(shell cd .. && pwd) bash $(SCRIPTS)/build-venv.sh
-	git -C $(shell cd .. && pwd) rev-parse --short HEAD > $(BUILD)/venv/build-hash.txt
 
 # ── spaCy NER models ──
 
@@ -72,10 +74,14 @@ frontend:
 
 # ── Dev (debug build with frontend, no deps/venv/model needed) ──
 
+# Carries the same tag-derived version as a packaged build, so a dev build's
+# About box reads e.g. "0.9.3 (2)" rather than the pbxproj's 0.0.0-dev sentinel.
 dev: frontend
 	@echo "==> Building Xcode project (Debug)"
-	cd HarborClerkServer && xcodebuild -project HarborClerkServer.xcodeproj \
+	stamps="$$(bash $(SCRIPTS)/build-version.sh)" && eval "$$stamps" && cd HarborClerkServer && \
+		xcodebuild -project HarborClerkServer.xcodeproj \
 		-scheme HarborClerkServer -configuration Debug \
+		MARKETING_VERSION="$$HC_VERSION" CURRENT_PROJECT_VERSION="$$HC_BUILD_NUMBER" \
 		CODE_SIGNING_ALLOWED=NO build
 
 # ── Test ──

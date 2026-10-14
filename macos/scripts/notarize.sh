@@ -22,6 +22,17 @@ APP_PASSWORD="${APP_PASSWORD:?Set APP_PASSWORD env var (app-specific password)}"
 # out for deliberate hotfix builds from a branch.
 sign_commit=$(git -C "$MACOS_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
 echo "==> Signing from commit ${sign_commit} ($(git -C "$MACOS_DIR" branch --show-current 2>/dev/null || echo detached))"
+# What the bundle itself says it is. package.sh stamps these from the commit it
+# built, so this line — not the one above — describes the artifact being signed;
+# when they disagree the bundle is stale (#687) and needs `make apps` first.
+bundle_plist="$OUTPUT_DIR/HarborClerkServer.app/Contents/Info.plist"
+bundle_stamp="$OUTPUT_DIR/HarborClerkServer.app/Contents/Resources/venv/build-version.txt"
+bundle_hash="$OUTPUT_DIR/HarborClerkServer.app/Contents/Resources/venv/build-hash.txt"
+if [ -f "$bundle_plist" ]; then
+    echo "==> Bundle reports version $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$bundle_plist" 2>/dev/null || echo unknown)" \
+         "($(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$bundle_plist" 2>/dev/null || echo '?'))," \
+         "stamp $(cat "$bundle_stamp" 2>/dev/null || echo unstamped), commit $(cat "$bundle_hash" 2>/dev/null || echo unknown)"
+fi
 if [ "${NOTARIZE_ALLOW_STALE:-0}" != "1" ]; then
     git -C "$MACOS_DIR" fetch -q origin main 2>/dev/null || true
     behind=$(git -C "$MACOS_DIR" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)

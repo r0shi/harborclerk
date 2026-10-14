@@ -11,8 +11,10 @@ operator docs that explain cloud and agent boundaries.
 ## Ground Rules
 
 - Run this against a build from the release candidate commit.
-- Record the Harbor Clerk commit, app build, macOS version or Docker version,
-  corpus, and whether the database was fresh or upgraded.
+- Record the Harbor Clerk commit, app version and build (the About box, or
+  `version` and `build` from `/api/system/health`), macOS version or Docker
+  version, corpus, and whether the database was fresh or upgraded. A release
+  candidate reads `X.Y.Z (0)`; anything with a distance or `.dirty` is not one.
 - Do not run destructive `scripts/test_corpora` sweeps against a personal or
   production corpus. Use a dedicated test instance for eval sweeps.
 - Prefer a known mixed corpus that includes PDFs, OCR-needed scans, email
@@ -28,6 +30,7 @@ Use this template for the smoke note:
 # Harbor Clerk Release Smoke - YYYY-MM-DD
 
 - Commit:
+- App version (About box / health `version`):
 - App build:
 - Deployment: macOS native / Docker
 - OS:

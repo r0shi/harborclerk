@@ -126,6 +126,7 @@ wrong place.
 | Skills: `verify`, `build-macos`, `acceptance`, `model-refresh`, `benchmark` | `.claude/skills/*/SKILL.md` — tracked, no machine-specific paths |
 | Eval harness and methodology | `scripts/test_corpora/`, `docs/evaluation.md` |
 | Integration setup (MCP, CLI, connectors) | `docs/integrations.md` |
+| Release procedure: tag first, version stamps, signing by hand | `docs/releasing.md` |
 | Pipeline stages, queues, `mark_stage_done`, extraction paths, storage, retrieval, async traps | `src/harbor_clerk/AGENTS.md` |
 | Tailwind v4 (no config file), ESLint hooks rules, React Router state loss, npm peer deps, WKWebView dialogs | `frontend/AGENTS.md` |
 | Swift process management, `waitUntilExit`, pipe deadlocks, ports 8100/8443, worker presets, bundle IDs | `macos/AGENTS.md` |

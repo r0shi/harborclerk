@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from harbor_clerk.models import Document, IngestionJob
@@ -1270,3 +1271,37 @@ async def test_no_health_check_renders_a_dangling_prefix(client, monkeypatch):
     for name, value in checks.items():
         assert value.strip() != "error:", f"{name} rendered a bare prefix"
         assert not value.endswith(": "), f"{name} rendered a dangling colon: {value!r}"
+
+
+async def test_health_check_reports_the_stamped_build_version(client, monkeypatch):
+    """A packaged app exports BUILD_VERSION from venv/build-version.txt, which
+    package.sh derives from the release tag; health surfaces it verbatim next
+    to the commit so a development build (`+N.g<hash>[.dirty]`) is never
+    mistaken for a release."""
+    monkeypatch.setenv("BUILD_VERSION", "0.9.3+2.g887c3fb.dirty")
+    resp = await client.get("/api/system/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["version"] == "0.9.3+2.g887c3fb.dirty"
+    assert "build" in data
+
+
+@pytest.mark.parametrize("stamp", [None, "", "   "], ids=["unset", "empty", "blank"])
+async def test_health_check_falls_back_to_the_package_version_without_a_stamp(client, monkeypatch, stamp):
+    """Docker, `uv run`, and a bundle assembled before the stamp existed export
+    no BUILD_VERSION (or nothing useful); health must still answer with the
+    installed package's version — pyproject's — not fail or report ''."""
+    import importlib.metadata
+    import tomllib
+    from pathlib import Path
+
+    if stamp is None:
+        monkeypatch.delenv("BUILD_VERSION", raising=False)
+    else:
+        monkeypatch.setenv("BUILD_VERSION", stamp)
+    resp = await client.get("/api/system/health")
+    assert resp.status_code == 200
+    version = resp.json()["version"]
+    assert version == importlib.metadata.version("harbor-clerk")
+    pyproject = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+    assert version == pyproject["project"]["version"]

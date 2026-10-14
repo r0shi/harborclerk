@@ -229,7 +229,7 @@ def test_probe_instance_reads_build_model_and_platform(monkeypatch: pytest.Monke
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path == "/api/system/health":
-            return httpx.Response(200, json={"status": "healthy", "build": "abc1234"})
+            return httpx.Response(200, json={"status": "healthy", "build": "abc1234", "version": "0.9.3+2.gabc1234"})
         if path == "/api/auth/login":
             return httpx.Response(200, json={"access_token": "t", "token_type": "bearer", "user": {"role": "admin"}})
         if path == "/api/chat/models/status":
@@ -247,4 +247,43 @@ def test_probe_instance_reads_build_model_and_platform(monkeypatch: pytest.Monke
     monkeypatch.setattr(hc_client.HarborClerk, "__init__", patched)
     monkeypatch.setenv("HC_USERNAME", "a@b.c")
     monkeypatch.setenv("HC_PASSWORD", "x")
-    assert report.probe_instance("http://test", None, None, "macOS native") == ("abc1234", "qwen3-8b", "Docker Compose")
+    assert report.probe_instance("http://test", None, None, "macOS native") == (
+        "abc1234",
+        "qwen3-8b",
+        "Docker Compose",
+        "0.9.3+2.gabc1234",
+    )
+
+
+def test_probe_instance_tolerates_health_without_a_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An instance from before health carried ``version`` must still be probed;
+    the header then says ``unknown`` rather than the probe failing."""
+    import httpx
+
+    from acceptance import hc_client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/system/health":
+            return httpx.Response(200, json={"status": "healthy", "build": "abc1234"})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    original = hc_client.HarborClerk.__init__
+
+    def patched(self, base_url, **kw):
+        original(self, base_url, transport=transport, **{k: v for k, v in kw.items() if k != "transport"})
+
+    monkeypatch.setattr(hc_client.HarborClerk, "__init__", patched)
+    monkeypatch.delenv("HC_USERNAME", raising=False)
+    monkeypatch.delenv("HC_PASSWORD", raising=False)
+    assert report.probe_instance("http://test", None, None, "macOS native") == ("abc1234", None, "macOS native", None)
+    text = report.render(
+        report.Summary(checks=[], counts={}, duration_s=0.0),
+        api_base="http://test",
+        run_id="r",
+        repo=Path(__file__).resolve().parents[1],
+        instance_build="abc1234",
+        model=None,
+        deployment="macOS native",
+    )
+    assert "version `unknown` · build `abc1234`" in text

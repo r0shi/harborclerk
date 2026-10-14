@@ -64,14 +64,9 @@ all. So an SDK bump is a behavioral change, not housekeeping.
 
 **The bump has already happened**, and nothing recorded it: the deployment
 target is still 15.0, but the SDK follows whatever Xcode is on the build machine,
-so installing Xcode 26 silently moved it. Measured on the shipped bundles:
-
-```
-$ vtool -show-build /Applications/HarborClerkServer.app/Contents/MacOS/HarborClerkServer
- platform MACOS
-    minos 15.0
-      sdk 26.5
-```
+so installing Xcode 26 silently moved it. Measured on the shipped bundles with
+`vtool -show-build /Applications/HarborClerkServer.app/Contents/MacOS/HarborClerkServer`:
+`minos 15.0`, `sdk 26.5`.
 
 So the stricter rules are **already live in every build since that Xcode
 upgrade**, and have been through a full field test (an 11,436-document corpus,
@@ -148,6 +143,11 @@ hashes), then the two local packages with `--no-deps --upgrade`, and rebuilds th
 venv when the lock changes. Never add a bare `pip install <name>`: the app once
 shipped torch two minors behind the lock, and it cost 43 GB of GPU memory (#685).
 
+**Every version string comes from the release tag.** `package.sh` derives them
+from `git describe` (`scripts/build-version.sh`): **tag before you build**, and
+never bump the pbxproj's `0.0.0-dev` sentinel (a test fails if you do). The
+procedure and what each stamp means: `docs/releasing.md`.
+
 ## The llama.cpp pin lives in two places
 
 `scripts/build-llama.sh` (`LLAMA_CPP_TAG`) and the image in `docker-compose.yml`;
@@ -196,5 +196,5 @@ use the explicit form. `make sign` compiles nothing and needs no override.
 signs (a dylib inside `tika-server.jar`), because an SSH session has the login
 keychain locked and cannot show the key-access prompt. A reboot clears any
 earlier unlock. It is not the jar: the owner runs `security unlock-keychain
-~/Library/Keychains/login.keychain-db` in that session, then `make sign`. The
-commit `notarize.sh` prints is the checkout's, not the bundle's: rebuild first.
+~/Library/Keychains/login.keychain-db` in that session, then `make sign`. If the
+bundle stamp `notarize.sh` prints differs from the checkout's commit, rebuild (#687).

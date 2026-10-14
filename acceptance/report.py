@@ -193,6 +193,7 @@ def render(
     deployment: str,
     wipe: bool = False,
     now: dt.datetime | None = None,
+    instance_version: str | None = None,
 ) -> str:
     now = now or dt.datetime.now().astimezone()
     areas = area_results(summary)
@@ -203,7 +204,8 @@ def render(
         f"# Acceptance run — {now:%Y-%m-%d} — {socket.gethostname().split('.')[0]}",
         "",
         "- **Suite commit:** `" + _git_describe(repo) + "`",
-        f"- **Instance:** {api_base} · build `{instance_build or 'unknown'}` · {deployment}",
+        f"- **Instance:** {api_base} · version `{instance_version or 'unknown'}` · "
+        f"build `{instance_build or 'unknown'}` · {deployment}",
         f"- **Machine:** {_machine()} · {_os_version()}",
         f"- **Corpus:** {corpus}",
         f"- **Model under test:** {model or 'none active (Ask checks skipped)'} · judge model: n/a · cloud spend: n/a",
@@ -239,15 +241,20 @@ def render(
 
 
 def probe_instance(
-    api_base: str, build: str | None, model: str | None, deployment: str
-) -> tuple[str | None, str | None, str]:
+    api_base: str, build: str | None, model: str | None, deployment: str, version: str | None = None
+) -> tuple[str | None, str | None, str, str | None]:
     """Fill what the flags left blank from the running instance. Credentials
-    come from the environment the suite itself uses; nothing is printed."""
+    come from the environment the suite itself uses; nothing is printed.
+
+    ``version`` is health's tag-derived ``version`` field; an instance older
+    than that field leaves it ``None`` and the header says ``unknown``."""
     from acceptance.hc_client import HarborClerk
 
     username, password = os.environ.get("HC_USERNAME", ""), os.environ.get("HC_PASSWORD", "")
     with HarborClerk(api_base, verify=not _flag("HC_INSECURE")) as client:
-        build = build or client.health().get("build")
+        health = client.health()
+        build = build or health.get("build")
+        version = version or health.get("version")
         if username and password:
             client.login(username, password)
             status = client.model_status()
@@ -256,7 +263,7 @@ def probe_instance(
             deployment = {"docker": "Docker Compose", "macos": "macOS native"}.get(
                 platform_name, platform_name or deployment
             )
-    return build, model, deployment
+    return build, model, deployment, version
 
 
 def verify_clean(api_base: str, run_id: str) -> list[str]:
@@ -298,12 +305,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--api-base", required=True)
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--instance-build")
+    ap.add_argument("--instance-version")
     ap.add_argument("--model")
     ap.add_argument("--deployment", default="macOS native")
     ap.add_argument(
         "--probe",
         action="store_true",
-        help="log in with HC_USERNAME/HC_PASSWORD and read build, active model and platform from the instance",
+        help="log in with HC_USERNAME/HC_PASSWORD and read version, build, active model and platform from the instance",
     )
     ap.add_argument("--wipe", action="store_true", help="the run emptied the instance first (HC_ACCEPTANCE_WIPE=1)")
     ap.add_argument(
@@ -319,15 +327,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if leftovers else 0
     summary = parse_junit(args.junit)
     repo = Path(__file__).resolve().parents[1]
-    build, model, deployment = args.instance_build, args.model, args.deployment
+    build, version, model, deployment = args.instance_build, args.instance_version, args.model, args.deployment
     if args.probe:
-        build, model, deployment = probe_instance(args.api_base, build, model, deployment)
+        build, model, deployment, version = probe_instance(args.api_base, build, model, deployment, version)
     text = render(
         summary,
         api_base=args.api_base,
         run_id=args.run_id,
         repo=repo,
         instance_build=build,
+        instance_version=version,
         model=model,
         deployment=deployment,
         wipe=args.wipe,

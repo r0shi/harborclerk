@@ -33,6 +33,23 @@ echo "==> Packaging Harbor Clerk apps"
 
 FRONTEND_DIST="$PROJECT_ROOT/frontend/dist"
 
+# ── Version stamps ──
+# The release tag is the only source of truth for a version. scripts/build-version.sh
+# derives every stamp from `git describe` of the commit being built, and the same
+# values go to both Xcode projects (below), into the venv beside build-hash.txt
+# (for /api/system/health) and into the plist check at the end of this script.
+# The pbxproj files carry a 0.0.0-dev sentinel so a plain Xcode build is never
+# mistaken for a release; nothing edits them per release.
+# Two steps, not `eval "$(...)"`: eval of an empty string succeeds, so a failing
+# derivation would otherwise build with every stamp blank. The assignment fails
+# the script under `set -e`.
+version_stamps="$(bash "$SCRIPT_DIR/build-version.sh")"
+eval "$version_stamps"
+echo "==> Version ${HC_VERSION_FULL} (CFBundleShortVersionString ${HC_VERSION}, CFBundleVersion ${HC_BUILD_NUMBER}, commit ${HC_BUILD_HASH})"
+if [ "$HC_RELEASE" != "1" ]; then
+    echo "    Not a clean build of a tagged commit: this is a development build and is labelled as one."
+fi
+
 # ── Build Xcode projects ──
 # Built without signing. `make sign` (scripts/notarize.sh) re-signs everything
 # with `codesign --force --deep --options runtime` and Developer ID, and passes
@@ -55,6 +72,8 @@ xcodebuild -project HarborClerkServer.xcodeproj \
     -arch arm64 \
     ONLY_ACTIVE_ARCH=NO \
     CODE_SIGNING_ALLOWED=NO \
+    MARKETING_VERSION="$HC_VERSION" \
+    CURRENT_PROJECT_VERSION="$HC_BUILD_NUMBER" \
     build
 
 echo "==> Building Harbor Clerk.app"
@@ -66,6 +85,8 @@ xcodebuild -project HarborClerk.xcodeproj \
     -arch arm64 \
     ONLY_ACTIVE_ARCH=NO \
     CODE_SIGNING_ALLOWED=NO \
+    MARKETING_VERSION="$HC_VERSION" \
+    CURRENT_PROJECT_VERSION="$HC_BUILD_NUMBER" \
     build
 
 # ── Locate built apps ──
@@ -105,6 +126,12 @@ if [ -d "$BUILD_DIR/python" ]; then
     cp -R "$BUILD_DIR/python" "$RESOURCES/python"
 fi
 if [ -d "$BUILD_DIR/venv" ]; then
+    # Stamped here, at the moment the bundle is assembled from this checkout, so
+    # the venv and the Info.plist above describe the same commit by construction.
+    # ServiceManager.swift exports both to the API as BUILD_HASH / BUILD_VERSION;
+    # /api/system/health reports them as "build" / "version".
+    printf '%s\n' "$HC_BUILD_HASH" > "$BUILD_DIR/venv/build-hash.txt"
+    printf '%s\n' "$HC_VERSION_FULL" > "$BUILD_DIR/venv/build-version.txt"
     cp -R "$BUILD_DIR/venv" "$RESOURCES/venv"
 fi
 
@@ -167,6 +194,22 @@ copy_bundle "$CLIENT_APP" "$OUTPUT_DIR/HarborClerk.app"
 # allow-unsigned-executable-memory and both network entitlements, which the
 # server needs to spawn llama and Python under the hardened runtime. Silently.
 
+# ── The bundles must say what the tag says ──
+# Command-line build settings override the pbxproj, but a renamed setting or a
+# target that stopped reading $(MARKETING_VERSION) in its Info.plist would ship
+# the 0.0.0-dev sentinel silently. Read the plists back.
+for app in "$OUTPUT_DIR/HarborClerkServer.app" "$OUTPUT_DIR/HarborClerk.app"; do
+    plist="$app/Contents/Info.plist"
+    short="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")"
+    bundle_version="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist")"
+    if [ "$short" != "$HC_VERSION" ] || [ "$bundle_version" != "$HC_BUILD_NUMBER" ]; then
+        echo "ERROR: $(basename "$app") reports version ${short} (${bundle_version}); expected ${HC_VERSION} (${HC_BUILD_NUMBER})." >&2
+        echo "       MARKETING_VERSION / CURRENT_PROJECT_VERSION did not reach the target's Info.plist." >&2
+        exit 1
+    fi
+done
+
 echo "==> Apps assembled in ${OUTPUT_DIR}"
+echo "==> Version: ${HC_VERSION} (${HC_BUILD_NUMBER}), ${HC_VERSION_FULL}"
 echo "==> Server app: $(du -sh "$OUTPUT_DIR/HarborClerkServer.app" | cut -f1)"
 echo "==> Client app: $(du -sh "$OUTPUT_DIR/HarborClerk.app" | cut -f1)"

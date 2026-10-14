@@ -225,12 +225,16 @@ async def health_check(
                 logger.error("Local HTTPS gateway health check failed: %s", describe_error(e))
                 checks["local_https_gateway"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
 
-    from harbor_clerk.api.app import BUILD_HASH
+    from harbor_clerk.api.app import BUILD_HASH, build_version
 
     overall = all(v in ("ok", "disabled", "not_probed") for v in checks.values())
     return {
         "status": "healthy" if overall else "degraded",
+        # Commit of the running build ("dev" outside a packaged app) and the
+        # tag-derived version: "0.9.3" only for a clean build of the tagged
+        # commit, "0.9.3+2.g887c3fb[.dirty]" otherwise. See build_version().
         "build": BUILD_HASH,
+        "version": build_version(),
         "checks": checks,
         # Deployment-wide capabilities the frontend needs to know about. Kept
         # in the health response so it's fetched on app boot without a
