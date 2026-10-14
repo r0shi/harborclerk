@@ -1,0 +1,80 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04417",
+  "date": "2025-01-17",
+  "total_usd": 7717.14,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Shelving Units (48\"x24\"x72\")",
+      "quantity": 12,
+      "unit_price": 189.0,
+      "amount": 2268.0
+    },
+    {
+      "description": "Industrial Label Printer - Model LP-9",
+      "quantity": 2,
+      "unit_price": 435.5,
+      "amount": 871.0
+    },
+    {
+      "description": "Thermal Label Rolls (Case of 500)",
+      "quantity": 8,
+      "unit_price": 54.75,
+      "amount": 438.0
+    },
+    {
+      "description": "Safety Cabinet - Flammable Storage",
+      "quantity": 1,
+      "unit_price": 978.0,
+      "amount": 978.0
+    },
+    {
+      "description": "Nitrile Gloves, Box of 100 (Large)",
+      "quantity": 24,
+      "unit_price": 18.4,
+      "amount": 441.6
+    },
+    {
+      "description": "Industrial Floor Cleaner - 5 Gal Drum",
+      "quantity": 6,
+      "unit_price": 67.25,
+      "amount": 403.5
+    },
+    {
+      "description": "Packing Tape Dispenser w/ 12 Rolls",
+      "quantity": 10,
+      "unit_price": 22.0,
+      "amount": 220.0
+    },
+    {
+      "description": "Wire Management Raceways - 6 ft (10pk)",
+      "quantity": 5,
+      "unit_price": 44.8,
+      "amount": 224.0
+    },
+    {
+      "description": "First Aid Cabinet - Wall Mount, Deluxe",
+      "quantity": 3,
+      "unit_price": 156.0,
+      "amount": 468.0
+    },
+    {
+      "description": "Quarterly Maintenance Service - Q1",
+      "quantity": 1,
+      "unit_price": 750.0,
+      "amount": 750.0
+    },
+    {
+      "description": "Freight/Shipping",
+      "quantity": 1,
+      "unit_price": 185.0,
+      "amount": 185.0
+    },
+    {
+      "description": "Sales Tax (6.5%)",
+      "quantity": 1,
+      "unit_price": 470.04,
+      "amount": 470.04
+    }
+  ]
+}

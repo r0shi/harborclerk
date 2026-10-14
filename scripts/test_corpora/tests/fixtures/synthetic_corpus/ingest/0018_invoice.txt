@@ -1,0 +1,83 @@
+================================================================================
+                          INITECH SOFTWARE
+                     4821 Corporate Parkway, Suite 300
+                          Austin, TX 78701
+                        Phone: (512) 555-0184
+                         Fax: (512) 555-0185
+                    billing@initechsoftware.com
+                     www.initechsoftware.com
+================================================================================
+
+INVOICE
+
+Invoice Number:  INV-2025-04872
+Invoice Date:    April 27, 2025
+Due Date:        May 27, 2025
+Payment Terms:   Net 30
+
+--------------------------------------------------------------------------------
+BILL TO:
+  Marbledock & Associates
+  1120 Harbor View Boulevard, Floor 8
+  Boston, MA 02110
+  Attn: Accounts Payable
+--------------------------------------------------------------------------------
+
+DESCRIPTION OF SERVICES
+
+--------------------------------------------------------------------------------
+ Item   Description                              Qty    Unit Price     Amount
+--------------------------------------------------------------------------------
+  1     Enterprise License — DataFlow Pro        1      $8,500.00    $8,500.00
+        (Annual Subscription, 25-seat license)
+        License Period: 2025-04-27 to 2026-04-26
+
+  2     Professional Implementation Services     16 hrs   $195.00    $3,120.00
+        On-site configuration and deployment
+        (April 14–25, 2025)
+
+  3     Custom API Integration Module            1      $4,750.00    $4,750.00
+        Bespoke connector for client ERP system
+        (Scope ref: SOW-MDA-2025-007)
+
+  4     Priority Support Package — Tier 2        1      $2,400.00    $2,400.00
+        12-month coverage, 8 business-hour SLA
+        Period: 2025-04-27 to 2026-04-26
+
+  5     Training — Remote Instructor-Led         8 hrs   $175.00    $1,400.00
+        End-user training sessions (4 × 2 hrs)
+        Delivered via Zoom, April 21–24, 2025
+--------------------------------------------------------------------------------
+
+                                          Subtotal:          $20,170.00
+                                          Tax (8.25%):        $1,664.03
+                                          ──────────────────────────────
+                                          TOTAL DUE:         $21,834.03
+
+================================================================================
+PAYMENT INSTRUCTIONS
+
+  Please remit payment by May 27, 2025 to avoid a 1.5% monthly late fee.
+
+  Bank Wire / ACH Transfer:
+    Bank Name:      First National Bank of Texas
+    Routing No.:    111000614
+    Account No.:    7842930156
+    Account Name:   Initech Software LLC
+
+  Check Payable To: Initech Software
+  Mail To: 4821 Corporate Parkway, Suite 300, Austin, TX 78701
+
+  Please reference Invoice #INV-2025-04872 with all payments.
+================================================================================
+NOTES
+
+  - Purchase Order Reference: PO-MDA-20250318
+  - Project Code: MDA-DATAFLOW-2025
+  - All services rendered in accordance with the Master Service Agreement
+    dated January 10, 2025.
+  - For billing inquiries contact billing@initechsoftware.com
+    or call (512) 555-0184 ext. 3.
+================================================================================
+                Thank you for your business, Marbledock & Associates!
+================================================================================

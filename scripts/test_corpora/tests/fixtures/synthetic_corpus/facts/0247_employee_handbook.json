@@ -1,0 +1,13 @@
+{
+  "year": 2025,
+  "sections": [
+    "Code of Conduct",
+    "Hours of Work and Attendance",
+    "Health, Safety, and Wellness"
+  ],
+  "lang_split": {
+    "language_1": "English",
+    "language_2": "French",
+    "format": "sequential parallel sections"
+  }
+}

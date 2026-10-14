@@ -1,0 +1,68 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-08471",
+  "date": "2025-08-03",
+  "total_usd": 10793.26,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Storage Shelving Unit (Steel, 5-Tier, 72\"H x 48\"W x 18\"D)",
+      "quantity": 12,
+      "unit_price": 148.5,
+      "amount": 1782.0
+    },
+    {
+      "description": "Industrial Packing Tape Dispenser (Heavy-Gauge Aluminum, Adjustable)",
+      "quantity": 6,
+      "unit_price": 34.75,
+      "amount": 208.5
+    },
+    {
+      "description": "Office Chair, Ergonomic Mesh (Lumbar Support, Adjustable Arms)",
+      "quantity": 10,
+      "unit_price": 289.0,
+      "amount": 2890.0
+    },
+    {
+      "description": "Copy Paper, Case (10 Reams) (8.5\" x 11\", 20lb, 92 Brightness)",
+      "quantity": 25,
+      "unit_price": 52.4,
+      "amount": 1310.0
+    },
+    {
+      "description": "Nitrile Disposable Gloves, Box (Powder-Free, Medium, 100ct)",
+      "quantity": 100,
+      "unit_price": 8.95,
+      "amount": 895.0
+    },
+    {
+      "description": "Wireless Laser Barcode Scanner (USB Receiver, 1D/2D Compatible)",
+      "quantity": 4,
+      "unit_price": 174.0,
+      "amount": 696.0
+    },
+    {
+      "description": "Industrial Cleaning Concentrate (5-Gallon Drum, Multi-Surface)",
+      "quantity": 18,
+      "unit_price": 41.2,
+      "amount": 741.6
+    },
+    {
+      "description": "Bubble Wrap Roll 500ft (3/16\" Small Bubble, Perforated)",
+      "quantity": 8,
+      "unit_price": 67.85,
+      "amount": 542.8
+    },
+    {
+      "description": "Heavy-Duty Hand Truck (Convertible, 600 lb Capacity)",
+      "quantity": 3,
+      "unit_price": 119.5,
+      "amount": 358.5
+    },
+    {
+      "description": "First Aid Cabinet, Refill Kit (OSHA Compliant, 50-Person)",
+      "quantity": 5,
+      "unit_price": 88.75,
+      "amount": 443.75
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-08847",
+  "date": "2025-11-19",
+  "total_usd": 16819.43,
+  "line_items": [
+    {
+      "description": "Enterprise License - TPS Report Suite (Annual subscription, 25-user seat)",
+      "quantity": 1,
+      "unit_price": 8500.0,
+      "amount": 8500.0
+    },
+    {
+      "description": "Professional Services - System Integration & Configuration (hrs)",
+      "quantity": 12,
+      "unit_price": 195.0,
+      "amount": 2340.0
+    },
+    {
+      "description": "Data Migration Module Add-On (Legacy system import toolkit)",
+      "quantity": 1,
+      "unit_price": 1200.0,
+      "amount": 1200.0
+    },
+    {
+      "description": "Priority Support Package - Q4 2025 (24/7 technical support, 3 months)",
+      "quantity": 1,
+      "unit_price": 950.0,
+      "amount": 950.0
+    },
+    {
+      "description": "On-Site Training Session (Half-day sessions, per session)",
+      "quantity": 2,
+      "unit_price": 750.0,
+      "amount": 1500.0
+    },
+    {
+      "description": "Custom API Development - Phase 1 (Marbledock CRM connector, hrs)",
+      "quantity": 8,
+      "unit_price": 225.0,
+      "amount": 1800.0
+    }
+  ]
+}

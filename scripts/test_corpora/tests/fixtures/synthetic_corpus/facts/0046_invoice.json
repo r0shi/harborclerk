@@ -1,0 +1,62 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CYB-2025-00847",
+  "date": "2025-02-02",
+  "total_usd": 18797.67,
+  "line_items": [
+    {
+      "description": "Managed IT Support Services \u2014 15 endpoints (January 2025)",
+      "quantity": 15,
+      "unit_price": 89.0,
+      "subtotal": 1335.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Licensing \u2014 20 seats, 12 months",
+      "quantity": 240,
+      "unit_price": 22.0,
+      "subtotal": 5280.0
+    },
+    {
+      "description": "Network Infrastructure Assessment (on-site audit)",
+      "quantity": 1,
+      "unit_price": 3750.0,
+      "subtotal": 3750.0
+    },
+    {
+      "description": "Cisco Meraki MX68 Security Appliance \u2014 hardware supply & delivery",
+      "quantity": 2,
+      "unit_price": 1240.0,
+      "subtotal": 2480.0
+    },
+    {
+      "description": "Structured Cabling Installation \u2014 Cat6A, 48 drops",
+      "quantity": 48,
+      "unit_price": 78.0,
+      "subtotal": 3744.0
+    },
+    {
+      "description": "Cloud Backup Configuration & Setup (Veeam Cloud Connect)",
+      "quantity": 1,
+      "unit_price": 1200.0,
+      "subtotal": 1200.0
+    },
+    {
+      "description": "Cybersecurity Awareness Training \u2014 KnowBe4, 20 users, annual",
+      "quantity": 20,
+      "unit_price": 24.5,
+      "subtotal": 490.0
+    },
+    {
+      "description": "Discount \u2014 5% Preferred Client",
+      "quantity": 1,
+      "unit_price": -913.95,
+      "subtotal": -913.95
+    },
+    {
+      "description": "Sales Tax (8.25% \u2014 MA)",
+      "quantity": 1,
+      "unit_price": 1432.62,
+      "subtotal": 1432.62
+    }
+  ]
+}

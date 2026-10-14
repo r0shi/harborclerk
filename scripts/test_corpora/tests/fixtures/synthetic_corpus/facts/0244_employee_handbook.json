@@ -1,0 +1,32 @@
+{
+  "year": 2025,
+  "sections": [
+    "Section 3: Code of Conduct / Section 3 : Code de conduite",
+    "Section 7: Leave Policies / Section 7 : Politiques de cong\u00e9"
+  ],
+  "lang_split": {
+    "primary_languages": [
+      "English",
+      "French"
+    ],
+    "format": "parallel_bilingual",
+    "english_subsections": [
+      "3.1",
+      "3.2",
+      "3.3",
+      "7.1",
+      "7.2",
+      "7.3"
+    ],
+    "french_subsections": [
+      "3.1",
+      "3.2",
+      "3.3",
+      "7.1",
+      "7.2",
+      "7.3"
+    ],
+    "total_sections_covered": 2,
+    "translation_note": "French version uses 'Marbledock & Associ\u00e9s' as the localized firm name"
+  }
+}

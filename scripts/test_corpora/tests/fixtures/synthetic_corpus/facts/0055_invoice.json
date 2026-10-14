@@ -1,0 +1,56 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-00847",
+  "date": "2025-01-19",
+  "total_usd": 11647.0,
+  "line_items": [
+    {
+      "description": "Managed Cloud Infrastructure Hosting & Monitoring (Monthly service - January 2025, AWS environment management)",
+      "quantity": 1,
+      "unit_price": 2400.0,
+      "amount": 2400.0
+    },
+    {
+      "description": "Cybersecurity Endpoint Protection License - CrowdStrike, per-seat, prorated Jan 2025",
+      "quantity": 25,
+      "unit_price": 48.0,
+      "amount": 1200.0
+    },
+    {
+      "description": "IT Helpdesk Support Hours (on-site and remote, Dec 16 - Jan 15 2025 billing cycle)",
+      "quantity": 32,
+      "unit_price": 95.0,
+      "amount": 3040.0
+    },
+    {
+      "description": "Network Infrastructure Audit & Report (topology review, vulnerability assessment, written report)",
+      "quantity": 1,
+      "unit_price": 1850.0,
+      "amount": 1850.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Licenses - monthly per-seat, January 2025",
+      "quantity": 10,
+      "unit_price": 22.0,
+      "amount": 220.0
+    },
+    {
+      "description": "SSL Certificate Procurement & Installation (wildcard SSL, 2 domains)",
+      "quantity": 2,
+      "unit_price": 175.0,
+      "amount": 350.0
+    },
+    {
+      "description": "Backup & Disaster Recovery Setup - One-Time Fee (Veeam deployment, configuration, documentation)",
+      "quantity": 1,
+      "unit_price": 3200.0,
+      "amount": 3200.0
+    },
+    {
+      "description": "Discount - 5% Preferred Partner Rate",
+      "quantity": 1,
+      "unit_price": -613.0,
+      "amount": -613.0
+    }
+  ]
+}

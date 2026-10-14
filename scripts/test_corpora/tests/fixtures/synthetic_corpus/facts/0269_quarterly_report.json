@@ -1,0 +1,20 @@
+{
+  "quarter": "Q3",
+  "year": 2025,
+  "revenue_usd": 4750000,
+  "key_initiatives": {
+    "client_retention_rate_percent": 94,
+    "new_enterprise_accounts_secured": 3,
+    "renewed_contracts": 7,
+    "platform_rollout": "MarbleTrak 2.0",
+    "sustainability_consulting_inquiry_growth_percent": 31,
+    "quarter_over_quarter_revenue_growth_percent": 11.2,
+    "operating_margin_percent": 22,
+    "polestar_industries_revenue_contribution_percent": 18,
+    "polestar_industries_engagement_scope": [
+      "Supply chain realignment",
+      "Vendor risk assessment",
+      "Digital transformation consulting"
+    ]
+  }
+}

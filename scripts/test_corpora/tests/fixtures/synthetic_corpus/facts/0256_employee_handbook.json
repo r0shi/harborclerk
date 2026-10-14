@@ -1,0 +1,14 @@
+{
+  "year": 2025,
+  "sections": [
+    "Code of Conduct",
+    "Working Hours",
+    "Remote Work Policy",
+    "Leave Entitlements"
+  ],
+  "lang_split": {
+    "primary": "English",
+    "secondary": "French",
+    "structure": "parallel"
+  }
+}

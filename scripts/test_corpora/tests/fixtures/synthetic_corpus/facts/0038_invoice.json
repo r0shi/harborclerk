@@ -1,0 +1,78 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04817",
+  "date": "2025-02-08",
+  "total_usd": 9521.3,
+  "line_items": [
+    {
+      "item_number": "001",
+      "description": "Heavy-Duty Storage Shelving Units (Model: SHF-HD-72)",
+      "quantity": 12,
+      "unit_price": 189.99,
+      "amount": 2279.88
+    },
+    {
+      "item_number": "002",
+      "description": "Industrial Label Printer (Zebra ZD421)",
+      "quantity": 2,
+      "unit_price": 349.5,
+      "amount": 699.0
+    },
+    {
+      "item_number": "003",
+      "description": "Printer Label Rolls - 4\"x6\" (Box of 250)",
+      "quantity": 50,
+      "unit_price": 18.75,
+      "amount": 937.5
+    },
+    {
+      "item_number": "004",
+      "description": "Heavy-Duty Plastic Storage Bins 12\"x8\"x6\"",
+      "quantity": 100,
+      "unit_price": 6.4,
+      "amount": 640.0
+    },
+    {
+      "item_number": "005",
+      "description": "Commercial-Grade Floor Mats Anti-Fatigue 3'x5'",
+      "quantity": 8,
+      "unit_price": 74.99,
+      "amount": 599.92
+    },
+    {
+      "item_number": "006",
+      "description": "LED High-Bay Warehouse Lighting 100W 5000K UFO Style",
+      "quantity": 6,
+      "unit_price": 212.0,
+      "amount": 1272.0
+    },
+    {
+      "item_number": "007",
+      "description": "Office Paper - Case (8.5\"x11\", 20 lb, 10 Reams/Case)",
+      "quantity": 20,
+      "unit_price": 52.5,
+      "amount": 1050.0
+    },
+    {
+      "item_number": "008",
+      "description": "Packing Tape Rolls 48mm x 100m Heavy Duty Clear",
+      "quantity": 30,
+      "unit_price": 3.85,
+      "amount": 115.5
+    },
+    {
+      "item_number": "009",
+      "description": "Bubble Wrap Roll 12\"x100ft 3/16\" Perforated",
+      "quantity": 5,
+      "unit_price": 28.6,
+      "amount": 143.0
+    },
+    {
+      "item_number": "010",
+      "description": "Ergonomic Office Chair Mesh Back with Lumbar Support",
+      "quantity": 4,
+      "unit_price": 315.0,
+      "amount": 1260.0
+    }
+  ]
+}

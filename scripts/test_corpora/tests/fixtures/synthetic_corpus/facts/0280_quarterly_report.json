@@ -1,0 +1,10 @@
+{
+  "quarter": "Q1",
+  "year": 2025,
+  "revenue_usd": 4750000,
+  "key_initiatives": {
+    "ai_enabled_operations": "Launch of AI-Enabled Operations Initiative integrating machine learning tooling into client delivery workflows",
+    "talent_acceleration": "Marbledock Talent Acceleration Program onboarding 18 new senior consultants",
+    "sustainability_advisory": "Introduction of dedicated sustainability advisory practice area focused on ESG compliance support"
+  }
+}

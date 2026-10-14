@@ -1,0 +1,14 @@
+{
+  "year": 2025,
+  "sections": [
+    "Code of Conduct / Code de conduite",
+    "Hours of Work and Attendance / Horaires de travail et pr\u00e9sence",
+    "Health, Safety, and Well-Being / Sant\u00e9, s\u00e9curit\u00e9 et bien-\u00eatre"
+  ],
+  "lang_split": {
+    "primary": "English",
+    "secondary": "French",
+    "structure": "parallel",
+    "delimiter": "--- SECTION FRAN\u00c7AISE ---"
+  }
+}

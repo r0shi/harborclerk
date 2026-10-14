@@ -1,0 +1,20 @@
+{
+  "vendor": "Cyberdyne IT",
+  "term_months": 12,
+  "monthly_fee_usd": 8500.0,
+  "governing_law": "State of New York",
+  "signatures": {
+    "client": {
+      "name": "Jonathan R. Caldwell",
+      "title": "Managing Partner",
+      "organization": "Marbledock & Associates",
+      "date": "2025-02-08"
+    },
+    "vendor": {
+      "name": "Sara M. Tran",
+      "title": "Chief Executive Officer",
+      "organization": "Cyberdyne IT",
+      "date": "2025-02-08"
+    }
+  }
+}

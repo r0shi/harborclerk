@@ -1,0 +1,20 @@
+{
+  "vendor": "Cyberdyne IT",
+  "term_months": 12,
+  "monthly_fee_usd": 8500.0,
+  "governing_law": "State of New York",
+  "signatures": {
+    "client": {
+      "entity": "Marbledock & Associates",
+      "signatory_name": "Jonathan R. Ashford",
+      "title": "Managing Partner",
+      "date": "2025-05-23"
+    },
+    "vendor": {
+      "entity": "Cyberdyne IT",
+      "signatory_name": "Sandra K. Morrow",
+      "title": "Chief Executive Officer",
+      "date": "2025-05-23"
+    }
+  }
+}

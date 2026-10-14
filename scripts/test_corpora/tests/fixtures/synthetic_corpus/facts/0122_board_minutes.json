@@ -1,0 +1,45 @@
+{
+  "date": "2025-09-02",
+  "attendees": [
+    {
+      "name": "Margaret Holvan",
+      "title": "Chief Executive Officer",
+      "role": "Chair"
+    },
+    {
+      "name": "Pierre Dubois",
+      "title": "Chief Financial Officer"
+    },
+    {
+      "name": "Aiyana Park",
+      "title": "Head of Operations"
+    }
+  ],
+  "decisions": [
+    {
+      "agenda_item": 1,
+      "summary": "Minutes of the August 5, 2025 board meeting approved as amended (Q2 revenue figure corrected from $4.2M to $4.35M)."
+    },
+    {
+      "agenda_item": 2,
+      "summary": "Q2 2025 financial report approved. Pierre Dubois directed to submit a vendor cost-containment proposal by September 19, 2025."
+    },
+    {
+      "agenda_item": 3,
+      "summary": "Board approved expansion of the Polestar Industries contract to include supply chain and compliance services, targeting an estimated value of $1.65M. Aiyana Park authorized to schedule a proposal meeting with Polestar Industries before September 30, 2025; internal draft due September 15, 2025; Margaret Holvan to co-sign the final proposal."
+    },
+    {
+      "agenda_item": 4,
+      "summary": "Approved phased 50% reduction of Glasgow office footprint. Aiyana Park to deliver a staff transition plan by October 1, 2025. No redundancies permitted without further board approval."
+    },
+    {
+      "agenda_item": 5,
+      "summary": "Approved technology infrastructure upgrade budget of up to $230,000. Pierre Dubois authorized to finalize vendor and execute contract. Implementation to begin by November 1, 2025 and complete by Q1 2026."
+    },
+    {
+      "agenda_item": 6,
+      "summary": "Approved in principle the hiring of four new roles for 2026 (two senior consultants, one data analyst, one business development associate). Finalized role descriptions and recruitment timeline to be presented at the November 2025 board meeting."
+    }
+  ],
+  "lang": "en"
+}

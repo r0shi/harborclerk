@@ -1,0 +1,74 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDY-2025-04187",
+  "date": "2025-04-18",
+  "total_usd": 16638.25,
+  "line_items": [
+    {
+      "description": "Managed IT Support Services (Monthly blocks, Q2 2025)",
+      "quantity": 4,
+      "unit_price": 1250.0,
+      "amount": 5000.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium License Procurement & Setup (per seat)",
+      "quantity": 15,
+      "unit_price": 22.0,
+      "amount": 330.0
+    },
+    {
+      "description": "Network Infrastructure Audit",
+      "quantity": 1,
+      "unit_price": 3800.0,
+      "amount": 3800.0
+    },
+    {
+      "description": "Cybersecurity Awareness Training (per-user online course bundle)",
+      "quantity": 25,
+      "unit_price": 45.0,
+      "amount": 1125.0
+    },
+    {
+      "description": "Cloud Backup Configuration & Migration (Azure Blob Storage, two server environments)",
+      "quantity": 2,
+      "unit_price": 650.0,
+      "amount": 1300.0
+    },
+    {
+      "description": "On-Site Technician Labor (hardware installation & cabling)",
+      "quantity": 8,
+      "unit_price": 175.0,
+      "amount": 1400.0
+    },
+    {
+      "description": "Cisco Catalyst 2960-X 24-Port Switch (hardware supply & staging)",
+      "quantity": 1,
+      "unit_price": 1295.0,
+      "amount": 1295.0
+    },
+    {
+      "description": "Structured Cabling \u2013 Cat6, materials only (per linear foot)",
+      "quantity": 320,
+      "unit_price": 3.75,
+      "amount": 1200.0
+    },
+    {
+      "description": "Tax (8.5%)",
+      "quantity": null,
+      "unit_price": null,
+      "amount": 1313.25
+    },
+    {
+      "description": "Shipping/Freight",
+      "quantity": null,
+      "unit_price": null,
+      "amount": 75.0
+    },
+    {
+      "description": "Discount",
+      "quantity": null,
+      "unit_price": null,
+      "amount": -200.0
+    }
+  ]
+}

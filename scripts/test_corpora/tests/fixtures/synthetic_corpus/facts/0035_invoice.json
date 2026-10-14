@@ -1,0 +1,64 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04817",
+  "date": "2025-09-06",
+  "total_usd": 10033.9,
+  "line_items": [
+    {
+      "description": "Managed IT Support - Standard Tier (Monthly helpdesk & remote support, up to 25 end users, SLA 4-hr response)",
+      "quantity": 1,
+      "unit": "month",
+      "unit_price": 2850.0,
+      "amount": 2850.0
+    },
+    {
+      "description": "Cloud Infrastructure Management (Azure VM monitoring, patch mgmt, backup verification & reporting)",
+      "quantity": 1,
+      "unit": "month",
+      "unit_price": 1975.0,
+      "amount": 1975.0
+    },
+    {
+      "description": "Cybersecurity Threat Monitoring (24/7 SIEM monitoring, alerting, monthly threat summary report)",
+      "quantity": 1,
+      "unit": "month",
+      "unit_price": 1400.0,
+      "amount": 1400.0
+    },
+    {
+      "description": "Network Switch Replacement - Cisco Catalyst 2960-X 48-port PoE+, incl. installation & config",
+      "quantity": 2,
+      "unit": "each",
+      "unit_price": 1245.0,
+      "amount": 2490.0
+    },
+    {
+      "description": "SSL Certificate Renewal - Wildcard SSL, 1-year term, installation included",
+      "quantity": 3,
+      "unit": "each",
+      "unit_price": 189.0,
+      "amount": 567.0
+    },
+    {
+      "description": "On-Site Engineer - Project Work (Server room audit & cable mgmt remediation, September 3, 2025)",
+      "quantity": 6,
+      "unit": "hour",
+      "unit_price": 195.0,
+      "amount": 1170.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium License - Monthly (new seats)",
+      "quantity": 5,
+      "unit": "license",
+      "unit_price": 22.0,
+      "amount": 110.0
+    },
+    {
+      "description": "Discount - 5% Preferred Client",
+      "quantity": 1,
+      "unit": "lump sum",
+      "unit_price": -528.1,
+      "amount": -528.1
+    }
+  ]
+}

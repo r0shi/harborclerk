@@ -1,0 +1,12 @@
+{
+  "quarter": "Q1",
+  "year": 2025,
+  "revenue_usd": 47300000,
+  "key_initiatives": {
+    "advanced_analytics_practice_launch": "Formal launch of the Advanced Analytics Practice to serve data-driven client needs",
+    "new_client_onboarding": "Onboarded six new Fortune 500 clients in manufacturing and logistics sectors",
+    "marbedash_platform_rollout": "Continued deployment of the proprietary MarbleDash\u2122 client reporting platform",
+    "talent_acquisition": "Added 34 senior consultants specializing in ESG compliance and infrastructure modernization",
+    "polestar_industries_expansion": "Expanded Polestar Industries engagement to include operational consulting, supply chain optimization, and digital transformation services"
+  }
+}

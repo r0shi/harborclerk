@@ -1,14 +1,14 @@
 """Score an answer against an answer key, without a judge or a baseline (#661's bake-off, 2026-09-21).
 
-A judge grades against a reference it cannot check. Where the corpus carries human labels (CUAD's
-`master_clauses.csv`: 41 clause types per contract, annotated by lawyers) an answer can be scored against those
-instead, for nothing, and recall becomes visible: a baseline that names 23 of 65 anti-assignment contracts looks
-complete to every judge.
+A judge grades against a reference it cannot check. Where the corpus carries labels (CUAD's `master_clauses.csv`:
+41 clause types per contract, annotated by lawyers; the synthetic corpus's fact sidecars, written with each
+document) an answer can be scored against those instead, for nothing, and recall becomes visible: a baseline that
+names 23 of 65 anti-assignment contracts looks complete to every judge.
 
-The labels are the annotators'. Everything else here is this harness's and is crude on purpose, so that it can be
-read: a fact is present or it is not; a list is the F1 of the contracts an answer names in its text against the
-contracts labelled. What counts as "naming" a contract is the weakest part, and `named_contracts` says exactly what
-it does, and what it deliberately ignores. The fact matcher accepts negation ("New York law, not Delaware" finds
+The labels are the annotators' or the generator's. Everything else here is this harness's and is crude on purpose,
+so that it can be read: a fact is present or it is not; a list is the F1 of the items an answer names in its text
+against the items labelled. What counts as "naming" an item is the weakest part, and `named_contracts` says exactly
+what it does, and what it deliberately ignores. The fact matcher accepts negation ("New York law, not Delaware" finds
 "Delaware"); a key is one phrase, so this has not mattered yet, and is stated so that a score of 1.0 is read as
 "the phrase is present", nothing more. The one thing read before the phrase is looked for is the answer's opening
 sentence: one that contains a "found nothing" phrasing ("is not explicitly stated in the retrieved excerpts", then
@@ -16,23 +16,50 @@ a party "in Nevada", the keyed answer; #713) scores 0, whatever the answer says 
 its costs are accepted and pinned in the tests: a correct answer whose first sentence carries a caveat about
 something else ("Although the venue is not explicitly stated, Nevada law governs") scores 0, and an answer that
 states the parties first and the absence second scores 1.0. The phrasings are the harness's no-findings list in
-`quality.py`, not a second list; two of them count only here, in an opening.
+`quality.py`, not a second list; some of them count only here, in an opening.
 
-Key entries (see `corpora/cuad_key.py`, which writes them):
-    {"kind": "fact",  "all_of": [["california"], ["exxonmobil", "exxon mobil"]]}    every group, any spelling in it
-    {"kind": "date",  "date": "2022-03-15"}
-    {"kind": "list",  "positives": ["<contract title>", ...], "universe": ["<every ingested title>", ...]}
+Key entries (see `corpora/cuad_key.py` and `corpora/synthetic_key.py`, which write them):
+    {"kind": "fact",   "all_of": [["california"], ["exxonmobil", "exxon mobil"]]}   every group, any spelling in it
+    {"kind": "date",   "date": "2022-03-15"}                                        + "day_first": true for 15/03/2022
+    {"kind": "count",  "count": 15}                                                 a standalone integer, or its word
+    {"kind": "amount", "amount": 364107.38}                                         a money amount, to the cent
+    {"kind": "list",   "positives": ["<title>", ...], "universe": ["<every title>", ...],
+                       "aliases": {"<title>": ["<other way the answer may name it>", ...]}}   aliases optional
+
+Letters are compared with their accents folded (`normalize`): "Remi Thibodeau" is "Rémi Thibodeau", because the
+synthetic corpus is bilingual and a model answering in English drops them. Dates are read in English and French
+spellings, and in day-first numerals when the entry says so; counts and amounts in either language's digit
+grouping. `counts_in` and `amounts_in` say what they strip and why.
+
+A synthetic key entry also carries `"generation"`: the first sixteen hex digits of a SHA-256 over the corpus's fact
+sidecars (`generation_id`). An entry with one is scored only against that corpus: `score` looks for the synthetic
+corpus under the sweep's workdir, and refuses (`CorpusMismatch`) when it is missing or is another generation,
+because a count of invoices is only true of the documents it was counted over. The workdir is the one bound with
+`bind_corpus_root`, else `$HC_EVAL_WORKDIR`, else the `--workdir` on this process's command line (the sweep's
+flag; read here so the sweep needs no hook), else the harness default.
 """
 
 from __future__ import annotations
 
+import argparse
+import hashlib
+import os
 import re
+import sys
+import unicodedata
 from datetime import date
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal, InvalidOperation
+from pathlib import Path
 
 from scripts.test_corpora.runner.quality import nothing_found_signature
 
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october")
 _MONTHS += ("november", "december")
+# French month names, accents folded as `normalize` folds them, with the usual abbreviations (mars, mai, juin and
+# aout are not abbreviated).
+_MONTHS_FR = ("janvier", "fevrier", "mars", "avril", "mai", "juin", "juillet", "aout", "septembre", "octobre")
+_MONTHS_FR += ("novembre", "decembre")
+_MONTHS_FR_SHORT = ("janv", "fevr", "mars", "avr", "mai", "juin", "juil", "aout", "sept", "oct", "nov", "dec")
 # What may stand in front of an answer's first sentence: a thinking model's reasoning block, a bold label on a
 # line of its own (`**Answer:**`, `**Answer**:`), a list marker. Read past, so the sentence is the one judged. A
 # label is bold text ending in a colon; bold text on its own line without one (`**Nevada.**`) is the answer, not a
@@ -45,6 +72,13 @@ _LIST_MARKER = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
 # A sentence ends at `.`, `!` or `?` (closing bold, quotes or brackets allowed after it) before whitespace and a
 # capital, digit or opening mark, or the end, or at a line break. "Inc. and" is not an end; "U.S. Virgin" is.
 _SENTENCE_END = re.compile(r"[.!?][*_)\]\"'”’]*(?=\s+[A-Z0-9\"“*(\[]|\s*$)|\r?\n")
+
+GENERATION_DIGITS = 16
+WORKDIR_ENV = "HC_EVAL_WORKDIR"
+
+
+class CorpusMismatch(RuntimeError):
+    """The key was written for another generation of the corpus than the one under the workdir, or there is none."""
 
 
 def opening(answer: str) -> str:
@@ -59,38 +93,55 @@ def opening(answer: str) -> str:
     return text[: found.start()] if found else text
 
 
+def fold(text: str) -> str:
+    """`text` with its accents dropped (NFKD, combining marks removed): "Côté-Renaud" -> "Cote-Renaud"."""
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
+
+
 def normalize(text: str) -> str:
-    """Lower-case letters and digits only. Typographic hyphens, underscores and spacing all vanish, which is what
-    lets `EX‑10.4_Co‑Branding` in an answer match `EX-10.4_Co-Branding` in a filename."""
-    return re.sub(r"[^a-z0-9]", "", text.lower())
+    """Lower-case letters and digits only, accents folded. Typographic hyphens, underscores and spacing all vanish,
+    which is what lets `EX‑10.4_Co‑Branding` in an answer match `EX-10.4_Co-Branding` in a filename, and
+    "Remi Thibodeau" match "Rémi Thibodeau"."""
+    return re.sub(r"[^a-z0-9]", "", fold(text).lower())
 
 
-def date_spellings(iso: str) -> set[str]:
-    """Normalised ways an answer may write `iso`: March 15, 2022; 15 March 2022; Mar 15 2022; 2022-03-15;
-    3/15/2022; 03/15/22. Ordinals ("15th") are handled by the caller stripping them. Day-first numeric forms are
-    left out: 3/4/2022 is two different days and the corpus is American."""
+def _words(text: str) -> str:
+    """Letters and digits, lower-cased and folded, with one space where anything else was. Forms are matched
+    between boundaries in this, so "12 November 2019" is not "2 November 2019" and a number inside a longer digit
+    run is not that number (review of #697), while "February 4, 2020**【141b..." still is, because the "**【"
+    keeps the 141 apart."""
+    return re.sub(r"[^a-z0-9]+", " ", fold(text).lower())
+
+
+def date_spellings(iso: str, *, day_first: bool = False) -> set[str]:
+    """Normalised ways an answer may write `iso`: March 15, 2022; 15 March 2022; Mar 15 2022; 15 mars 2022;
+    2022-03-15; 3/15/2022; 03/15/22. Ordinals ("15th", "1er") are handled by the caller stripping them. Day-first
+    numeric forms (15/03/2022, 15.03.2022) are included only with `day_first`: 3/4/2022 is two different days, and
+    CUAD is American; the synthetic corpus is Canadian and bilingual, and its key asks for them."""
     d = date.fromisoformat(iso)
-    month, short = _MONTHS[d.month - 1], _MONTHS[d.month - 1][:3]
     forms = {f"{d.year}{d.month:02d}{d.day:02d}"}
-    for name in (month, short):
+    names = (_MONTHS[d.month - 1], _MONTHS[d.month - 1][:3], _MONTHS_FR[d.month - 1], _MONTHS_FR_SHORT[d.month - 1])
+    for name in names:
         for day in {f"{d.day}", f"{d.day:02d}"}:  # contracts write "Nov. 02, 2019" as readily as "Nov. 2, 2019"
             forms |= {f"{name}{day}{d.year}", f"{day}{name}{d.year}"}
     for m in {f"{d.month}", f"{d.month:02d}"}:
         for day in {f"{d.day}", f"{d.day:02d}"}:
             forms |= {f"{m}/{day}/{d.year}", f"{m}/{day}/{d.year % 100:02d}"}
+            if day_first:
+                forms |= {f"{day}/{m}/{d.year}", f"{day}/{m}/{d.year % 100:02d}", f"{day}.{m}.{d.year}"}
     return forms
 
 
-def _has_date(text: str, iso: str) -> bool:
-    low = re.sub(r"(?<=\d)(st|nd|rd|th)\b", "", text.lower())
+def _has_date(text: str, iso: str, *, day_first: bool = False) -> bool:
+    low = fold(text).lower()
+    low = re.sub(r"(?<=\d)(st|nd|rd|th|er|re|e)\b", "", low)  # "15th", "1er décembre"
     low = re.sub(r"(?<=\d)\s+(day\s+)?of\s+(?=[a-z])", " ", low)  # "the 15th day of March, 2022"
-    # Letters and digits, with one space where anything else was: the forms are matched between boundaries, so
-    # "12 November 2019" is not "2 November 2019" and an ISO date inside a longer digit run is not the date
-    # (review of #697), while "February 4, 2020**【141b..." still is, because the "**【" keeps the 141 apart.
     words = re.sub(r"[^a-z0-9]+", " ", low)
-    for form in date_spellings(iso):
-        if "/" in form:
-            if re.search(rf"(?<![\d/]){re.escape(form)}(?![\d/])", low):
+    for form in date_spellings(iso, day_first=day_first):
+        if "/" in form or "." in form:
+            # A numeral form is read in the text itself, between non-digits: "13/15/2022" is not "3/15/2022", and
+            # a trailing full stop ("on 15.03.2022.") is a sentence end, not another digit group.
+            if re.search(rf"(?<!\d)(?<!\d[/.])(?<!\d[/.]\d)(?<!\d[/.]\d\d){re.escape(form)}(?![/.]?\d)", low):
                 return True
         elif re.search(rf"(?<![a-z0-9])(?:{_spaced(form)})(?![a-z0-9])", words):
             return True
@@ -98,8 +149,8 @@ def _has_date(text: str, iso: str) -> bool:
 
 
 def _spaced(form: str) -> str:
-    """A squeezed form as a pattern over `words`: optional single spaces between its parts (`march152022` matches
-    "march 15 2022", "march 15, 2022" and "march15 2022")."""
+    """A squeezed form as a pattern over `_words` text: optional single spaces between its parts (`march152022`
+    matches "march 15 2022", "march 15, 2022" and "march15 2022")."""
     return r" ?".join(re.escape(ch) for ch in form)
 
 
@@ -108,36 +159,226 @@ def company(title: str) -> str:
     return normalize(title.split("_")[0])
 
 
-def named_contracts(text: str, universe: list[str]) -> set[str]:
-    """Which contracts of `universe` an answer names, in its text: a contract is named if its whole title appears,
-    or if its filer's name appears and that filer has exactly one contract in the universe and a name of eight
-    characters or more. It misses a contract referred to only by paraphrase ("the Papa John's deal") and cannot
-    tell a contract listed as a match from one listed as a non-match.
+def named_contracts(text: str, universe: list[str], aliases: dict[str, list[str]] | None = None) -> set[str]:
+    """Which items of `universe` an answer names, in its text: an item is named if its whole title appears, or if
+    its filer's name appears and that filer has exactly one contract in the universe and a name of eight
+    characters or more, or if one of its `aliases` appears between word boundaries (the synthetic key names an
+    invoice by its file stem, and aliases it by its invoice number or its total when those are unique in the
+    corpus; `corpora/synthetic_key.py` says which). It misses an item referred to only by paraphrase ("the Papa
+    John's deal") and cannot tell an item listed as a match from one listed as a non-match.
 
     The answer's `citations` are deliberately not consulted. The app's citations field is every hit any tool
     call returned (`dedupe_citations(citations_accumulated)` in llm/chat.py: a median of 20 and up to 65 per
     list answer here), not what the answer refers to. Counting them would score search volume, and an answer
     saying "none" after one search would score like one that listed the hits (review of #697)."""
-    squeezed = normalize(text)
+    squeezed, words = normalize(text), _words(text)
     filers: dict[str, list[str]] = {}
     for title in universe:
         filers.setdefault(company(title), []).append(title)
     found = set()
     for title in universe:
         whole, filer = normalize(title), company(title)
-        if whole in squeezed or len(filer) >= 8 and len(filers[filer]) == 1 and filer in squeezed:
+        by_filer = len(filer) >= 8 and len(filers[filer]) == 1 and filer in squeezed
+        if whole in squeezed or by_filer or any(_mentions(words, alias) for alias in (aliases or {}).get(title, ())):
             found.add(title)
     return found
 
 
+def _mentions(words: str, alias: str) -> bool:
+    """`alias` in `_words` text, between boundaries: "$17,195.51" mentions "17195" and "17195.51"; "117195" neither."""
+    form = normalize(alias)
+    return bool(form) and re.search(rf"(?<![a-z0-9])(?:{_spaced(form)})(?![a-z0-9])", words) is not None
+
+
+# ── counts ──
+
+_UNITS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve")
+_UNITS += ("thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen")
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+_UNITS_FR = ("zero", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix", "onze", "douze")
+_UNITS_FR += ("treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf")
+_TENS_FR = {"vingt": 20, "trente": 30, "quarante": 40, "cinquante": 50, "soixante": 60}
+NUMBER_WORDS: dict[str, int] = {w: i for i, w in enumerate(_UNITS)} | {w: i for i, w in enumerate(_UNITS_FR)}
+NUMBER_WORDS |= {"une": 1} | _TENS | _TENS_FR
+_TENS_UNITS = re.compile(
+    rf"\b({'|'.join(_TENS | _TENS_FR)})[ -](?:et[ -])?({'|'.join(_UNITS[1:10] + _UNITS_FR[1:10])})\b"
+)
+_NUMBER_WORD = re.compile(r"\b(" + "|".join(sorted(NUMBER_WORDS, key=len, reverse=True)) + r")\b")
+# A month as a whole word, full or abbreviated, in either language ("nov", "sept", "juil"); not a prefix, so that
+# "market 15" and "decided 5" keep their numbers.
+_MONTH_WORD = "|".join(
+    sorted(set(_MONTHS + _MONTHS_FR + _MONTHS_FR_SHORT + tuple(m[:3] for m in _MONTHS)), key=len, reverse=True)
+)
+_MONTH_DAY = re.compile(rf"\b(?:{_MONTH_WORD})\b\.?\s+\d{{1,2}}\b(?:,?\s*\d{{4}})?")
+_DAY_MONTH = re.compile(rf"\b\d{{1,2}}\s+(?:{_MONTH_WORD})\b\.?(?:,?\s*\d{{4}})?")
+_NUMERIC_DATE = re.compile(r"\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b")
+_RANGE = re.compile(r"\b\d+\s*[-–]\s*\d+\b")
+_YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
+_MONEY = re.compile(r"[$€£]\s*\d[\d,.\s]*|\d[\d,.\s]*\s*(?:[$€£]|\b(?:usd|cad|eur|dollars?)\b)")
+# A standalone integer: digits, or digit groups of three with a comma, not touching a letter, an underscore, a
+# colon or more digits through a separator ("0012_invoice", "9:00", "15.5", "141b4469" are not counts), not a
+# percentage.
+_INT = re.compile(r"(?<![\w,./:-])(\d{1,3}(?:,\d{3})+|\d+)(?![\w,.:]*\d)(?!\w)(?!\s?%)")
+
+
+def counts_in(text: str) -> set[int]:
+    """Every integer an answer states on its own, as digits ("15", "1,234") or as a word up to ninety-nine in
+    English or French ("fifteen", "quinze", "vingt-cinq"). Read after stripping what carries digits without being a
+    count: list markers at line starts (the fifteenth item of a list is not "15"), dates in any spelling, years,
+    numeric ranges, money, decimals and percentages. What it cannot strip is stated: a day number beside a month
+    survives when the month is misspelt, "une" and "un" are French articles before they are "one", so a key of 1
+    in a French answer is matched by any noun phrase; the synthetic key asks for no count under 2."""
+    low = fold(text).lower()
+    low = re.sub(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+", " ", low)
+    low = re.sub(r"(?<=\d)(st|nd|rd|th|er|re|e)\b", "", low)
+    for pattern in (_MONTH_DAY, _DAY_MONTH, _NUMERIC_DATE, _RANGE, _YEAR, _MONEY):
+        low = pattern.sub(" ", low)
+    found = {int(m.group(1).replace(",", "")) for m in _INT.finditer(low)}
+    words = re.sub(r"[^a-z -]+", " ", low)
+    for m in _TENS_UNITS.finditer(words):  # "vingt-cinq" is 25, and neither 20 nor 5
+        found.add(_TENS.get(m.group(1), _TENS_FR.get(m.group(1), 0)) + NUMBER_WORDS[m.group(2)])
+    words = _TENS_UNITS.sub(" ", words)
+    found |= {NUMBER_WORDS[m.group(1)] for m in _NUMBER_WORD.finditer(words)}
+    return found
+
+
+# ── amounts ──
+
+_GROUP_SPACE = re.compile(r"(?<=\d)[   '](?=\d{3}(?!\d))")
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def amounts_in(text: str) -> set[Decimal]:
+    """Every number in an answer as a money amount, whichever way its digits are grouped: "364,107.38",
+    "364 107,38", "364107.38", "2,580,000", "12.500" (a European thousand) and "12,500" are each one number.
+    A separator followed by one or two digits at the end is the decimal mark; one followed by three is a
+    thousands separator; two different separators make the last one the decimal mark. Currency symbols and codes
+    are just not digits. Numbers that are not amounts (dates, invoice numbers) come along; they never equal a key
+    by accident at the cent."""
+    low = _GROUP_SPACE.sub("", fold(text))
+    found: set[Decimal] = set()
+    for token in _NUMBER.findall(low):
+        value = _parse_amount(token)
+        if value is not None:
+            found.add(value)
+    return found
+
+
+def _parse_amount(token: str) -> Decimal | None:
+    seps = [ch for ch in token if ch in ",."]
+    if not seps:
+        return Decimal(token)
+    groups = re.split(r"[.,]", token)
+    if len(set(seps)) == 2:  # 364,107.38 or 364.107,38: the last separator is the decimal mark
+        decimal = seps[-1]
+        head = token[: token.rfind(decimal)].replace(".", "").replace(",", "")
+        return _decimal(f"{head}.{groups[-1]}")
+    if len(seps) == 1 and len(groups[-1]) in (1, 2):
+        return _decimal(f"{groups[0]}.{groups[1]}")
+    if all(len(g) == 3 for g in groups[1:]):
+        return Decimal("".join(groups))
+    return None  # "1.2.3", "12,34,5": not a number this reads
+
+
+def _decimal(text: str) -> Decimal | None:
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        return None
+
+
+def _has_amount(text: str, amount: float | int | str) -> bool:
+    """`amount` is in the text to the cent, or rounded or truncated to the whole unit ("$275,926.50", "$275,927" and
+    "$275,926" each state 275926.5; "$275,900" does not)."""
+    want = Decimal(str(amount))
+    whole = {want.to_integral_value(ROUND_HALF_UP), want.to_integral_value(ROUND_FLOOR)}
+    return any(abs(found - want) < Decimal("0.005") or found in whole for found in amounts_in(text))
+
+
+# ── the corpus a synthetic key was written for ──
+
+
+def generation_id(facts_dir: Path) -> str:
+    """The identity of a synthetic corpus generation: the first `GENERATION_DIGITS` hex digits of a SHA-256 over its
+    fact sidecars, name and bytes, in name order. Raises FileNotFoundError when there is no sidecar there."""
+    sidecars = sorted(Path(facts_dir).glob("*.json"))
+    if not sidecars:
+        raise FileNotFoundError(f"no fact sidecars in {facts_dir}")
+    digest = hashlib.sha256()
+    for sidecar in sidecars:
+        digest.update(sidecar.name.encode())
+        digest.update(b"\0")
+        digest.update(sidecar.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()[:GENERATION_DIGITS]
+
+
+_bound_root: Path | None = None
+_generations: dict[Path, str] = {}
+
+
+def bind_corpus_root(root: Path | str | None) -> None:
+    """Say where the corpora are (the sweep's workdir, holding `synthetic/facts`). None unbinds; either way the
+    generation read before is forgotten."""
+    global _bound_root
+    _bound_root = Path(root).expanduser() if root is not None else None
+    _generations.clear()
+
+
+def corpus_root() -> Path:
+    """The workdir the synthetic corpus is read from: bound, `$HC_EVAL_WORKDIR`, this process's `--workdir`, or
+    the harness default, in that order."""
+    if _bound_root is not None:
+        return _bound_root
+    if env := os.environ.get(WORKDIR_ENV):
+        return Path(env).expanduser()
+    if argv := _workdir_from_argv():
+        return argv
+    from scripts.test_corpora import conftest as cfg
+
+    return cfg.WORKDIR_DEFAULT
+
+
+def _workdir_from_argv() -> Path | None:
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--workdir")
+    try:
+        known, _ = parser.parse_known_args(sys.argv[1:])
+    except SystemExit:  # `--workdir` with no value: not ours to complain about
+        return None
+    return Path(known.workdir).expanduser() if known.workdir else None
+
+
+def check_generation(expected: str) -> None:
+    """Refuse (`CorpusMismatch`) unless the synthetic corpus under `corpus_root()` is generation `expected`."""
+    facts = corpus_root() / "synthetic" / "facts"
+    if facts not in _generations:
+        try:
+            _generations[facts] = generation_id(facts)
+        except FileNotFoundError as exc:
+            raise CorpusMismatch(
+                f"the key is for synthetic generation {expected}, but there is no synthetic corpus to score it "
+                f"against ({exc}); bind the workdir (answer_key.bind_corpus_root, ${WORKDIR_ENV} or --workdir)"
+            ) from None
+    if _generations[facts] != expected:
+        raise CorpusMismatch(
+            f"the key is for synthetic generation {expected}; the corpus under {facts} is generation "
+            f"{_generations[facts]}. Regenerate the key from this corpus (corpora/synthetic_key.py --redo) or "
+            "score against the corpus it was written for; a count is only true of the documents it counted."
+        )
+
+
 def score(entry: dict, answer: str) -> dict:
-    """{"score": 0..1, ...detail}. An empty answer scores 0, and so does a fact or date answer whose opening
-    sentence says the thing is absent, before its text is searched (#713). "Absent" is any of quality.py's
-    no-findings phrasings: the four the baseline check reads anywhere ("no information about ...") and the two
-    read only in an opening."""
+    """{"score": 0..1, ...detail}. An empty answer scores 0, and so does a fact, date, count or amount answer whose
+    opening sentence says the thing is absent, before its text is searched (#713). "Absent" is any of quality.py's
+    no-findings phrasings: the ones the baseline check reads anywhere ("no information about ...") and the ones
+    read only in an opening, in English and French. An entry that names its corpus generation is first checked
+    against the corpus under the workdir (`check_generation`)."""
     answer = answer or ""
     kind = entry["kind"]
-    if kind in ("fact", "date"):
+    if generation := entry.get("generation"):
+        check_generation(generation)
+    if kind in ("fact", "date", "count", "amount"):
         absent = nothing_found_signature(opening(answer), at_opening=True)
         if absent:
             groups = {"groups_found": 0, "groups": len(entry["all_of"])} if kind == "fact" else {}
@@ -147,10 +388,15 @@ def score(entry: dict, answer: str) -> dict:
         hits = [any(normalize(alt) in squeezed for alt in group) for group in entry["all_of"]]
         return {"score": sum(hits) / len(hits), "groups_found": sum(hits), "groups": len(hits)}
     if kind == "date":
-        return {"score": 1.0 if _has_date(answer, entry["date"]) else 0.0}
+        return {"score": 1.0 if _has_date(answer, entry["date"], day_first=bool(entry.get("day_first"))) else 0.0}
+    if kind == "count":
+        found = counts_in(answer)
+        return {"score": 1.0 if int(entry["count"]) in found else 0.0, "numbers": sorted(found)[:12]}
+    if kind == "amount":
+        return {"score": 1.0 if _has_amount(answer, entry["amount"]) else 0.0}
     if kind == "list":
         want = set(entry["positives"])
-        got = named_contracts(answer, entry["universe"])
+        got = named_contracts(answer, entry["universe"], entry.get("aliases"))
         right = len(want & got)
         precision = right / len(got) if got else 0.0
         recall = right / len(want) if want else 0.0

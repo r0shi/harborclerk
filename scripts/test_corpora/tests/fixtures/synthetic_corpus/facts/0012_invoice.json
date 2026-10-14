@@ -1,0 +1,44 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-00847",
+  "date": "2025-02-02",
+  "total_usd": 17195.51,
+  "line_items": [
+    {
+      "description": "Enterprise License - Document Management Suite (Annual)",
+      "quantity": 1,
+      "unit_price": 7500.0,
+      "amount": 7500.0
+    },
+    {
+      "description": "Professional Services - System Configuration & Onboarding",
+      "quantity": 12,
+      "unit_price": 175.0,
+      "amount": 2100.0
+    },
+    {
+      "description": "User Seat Licenses (additional)",
+      "quantity": 15,
+      "unit_price": 45.0,
+      "amount": 675.0
+    },
+    {
+      "description": "Priority Support & Maintenance Plan (12-month subscription)",
+      "quantity": 1,
+      "unit_price": 1200.0,
+      "amount": 1200.0
+    },
+    {
+      "description": "Data Migration Services",
+      "quantity": 8,
+      "unit_price": 195.0,
+      "amount": 1560.0
+    },
+    {
+      "description": "Custom API Integration Module",
+      "quantity": 1,
+      "unit_price": 2850.0,
+      "amount": 2850.0
+    }
+  ]
+}

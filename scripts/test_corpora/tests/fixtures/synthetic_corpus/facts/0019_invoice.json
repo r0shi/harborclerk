@@ -1,0 +1,80 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04817",
+  "date": "2025-02-07",
+  "total_usd": 7263.84,
+  "line_items": [
+    {
+      "description": "Premium Copy Paper (Case, 10 Reams)",
+      "quantity": 18,
+      "unit_price": 42.5,
+      "amount": 765.0
+    },
+    {
+      "description": "Toner Cartridges - HP LaserJet",
+      "quantity": 12,
+      "unit_price": 89.99,
+      "amount": 1079.88
+    },
+    {
+      "description": "Heavy-Duty Stapler (Box of 6)",
+      "quantity": 4,
+      "unit_price": 67.25,
+      "amount": 269.0
+    },
+    {
+      "description": "Ergonomic Desk Chair",
+      "quantity": 5,
+      "unit_price": 314.0,
+      "amount": 1570.0
+    },
+    {
+      "description": "Whiteboard Markers Set (12-Pack)",
+      "quantity": 20,
+      "unit_price": 11.75,
+      "amount": 235.0
+    },
+    {
+      "description": "Filing Cabinets (4-Drawer, Steel)",
+      "quantity": 3,
+      "unit_price": 428.5,
+      "amount": 1285.5
+    },
+    {
+      "description": "Bubble Wrap Roll (100 ft)",
+      "quantity": 8,
+      "unit_price": 24.99,
+      "amount": 199.92
+    },
+    {
+      "description": "Packing Tape Dispenser + 6 Rolls",
+      "quantity": 10,
+      "unit_price": 18.4,
+      "amount": 184.0
+    },
+    {
+      "description": "Sticky Notes Bulk Pack (12 Pads)",
+      "quantity": 15,
+      "unit_price": 9.8,
+      "amount": 147.0
+    },
+    {
+      "description": "Printer Paper - Legal Size (Case)",
+      "quantity": 22,
+      "unit_price": 38.6,
+      "amount": 849.2
+    },
+    {
+      "description": "Shipping",
+      "quantity": 1,
+      "unit_price": 185.0,
+      "amount": 185.0
+    },
+    {
+      "description": "Tax (7.5%)",
+      "quantity": 1,
+      "unit_price": 494.34,
+      "amount": 494.34
+    }
+  ]
+}

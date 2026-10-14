@@ -1,0 +1,50 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04871",
+  "date": "2025-10-18",
+  "total_usd": 14809.17,
+  "line_items": [
+    {
+      "description": "Managed IT Support (Monthly Service Fee)",
+      "quantity": 1,
+      "unit_price": 2400.0,
+      "amount": 2400.0
+    },
+    {
+      "description": "Cloud Backup & Disaster Recovery Setup",
+      "quantity": 1,
+      "unit_price": 1150.0,
+      "amount": 1150.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Licenses",
+      "quantity": 12,
+      "unit_price": 220.0,
+      "amount": 2640.0
+    },
+    {
+      "description": "Network Security Audit & Vulnerability Scan",
+      "quantity": 1,
+      "unit_price": 3500.0,
+      "amount": 3500.0
+    },
+    {
+      "description": "On-Site Technician Labor (8 hrs @ $145/hr)",
+      "quantity": 8,
+      "unit_price": 145.0,
+      "amount": 1160.0
+    },
+    {
+      "description": "Firewall Appliance (Fortinet FortiGate 60F)",
+      "quantity": 1,
+      "unit_price": 1875.0,
+      "amount": 1875.0
+    },
+    {
+      "description": "Structured Cabling & Installation (Cat6A)",
+      "quantity": 24,
+      "unit_price": 38.5,
+      "amount": 924.0
+    }
+  ]
+}

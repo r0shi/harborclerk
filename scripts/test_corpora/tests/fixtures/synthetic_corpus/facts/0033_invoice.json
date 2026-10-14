@@ -1,0 +1,56 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-4471",
+  "date": "2025-10-03",
+  "total_usd": 20080.38,
+  "line_items": [
+    {
+      "description": "Managed Cloud Infrastructure Monitoring & Support (monthly)",
+      "quantity": 1,
+      "unit_price": 4200.0,
+      "amount": 4200.0
+    },
+    {
+      "description": "Cybersecurity Assessment & Vulnerability Report",
+      "quantity": 1,
+      "unit_price": 3500.0,
+      "amount": 3500.0
+    },
+    {
+      "description": "Network Hardware Installation (Cisco Meraki MX67 Firewall)",
+      "quantity": 2,
+      "unit_price": 1850.0,
+      "amount": 3700.0
+    },
+    {
+      "description": "Microsoft 365 Business Licenses (Annual, per seat)",
+      "quantity": 15,
+      "unit_price": 220.0,
+      "amount": 3300.0
+    },
+    {
+      "description": "On-Site IT Technician Hours (8 hrs x 2 days)",
+      "quantity": 16,
+      "unit_price": 125.0,
+      "amount": 2000.0
+    },
+    {
+      "description": "Data Backup & Disaster Recovery Setup",
+      "quantity": 1,
+      "unit_price": 1100.0,
+      "amount": 1100.0
+    },
+    {
+      "description": "Project Management Fee",
+      "quantity": 1,
+      "unit_price": 750.0,
+      "amount": 750.0
+    },
+    {
+      "description": "Tax (8.25% - Travis County)",
+      "quantity": 1,
+      "unit_price": 1530.38,
+      "amount": 1530.38
+    }
+  ]
+}

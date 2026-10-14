@@ -1,0 +1,44 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-04871",
+  "date": "2025-11-11",
+  "total_usd": 16215.85,
+  "line_items": [
+    {
+      "description": "Enterprise License Renewal \u2013 Initech Project Management Suite v7 (25 seats @ $180.00/seat, 1-year)",
+      "quantity": 25,
+      "unit_price": 180.0,
+      "amount": 4500.0
+    },
+    {
+      "description": "Professional Services \u2013 System Integration (Senior Engineer, 14 hrs @ $195.00/hr)",
+      "quantity": 14,
+      "unit_price": 195.0,
+      "amount": 2730.0
+    },
+    {
+      "description": "Data Migration Module \u2013 One-Time Setup Fee",
+      "quantity": 1,
+      "unit_price": 1850.0,
+      "amount": 1850.0
+    },
+    {
+      "description": "Priority Support Package (12 months, 24/7 with 4-hr SLA)",
+      "quantity": 1,
+      "unit_price": 2400.0,
+      "amount": 2400.0
+    },
+    {
+      "description": "Training Services \u2013 On-site end-user training, 2 days (2 trainers @ $875.00/day)",
+      "quantity": 4,
+      "unit_price": 875.0,
+      "amount": 3500.0
+    },
+    {
+      "description": "Tax (8.25%)",
+      "quantity": 1,
+      "unit_price": 1235.85,
+      "amount": 1235.85
+    }
+  ]
+}

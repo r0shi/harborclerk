@@ -1,0 +1,44 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-04417",
+  "date": "2025-07-06",
+  "total_usd": 14060.0,
+  "line_items": [
+    {
+      "description": "Enterprise License - Project Tracker Pro (Annual Subscription)",
+      "quantity": 1,
+      "unit_price": 4800.0,
+      "amount": 4800.0
+    },
+    {
+      "description": "User Seat Licenses (25 seats) - Standard User Tier",
+      "quantity": 25,
+      "unit_price": 120.0,
+      "amount": 3000.0
+    },
+    {
+      "description": "Professional Services - System Integration & Configuration (8 hours @ $195/hr)",
+      "quantity": 8,
+      "unit_price": 195.0,
+      "amount": 1560.0
+    },
+    {
+      "description": "Data Migration Package - Standard (Legacy data import & validation)",
+      "quantity": 1,
+      "unit_price": 2200.0,
+      "amount": 2200.0
+    },
+    {
+      "description": "Priority Support Plan (Annual) - 24/5 Technical Support, 4-hr SLA",
+      "quantity": 1,
+      "unit_price": 1450.0,
+      "amount": 1450.0
+    },
+    {
+      "description": "Training Sessions (Remote) - 2-hour onboarding sessions x3 groups",
+      "quantity": 3,
+      "unit_price": 350.0,
+      "amount": 1050.0
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-00847",
+  "date": "2025-02-28",
+  "total_usd": 13772.63,
+  "line_items": [
+    {
+      "description": "Managed Cloud Infrastructure Services (Monthly recurring - February 2025)",
+      "quantity": 1,
+      "unit_price": 4200.0,
+      "amount": 4200.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Licenses (Per seat, February 2025)",
+      "quantity": 18,
+      "unit_price": 22.0,
+      "amount": 396.0
+    },
+    {
+      "description": "Network Security Audit & Penetration Testing - Full Report Delivered",
+      "quantity": 1,
+      "unit_price": 3500.0,
+      "amount": 3500.0
+    },
+    {
+      "description": "On-Site IT Support Labor (Hours @ standard rate)",
+      "quantity": 14,
+      "unit_price": 145.0,
+      "amount": 2030.0
+    },
+    {
+      "description": "Cisco Meraki MX68 Firewall Appliance (Hardware supply & configuration included)",
+      "quantity": 2,
+      "unit_price": 895.0,
+      "amount": 1790.0
+    },
+    {
+      "description": "Data Backup Solution - BaaS Monthly (500 GB protected storage, Feb 2025)",
+      "quantity": 1,
+      "unit_price": 620.0,
+      "amount": 620.0
+    },
+    {
+      "description": "Help Desk Support Ticket Resolution (Flat monthly block - 20 incidents)",
+      "quantity": 1,
+      "unit_price": 750.0,
+      "amount": 750.0
+    },
+    {
+      "description": "SSL Certificate Renewal (3-year term)",
+      "quantity": 1,
+      "unit_price": 285.0,
+      "amount": 285.0
+    },
+    {
+      "description": "California Sales Tax 8.75% on hardware",
+      "quantity": 1,
+      "unit_price": 156.63,
+      "amount": 156.63
+    },
+    {
+      "description": "Shipping & Handling",
+      "quantity": 1,
+      "unit_price": 45.0,
+      "amount": 45.0
+    }
+  ]
+}

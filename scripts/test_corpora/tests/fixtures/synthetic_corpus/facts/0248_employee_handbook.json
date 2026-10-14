@@ -1,0 +1,14 @@
+{
+  "year": 2025,
+  "sections": [
+    "Code of Conduct",
+    "Working Hours and Flexibility",
+    "Compensation and Benefits",
+    "Professional Development"
+  ],
+  "lang_split": {
+    "primary": "English",
+    "secondary": "French",
+    "format": "sequential parallel sections"
+  }
+}

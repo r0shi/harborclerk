@@ -1,0 +1,50 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CYB-2025-04872",
+  "date": "2025-04-18",
+  "total_usd": 15236.96,
+  "line_items": [
+    {
+      "description": "Managed IT Support - Monthly Retainer (April 2025 - Tier 2 Support Package)",
+      "quantity": 1,
+      "unit_price": 3200.0,
+      "amount": 3200.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Licenses (Monthly subscription, per seat)",
+      "quantity": 18,
+      "unit_price": 22.0,
+      "amount": 396.0
+    },
+    {
+      "description": "Network Security Audit & Vulnerability Assessment - Full Infrastructure Scan",
+      "quantity": 1,
+      "unit_price": 4750.0,
+      "amount": 4750.0
+    },
+    {
+      "description": "Cisco Meraki MX68 Security Appliance (Hardware - includes 1-yr Advanced License)",
+      "quantity": 2,
+      "unit_price": 1840.0,
+      "amount": 3680.0
+    },
+    {
+      "description": "On-Site Engineer Labor - Server Room UPS Replacement & Cable Management",
+      "quantity": 6,
+      "unit_price": 185.0,
+      "amount": 1110.0
+    },
+    {
+      "description": "Cloud Backup Solution Setup & Configuration (Veeam Cloud Connect - Initial Deploy)",
+      "quantity": 1,
+      "unit_price": 650.0,
+      "amount": 650.0
+    },
+    {
+      "description": "Endpoint Detection & Response (EDR) Agent Licensing - Monthly, per device",
+      "quantity": 18,
+      "unit_price": 12.5,
+      "amount": 225.0
+    }
+  ]
+}

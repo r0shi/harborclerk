@@ -1,0 +1,13 @@
+{
+  "year": 2025,
+  "sections": [
+    "Code of Conduct / Code de conduite",
+    "Working Hours and Flexibility / Heures de travail et flexibilit\u00e9",
+    "Leave Entitlements / Droits aux cong\u00e9s"
+  ],
+  "lang_split": {
+    "primary": "English",
+    "secondary": "French",
+    "structure": "sequential parallel sections"
+  }
+}

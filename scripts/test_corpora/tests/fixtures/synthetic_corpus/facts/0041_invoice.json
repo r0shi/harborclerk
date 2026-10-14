@@ -1,0 +1,56 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-04817",
+  "date": "2025-06-03",
+  "total_usd": 20629.2,
+  "line_items": [
+    {
+      "description": "Enterprise License \u2013 Initech Platform Pro (Annual Subscription)",
+      "quantity": 1,
+      "unit_price": 8500.0,
+      "amount": 8500.0
+    },
+    {
+      "description": "User Seat Licenses \u2013 Named Users, 12-Month Term",
+      "quantity": 15,
+      "unit_price": 320.0,
+      "amount": 4800.0
+    },
+    {
+      "description": "Professional Services \u2013 Implementation & Configuration (hours)",
+      "quantity": 8,
+      "unit_price": 195.0,
+      "amount": 1560.0
+    },
+    {
+      "description": "Data Migration Support (Flat Fee)",
+      "quantity": 1,
+      "unit_price": 2250.0,
+      "amount": 2250.0
+    },
+    {
+      "description": "Priority Technical Support Package (12-Month)",
+      "quantity": 1,
+      "unit_price": 1200.0,
+      "amount": 1200.0
+    },
+    {
+      "description": "On-Site Training Workshop (Full-Day Sessions)",
+      "quantity": 2,
+      "unit_price": 875.0,
+      "amount": 1750.0
+    },
+    {
+      "description": "Discount \u2013 Preferred Partner (5%)",
+      "quantity": 1,
+      "unit_price": -1003.0,
+      "amount": -1003.0
+    },
+    {
+      "description": "Sales Tax (8.25% \u2013 TX)",
+      "quantity": 1,
+      "unit_price": 1572.2,
+      "amount": 1572.2
+    }
+  ]
+}

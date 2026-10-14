@@ -1,0 +1,56 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-08471",
+  "date": "2025-08-28",
+  "total_usd": 14991.6,
+  "line_items": [
+    {
+      "description": "Managed IT Support Services (Monthly retainer - September 2025)",
+      "quantity": 1,
+      "unit_price": 3200.0,
+      "amount": 3200.0
+    },
+    {
+      "description": "Cisco Meraki MX68 Security Appliance - Hardware supply and 1-year licensing",
+      "quantity": 2,
+      "unit_price": 1475.0,
+      "amount": 2950.0
+    },
+    {
+      "description": "Network Infrastructure Audit & Vulnerability Assessment",
+      "quantity": 1,
+      "unit_price": 2800.0,
+      "amount": 2800.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium License provisioning & onboarding (per-seat annual, prorated Aug-Sep 2025)",
+      "quantity": 15,
+      "unit_price": 220.0,
+      "amount": 3300.0
+    },
+    {
+      "description": "On-Site Technician Labor - Network re-cabling and switch configuration (6 hours @ $185/hr)",
+      "quantity": 6,
+      "unit_price": 185.0,
+      "amount": 1110.0
+    },
+    {
+      "description": "Cloud Backup Solution - Setup Fee (Veeam Cloud Connect, 5 VMs)",
+      "quantity": 1,
+      "unit_price": 750.0,
+      "amount": 750.0
+    },
+    {
+      "description": "Sales Tax (6%)",
+      "quantity": null,
+      "unit_price": null,
+      "amount": 846.6
+    },
+    {
+      "description": "Shipping & Handling",
+      "quantity": null,
+      "unit_price": null,
+      "amount": 35.0
+    }
+  ]
+}

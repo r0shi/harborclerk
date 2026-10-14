@@ -1,0 +1,56 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04871",
+  "date": "2025-04-07",
+  "total_usd": 16752.4,
+  "line_items": [
+    {
+      "description": "Managed Cloud Hosting (Monthly \u2014 April 2025)",
+      "quantity": 1,
+      "unit_price": 2400.0,
+      "amount": 2400.0
+    },
+    {
+      "description": "Cybersecurity Monitoring Service (Monthly \u2014 April 2025)",
+      "quantity": 1,
+      "unit_price": 1850.0,
+      "amount": 1850.0
+    },
+    {
+      "description": "IT Help Desk Support (Hours @ Tier 2 Rate)",
+      "quantity": 40,
+      "unit_price": 95.0,
+      "amount": 3800.0
+    },
+    {
+      "description": "Microsoft 365 Business Licenses (Monthly)",
+      "quantity": 15,
+      "unit_price": 22.0,
+      "amount": 330.0
+    },
+    {
+      "description": "Network Infrastructure Upgrade \u2014 Labor & Configuration",
+      "quantity": 1,
+      "unit_price": 4750.0,
+      "amount": 4750.0
+    },
+    {
+      "description": "Replacement Hardware \u2014 Dell Managed Switches",
+      "quantity": 3,
+      "unit_price": 480.0,
+      "amount": 1440.0
+    },
+    {
+      "description": "SSL Certificate Renewal",
+      "quantity": 2,
+      "unit_price": 125.0,
+      "amount": 250.0
+    },
+    {
+      "description": "Data Backup & Disaster Recovery Service (Monthly)",
+      "quantity": 1,
+      "unit_price": 620.0,
+      "amount": 620.0
+    }
+  ]
+}

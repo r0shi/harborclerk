@@ -1,0 +1,50 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04872",
+  "date": "2025-04-05",
+  "total_usd": 22054.5,
+  "line_items": [
+    {
+      "description": "Managed Cloud Infrastructure (Monthly managed hosting, AWS east region, 3 servers, Apr 2025)",
+      "quantity": 1,
+      "unit_price": 4800.0,
+      "amount": 4800.0
+    },
+    {
+      "description": "IT Help Desk Support \u2013 Standard Plan (50 support hours @ $45/hr, March billing cycle)",
+      "quantity": 1,
+      "unit_price": 2250.0,
+      "amount": 2250.0
+    },
+    {
+      "description": "Cisco Catalyst 9200 Switch (24-Port)",
+      "quantity": 2,
+      "unit_price": 1875.0,
+      "amount": 3750.0
+    },
+    {
+      "description": "Network Security Audit & Penetration Testing (Q1 2025 Assessment Report)",
+      "quantity": 1,
+      "unit_price": 3500.0,
+      "amount": 3500.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium (Annual license per seat, prorated Apr\u2013Jun 2025, 15 users)",
+      "quantity": 15,
+      "unit_price": 220.0,
+      "amount": 3300.0
+    },
+    {
+      "description": "On-Site Technician Deployment (8 hours on-site, March 28\u201329, 2025)",
+      "quantity": 8,
+      "unit_price": 185.0,
+      "amount": 1480.0
+    },
+    {
+      "description": "Backup & Disaster Recovery Config (Veeam Cloud Connect setup & config)",
+      "quantity": 1,
+      "unit_price": 1200.0,
+      "amount": 1200.0
+    }
+  ]
+}

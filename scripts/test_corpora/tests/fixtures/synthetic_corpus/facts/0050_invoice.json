@@ -1,0 +1,92 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-00847",
+  "date": "2025-01-03",
+  "total_usd": 12720.41,
+  "line_items": [
+    {
+      "item_number": "001",
+      "description": "Heavy-Duty Storage Shelving Units (Steel, 6-tier, 48\"W x 18\"D x 72\"H)",
+      "quantity": 12,
+      "unit_price": 189.5,
+      "total": 2274.0
+    },
+    {
+      "item_number": "002",
+      "description": "Industrial Packing Tape Rolls (2\" x 110 yd, Clear, Heavy Duty)",
+      "quantity": 60,
+      "unit_price": 4.75,
+      "total": 285.0
+    },
+    {
+      "item_number": "003",
+      "description": "Ergonomic Office Chair (Mesh Back, Adjustable Lumbar Support)",
+      "quantity": 10,
+      "unit_price": 342.0,
+      "total": 3420.0
+    },
+    {
+      "item_number": "004",
+      "description": "Commercial Paper Shredder (Micro-Cut, 18-Sheet Capacity, P-4)",
+      "quantity": 3,
+      "unit_price": 418.0,
+      "total": 1254.0
+    },
+    {
+      "item_number": "005",
+      "description": "Multi-Function Laser Printer (Color, Duplex, Network Ready)",
+      "quantity": 2,
+      "unit_price": 629.0,
+      "total": 1258.0
+    },
+    {
+      "item_number": "006",
+      "description": "Disinfectant Spray, Case (32 oz bottles, 12/case)",
+      "quantity": 24,
+      "unit_price": 38.5,
+      "total": 924.0
+    },
+    {
+      "item_number": "007",
+      "description": "Heavy-Duty Extension Cords (25 ft, 12-Gauge, 3-Outlet, Grounded)",
+      "quantity": 15,
+      "unit_price": 27.99,
+      "total": 419.85
+    },
+    {
+      "item_number": "008",
+      "description": "Packaging Bubble Wrap Roll (3/16\" x 300 ft, Perforated)",
+      "quantity": 8,
+      "unit_price": 54.0,
+      "total": 432.0
+    },
+    {
+      "item_number": "009",
+      "description": "Dry-Erase Whiteboard (48\" x 36\", Aluminum Frame, Magnetic)",
+      "quantity": 4,
+      "unit_price": 215.0,
+      "total": 860.0
+    },
+    {
+      "item_number": "010",
+      "description": "First Aid Cabinet - Refill Kit (OSHA Compliant, 200-Person)",
+      "quantity": 6,
+      "unit_price": 89.0,
+      "total": 534.0
+    },
+    {
+      "item_number": "SHIP",
+      "description": "Shipping",
+      "quantity": 1,
+      "unit_price": 185.0,
+      "total": 185.0
+    },
+    {
+      "item_number": "TAX",
+      "description": "Tax (7.5%)",
+      "quantity": 1,
+      "unit_price": 874.56,
+      "total": 874.56
+    }
+  ]
+}

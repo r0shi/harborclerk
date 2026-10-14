@@ -1,0 +1,50 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04817",
+  "date": "2025-10-28",
+  "total_usd": 14250.95,
+  "line_items": [
+    {
+      "description": "Managed Cloud Infrastructure - Monthly Subscription (October 2025)",
+      "quantity": 1,
+      "unit_price": 3200.0,
+      "amount": 3200.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium User Licenses (October 2025)",
+      "quantity": 18,
+      "unit_price": 22.0,
+      "amount": 396.0
+    },
+    {
+      "description": "Network Security Audit & Penetration Testing - Full Scope Assessment",
+      "quantity": 1,
+      "unit_price": 4750.0,
+      "amount": 4750.0
+    },
+    {
+      "description": "Help Desk Support - Tier 2/3 On-Site & Remote Hours (October 2025)",
+      "quantity": 32,
+      "unit_price": 95.0,
+      "amount": 3040.0
+    },
+    {
+      "description": "Cisco Meraki MX68 Firewall - Hardware Supply & Installation",
+      "quantity": 2,
+      "unit_price": 1180.0,
+      "amount": 2360.0
+    },
+    {
+      "description": "SSL Certificate Renewal - Wildcard Certificates (2-year term)",
+      "quantity": 3,
+      "unit_price": 145.0,
+      "amount": 435.0
+    },
+    {
+      "description": "Data Recovery Services - Workstation Incident #INC-20251009",
+      "quantity": 1,
+      "unit_price": 820.0,
+      "amount": 820.0
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04471",
+  "date": "2025-08-01",
+  "total_usd": 14047.6,
+  "line_items": [
+    {
+      "description": "Managed IT Support Services (Monthly retainer - August 2025)",
+      "quantity": 1,
+      "unit_price": 2500.0,
+      "amount": 2500.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Licenses (per user/month)",
+      "quantity": 22,
+      "unit_price": 22.0,
+      "amount": 484.0
+    },
+    {
+      "description": "Cisco Meraki MX68 Security Appliance (hardware supply)",
+      "quantity": 1,
+      "unit_price": 1295.0,
+      "amount": 1295.0
+    },
+    {
+      "description": "Network Infrastructure Audit and Remediation Report",
+      "quantity": 1,
+      "unit_price": 3800.0,
+      "amount": 3800.0
+    },
+    {
+      "description": "On-Site Technician Labor (hours @ standard rate)",
+      "quantity": 14,
+      "unit_price": 145.0,
+      "amount": 2030.0
+    },
+    {
+      "description": "SSL Certificate Renewal (2-year term, per domain)",
+      "quantity": 2,
+      "unit_price": 189.0,
+      "amount": 378.0
+    },
+    {
+      "description": "Backup & Disaster Recovery Solution - Monthly Fee",
+      "quantity": 1,
+      "unit_price": 650.0,
+      "amount": 650.0
+    },
+    {
+      "description": "Structured Cabling Installation (Cat6, 12-drop, materials incl.)",
+      "quantity": 1,
+      "unit_price": 1840.0,
+      "amount": 1840.0
+    }
+  ]
+}

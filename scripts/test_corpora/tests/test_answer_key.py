@@ -321,3 +321,187 @@ def test_the_metrics_cell_is_the_keys_score_or_empty_without_a_key():
     # An outage is not a wrong answer: the judge columns of that row are blank, and so is this one.
     assert key_score_cell(fact, None, Status.ERROR) == "" and key_score_cell(fact, {"answer": "Texas"}, None) == ""
     assert key_score_cell(None, result, Status.DONE) == "" and key_score_cell({}, result, Status.DONE) == ""
+
+
+# ── the synthetic key's kinds: counts, amounts, both languages (#779's pairs measured against a key) ──
+
+
+@pytest.fixture
+def _no_corpus_lookup():
+    """These entries carry no generation, so the scorer never looks for a corpus; said so, in one place."""
+    from scripts.test_corpora.runner import answer_key
+
+    answer_key.bind_corpus_root(None)
+    yield
+    answer_key.bind_corpus_root(None)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Initech Software issued 15 invoices in 2025.",
+        "**15** invoices.",
+        "There are fifteen invoices from Initech.",
+        "Initech Software a émis quinze factures à Marbledock en 2025.",
+        "15 factures, pour un total de 275 926,50 $.",
+        "Fifteen (15) invoices, dated 2025-01-13, 2025-01-20, February 2, 2025 and 12 others.",
+        "I count 15: INV-2025-00847 (six times), INV-2025-04417, INV-2025-04872, INV-2025-04817 (three times)...",
+        "- 0008_invoice.txt\n- 0012_invoice.txt\n\nTotal: 15 invoices from Initech in 2025, worth $275,926.50 (15% of spend).",
+    ],
+)
+def test_a_count_is_found_as_digits_or_as_a_word_in_either_language(answer, _no_corpus_lookup):
+    result = score({"kind": "count", "count": 15}, answer)
+    assert result["score"] == 1.0 and 15 in result["numbers"], answer
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Initech Software issued 16 invoices in 2025.",
+        "Fourteen invoices.",
+        "quatorze factures",
+        "1. INV-2025-00847\n2. INV-2025-04417\n" + "".join(f"{i}. INV-2025-0{i}\n" for i in range(3, 16)),
+        "The total was $15,192.33 across 2025-02-15 and February 15, 2025; 15% was tax; see 0015_invoice.txt at 9:15.",
+        "",
+    ],
+)
+def test_another_number_is_not_the_count(answer, _no_corpus_lookup):
+    """A list of fifteen items ends in "15." and is not a count of 15; neither is a day, a percentage, an amount, a
+    time or a file name."""
+    assert score({"kind": "count", "count": 15}, answer)["score"] == 0.0, answer
+
+
+def test_what_counts_in_reads_and_what_it_strips(_no_corpus_lookup):
+    from scripts.test_corpora.runner.answer_key import counts_in
+
+    assert counts_in("Twenty-five invoices; thirty one documents; 1,234 pages; vingt-cinq réunions; dix-sept") == {
+        25,
+        31,
+        1234,
+        17,
+    }, "a compound word is one number, not its parts"
+    assert counts_in("In 2025 there were 11 board meetings, the last on November 26, 2025 (26 Nov 2025).") == {11}
+    assert counts_in("The market 15 and decided 5: 15 factures pour 275 926,50 $.") == {15, 5}, (
+        "a month is a whole word"
+    )
+    assert counts_in("Oct 29-30, 2025; invoice CDI-2025-08841; ref 【141b4469-c5c0】; 24x5") == set()
+    assert counts_in("une réunion") == {1}, "the French article is the French one: a key of 1 is not asked in French"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "The total is $364,107.38.",
+        "USD 364,107.38 across 25 invoices.",
+        "**364 107,38 $** au total.",
+        "364107.38",
+        "Le total s'élève à 364 107,38 dollars.",
+        "approximately $364,107 in all",
+        "Total: 364.107,38 €",
+    ],
+)
+def test_an_amount_is_found_however_its_digits_are_grouped(answer, _no_corpus_lookup):
+    assert score({"kind": "amount", "amount": 364107.38}, answer)["score"] == 1.0, answer
+
+
+@pytest.mark.parametrize(
+    "answer", ["$364,107.39", "$364,100", "$364,108 (rounded up)", "$3,641,073.80", "36,410.74", "about $364k", ""]
+)
+def test_another_amount_is_not_it(answer, _no_corpus_lookup):
+    """To the cent, or the whole dollars rounded or truncated; 364,108 is neither, and 364k is not a number."""
+    assert score({"kind": "amount", "amount": 364107.38}, answer)["score"] == 0.0, answer
+
+
+def test_a_whole_dollar_amount_accepts_cents_of_zero(_no_corpus_lookup):
+    assert score({"kind": "amount", "amount": 12500}, "a flat monthly fee of USD $12,500.00")["score"] == 1.0
+    assert score({"kind": "amount", "amount": 12500}, "12 500 $ par mois")["score"] == 1.0
+    assert score({"kind": "amount", "amount": 12500}, "$12,500.50")["score"] == 0.0
+    assert score({"kind": "amount", "amount": 2050.25}, "$2,050.25 and $2,050")["score"] == 1.0
+
+
+def test_amounts_in_reads_each_grouping_once():
+    from decimal import Decimal
+
+    from scripts.test_corpora.runner.answer_key import amounts_in
+
+    found = amounts_in("$364,107.38; 364 107,38 $; 2,580,000; 12.500; 12,500.00; 1,5; 2025-11-04; 1.2.3")
+    assert found == {Decimal(v) for v in ("364107.38", "2580000", "12500", "12500.00", "1.5", "2025", "11", "04")}
+    assert Decimal("12500") in found and Decimal("12500.00") in found, "one value, two spellings"
+
+
+def test_the_absent_opening_rule_covers_counts_and_amounts_in_both_languages(_no_corpus_lookup):
+    count, amount = {"kind": "count", "count": 15}, {"kind": "amount", "amount": 364107.38}
+    assert score(count, "I could not find any invoices from Initech; the corpus lists 15 documents.") == {
+        "score": 0.0,
+        "absent": "could not find",
+    }
+    assert score(count, "Je n’ai pas trouvé de factures d'Initech, mais 15 documents la mentionnent.") == {
+        "score": 0.0,
+        "absent": "je n'ai pas trouvé",
+    }, "the typographic apostrophe is the plain one"
+    assert score(amount, "Aucune information sur le total; les factures visibles font 364 107,38 $.")["score"] == 0.0
+    assert score(amount, "Le total n'est pas indiqué. Les 25 factures font 364 107,38 $.")["score"] == 0.0
+    # Said later, it is a caveat, not the answer: the rule reads the opening sentence only.
+    assert score(amount, "364 107,38 $. Je n'ai pas trouvé de facture pour décembre.")["score"] == 1.0
+    assert score(count, "15 factures. Aucune information sur leur paiement.")["score"] == 1.0
+    assert score(count, "<think>Je n'ai pas trouvé.</think>\n15 factures.")["score"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "le 1er décembre 2025",
+        "effective Monday, le 1er decembre 2025.",
+        "December 1, 2025",
+        "1 déc. 2025",
+        "01/12/2025",
+        "1.12.2025",
+        "12/1/2025",
+        "2025-12-01",
+    ],
+)
+def test_a_canadian_date_is_found_in_french_in_english_and_in_either_numeric_convention(text, _no_corpus_lookup):
+    assert score({"kind": "date", "date": "2025-12-01", "day_first": True}, text)["score"] == 1.0
+
+
+@pytest.mark.parametrize("text", ["11/12/2025", "December 10, 2025", "le 2 décembre 2025", "1er novembre 2025"])
+def test_another_canadian_date_is_not_it(text, _no_corpus_lookup):
+    assert score({"kind": "date", "date": "2025-12-01", "day_first": True}, text)["score"] == 0.0
+
+
+def test_day_first_numerals_are_read_only_when_the_entry_says_so(_no_corpus_lookup):
+    """CUAD's entries do not say so, and 3/4/2022 stays one day for them (review of #697)."""
+    assert score({"kind": "date", "date": "2025-12-01"}, "01/12/2025")["score"] == 0.0
+    assert score({"kind": "date", "date": "2025-12-01"}, "le 1er décembre 2025")["score"] == 1.0, (
+        "words are unambiguous"
+    )
+    assert "1decembre2025" in date_spellings("2025-12-01") and "01/12/2025" not in date_spellings("2025-12-01")
+    assert "01/12/2025" in date_spellings("2025-12-01", day_first=True)
+
+
+def test_a_fact_is_read_with_its_accents_folded(_no_corpus_lookup):
+    entry = {"kind": "fact", "all_of": [["Madeleine Côté-Renaud"]]}
+    assert score(entry, "The letter is signed by Madeleine Cote-Renaud.")["score"] == 1.0
+    assert score(entry, "Signée par **Madeleine Côté‑Renaud**, Directrice.")["score"] == 1.0
+    assert score(entry, "Madeleine Tremblay-Renaud")["score"] == 0.0
+    assert score({"kind": "fact", "all_of": [["Globex Supplies", "Globex"]]}, "C'est Globex.")["score"] == 1.0
+
+
+def test_a_list_item_is_also_named_by_an_alias_between_word_boundaries(_no_corpus_lookup):
+    universe = ["0001_invoice", "0012_invoice", "0044_invoice", "0053_invoice"]
+    aliases = {
+        "0001_invoice": ["CDI-2025-08841", "10725.41", "10725"],
+        "0012_invoice": ["17195.51", "17195"],
+        "0044_invoice": ["19062.83", "19062"],
+        "0053_invoice": ["12117.22", "12117"],
+    }
+    table = "| CDI-2025-08841 | Nov 4 | $10,725.41 |\n| INV-2025-00847 | Feb 2 | $17,195.51 |\n| 0044_invoice.txt | $19,062 |"
+    assert named_contracts(table, universe, aliases) == {"0001_invoice", "0012_invoice", "0044_invoice"}
+    assert named_contracts("117195 and 1211722 and 12 117 22", universe, aliases) == {"0053_invoice"}, (
+        "a longer number is not the alias; the cents form is, however spaced"
+    )
+    assert named_contracts("$10 725,41", universe, aliases) == {"0001_invoice"}
+    assert named_contracts("", universe, aliases) == set() and named_contracts("nothing", universe) == set()
+    entry = {"kind": "list", "positives": ["0001_invoice", "0012_invoice"], "universe": universe, "aliases": aliases}
+    assert score(entry, table)["score"] == pytest.approx(0.8), "two right of three named, of two labelled"
+    assert score({**entry, "aliases": None}, table)["score"] == 0.0, "without aliases, only a stem names an invoice"

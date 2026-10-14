@@ -1,0 +1,80 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04871",
+  "date": "2025-08-07",
+  "total_usd": 9722.34,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Storage Shelving (Steel, 5-tier, 72\"H x 36\"W x 18\"D)",
+      "quantity": 12,
+      "unit_price": 189.0,
+      "amount": 2268.0
+    },
+    {
+      "description": "Industrial Label Printer (Zebra ZT230, 300 dpi, USB/LAN)",
+      "quantity": 3,
+      "unit_price": 315.5,
+      "amount": 946.5
+    },
+    {
+      "description": "Thermal Label Rolls (4\" x 6\", 250 labels/roll, 12/case)",
+      "quantity": 8,
+      "unit_price": 42.75,
+      "amount": 342.0
+    },
+    {
+      "description": "Heavy-Duty Packing Tape (2\" x 110 yds, 36 rolls/box)",
+      "quantity": 20,
+      "unit_price": 28.4,
+      "amount": 568.0
+    },
+    {
+      "description": "Corrugated Shipping Boxes (12\" x 10\" x 8\", Pack of 25)",
+      "quantity": 150,
+      "unit_price": 1.95,
+      "amount": 292.5
+    },
+    {
+      "description": "Bubble Wrap Roll (3/16\" perforated, 12\" x 175 ft)",
+      "quantity": 10,
+      "unit_price": 54.0,
+      "amount": 540.0
+    },
+    {
+      "description": "Office Chair, Ergonomic (Mesh back, adjustable lumbar)",
+      "quantity": 6,
+      "unit_price": 312.0,
+      "amount": 1872.0
+    },
+    {
+      "description": "Wireless Keyboard & Mouse Combo (Logitech MK370, USB dongle)",
+      "quantity": 6,
+      "unit_price": 87.99,
+      "amount": 527.94
+    },
+    {
+      "description": "Copy Paper Case (8.5\" x 11\", 20 lb, 10 reams/case)",
+      "quantity": 15,
+      "unit_price": 68.5,
+      "amount": 1027.5
+    },
+    {
+      "description": "Janitorial Supply Bundle (Mop, bucket, broom, dustpan set)",
+      "quantity": 4,
+      "unit_price": 145.0,
+      "amount": 580.0
+    },
+    {
+      "description": "Shipping & Handling",
+      "quantity": 1,
+      "unit_price": 185.0,
+      "amount": 185.0
+    },
+    {
+      "description": "Tax (6.25%)",
+      "quantity": 1,
+      "unit_price": 572.9,
+      "amount": 572.9
+    }
+  ]
+}

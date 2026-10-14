@@ -1,0 +1,12 @@
+{
+  "quarter": "Q4",
+  "year": 2025,
+  "revenue_usd": 18700000,
+  "key_initiatives": {
+    "platform_rollout": "Marbledock Integrated Analytics Platform deployed across three enterprise clients including Acme Corp",
+    "sustainability": "Launch of Sustainable Advisory Initiative focused on ESG consulting services",
+    "talent_acquisition": "Addition of 14 full-time equivalents with focus on data science and compliance practices",
+    "client_expansion": "Acme Corp multi-year retainer renewal valued at approximately $4.2 million USD",
+    "pipeline_development": "Prospective Q1 2026 engagement pipeline valued at $23 million USD"
+  }
+}

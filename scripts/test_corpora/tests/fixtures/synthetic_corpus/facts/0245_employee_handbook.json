@@ -1,0 +1,18 @@
+{
+  "year": 2025,
+  "sections": [
+    "Code of Conduct",
+    "Working Hours",
+    "Leave Entitlements",
+    "Confidentiality"
+  ],
+  "lang_split": {
+    "languages": [
+      "English",
+      "French"
+    ],
+    "structure": "sequential",
+    "english_label": "ENGLISH SECTION",
+    "french_label": "SECTION FRAN\u00c7AISE"
+  }
+}

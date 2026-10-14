@@ -1,0 +1,20 @@
+{
+  "vendor": "Globex Supplies",
+  "term_months": 12,
+  "monthly_fee_usd": 5000,
+  "governing_law": "State of New York",
+  "signatures": {
+    "client": {
+      "name": "Jonathan R. Marbledock",
+      "title": "Managing Partner",
+      "organization": "Marbledock & Associates",
+      "date": "2025-11-02"
+    },
+    "vendor": {
+      "name": "Sandra L. Petrov",
+      "title": "Chief Executive Officer",
+      "organization": "Globex Supplies",
+      "date": "2025-11-02"
+    }
+  }
+}

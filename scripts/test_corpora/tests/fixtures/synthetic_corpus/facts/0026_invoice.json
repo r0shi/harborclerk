@@ -1,0 +1,64 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04817",
+  "date": "2025-01-22",
+  "total_usd": 10075.85,
+  "line_items": [
+    {
+      "description": "Managed IT Support Services (On-site & Remote - January 2025)",
+      "quantity": 16,
+      "unit": "hr",
+      "unit_price": 145.0,
+      "amount": 2320.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Monthly License - January 2025",
+      "quantity": 12,
+      "unit": "user",
+      "unit_price": 22.0,
+      "amount": 264.0
+    },
+    {
+      "description": "Cisco Meraki MX68 Firewall Appliance (Hardware Supply & Delivery)",
+      "quantity": 1,
+      "unit": "ea",
+      "unit_price": 1850.0,
+      "amount": 1850.0
+    },
+    {
+      "description": "Network Infrastructure Setup & Configuration (Firewall + VLAN Segmentation)",
+      "quantity": 8,
+      "unit": "hr",
+      "unit_price": 175.0,
+      "amount": 1400.0
+    },
+    {
+      "description": "Endpoint Detection & Response (EDR) - SentinelOne Agent Licensing (Monthly, January 2025)",
+      "quantity": 25,
+      "unit": "device",
+      "unit_price": 8.5,
+      "amount": 212.5
+    },
+    {
+      "description": "Cloud Backup Solution - Veeam (50 TB Tier, Monthly Subscription)",
+      "quantity": 1,
+      "unit": "mo",
+      "unit_price": 395.0,
+      "amount": 395.0
+    },
+    {
+      "description": "IT Security Audit & Vulnerability Assessment Report",
+      "quantity": 1,
+      "unit": "ea",
+      "unit_price": 2200.0,
+      "amount": 2200.0
+    },
+    {
+      "description": "Emergency After-Hours Support Call (January 9, 2025 - Server Outage)",
+      "quantity": 3,
+      "unit": "hr",
+      "unit_price": 215.0,
+      "amount": 645.0
+    }
+  ]
+}

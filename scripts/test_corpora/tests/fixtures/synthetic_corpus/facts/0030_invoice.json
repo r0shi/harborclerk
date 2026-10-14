@@ -1,0 +1,78 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04872",
+  "date": "2025-04-05",
+  "total_usd": 15192.33,
+  "line_items": [
+    {
+      "item_number": "001",
+      "description": "Heavy-Duty Storage Shelving Units (48\" x 24\" x 72\", Steel, Gray)",
+      "quantity": 6,
+      "unit_price": 189.99,
+      "amount": 1139.94
+    },
+    {
+      "item_number": "002",
+      "description": "Industrial Work Tables (60\" x 30\", Stainless Steel Top)",
+      "quantity": 4,
+      "unit_price": 324.5,
+      "amount": 1298.0
+    },
+    {
+      "item_number": "003",
+      "description": "Office Chair - Executive Mesh (Ergonomic, Adjustable, Black)",
+      "quantity": 12,
+      "unit_price": 215.0,
+      "amount": 2580.0
+    },
+    {
+      "item_number": "004",
+      "description": "Laser Printer Paper, Case (8.5\" x 11\", 20 lb, 10 reams/case)",
+      "quantity": 30,
+      "unit_price": 54.75,
+      "amount": 1642.5
+    },
+    {
+      "item_number": "005",
+      "description": "Safety Equipment Kit (Hard hat, gloves, goggles, vest)",
+      "quantity": 8,
+      "unit_price": 112.8,
+      "amount": 902.4
+    },
+    {
+      "item_number": "006",
+      "description": "Cleaning Supplies Bundle (Janitorial multi-product set)",
+      "quantity": 15,
+      "unit_price": 67.4,
+      "amount": 1011.0
+    },
+    {
+      "item_number": "007",
+      "description": "Wireless Keyboard & Mouse Combo (USB Dongle, 2.4GHz, Black)",
+      "quantity": 10,
+      "unit_price": 89.95,
+      "amount": 899.5
+    },
+    {
+      "item_number": "008",
+      "description": "LED Ceiling Light Fixtures (4-ft, 5000K, 50W, Commercial Grade)",
+      "quantity": 20,
+      "unit_price": 145.6,
+      "amount": 2912.0
+    },
+    {
+      "item_number": "009",
+      "description": "Whiteboard 72\" x 48\" (Magnetic, Dry-Erase, Aluminum Frame)",
+      "quantity": 3,
+      "unit_price": 199.99,
+      "amount": 599.97
+    },
+    {
+      "item_number": "010",
+      "description": "Breakroom Appliance Package (Microwave, Coffee Maker, Toaster Oven)",
+      "quantity": 2,
+      "unit_price": 487.5,
+      "amount": 975.0
+    }
+  ]
+}

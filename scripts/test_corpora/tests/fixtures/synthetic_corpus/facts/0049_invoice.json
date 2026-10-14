@@ -1,0 +1,78 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-08471",
+  "date": "2025-08-26",
+  "total_usd": 10158.93,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Storage Shelving Units (Steel, 6-Tier, 48\" x 18\" x 72\")",
+      "quantity": 8,
+      "unit": "Each",
+      "unit_price": 189.5,
+      "amount": 1516.0
+    },
+    {
+      "description": "Industrial Label Printer Ribbon (Compatible Model ILP-400, Black)",
+      "quantity": 24,
+      "unit": "Pack",
+      "unit_price": 34.75,
+      "amount": 834.0
+    },
+    {
+      "description": "Office Chair - Ergonomic Mesh (Adjustable Lumbar, Armrests Incl.)",
+      "quantity": 12,
+      "unit": "Each",
+      "unit_price": 229.0,
+      "amount": 2748.0
+    },
+    {
+      "description": "Premium Copy Paper A4 (80gsm, 500 Sheets/Ream, White)",
+      "quantity": 120,
+      "unit": "Ream",
+      "unit_price": 6.85,
+      "amount": 822.0
+    },
+    {
+      "description": "Foam Packing Sheets 24\" x 36\" (1/4\" Thick, 48 Sheets per Box)",
+      "quantity": 5,
+      "unit": "Box",
+      "unit_price": 74.2,
+      "amount": 371.0
+    },
+    {
+      "description": "Industrial Floor Cleaner Concentrate (Multi-Surface, Biodegradable)",
+      "quantity": 18,
+      "unit": "Gallon",
+      "unit_price": 28.5,
+      "amount": 513.0
+    },
+    {
+      "description": "Safety Cabinet - Flammable Storage (FM Approved, 12-Gallon Capacity)",
+      "quantity": 2,
+      "unit": "Each",
+      "unit_price": 547.0,
+      "amount": 1094.0
+    },
+    {
+      "description": "Network Patch Cables Cat6 10ft (Snagless Molded Boot, Blue)",
+      "quantity": 60,
+      "unit": "Each",
+      "unit_price": 7.95,
+      "amount": 477.0
+    },
+    {
+      "description": "Dry-Erase Whiteboards 4'x6' (Aluminum Frame, Includes Tray)",
+      "quantity": 6,
+      "unit": "Each",
+      "unit_price": 112.0,
+      "amount": 672.0
+    },
+    {
+      "description": "Bubble Wrap Roll 12\" x 100ft (3/16\" Bubbles, Perforated)",
+      "quantity": 8,
+      "unit": "Roll",
+      "unit_price": 22.4,
+      "amount": 179.2
+    }
+  ]
+}

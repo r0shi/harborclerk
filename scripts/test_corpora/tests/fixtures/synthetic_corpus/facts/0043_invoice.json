@@ -1,0 +1,50 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-04471",
+  "date": "2025-08-08",
+  "total_usd": 18164.0,
+  "line_items": [
+    {
+      "description": "Enterprise License - Initech CRM Suite (Annual Subscription)",
+      "quantity": 1,
+      "unit_price": 8500.0,
+      "amount": 8500.0
+    },
+    {
+      "description": "Professional Services - Implementation & Configuration (hrs)",
+      "quantity": 16,
+      "unit_price": 195.0,
+      "amount": 3120.0
+    },
+    {
+      "description": "Custom API Integration Development Package",
+      "quantity": 1,
+      "unit_price": 2750.0,
+      "amount": 2750.0
+    },
+    {
+      "description": "Data Migration Service (Legacy System to Initech CRM)",
+      "quantity": 1,
+      "unit_price": 1200.0,
+      "amount": 1200.0
+    },
+    {
+      "description": "User Training Session - On-Site (sessions)",
+      "quantity": 5,
+      "unit_price": 350.0,
+      "amount": 1750.0
+    },
+    {
+      "description": "Annual Support & Maintenance Plan",
+      "quantity": 1,
+      "unit_price": 1800.0,
+      "amount": 1800.0
+    },
+    {
+      "description": "Discount (5% Preferred Partner)",
+      "quantity": 1,
+      "unit_price": -956.0,
+      "amount": -956.0
+    }
+  ]
+}

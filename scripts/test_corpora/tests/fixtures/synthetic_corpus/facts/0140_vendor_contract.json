@@ -1,0 +1,20 @@
+{
+  "vendor": "Cyberdyne IT",
+  "term_months": 12,
+  "monthly_fee_usd": 7500.0,
+  "governing_law": "State of California",
+  "signatures": {
+    "client": {
+      "organization": "Marbledock & Associates",
+      "signatory_name": "Jonathan R. Caldwell",
+      "signatory_title": "Managing Partner",
+      "signature_date": "2025-04-03"
+    },
+    "vendor": {
+      "organization": "Cyberdyne IT",
+      "signatory_name": "Sandra T. Okafor",
+      "signatory_title": "Chief Executive Officer",
+      "signature_date": "2025-04-03"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "year": 2025,
+  "sections": [
+    "Code of Conduct",
+    "Working Hours and Attendance",
+    "Benefits and Compensation",
+    "Code de conduite",
+    "Heures de travail et pr\u00e9sence",
+    "Avantages sociaux et r\u00e9mun\u00e9ration"
+  ],
+  "lang_split": {
+    "english": true,
+    "french": true,
+    "parallel_structure": true,
+    "delimiter": "--- ENGLISH SECTION --- / --- SECTION FRAN\u00c7AISE ---"
+  }
+}

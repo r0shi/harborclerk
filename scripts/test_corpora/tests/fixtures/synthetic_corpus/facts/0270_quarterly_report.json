@@ -1,0 +1,11 @@
+{
+  "quarter": "Q1",
+  "year": 2025,
+  "revenue_usd": 4750000,
+  "key_initiatives": {
+    "client_analytics_platform": "Rollout of proprietary client analytics platform to enhance reporting and insights for key accounts",
+    "sustainability_consulting_launch": "Establishment of a dedicated sustainability consulting practice to address growing client demand for ESG advisory services",
+    "talent_acquisition": "Hired 14 senior consultants across three regional offices to support expanding service delivery capacity",
+    "acme_corp_expansion": "Extended engagement scope with Acme Corp including digital transformation workstream and pending multi-year MSA renewal"
+  }
+}

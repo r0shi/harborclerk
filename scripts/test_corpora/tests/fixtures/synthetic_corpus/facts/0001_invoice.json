@@ -1,0 +1,62 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-08841",
+  "date": "2025-11-04",
+  "total_usd": 10725.41,
+  "line_items": [
+    {
+      "description": "Managed IT Support - Monthly Retainer (November 2025 - 24x5 Help Desk & Systems Monitoring)",
+      "quantity": 1,
+      "unit_price": 3500.0,
+      "amount": 3500.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium User Licenses - November 2025",
+      "quantity": 14,
+      "unit_price": 22.0,
+      "amount": 308.0
+    },
+    {
+      "description": "Cisco Meraki MX68 Security Appliance (Hardware - includes 1-yr advanced security license)",
+      "quantity": 2,
+      "unit_price": 895.0,
+      "amount": 1790.0
+    },
+    {
+      "description": "Network Infrastructure Assessment & Security Audit Report (Onsite visit Oct 29-30, 2025)",
+      "quantity": 1,
+      "unit_price": 2200.0,
+      "amount": 2200.0
+    },
+    {
+      "description": "SSL Certificate Renewal - 2-Year Wildcard",
+      "quantity": 3,
+      "unit_price": 148.0,
+      "amount": 444.0
+    },
+    {
+      "description": "Cloud Backup Solution - Veeam Cloud Connect (Annual, prorated Nov-Dec 2025, 2 months)",
+      "quantity": 1,
+      "unit_price": 675.0,
+      "amount": 675.0
+    },
+    {
+      "description": "On-Site Technician Labor (6 hours @ $165/hr - Firewall replacement & switch configuration)",
+      "quantity": 6,
+      "unit_price": 165.0,
+      "amount": 990.0
+    },
+    {
+      "description": "Travel & Expenses - On-Site Visit (Mileage, tolls, parking)",
+      "quantity": 1,
+      "unit_price": 187.5,
+      "amount": 187.5
+    },
+    {
+      "description": "Tax (6.25% MA)",
+      "quantity": null,
+      "unit_price": null,
+      "amount": 630.91
+    }
+  ]
+}

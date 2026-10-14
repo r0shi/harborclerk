@@ -1,0 +1,17 @@
+{
+  "employee_name": "Nouvelle Coll\u00e8gue / New Colleague (recipient not named explicitly \u2014 onboarding template)",
+  "role": "Senior Project Coordinator",
+  "start_date": "2025-07-22",
+  "languages_used": {
+    "english_percentage": 60,
+    "french_percentage": 40,
+    "mix_style": "naturally interleaved bilingual paragraphs and section headings"
+  },
+  "signing_manager": {
+    "name": "Isabelle Tr\u00e9panier",
+    "title_fr": "Directrice des ressources humaines",
+    "title_en": "Director of Human Resources",
+    "email": "it@marbledock.ca",
+    "phone": "(613) 555-0192"
+  }
+}

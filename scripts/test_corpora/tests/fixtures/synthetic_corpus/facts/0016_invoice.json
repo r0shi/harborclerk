@@ -1,0 +1,80 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04817",
+  "date": "2025-09-24",
+  "total_usd": 18455.0,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Filing Cabinets (4-Drawer, Steel, Charcoal Gray)",
+      "quantity": 8,
+      "unit_price": 215.0,
+      "amount": 1720.0
+    },
+    {
+      "description": "Ergonomic Mesh Office Chairs (Adjustable Lumbar, Model EM-7)",
+      "quantity": 12,
+      "unit_price": 349.5,
+      "amount": 4194.0
+    },
+    {
+      "description": "Office Desk Organizer Sets (6-Piece, Bamboo Finish)",
+      "quantity": 20,
+      "unit_price": 47.25,
+      "amount": 945.0
+    },
+    {
+      "description": "HP LaserJet Pro Toner Cartridges (Black, High-Yield, CF258X)",
+      "quantity": 30,
+      "unit_price": 89.0,
+      "amount": 2670.0
+    },
+    {
+      "description": "Whiteboard / Corkboard Combo Units (48\" x 36\", Aluminum Frame)",
+      "quantity": 5,
+      "unit_price": 178.0,
+      "amount": 890.0
+    },
+    {
+      "description": "Premium Copy Paper (Case, 8.5\" x 11\", 20 lb, 5000 sheets)",
+      "quantity": 40,
+      "unit_price": 52.75,
+      "amount": 2110.0
+    },
+    {
+      "description": "Wireless Keyboard & Mouse Bundles (Logitech MK295, Quiet Touch)",
+      "quantity": 15,
+      "unit_price": 64.0,
+      "amount": 960.0
+    },
+    {
+      "description": "Breakroom Appliance Package (Coffee Maker, Microwave, Toaster Oven)",
+      "quantity": 3,
+      "unit_price": 412.0,
+      "amount": 1236.0
+    },
+    {
+      "description": "Industrial Shelving Units (72\" H x 48\" W x 18\" D, 5-Shelf)",
+      "quantity": 4,
+      "unit_price": 285.0,
+      "amount": 1140.0
+    },
+    {
+      "description": "First Aid & Safety Compliance Kits (OSHA 10-Person Deluxe Kit)",
+      "quantity": 10,
+      "unit_price": 93.5,
+      "amount": 935.0
+    },
+    {
+      "description": "Shipping & Handling",
+      "quantity": 1,
+      "unit_price": 185.0,
+      "amount": 185.0
+    },
+    {
+      "description": "Tax (8.75% IL)",
+      "quantity": 1,
+      "unit_price": 1470.0,
+      "amount": 1470.0
+    }
+  ]
+}

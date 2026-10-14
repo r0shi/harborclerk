@@ -1,0 +1,20 @@
+{
+  "vendor": "Initech Software",
+  "term_months": 24,
+  "monthly_fee_usd": 8500.0,
+  "governing_law": "State of Delaware",
+  "signatures": {
+    "client": {
+      "organization": "Marbledock & Associates",
+      "signatory_name": "Jonathan R. Aldridge",
+      "title": "Managing Partner",
+      "date": "2025-04-13"
+    },
+    "vendor": {
+      "organization": "Initech Software",
+      "signatory_name": "Sandra M. Fielding",
+      "title": "Chief Executive Officer",
+      "date": "2025-04-13"
+    }
+  }
+}

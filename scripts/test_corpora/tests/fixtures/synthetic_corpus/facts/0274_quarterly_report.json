@@ -1,0 +1,12 @@
+{
+  "quarter": "Q4",
+  "year": 2025,
+  "revenue_usd": 48700000,
+  "key_initiatives": {
+    "data_intelligence_platform_rollout": "Launched proprietary data intelligence platform to enhance client analytics and reporting capabilities across all service lines.",
+    "asia_pacific_expansion": "Onboarded three new enterprise accounts in the Asia-Pacific region, establishing a stronger regional presence and diversifying the client base.",
+    "esg_compliance_framework": "Completed and distributed a comprehensive ESG compliance framework to all existing clients, including Polestar Industries, in alignment with emerging regulatory standards.",
+    "operational_restructuring": "Realized cost savings and margin improvements from Q3 2025 internal restructuring, contributing to improved EBITDA performance in Q4.",
+    "polestar_industries_account_growth": "Expanded scope of services delivered to Polestar Industries, encompassing supply chain optimization, risk mitigation advisory, and cross-market expansion strategy."
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "quarter": "Q1",
+  "year": 2025,
+  "revenue_usd": 48700000,
+  "key_initiatives": {
+    "digital_transformation_advisory": "Expansion of advisory services helping clients modernize legacy infrastructure and adopt cloud-native architectures.",
+    "sustainability_compliance_consulting": "Guiding enterprise clients through ESG reporting frameworks and regulatory compliance obligations for 2025 mandates.",
+    "marbleiq_platform_rollout": "Internal deployment of the firm's proprietary analytics platform, MarbleIQ\u2122, to enhance client reporting and predictive insights.",
+    "polestar_industries_expansion": "Deepened partnership with Polestar Industries including a new managed services agreement and Phase I operational audit completion.",
+    "enterprise_account_growth": "Onboarding of three net-new enterprise accounts contributing to pipeline diversification and long-term revenue stability."
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04417",
+  "date": "2025-02-19",
+  "total_usd": 10453.69,
+  "line_items": [
+    {
+      "description": "Premium Copy Paper (Case, 10 Reams)",
+      "quantity": 18,
+      "unit_price": 52.0,
+      "amount": 936.0
+    },
+    {
+      "description": "Ergonomic Office Chair (Mesh Back)",
+      "quantity": 6,
+      "unit_price": 289.5,
+      "amount": 1737.0
+    },
+    {
+      "description": "Heavy-Duty Stapler (Box of 12)",
+      "quantity": 4,
+      "unit_price": 74.25,
+      "amount": 297.0
+    },
+    {
+      "description": "Whiteboard Marker Set (24-Pack)",
+      "quantity": 20,
+      "unit_price": 18.4,
+      "amount": 368.0
+    },
+    {
+      "description": "4-Drawer Filing Cabinet (Lockable)",
+      "quantity": 5,
+      "unit_price": 415.0,
+      "amount": 2075.0
+    },
+    {
+      "description": "Wireless Keyboard & Mouse Combo",
+      "quantity": 12,
+      "unit_price": 64.99,
+      "amount": 779.88
+    },
+    {
+      "description": "Industrial Label Maker",
+      "quantity": 3,
+      "unit_price": 182.5,
+      "amount": 547.5
+    },
+    {
+      "description": "Laser Printer Toner Cartridge (Black)",
+      "quantity": 15,
+      "unit_price": 89.95,
+      "amount": 1349.25
+    },
+    {
+      "description": "Bubble Wrap Roll (500 ft)",
+      "quantity": 8,
+      "unit_price": 38.0,
+      "amount": 304.0
+    },
+    {
+      "description": "Conference Room Notepad (50-ct Box)",
+      "quantity": 10,
+      "unit_price": 22.75,
+      "amount": 227.5
+    },
+    {
+      "description": "Packaging Tape Dispenser Kit (12-pk)",
+      "quantity": 6,
+      "unit_price": 31.6,
+      "amount": 189.6
+    },
+    {
+      "description": "Adjustable Monitor Stand (Dual)",
+      "quantity": 7,
+      "unit_price": 124.0,
+      "amount": 868.0
+    }
+  ]
+}

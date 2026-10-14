@@ -1,0 +1,44 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-00847",
+  "date": "2025-02-22",
+  "total_usd": 16210.8,
+  "line_items": [
+    {
+      "description": "Enterprise License - ProjectFlow Software Suite (Annual)",
+      "quantity": 1,
+      "unit_price": 8500.0,
+      "amount": 8500.0
+    },
+    {
+      "description": "Professional Implementation Services (hours)",
+      "quantity": 16,
+      "unit_price": 175.0,
+      "amount": 2800.0
+    },
+    {
+      "description": "Data Migration & Integration Consulting (hours)",
+      "quantity": 8,
+      "unit_price": 195.0,
+      "amount": 1560.0
+    },
+    {
+      "description": "Premium Support Package (12 months)",
+      "quantity": 1,
+      "unit_price": 1200.0,
+      "amount": 1200.0
+    },
+    {
+      "description": "On-Site Training Session (half-day, up to 10 users)",
+      "quantity": 1,
+      "unit_price": 950.0,
+      "amount": 950.0
+    },
+    {
+      "description": "Tax (8%)",
+      "quantity": null,
+      "unit_price": null,
+      "amount": 1200.8
+    }
+  ]
+}

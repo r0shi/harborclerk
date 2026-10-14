@@ -1,0 +1,68 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-08841",
+  "date": "2025-10-13",
+  "total_usd": 13124.0,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Shelving Units (48\"x72\")",
+      "quantity": 12,
+      "unit_price": 189.99,
+      "amount": 2279.88
+    },
+    {
+      "description": "Industrial Packing Tape (36-Roll Box)",
+      "quantity": 20,
+      "unit_price": 34.5,
+      "amount": 690.0
+    },
+    {
+      "description": "Safety Gloves, Cut-Resistant (Box/12)",
+      "quantity": 15,
+      "unit_price": 58.0,
+      "amount": 870.0
+    },
+    {
+      "description": "Wireless Barcode Scanner, USB/BT",
+      "quantity": 6,
+      "unit_price": 212.75,
+      "amount": 1276.5
+    },
+    {
+      "description": "Thermal Label Roll 4\"x6\" (500/roll)",
+      "quantity": 40,
+      "unit_price": 18.25,
+      "amount": 730.0
+    },
+    {
+      "description": "Office Chair, Ergonomic Mesh",
+      "quantity": 8,
+      "unit_price": 345.0,
+      "amount": 2760.0
+    },
+    {
+      "description": "Steel-Toe Work Boots, Asst. Sizes",
+      "quantity": 10,
+      "unit_price": 124.99,
+      "amount": 1249.9
+    },
+    {
+      "description": "A4 Copy Paper, 80gsm (Case of 5 Reams)",
+      "quantity": 25,
+      "unit_price": 42.0,
+      "amount": 1050.0
+    },
+    {
+      "description": "First Aid Kit, OSHA Compliant (Large)",
+      "quantity": 4,
+      "unit_price": 87.5,
+      "amount": 350.0
+    },
+    {
+      "description": "Portable Work Light, LED 5000LM",
+      "quantity": 5,
+      "unit_price": 156.0,
+      "amount": 780.0
+    }
+  ]
+}

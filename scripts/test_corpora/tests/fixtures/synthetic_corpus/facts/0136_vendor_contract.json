@@ -1,0 +1,20 @@
+{
+  "vendor": "Initech Software",
+  "term_months": 12,
+  "monthly_fee_usd": 8500.0,
+  "governing_law": "State of New York",
+  "signatures": {
+    "client_signatory": {
+      "name": "Jonathan H. Marbledock",
+      "title": "Managing Partner",
+      "organization": "Marbledock & Associates",
+      "date": "2025-05-15"
+    },
+    "vendor_signatory": {
+      "name": "Patricia L. Nguyen",
+      "title": "Chief Executive Officer",
+      "organization": "Initech Software",
+      "date": "2025-05-15"
+    }
+  }
+}

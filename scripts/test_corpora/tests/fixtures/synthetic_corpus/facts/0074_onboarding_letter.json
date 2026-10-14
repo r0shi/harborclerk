@@ -1,0 +1,20 @@
+{
+  "employee_name": "Nouvelle Recrue / New Hire (General Onboarding Template)",
+  "role": "Analyste principal en d\u00e9veloppement des affaires / Senior Business Development Analyst",
+  "start_date": "2025-10-18",
+  "languages_used": {
+    "primary_languages": [
+      "English",
+      "French"
+    ],
+    "mix_ratio": "approximately 40% English, 60% French",
+    "style": "bilingual interleaved, natural Canadian professional tone"
+  },
+  "signing_manager": {
+    "name": "Sophie Tremblay-Marchand",
+    "title_french": "Directrice des Ressources Humaines",
+    "title_english": "Director of Human Resources",
+    "company": "Marbledock & Associates",
+    "email": "sophie.tremblay@marbledock.ca"
+  }
+}

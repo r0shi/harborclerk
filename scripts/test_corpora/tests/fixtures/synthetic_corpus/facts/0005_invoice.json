@@ -1,0 +1,80 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-08841",
+  "date": "2025-11-23",
+  "total_usd": 12913.8,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Storage Shelving Units (Model: HD-SHELF-2400, Steel Frame, 72\"H x 36\"W x 18\"D)",
+      "quantity": 8,
+      "unit_price": 214.5,
+      "amount": 1716.0
+    },
+    {
+      "description": "Commercial Grade Label Printer (Zebra ZD421, Thermal Transfer, 300 DPI, USB + Ethernet)",
+      "quantity": 3,
+      "unit_price": 389.0,
+      "amount": 1167.0
+    },
+    {
+      "description": "Thermal Label Rolls - 4\"x6\" (500 labels/roll, Compatible with Zebra ZD421 series)",
+      "quantity": 20,
+      "unit_price": 34.75,
+      "amount": 695.0
+    },
+    {
+      "description": "Industrial Packing Tape Dispenser (Heavy-duty steel, adjustable tension, 2\" core)",
+      "quantity": 6,
+      "unit_price": 47.2,
+      "amount": 283.2
+    },
+    {
+      "description": "Stretch Wrap Film - 80 Gauge (18\" x 1500 ft per roll, Cast stretch wrap, clear)",
+      "quantity": 15,
+      "unit_price": 28.9,
+      "amount": 433.5
+    },
+    {
+      "description": "Ergonomic Office Chair (Mesh back, lumbar support, adjustable armrests, Model EC-700)",
+      "quantity": 5,
+      "unit_price": 512.0,
+      "amount": 2560.0
+    },
+    {
+      "description": "Multi-Function Laser Printer (HP LaserJet Pro 4301fdw, Duplex, Wireless, 40 ppm)",
+      "quantity": 2,
+      "unit_price": 1149.0,
+      "amount": 2298.0
+    },
+    {
+      "description": "Copy Paper - Case 8.5\"x11\" (10 reams/case, 20lb, 92 bright, 500 sheets/ream)",
+      "quantity": 25,
+      "unit_price": 52.4,
+      "amount": 1310.0
+    },
+    {
+      "description": "Dry Erase Whiteboard (48\"x36\", Aluminum frame, includes tray and markers)",
+      "quantity": 4,
+      "unit_price": 189.75,
+      "amount": 759.0
+    },
+    {
+      "description": "Safety First Aid Cabinet (Wall-mounted, ANSI compliant, fully stocked, 200-piece kit)",
+      "quantity": 2,
+      "unit_price": 268.5,
+      "amount": 537.0
+    },
+    {
+      "description": "Shipping",
+      "quantity": 1,
+      "unit_price": 185.0,
+      "amount": 185.0
+    },
+    {
+      "description": "Tax (8.25%)",
+      "quantity": 1,
+      "unit_price": 970.1,
+      "amount": 970.1
+    }
+  ]
+}

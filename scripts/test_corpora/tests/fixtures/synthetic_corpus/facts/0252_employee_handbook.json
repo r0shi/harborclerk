@@ -1,0 +1,14 @@
+{
+  "year": 2025,
+  "sections": [
+    "Code of Conduct",
+    "Working Hours & Flexibility",
+    "Compensation & Benefits",
+    "Leave Policies"
+  ],
+  "lang_split": {
+    "primary": "English",
+    "secondary": "French",
+    "structure": "parallel"
+  }
+}

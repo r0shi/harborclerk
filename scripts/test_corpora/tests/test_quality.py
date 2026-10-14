@@ -436,3 +436,15 @@ def test_an_answer_that_mentions_a_function_in_prose_is_not_roleplay() -> None:
     # The tag with a name that is not a tool: a function tag alone is not the fingerprint.
     assert classify_answer("Per the spec, <function=payment> is the clause that sets net-30 terms.")[0] == "real"
     assert classify_answer("Per the spec, <function=search_documents_v2> is a made-up tool.")[0] == "real"
+
+
+def test_the_french_no_findings_phrasings_count_only_in_an_opening_and_fold_the_apostrophe() -> None:
+    """The synthetic key's French variants (#779): the #713 answer in French opens the same way, in either apostrophe."""
+    assert nothing_found_signature("Je n’ai pas trouvé la date.", at_opening=True) == "je n'ai pas trouvé"
+    assert nothing_found_signature("Je n'ai pas pu trouver le total.", at_opening=True) == "je n'ai pas pu trouver"
+    assert nothing_found_signature("Le montant **n'est pas indiqué** ici.", at_opening=True) == "n'est pas indiqué"
+    assert nothing_found_signature("Aucun document ne mentionne Initech.", at_opening=True) == "aucun document"
+    assert nothing_found_signature("Je n’ai pas trouvé la date.") is None, "an opening phrasing, not a baseline one"
+    assert nothing_found_signature("Quinze factures.", at_opening=True) is None
+    thorough = "Quinze factures (voir la liste). Je n'ai pas trouvé de facture pour décembre; ce n'est pas précisé."
+    assert baseline_quality_problem({"answer": thorough}) is None

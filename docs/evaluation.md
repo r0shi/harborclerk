@@ -29,6 +29,22 @@ The harness writes artifacts under the configured test-corpora workdir, commonly
 include the Harbor Clerk commit, corpus, model, run label, scoring method, and
 whether captures were reused or refreshed.
 
+Two question sets carry an answer key and are scored without a judge or a
+baseline (`scripts/test_corpora/questions/keyed/`, asked with
+`--questions-dir`): CUAD's, from the dataset's own clause annotations, and the
+synthetic corpus's, derived mechanically from the fact sidecars the generator
+writes beside each document (`scripts/test_corpora/corpora/synthetic_key.py`).
+The synthetic key covers what CUAD cannot: single-document lookups (a price, a
+signatory, a vendor), dates, counts and totals aggregated across documents,
+enumerations scored by F1, and three bilingual pairs asked in English and
+French against one key. It is regenerated from the corpus with
+`python -m scripts.test_corpora.corpora.synthetic_key --workdir "$WORKDIR"
+--snapshot --redo`, which also refreshes the committed fixture it is rebuilt
+from in CI, so a stale key fails there. It is tied to the generation it was
+counted over: every entry carries a digest of the sidecars, and the scorer
+refuses to score it against any other generation of the corpus, because a
+count of invoices is only true of the documents it counted.
+
 ## Current claim posture
 
 Safe claims:

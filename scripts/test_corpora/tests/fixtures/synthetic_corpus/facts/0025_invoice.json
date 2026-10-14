@@ -1,0 +1,56 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04471",
+  "date": "2025-07-20",
+  "total_usd": 12011.0,
+  "line_items": [
+    {
+      "description": "Managed Endpoint Security (per seat/mo) - July 2025",
+      "quantity": 45,
+      "unit_price": 38.0,
+      "amount": 1710.0
+    },
+    {
+      "description": "Cloud Infrastructure Monitoring - Pro Tier, July 2025",
+      "quantity": 1,
+      "unit_price": 620.0,
+      "amount": 620.0
+    },
+    {
+      "description": "Network Vulnerability Assessment - Full internal/external scan + report",
+      "quantity": 1,
+      "unit_price": 3400.0,
+      "amount": 3400.0
+    },
+    {
+      "description": "On-Site IT Support (8 hrs @ $175/hr) - July 14, 2025",
+      "quantity": 8,
+      "unit_price": 175.0,
+      "amount": 1400.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Licensing - July 2025, per user",
+      "quantity": 18,
+      "unit_price": 22.0,
+      "amount": 396.0
+    },
+    {
+      "description": "Firewall Configuration & Hardening - Fortinet FortiGate 200F",
+      "quantity": 1,
+      "unit_price": 1850.0,
+      "amount": 1850.0
+    },
+    {
+      "description": "Backup & Disaster Recovery Setup - Veeam B&R v12, 5 servers",
+      "quantity": 1,
+      "unit_price": 2200.0,
+      "amount": 2200.0
+    },
+    {
+      "description": "SSL Certificate Procurement & Installation - Wildcard SSL, 1-year term",
+      "quantity": 3,
+      "unit_price": 145.0,
+      "amount": 435.0
+    }
+  ]
+}

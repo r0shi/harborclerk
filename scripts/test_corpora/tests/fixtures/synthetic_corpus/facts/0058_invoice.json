@@ -1,0 +1,68 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04872",
+  "date": "2025-04-19",
+  "total_usd": 11193.14,
+  "line_items": [
+    {
+      "description": "Managed Cloud Infrastructure (Monthly Subscription - April 2025)",
+      "quantity": 1,
+      "unit_price": 3200.0,
+      "amount": 3200.0
+    },
+    {
+      "description": "Cybersecurity Monitoring & Threat Detection Service (April 2025)",
+      "quantity": 1,
+      "unit_price": 1850.0,
+      "amount": 1850.0
+    },
+    {
+      "description": "On-Site IT Support & Maintenance (Hours - April 2 & April 11, 2025)",
+      "quantity": 14,
+      "unit_price": 125.0,
+      "amount": 1750.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Licenses (Monthly, per seat)",
+      "quantity": 12,
+      "unit_price": 22.0,
+      "amount": 264.0
+    },
+    {
+      "description": "Network Hardware - Cisco Meraki MX68 Security Appliance",
+      "quantity": 1,
+      "unit_price": 1495.0,
+      "amount": 1495.0
+    },
+    {
+      "description": "Hardware Installation & Configuration (Hours - April 14, 2025)",
+      "quantity": 4,
+      "unit_price": 150.0,
+      "amount": 600.0
+    },
+    {
+      "description": "Data Backup & Disaster Recovery Solution (Monthly - April 2025)",
+      "quantity": 1,
+      "unit_price": 475.0,
+      "amount": 475.0
+    },
+    {
+      "description": "Help Desk Support Package - Standard (20-Ticket Block, April 2025)",
+      "quantity": 1,
+      "unit_price": 650.0,
+      "amount": 650.0
+    },
+    {
+      "description": "Tax (8.5%)",
+      "quantity": null,
+      "unit_price": null,
+      "amount": 874.14
+    },
+    {
+      "description": "Shipping",
+      "quantity": null,
+      "unit_price": null,
+      "amount": 35.0
+    }
+  ]
+}

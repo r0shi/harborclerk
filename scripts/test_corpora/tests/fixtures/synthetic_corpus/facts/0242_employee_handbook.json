@@ -1,0 +1,19 @@
+{
+  "year": 2025,
+  "sections": [
+    "Welcome & Company Values",
+    "Working Hours & Attendance",
+    "Code of Conduct"
+  ],
+  "lang_split": {
+    "languages": [
+      "English",
+      "French"
+    ],
+    "structure": "parallel",
+    "english_label": "ENGLISH",
+    "french_label": "FRAN\u00c7AIS",
+    "sections_mirrored": true,
+    "total_sections_per_language": 3
+  }
+}

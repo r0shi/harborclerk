@@ -1,0 +1,96 @@
+research: []
+ask:
+- id: synthetic-key-1
+  text: What is the total amount due on invoice CDI-2025-08841 from Cyberdyne IT to Marbledock & Associates?
+  notes: total_usd = 10,725.41 in facts/0001_invoice.json; invoice_number is unique in the corpus
+- id: synthetic-key-2
+  text: Which vendor issued invoice GS-2025-04471 to Marbledock & Associates?
+  notes: vendor = 'Globex Supplies' in facts/0006_invoice.json; invoice_number is unique in the corpus
+- id: synthetic-key-3
+  text: On what date was invoice INV-2025-04872 from Initech Software issued?
+  notes: date = 2025-04-27 in facts/0018_invoice.json; invoice_number is unique in the corpus
+- id: synthetic-key-4
+  cross_language: true
+  variants:
+  - lang: en
+    text: How many invoices did Initech Software issue to Marbledock & Associates in 2025?
+  - lang: fr
+    text: Combien de factures Initech Software a-t-elle émises à Marbledock & Associates en 2025 ?
+  notes: 15 invoice sidecars with vendor = 'Initech Software' (the vendor with the fewest)
+- id: synthetic-key-5
+  text: What is the total amount invoiced by Cyberdyne IT to Marbledock & Associates in 2025, across all its invoices?
+  notes: sum of total_usd over the 25 invoice sidecars with vendor = 'Cyberdyne IT' (the vendor with the most) =
+    364,107.38
+- id: synthetic-key-6
+  text: What was the total amount invoiced to Marbledock & Associates in March 2025, across all vendors?
+  notes: sum of total_usd over the 2 invoice sidecars dated 2025-03-* (the month with the fewest invoices, two or
+    more) = 25,474.18
+- id: synthetic-key-7
+  text: List every invoice Initech Software issued to Marbledock & Associates in 2025, with its invoice number and
+    total.
+  notes: the 15 invoice sidecars with vendor = 'Initech Software', of 60 invoices; an invoice is named by its file
+    stem, or by its invoice number or total where unique
+- id: synthetic-key-8
+  text: List every invoice issued to Marbledock & Associates in February 2025, from any vendor, with its invoice
+    number and total.
+  notes: the 12 invoice sidecars dated 2025-02-* (the month with the most invoices), of 60 invoices
+- id: synthetic-key-9
+  text: What is the monthly fee in the 24-month vendor service contract between Marbledock & Associates and Cyberdyne
+    IT?
+  notes: monthly_fee_usd = 12,500 in facts/0141_vendor_contract.json; the only 24-month contract with Cyberdyne
+    IT
+- id: synthetic-key-10
+  text: What is the governing law of the 24-month vendor service contract between Marbledock & Associates and Globex
+    Supplies?
+  notes: governing_law = 'State of Delaware' in facts/0142_vendor_contract.json; the only 24-month contract with
+    Globex Supplies
+- id: synthetic-key-11
+  cross_language: true
+  variants:
+  - lang: en
+    text: On what date does Élise Fontaine start at Marbledock & Associates, according to the onboarding letter?
+  - lang: fr
+    text: À quelle date Élise Fontaine entre-t-elle en fonction chez Marbledock & Associates, selon la lettre d'accueil
+      ?
+  notes: start_date = 2025-12-01 in facts/0061_onboarding_letter.json; the one letter addressed to a named person
+    of that name
+- id: synthetic-key-12
+  text: Who signed the onboarding letter addressed to Alex Thibodeau?
+  notes: signing_manager = 'Madeleine Côté-Renaud' in facts/0072_onboarding_letter.json; the one letter addressed
+    to Alex Thibodeau
+- id: synthetic-key-13
+  text: Who is the policy owner of version 2.1.0 of the Comprehensive Workplace, Human Resources, and Information
+    Security Policy?
+  notes: owner = 'Human Resources & Information Security Department, Marbledock & Associates' in facts/0197_policy_doc.json;
+    no other policy has that name and version
+- id: synthetic-key-14
+  text: Who sent the internal memo with the subject “Implementation of Revised Remote Work and Flexible Scheduling
+    Policy”?
+  notes: from = 'Victoria L. Hargrove, Managing Director, Marbledock & Associates' in facts/0161_internal_memo.json,
+    read as 'Victoria L. Hargrove'; the one memo with that subject
+- id: synthetic-key-15
+  text: On what date did the board of Marbledock & Associates meet in January 2025?
+  notes: date = 2025-01-12 in facts/0113_board_minutes.json; the only board minutes dated 2025-01
+- id: synthetic-key-16
+  text: On what date did the board of Marbledock & Associates meet in April 2025?
+  notes: date = 2025-04-15 in facts/0120_board_minutes.json; the only board minutes dated 2025-04
+- id: synthetic-key-17
+  text: How many board meetings did Marbledock & Associates hold in Q3 2025, according to the board minutes?
+  notes: 11 board_minutes sidecars dated in Q3 2025 (the quarter with the most meetings)
+- id: synthetic-key-18
+  text: How many marketing briefs did Marbledock & Associates write for the Harbour Lights campaign?
+  notes: 7 marketing_brief sidecars with campaign_name = 'Harbour Lights' (the campaign with the most briefs; ties
+    by name)
+- id: synthetic-key-19
+  cross_language: true
+  variants:
+  - lang: en
+    text: Which clients do the marketing briefs for the Skylight campaign target?
+  - lang: fr
+    text: Quels clients les briefs marketing de la campagne Skylight ciblent-ils ?
+  notes: 'target of the 7 marketing_brief sidecars with campaign_name = ''Skylight'': Northwind Partners, Polestar
+    Industries; the universe is every client a brief targets'
+- id: synthetic-key-20
+  text: Which campaigns have a marketing brief that targets Acme Corp?
+  notes: 'campaign_name of the marketing_brief sidecars with target = ''Acme Corp'' (the client the fewest campaigns
+    target): Harbour Lights'

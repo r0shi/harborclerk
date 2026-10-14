@@ -1,0 +1,38 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-00847",
+  "date": "2025-01-20",
+  "total_usd": 17666.4,
+  "line_items": [
+    {
+      "description": "Enterprise License \u2013 DataBridge Pro v4.2 (Annual subscription, Jan 2025 \u2013 Jan 2026)",
+      "quantity": 1,
+      "unit_price": 8500.0,
+      "amount": 8500.0
+    },
+    {
+      "description": "Professional Services \u2013 System Integration (API configuration & workflow setup)",
+      "quantity": 16,
+      "unit_price": 195.0,
+      "amount": 3120.0
+    },
+    {
+      "description": "Custom Report Module Development (Per SOW dated 2024-12-10)",
+      "quantity": 1,
+      "unit_price": 2750.0,
+      "amount": 2750.0
+    },
+    {
+      "description": "Priority Support Package \u2013 Q1 2025 (Jan \u2013 Mar 2025, 8x5 phone & email support)",
+      "quantity": 1,
+      "unit_price": 1200.0,
+      "amount": 1200.0
+    },
+    {
+      "description": "Onboarding & Training Session (4 hrs) \u2013 Remote, conducted Jan 15\u201316, 2025",
+      "quantity": 2,
+      "unit_price": 375.0,
+      "amount": 750.0
+    }
+  ]
+}

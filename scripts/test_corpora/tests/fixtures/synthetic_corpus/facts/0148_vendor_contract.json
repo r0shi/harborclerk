@@ -1,0 +1,20 @@
+{
+  "vendor": "Globex Supplies",
+  "term_months": 12,
+  "monthly_fee_usd": 4500.0,
+  "governing_law": "State of Illinois",
+  "signatures": {
+    "client": {
+      "entity": "Marbledock & Associates",
+      "signatory_name": "Jonathan R. Marbledock",
+      "signatory_title": "Managing Partner",
+      "date": "2025-08-09"
+    },
+    "vendor": {
+      "entity": "Globex Supplies",
+      "signatory_name": "Sandra T. Harwell",
+      "signatory_title": "Chief Executive Officer",
+      "date": "2025-08-09"
+    }
+  }
+}

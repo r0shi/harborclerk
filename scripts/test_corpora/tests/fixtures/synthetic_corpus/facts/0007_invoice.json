@@ -1,0 +1,68 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-08847",
+  "date": "2025-06-09",
+  "total_usd": 10282.91,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Shelving Units (5-Tier)",
+      "quantity": 12,
+      "unit_price": 189.99,
+      "amount": 2279.88
+    },
+    {
+      "description": "Industrial Cable Management Kit",
+      "quantity": 8,
+      "unit_price": 54.5,
+      "amount": 436.0
+    },
+    {
+      "description": "Safety Signage Package (Bilingual)",
+      "quantity": 20,
+      "unit_price": 22.75,
+      "amount": 455.0
+    },
+    {
+      "description": "Ergonomic Task Chairs",
+      "quantity": 6,
+      "unit_price": 319.0,
+      "amount": 1914.0
+    },
+    {
+      "description": "Dry-Erase Whiteboard 4x6 ft",
+      "quantity": 4,
+      "unit_price": 145.0,
+      "amount": 580.0
+    },
+    {
+      "description": "Janitorial Supply Bundle (Monthly)",
+      "quantity": 3,
+      "unit_price": 287.4,
+      "amount": 862.2
+    },
+    {
+      "description": "Multi-Outlet Surge Protector Strips",
+      "quantity": 15,
+      "unit_price": 38.95,
+      "amount": 584.25
+    },
+    {
+      "description": "First Aid Cabinet w/ Refill Kit",
+      "quantity": 2,
+      "unit_price": 224.0,
+      "amount": 448.0
+    },
+    {
+      "description": "Office Paper, Case (10 reams/case)",
+      "quantity": 30,
+      "unit_price": 52.0,
+      "amount": 1560.0
+    },
+    {
+      "description": "Packing Tape Dispenser w/ 12 Rolls",
+      "quantity": 10,
+      "unit_price": 18.75,
+      "amount": 187.5
+    }
+  ]
+}

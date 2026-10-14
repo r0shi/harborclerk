@@ -1,0 +1,57 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04871",
+  "date": "2025-04-24",
+  "total_usd": 17553.33,
+  "line_items": [
+    {
+      "description": "Managed Cloud Hosting (Monthly Fee)",
+      "quantity": 3,
+      "unit": "month",
+      "unit_price": 1200.0,
+      "amount": 3600.0
+    },
+    {
+      "description": "Cybersecurity Assessment & Penetration Test",
+      "quantity": 1,
+      "unit": "service",
+      "unit_price": 4500.0,
+      "amount": 4500.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Licenses",
+      "quantity": 12,
+      "unit": "license",
+      "unit_price": 22.0,
+      "amount": 264.0
+    },
+    {
+      "description": "Network Infrastructure Upgrade \u2013 Labor",
+      "quantity": 16,
+      "unit": "hour",
+      "unit_price": 185.0,
+      "amount": 2960.0
+    },
+    {
+      "description": "Firewall Appliance (Fortinet FortiGate 60F)",
+      "quantity": 1,
+      "unit": "unit",
+      "unit_price": 1895.0,
+      "amount": 1895.0
+    },
+    {
+      "description": "On-Site IT Support \u2013 April Retainer",
+      "quantity": 1,
+      "unit": "retainer",
+      "unit_price": 1750.0,
+      "amount": 1750.0
+    },
+    {
+      "description": "Data Backup & Disaster Recovery Setup",
+      "quantity": 1,
+      "unit": "service",
+      "unit_price": 2100.0,
+      "amount": 2100.0
+    }
+  ]
+}

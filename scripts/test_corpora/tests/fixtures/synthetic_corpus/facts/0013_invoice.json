@@ -1,0 +1,44 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-00847",
+  "date": "2025-02-13",
+  "total_usd": 19712.33,
+  "line_items": [
+    {
+      "description": "Enterprise License - DataBridge Pro (Annual subscription, seats 1-50)",
+      "quantity": 1,
+      "unit_price": 8500.0,
+      "amount": 8500.0
+    },
+    {
+      "description": "Professional Services - System Integration Consulting",
+      "quantity": 12,
+      "unit_price": 175.0,
+      "amount": 2100.0
+    },
+    {
+      "description": "Custom API Development - Salesforce Connector Module",
+      "quantity": 1,
+      "unit_price": 4200.0,
+      "amount": 4200.0
+    },
+    {
+      "description": "On-Site Implementation Support (Feb 6-7, 2025)",
+      "quantity": 8,
+      "unit_price": 195.0,
+      "amount": 1560.0
+    },
+    {
+      "description": "Priority Support Plan - Q1 2025 (January - March)",
+      "quantity": 1,
+      "unit_price": 750.0,
+      "amount": 750.0
+    },
+    {
+      "description": "Training Session - Admin Users (4-hour remote workshop, 10 attendees)",
+      "quantity": 1,
+      "unit_price": 1100.0,
+      "amount": 1100.0
+    }
+  ]
+}

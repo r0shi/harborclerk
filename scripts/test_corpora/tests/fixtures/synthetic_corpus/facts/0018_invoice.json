@@ -1,0 +1,38 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-04872",
+  "date": "2025-04-27",
+  "total_usd": 21834.03,
+  "line_items": [
+    {
+      "description": "Enterprise License \u2014 DataFlow Pro (Annual Subscription, 25-seat license)",
+      "quantity": 1,
+      "unit_price": 8500.0,
+      "amount": 8500.0
+    },
+    {
+      "description": "Professional Implementation Services (On-site configuration and deployment)",
+      "quantity": 16,
+      "unit_price": 195.0,
+      "amount": 3120.0
+    },
+    {
+      "description": "Custom API Integration Module (Bespoke connector for client ERP system)",
+      "quantity": 1,
+      "unit_price": 4750.0,
+      "amount": 4750.0
+    },
+    {
+      "description": "Priority Support Package \u2014 Tier 2 (12-month coverage, 8 business-hour SLA)",
+      "quantity": 1,
+      "unit_price": 2400.0,
+      "amount": 2400.0
+    },
+    {
+      "description": "Training \u2014 Remote Instructor-Led (End-user training sessions)",
+      "quantity": 8,
+      "unit_price": 175.0,
+      "amount": 1400.0
+    }
+  ]
+}

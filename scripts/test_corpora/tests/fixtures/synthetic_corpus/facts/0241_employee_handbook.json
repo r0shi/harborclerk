@@ -1,0 +1,26 @@
+{
+  "year": 2025,
+  "sections": [
+    "3.1 Professional Standards / Normes professionnelles",
+    "3.2 Conflict of Interest / Conflit d'int\u00e9r\u00eats",
+    "3.3 Confidentiality / Confidentialit\u00e9"
+  ],
+  "lang_split": {
+    "primary_language": "English",
+    "secondary_language": "French",
+    "structure": "parallel_mirrored",
+    "english_subsections": [
+      "3.1",
+      "3.2",
+      "3.3"
+    ],
+    "french_subsections": [
+      "3.1",
+      "3.2",
+      "3.3"
+    ],
+    "total_subsection_pairs": 3,
+    "confidentiality_post_employment_years": 3,
+    "conflict_disclosure_window_business_days": 5
+  }
+}

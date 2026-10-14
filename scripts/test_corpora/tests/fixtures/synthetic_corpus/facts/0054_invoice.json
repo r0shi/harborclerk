@@ -1,0 +1,62 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CYB-2025-04782",
+  "date": "2025-04-02",
+  "total_usd": 13294.18,
+  "line_items": [
+    {
+      "description": "Managed IT Support Services \u2013 Monthly retainer (April 2025)",
+      "quantity": 1,
+      "unit_price": 3200.0,
+      "total": 3200.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium User Licenses (monthly, per seat)",
+      "quantity": 18,
+      "unit_price": 22.0,
+      "total": 396.0
+    },
+    {
+      "description": "Endpoint Security & EDR Solution \u2013 CrowdStrike Falcon Q2 deployment",
+      "quantity": 1,
+      "unit_price": 1450.0,
+      "total": 1450.0
+    },
+    {
+      "description": "Network Infrastructure Assessment \u2013 On-site consulting hours",
+      "quantity": 12,
+      "unit_price": 185.0,
+      "total": 2220.0
+    },
+    {
+      "description": "Cloud Backup Configuration & Migration \u2013 Azure Blob Storage setup",
+      "quantity": 1,
+      "unit_price": 875.0,
+      "total": 875.0
+    },
+    {
+      "description": "Hardware \u2013 Cisco Catalyst 1000 Series 24-Port PoE Switch",
+      "quantity": 2,
+      "unit_price": 940.0,
+      "total": 1880.0
+    },
+    {
+      "description": "Cabling & Installation Labor \u2013 Structured cabling, patch panel",
+      "quantity": 6,
+      "unit_price": 95.0,
+      "total": 570.0
+    },
+    {
+      "description": "Cybersecurity Awareness Training \u2013 Per-user online platform, 12 months",
+      "quantity": 18,
+      "unit_price": 45.0,
+      "total": 810.0
+    },
+    {
+      "description": "Help Desk Overage Hours \u2013 March 2025 (beyond contracted 40-hr block)",
+      "quantity": 8,
+      "unit_price": 110.0,
+      "total": 880.0
+    }
+  ]
+}

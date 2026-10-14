@@ -1,0 +1,78 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04817",
+  "date": "2025-09-25",
+  "total_usd": 10235.2,
+  "line_items": [
+    {
+      "item_number": "001",
+      "description": "Heavy-Duty Storage Shelving Units (Steel, 6-Tier, 72\" x 36\" x 18\")",
+      "quantity": 8,
+      "unit_price": 189.99,
+      "amount": 1519.92
+    },
+    {
+      "item_number": "002",
+      "description": "Industrial Packing Tape Dispenser (Heavy-Duty, Ergonomic Handle)",
+      "quantity": 12,
+      "unit_price": 34.5,
+      "amount": 414.0
+    },
+    {
+      "item_number": "003",
+      "description": "Corrugated Shipping Boxes (Bundle/100, 18x12x10 in)",
+      "quantity": 5,
+      "unit_price": 148.0,
+      "amount": 740.0
+    },
+    {
+      "item_number": "004",
+      "description": "Commercial Label Printer (Thermal Transfer, 300 dpi)",
+      "quantity": 2,
+      "unit_price": 629.0,
+      "amount": 1258.0
+    },
+    {
+      "item_number": "005",
+      "description": "Pallet Jack, Manual Standard (5,500 lb Capacity, 48\" x 27\")",
+      "quantity": 3,
+      "unit_price": 875.0,
+      "amount": 2625.0
+    },
+    {
+      "item_number": "006",
+      "description": "Safety Work Gloves, Pack/12 (Cut-Resistant, Level A4)",
+      "quantity": 10,
+      "unit_price": 52.75,
+      "amount": 527.5
+    },
+    {
+      "item_number": "007",
+      "description": "Stretch Wrap Film, Case/4 Rolls (18\" x 1,500 ft, 80 Gauge)",
+      "quantity": 6,
+      "unit_price": 89.9,
+      "amount": 539.4
+    },
+    {
+      "item_number": "008",
+      "description": "Office Copy Paper, Case/10 Reams (8.5x11, 20 lb, 92 Bright)",
+      "quantity": 15,
+      "unit_price": 62.0,
+      "amount": 930.0
+    },
+    {
+      "item_number": "009",
+      "description": "Nitrile Disposable Gloves, Box/100 (Powder-Free, Medium)",
+      "quantity": 20,
+      "unit_price": 18.45,
+      "amount": 369.0
+    },
+    {
+      "item_number": "010",
+      "description": "Bubble Wrap Roll, 3/16\" Perforated (12\" x 175 ft per roll)",
+      "quantity": 4,
+      "unit_price": 112.0,
+      "amount": 448.0
+    }
+  ]
+}

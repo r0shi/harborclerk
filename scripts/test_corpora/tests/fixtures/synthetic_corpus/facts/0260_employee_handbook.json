@@ -1,0 +1,13 @@
+{
+  "year": 2025,
+  "sections": [
+    "Code of Conduct",
+    "Work Hours and Attendance",
+    "Compensation and Benefits",
+    "Confidentiality"
+  ],
+  "lang_split": {
+    "english": "Lines 1\u201335 (English Section)",
+    "french": "Lines 36\u201370 (Section Fran\u00e7aise)"
+  }
+}

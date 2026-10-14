@@ -1,0 +1,68 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "INV-2025-08847",
+  "date": "2025-12-24",
+  "total_usd": 12117.22,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Storage Shelving Units",
+      "quantity": 12,
+      "unit_price": 149.99,
+      "amount": 1799.88
+    },
+    {
+      "description": "Industrial Packing Tape (48mm x 100m rolls)",
+      "quantity": 50,
+      "unit_price": 8.75,
+      "amount": 437.5
+    },
+    {
+      "description": "Ergonomic Office Chair (Mesh, Adjustable)",
+      "quantity": 8,
+      "unit_price": 312.5,
+      "amount": 2500.0
+    },
+    {
+      "description": "Thermal Label Printer Ribbon Cartridges",
+      "quantity": 30,
+      "unit_price": 22.0,
+      "amount": 660.0
+    },
+    {
+      "description": "Stainless Steel Filing Cabinet (4-Drawer, Lockable)",
+      "quantity": 5,
+      "unit_price": 489.0,
+      "amount": 2445.0
+    },
+    {
+      "description": "Anti-Static Bubble Wrap Rolls (500mm x 100m)",
+      "quantity": 20,
+      "unit_price": 54.25,
+      "amount": 1085.0
+    },
+    {
+      "description": "Whiteboard 180cm x 120cm with Marker Set",
+      "quantity": 3,
+      "unit_price": 215.0,
+      "amount": 645.0
+    },
+    {
+      "description": "Premium Copy Paper A4 500-Sheet Reams (Box of 5)",
+      "quantity": 40,
+      "unit_price": 12.8,
+      "amount": 512.0
+    },
+    {
+      "description": "Cleaning & Janitorial Supply Kit (Assorted, 25-piece)",
+      "quantity": 10,
+      "unit_price": 87.5,
+      "amount": 875.0
+    },
+    {
+      "description": "Cable Management Tray Set",
+      "quantity": 6,
+      "unit_price": 43.75,
+      "amount": 262.5
+    }
+  ]
+}

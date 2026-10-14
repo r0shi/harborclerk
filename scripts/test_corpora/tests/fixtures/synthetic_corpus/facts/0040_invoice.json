@@ -1,0 +1,80 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04417",
+  "date": "2025-02-23",
+  "total_usd": 7291.01,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Storage Shelving Unit (Model: HD-STL-72, 72\" x 36\" x 18\")",
+      "quantity": 6,
+      "unit_price": 189.99,
+      "amount": 1139.94
+    },
+    {
+      "description": "Industrial Label Printer (Model: LP-4000, with USB & LAN)",
+      "quantity": 2,
+      "unit_price": 349.5,
+      "amount": 699.0
+    },
+    {
+      "description": "Thermal Label Rolls (Case of 12, 4\" x 6\", 250 labels/roll)",
+      "quantity": 10,
+      "unit_price": 44.75,
+      "amount": 447.5
+    },
+    {
+      "description": "Anti-Fatigue Floor Mat (3' x 5', Heavy Duty)",
+      "quantity": 8,
+      "unit_price": 87.25,
+      "amount": 698.0
+    },
+    {
+      "description": "Ergonomic Office Chair (Mesh Back, Adjustable Lumbar)",
+      "quantity": 5,
+      "unit_price": 312.0,
+      "amount": 1560.0
+    },
+    {
+      "description": "Wireless Barcode Scanner (Model: WBS-200, Bluetooth)",
+      "quantity": 4,
+      "unit_price": 128.5,
+      "amount": 514.0
+    },
+    {
+      "description": "Packing Tape Dispenser w/ 12 Rolls (2\" x 55 yd, Heavy Duty)",
+      "quantity": 15,
+      "unit_price": 22.99,
+      "amount": 344.85
+    },
+    {
+      "description": "Fire Extinguisher 5-lb ABC (Wall-Mount Bracket Included)",
+      "quantity": 3,
+      "unit_price": 79.95,
+      "amount": 239.85
+    },
+    {
+      "description": "First Aid Cabinet, Fully Stocked (OSHA Compliant, 150-Person)",
+      "quantity": 2,
+      "unit_price": 214.0,
+      "amount": 428.0
+    },
+    {
+      "description": "Cleaning Supply Bundle (Mop, Bucket, Broom, Dustpan Set)",
+      "quantity": 5,
+      "unit_price": 118.4,
+      "amount": 592.0
+    },
+    {
+      "description": "Freight/Shipping",
+      "quantity": 1,
+      "unit_price": 145.0,
+      "amount": 145.0
+    },
+    {
+      "description": "Tax (7.25%)",
+      "quantity": 1,
+      "unit_price": 482.87,
+      "amount": 482.87
+    }
+  ]
+}

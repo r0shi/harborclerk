@@ -1,0 +1,46 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-04817",
+  "date": "2025-12-11",
+  "total_usd": 20022.46,
+  "line_items": [
+    {
+      "description": "Enterprise License \u2013 Initech CRM Suite (Annual subscription, per seat)",
+      "quantity": 3,
+      "unit_price": 2400.0,
+      "amount": 7200.0
+    },
+    {
+      "description": "Professional Services \u2013 System Config & Initial Setup",
+      "quantity": 16,
+      "unit": "hours",
+      "unit_price": 185.0,
+      "amount": 2960.0
+    },
+    {
+      "description": "Data Migration & Integration Package (Legacy system to Initech CRM)",
+      "quantity": 1,
+      "unit_price": 3750.0,
+      "amount": 3750.0
+    },
+    {
+      "description": "Custom Report Development",
+      "quantity": 8,
+      "unit": "hours",
+      "unit_price": 195.0,
+      "amount": 1560.0
+    },
+    {
+      "description": "Priority Support Package \u2013 12 Months",
+      "quantity": 1,
+      "unit_price": 1800.0,
+      "amount": 1800.0
+    },
+    {
+      "description": "Staff Training Sessions (On-site, 2 days)",
+      "quantity": 1,
+      "unit_price": 2200.0,
+      "amount": 2200.0
+    }
+  ]
+}

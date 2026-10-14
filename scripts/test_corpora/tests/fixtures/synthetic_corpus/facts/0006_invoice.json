@@ -1,0 +1,80 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04471",
+  "date": "2025-05-26",
+  "total_usd": 8241.18,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Storage Shelving Units (48\" x 24\" x 72\", Steel, Charcoal)",
+      "quantity": 6,
+      "unit_price": 189.0,
+      "amount": 1134.0
+    },
+    {
+      "description": "Industrial Foam Packing Sheets (24\" x 36\", 2\" Thick, Pack of 10)",
+      "quantity": 20,
+      "unit_price": 34.5,
+      "amount": 690.0
+    },
+    {
+      "description": "Waterproof Tote Bins w/ Lids (27-Gallon, Heavy Duty HDPE)",
+      "quantity": 15,
+      "unit_price": 47.25,
+      "amount": 708.75
+    },
+    {
+      "description": "Commercial Label Printer (Zebra ZD421, Thermal Transfer)",
+      "quantity": 2,
+      "unit_price": 412.0,
+      "amount": 824.0
+    },
+    {
+      "description": "Thermal Label Rolls (4\" x 6\", 250 Labels/Roll)",
+      "quantity": 50,
+      "unit_price": 18.9,
+      "amount": 945.0
+    },
+    {
+      "description": "Packing Tape Dispensers (Heavy Duty, 3-inch Core)",
+      "quantity": 12,
+      "unit_price": 14.5,
+      "amount": 174.0
+    },
+    {
+      "description": "Stretch Wrap Rolls - 80 Gauge (18\" x 1500 ft, Clear)",
+      "quantity": 30,
+      "unit_price": 22.75,
+      "amount": 682.5
+    },
+    {
+      "description": "Steel Hand Truck / Dolly (800 lb Capacity, Folding)",
+      "quantity": 4,
+      "unit_price": 135.0,
+      "amount": 540.0
+    },
+    {
+      "description": "Safety Work Gloves - Box (Cut-Resistant, Size L, 12-pair box)",
+      "quantity": 10,
+      "unit_price": 38.0,
+      "amount": 380.0
+    },
+    {
+      "description": "Bubble Wrap Roll (12\" x 100 ft, 3/16\" Bubbles)",
+      "quantity": 25,
+      "unit_price": 29.4,
+      "amount": 735.0
+    },
+    {
+      "description": "Facility Cleaning Supplies Kit (Multi-surface, EPA-approved)",
+      "quantity": 8,
+      "unit_price": 67.5,
+      "amount": 540.0
+    },
+    {
+      "description": "Hanging File Folders - Case (Letter Size, 1/3 Cut, Box of 25)",
+      "quantity": 5,
+      "unit_price": 42.0,
+      "amount": 210.0
+    }
+  ]
+}

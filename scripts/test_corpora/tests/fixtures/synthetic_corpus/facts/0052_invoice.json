@@ -1,0 +1,47 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-00847",
+  "date": "2025-01-13",
+  "total_usd": 14230.0,
+  "line_items": [
+    {
+      "description": "Enterprise License - DataBridge Pro (Annual subscription, Tier 3)",
+      "quantity": 1,
+      "unit_price": 8400.0,
+      "amount": 8400.0
+    },
+    {
+      "description": "Professional Services - System Integration & Configuration",
+      "quantity": 12,
+      "unit": "hours",
+      "unit_price": 175.0,
+      "amount": 2100.0
+    },
+    {
+      "description": "Custom API Development - REST API endpoint build-out",
+      "quantity": 8,
+      "unit": "hours",
+      "unit_price": 195.0,
+      "amount": 1560.0
+    },
+    {
+      "description": "Cloud Hosting & Infrastructure - Managed cloud environment (January)",
+      "quantity": 1,
+      "unit_price": 620.0,
+      "amount": 620.0
+    },
+    {
+      "description": "Technical Support Package - Priority support tier (Q1 2025)",
+      "quantity": 1,
+      "unit_price": 950.0,
+      "amount": 950.0
+    },
+    {
+      "description": "Onboarding & Training - Remote training sessions (2 x 2hr)",
+      "quantity": 4,
+      "unit": "hours",
+      "unit_price": 150.0,
+      "amount": 600.0
+    }
+  ]
+}

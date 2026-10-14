@@ -1,0 +1,12 @@
+{
+  "quarter": "Q2",
+  "year": 2025,
+  "revenue_usd": 4750000,
+  "key_initiatives": {
+    "northwind_partners_joint_program": "Operational efficiency initiative launched in partnership with Northwind Partners to streamline advisory workflows and expand consulting scope",
+    "talent_acquisition": "Addition of eleven senior-level consultants to strengthen service delivery capacity",
+    "technology_infrastructure": "Deployment of upgraded client relationship management platform across all service lines",
+    "client_retention_drive": "Structured retention program maintaining a 93% client retention rate through enhanced account management protocols",
+    "pipeline_development": "Expanded business development outreach targeting mid-market and enterprise segments for H2 2025 growth"
+  }
+}

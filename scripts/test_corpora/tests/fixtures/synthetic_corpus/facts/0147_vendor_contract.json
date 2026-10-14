@@ -1,0 +1,20 @@
+{
+  "vendor": "Globex Supplies",
+  "term_months": 12,
+  "monthly_fee_usd": 7500.0,
+  "governing_law": "State of New York",
+  "signatures": {
+    "client": {
+      "organization": "Marbledock & Associates",
+      "signatory_name": "Jonathan R. Aldridge",
+      "title": "Managing Partner",
+      "date": "2025-09-25"
+    },
+    "vendor": {
+      "organization": "Globex Supplies",
+      "signatory_name": "Sandra T. Voss",
+      "title": "Chief Executive Officer",
+      "date": "2025-09-25"
+    }
+  }
+}

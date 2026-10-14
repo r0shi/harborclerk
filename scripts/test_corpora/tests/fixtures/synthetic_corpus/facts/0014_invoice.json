@@ -1,0 +1,62 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04417",
+  "date": "2025-03-12",
+  "total_usd": 9594.93,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Storage Shelving Units (Model: HDS-2400, Steel Frame, 5-Tier)",
+      "quantity": 6,
+      "unit_price": 284.99,
+      "amount": 1709.94
+    },
+    {
+      "description": "Industrial Label Printer (Zebra ZT230, USB/Ethernet)",
+      "quantity": 2,
+      "unit_price": 449.5,
+      "amount": 899.0
+    },
+    {
+      "description": "Thermal Label Rolls, Case (4\"x6\", 500 Labels/Roll)",
+      "quantity": 10,
+      "unit_price": 62.75,
+      "amount": 627.5
+    },
+    {
+      "description": "Office Chair - Ergonomic (Mesh Back, Adjustable Lumbar, Model: EC-7700)",
+      "quantity": 8,
+      "unit_price": 319.0,
+      "amount": 2552.0
+    },
+    {
+      "description": "Standing Desk Converter (Sit-Stand, 36\" Wide, Black Matte Finish)",
+      "quantity": 4,
+      "unit_price": 198.5,
+      "amount": 794.0
+    },
+    {
+      "description": "Multi-Function Printer Paper, Case of 10 Reams (8.5\"x11\", 20 lb)",
+      "quantity": 20,
+      "unit_price": 54.25,
+      "amount": 1085.0
+    },
+    {
+      "description": "Cable Management Tray Kit (Under-Desk Mount, Steel)",
+      "quantity": 12,
+      "unit_price": 38.99,
+      "amount": 467.88
+    },
+    {
+      "description": "Safety First Aid Cabinet (Fully Stocked, ANSI Class A, Wall-Mount)",
+      "quantity": 3,
+      "unit_price": 212.0,
+      "amount": 636.0
+    },
+    {
+      "description": "Delivery & Handling Fee",
+      "quantity": 1,
+      "unit_price": 175.0,
+      "amount": 175.0
+    }
+  ]
+}

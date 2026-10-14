@@ -1,0 +1,17 @@
+{
+  "year": 2025,
+  "sections": [
+    "3.2",
+    "4.1",
+    "7.4"
+  ],
+  "lang_split": {
+    "languages": [
+      "English",
+      "French"
+    ],
+    "structure": "sequential",
+    "english_label": "ENGLISH SECTION",
+    "french_label": "SECTION FRAN\u00c7AISE"
+  }
+}

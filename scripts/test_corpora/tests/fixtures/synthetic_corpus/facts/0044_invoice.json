@@ -1,0 +1,44 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-00847",
+  "date": "2025-02-22",
+  "total_usd": 19062.83,
+  "line_items": [
+    {
+      "description": "Enterprise License - ProjectFlow Pro (Annual subscription per seat, Jan 2025 - Dec 2025)",
+      "quantity": 3,
+      "unit_price": 2400.0,
+      "amount": 7200.0
+    },
+    {
+      "description": "Data Integration Module Add-On (Annual subscription per seat)",
+      "quantity": 3,
+      "unit_price": 650.0,
+      "amount": 1950.0
+    },
+    {
+      "description": "Professional Services - System Configuration & Setup (Hours at standard consulting rate)",
+      "quantity": 8,
+      "unit_price": 195.0,
+      "amount": 1560.0
+    },
+    {
+      "description": "Custom API Development - Marbledock CRM Connector (Fixed-price deliverable per SOW-0047)",
+      "quantity": 1,
+      "unit_price": 4200.0,
+      "amount": 4200.0
+    },
+    {
+      "description": "Priority Support Plan (Annual, 8x5 with 4-hr response SLA)",
+      "quantity": 1,
+      "unit_price": 1800.0,
+      "amount": 1800.0
+    },
+    {
+      "description": "Staff Training Session - Remote (Half-day sessions, up to 10 users each)",
+      "quantity": 2,
+      "unit_price": 450.0,
+      "amount": 900.0
+    }
+  ]
+}

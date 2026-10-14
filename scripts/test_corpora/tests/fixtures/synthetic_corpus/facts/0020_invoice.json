@@ -1,0 +1,56 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04817",
+  "date": "2025-07-21",
+  "total_usd": 12154.91,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Storage Shelving Units (Steel, 5-tier, 72\" x 36\" x 18\")",
+      "quantity": 6,
+      "unit_price": 312.5,
+      "amount": 1875.0
+    },
+    {
+      "description": "Multi-Function Office Printer (Laser, Color, Duplex, Network-Ready)",
+      "quantity": 2,
+      "unit_price": 649.0,
+      "amount": 1298.0
+    },
+    {
+      "description": "Premium Copy Paper - Case (8.5\" x 11\", 20lb, 10 reams/case)",
+      "quantity": 18,
+      "unit_price": 52.75,
+      "amount": 949.5
+    },
+    {
+      "description": "Ergonomic Office Chair (Adjustable lumbar, armrests, mesh back)",
+      "quantity": 8,
+      "unit_price": 387.0,
+      "amount": 3096.0
+    },
+    {
+      "description": "Industrial Cleaning Supplies Kit (Mop, broom, sanitizer, 12-item set)",
+      "quantity": 4,
+      "unit_price": 148.25,
+      "amount": 593.0
+    },
+    {
+      "description": "LED Panel Light Fixtures (2x4 ft, 5000K, Drop Ceiling Mount)",
+      "quantity": 20,
+      "unit_price": 89.99,
+      "amount": 1799.8
+    },
+    {
+      "description": "First Aid Cabinet - Wall Mount (OSHA Compliant, 150-piece kit)",
+      "quantity": 3,
+      "unit_price": 214.5,
+      "amount": 643.5
+    },
+    {
+      "description": "Packing & Shipping Supplies Bundle (Tape, bubble wrap, boxes, labels)",
+      "quantity": 5,
+      "unit_price": 176.0,
+      "amount": 880.0
+    }
+  ]
+}

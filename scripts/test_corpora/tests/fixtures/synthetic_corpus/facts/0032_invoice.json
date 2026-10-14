@@ -1,0 +1,68 @@
+{
+  "vendor": "Globex Supplies",
+  "invoice_number": "GS-2025-04817",
+  "date": "2025-06-27",
+  "total_usd": 16266.46,
+  "line_items": [
+    {
+      "description": "Heavy-Duty Shelving Units (48\"x18\"x72\") - Powder Coated Steel",
+      "quantity": 12,
+      "unit_price": 189.5,
+      "amount": 2274.0
+    },
+    {
+      "description": "Commercial Office Chair - Ergonomic Mesh Back, Adjustable Armrests",
+      "quantity": 20,
+      "unit_price": 224.0,
+      "amount": 4480.0
+    },
+    {
+      "description": "Letter-Size Filing Cabinet, 4-Drawer Lateral, Lockable",
+      "quantity": 8,
+      "unit_price": 312.75,
+      "amount": 2502.0
+    },
+    {
+      "description": "Thermal Receipt Paper Rolls (80mm x 80m), Box of 10",
+      "quantity": 150,
+      "unit_price": 4.2,
+      "amount": 630.0
+    },
+    {
+      "description": "Industrial Floor Cleaner - Concentrated, 1-Gallon Jugs",
+      "quantity": 24,
+      "unit_price": 38.9,
+      "amount": 933.6
+    },
+    {
+      "description": "Multi-Port USB-C Docking Station (10-in-1, 4K HDMI)",
+      "quantity": 15,
+      "unit_price": 145.0,
+      "amount": 2175.0
+    },
+    {
+      "description": "Bubble Wrap Roll - 12\" x 100 ft, 3/16\" Perforated",
+      "quantity": 10,
+      "unit_price": 27.5,
+      "amount": 275.0
+    },
+    {
+      "description": "Wireless Presentation Clicker with Laser Pointer, USB Receiver",
+      "quantity": 6,
+      "unit_price": 54.99,
+      "amount": 329.94
+    },
+    {
+      "description": "Safety Gloves - Cut-Resistant Level A4, Size M/L (Pairs)",
+      "quantity": 40,
+      "unit_price": 14.75,
+      "amount": 590.0
+    },
+    {
+      "description": "Janitorial Supply Cart - 3-Tier With Bucket and Mop Holder",
+      "quantity": 4,
+      "unit_price": 189.0,
+      "amount": 756.0
+    }
+  ]
+}

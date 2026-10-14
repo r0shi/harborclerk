@@ -1,0 +1,56 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04471",
+  "date": "2025-03-26",
+  "total_usd": 15879.25,
+  "line_items": [
+    {
+      "description": "Managed Cloud Infrastructure (Monthly)",
+      "quantity": 1,
+      "unit_price_usd": 3200.0,
+      "line_total_usd": 3200.0
+    },
+    {
+      "description": "Cybersecurity Monitoring & Threat Response",
+      "quantity": 1,
+      "unit_price_usd": 1850.0,
+      "line_total_usd": 1850.0
+    },
+    {
+      "description": "Help Desk Support - Tier 1 & 2 (40 hrs)",
+      "quantity": 40,
+      "unit_price_usd": 95.0,
+      "line_total_usd": 3800.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium - Licenses",
+      "quantity": 25,
+      "unit_price_usd": 22.0,
+      "line_total_usd": 550.0
+    },
+    {
+      "description": "Network Infrastructure Audit",
+      "quantity": 1,
+      "unit_price_usd": 2400.0,
+      "line_total_usd": 2400.0
+    },
+    {
+      "description": "On-Site Technician Visit (8 hrs @ $145/hr)",
+      "quantity": 8,
+      "unit_price_usd": 145.0,
+      "line_total_usd": 1160.0
+    },
+    {
+      "description": "Backup & Disaster Recovery Setup",
+      "quantity": 1,
+      "unit_price_usd": 1975.0,
+      "line_total_usd": 1975.0
+    },
+    {
+      "description": "Hardware Procurement - Cisco Switch 48-Port",
+      "quantity": 2,
+      "unit_price_usd": 890.0,
+      "line_total_usd": 1780.0
+    }
+  ]
+}

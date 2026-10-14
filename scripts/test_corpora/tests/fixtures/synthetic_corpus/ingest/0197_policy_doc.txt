@@ -1,0 +1,222 @@
+MARBLEDOCK & ASSOCIATES
+COMPANY POLICY DOCUMENT
+
+Policy Name: Comprehensive Workplace, Human Resources, and Information Security Policy
+Version: 2.1.0
+Effective Date: August 1, 2025
+Policy Owner: Human Resources & Information Security Department
+Approved By: Executive Leadership Committee
+
+---
+
+1. PURPOSE AND SCOPE
+
+1.1 Purpose
+This policy establishes the standards, expectations, and guidelines governing the conduct, rights, and responsibilities of all employees, contractors, consultants, and partners (collectively referred to as "Personnel") of Marbledock & Associates (hereinafter "the Company"). It is designed to foster a safe, inclusive, productive, and secure workplace environment.
+
+1.2 Scope
+This policy applies to all Personnel operating within any Marbledock & Associates office, remote work environment, client site, or any location where Company business is conducted. It encompasses all devices, systems, networks, and data owned or managed by the Company.
+
+---
+
+2. EQUAL EMPLOYMENT OPPORTUNITY AND ANTI-DISCRIMINATION
+
+2.1 Commitment to Equality
+Marbledock & Associates is an equal opportunity employer. The Company does not discriminate on the basis of race, color, religion, sex, national origin, age, disability, genetic information, sexual orientation, gender identity or expression, veteran status, or any other characteristic protected by applicable law.
+
+2.2 Anti-Harassment Policy
+Harassment of any kind — including verbal, physical, visual, or digital — is strictly prohibited. This includes but is not limited to sexual harassment, bullying, intimidation, and hostile behavior. Any Personnel found in violation of this policy will be subject to disciplinary action up to and including termination.
+
+2.3 Reporting Procedures
+Personnel who experience or witness discrimination or harassment must report the incident to their direct supervisor, the Human Resources Department, or via the anonymous ethics hotline at ethics@marbledock.com. All reports will be investigated promptly, fairly, and confidentially.
+
+---
+
+3. CODE OF CONDUCT
+
+3.1 Professional Behavior
+All Personnel are expected to conduct themselves with integrity, respect, and professionalism at all times. This includes interactions with colleagues, clients, vendors, and the general public.
+
+3.2 Conflicts of Interest
+Personnel must disclose any actual or potential conflicts of interest to the Human Resources Department in writing. A conflict of interest exists when personal interests interfere or appear to interfere with the interests of Marbledock & Associates.
+
+3.3 Confidentiality
+All Personnel are required to maintain the confidentiality of proprietary Company information, client data, financial records, strategic plans, and personnel information both during and after their tenure with the Company. Violations may result in legal action in addition to disciplinary measures.
+
+3.4 Social Media Use
+Personnel must exercise sound judgment when using social media. Disclosing confidential Company information, making disparaging remarks about the Company or its clients, or misrepresenting one's affiliation with Marbledock & Associates on social platforms is strictly prohibited.
+
+---
+
+4. ATTENDANCE AND REMOTE WORK POLICY
+
+4.1 Standard Working Hours
+Core business hours are 9:00 AM to 5:00 PM local time, Monday through Friday, unless otherwise specified by department heads. Personnel are expected to be available and responsive during these hours.
+
+4.2 Remote Work Guidelines
+Marbledock & Associates supports a hybrid work model. Personnel working remotely must:
+   a) Maintain a secure and professional workspace.
+   b) Use only Company-approved VPN and communication tools.
+   c) Be available during core business hours unless an alternative schedule is pre-approved.
+   d) Attend all mandatory in-person meetings or events as required.
+
+4.3 Attendance Reporting
+Absences must be reported to the direct supervisor and logged in the Company's HR management system no later than 30 minutes after the start of the scheduled shift. Repeated unexcused absences will be subject to progressive disciplinary action.
+
+---
+
+5. LEAVE POLICY
+
+5.1 Annual Leave
+Full-time Personnel accrue 15 days of paid annual leave per calendar year, increasing to 20 days after five years of continuous service. Leave must be requested and approved through the HR management system at least five business days in advance for planned absences.
+
+5.2 Sick Leave
+Personnel are entitled to 10 days of paid sick leave per calendar year. Sick leave does not carry over to subsequent years. A medical certificate may be required for absences exceeding three consecutive days.
+
+5.3 Parental Leave
+Marbledock & Associates provides up to 16 weeks of paid parental leave for primary caregivers and up to 6 weeks of paid parental leave for secondary caregivers following the birth, adoption, or foster placement of a child.
+
+5.4 Bereavement Leave
+Personnel are entitled to up to 5 days of paid bereavement leave for the loss of an immediate family member (spouse, child, parent, or sibling) and up to 3 days for extended family members.
+
+5.5 Other Leave
+Jury duty, military leave, and other legally mandated leaves are granted in accordance with applicable laws.
+
+---
+
+6. COMPENSATION AND PERFORMANCE
+
+6.1 Pay Schedule
+Salaries and wages are disbursed on a bi-weekly basis. Any payroll discrepancies must be reported to the Finance Department within 10 business days of the pay date.
+
+6.2 Performance Reviews
+Formal performance evaluations are conducted annually in December. Mid-year check-ins are conducted in June. Personnel are evaluated on job performance, collaboration, adherence to Company values, and goal achievement.
+
+6.3 Merit Increases and Bonuses
+Merit increases and performance bonuses are awarded at the Company's discretion based on individual performance, departmental results, and overall Company financial performance.
+
+---
+
+7. INFORMATION SECURITY POLICY
+
+7.1 Data Classification
+All Company data is classified into the following categories:
+   - Public: Information intended for external audiences.
+   - Internal: Information for general internal use.
+   - Confidential: Sensitive business, client, or personnel information.
+   - Restricted: Highly sensitive data requiring the highest level of protection (e.g., financial records, legal documents, authentication credentials).
+
+7.2 Access Control
+Access to Company systems and data is granted on a least-privilege basis. Personnel are granted access only to the systems and information necessary to perform their job functions. All access rights are reviewed quarterly by the Information Security team.
+
+7.3 Password and Authentication Requirements
+All Personnel must adhere to the following:
+   a) Passwords must be a minimum of 14 characters and include uppercase letters, lowercase letters, numbers, and special characters.
+   b) Passwords must be changed every 90 days.
+   c) Multi-factor authentication (MFA) is mandatory for all Company systems, applications, and remote access.
+   d) Passwords must not be shared, written down in unsecured locations, or reused across systems.
+
+7.4 Device and Endpoint Security
+All devices used to access Company systems — whether Company-issued or personal (BYOD) — must:
+   a) Have approved endpoint security software installed and active.
+   b) Have operating systems and applications kept up to date with current security patches.
+   c) Be encrypted using Company-approved encryption standards.
+   d) Be reported to IT immediately if lost, stolen, or compromised.
+
+7.5 Network Security
+Personnel must not connect to Company systems using unsecured public Wi-Fi networks without an active VPN connection. The use of unauthorized hardware (e.g., personal routers, USB drives) on the Company network is prohibited without prior approval from the IT Department.
+
+7.6 Acceptable Use of Company Technology
+Company technology resources are provided for business purposes. Incidental personal use is permitted provided it does not:
+   a) Interfere with job performance.
+   b) Consume excessive bandwidth or storage.
+   c) Involve accessing, storing, or transmitting inappropriate, illegal, or offensive content.
+   d) Violate any other provision of this policy.
+
+7.7 Data Handling and Storage
+Confidential and Restricted data must be stored only in Company-approved systems. Transfer of such data to external parties requires written authorization from the relevant department head and the Information Security team. Data must not be stored on personal devices or unauthorized cloud services.
+
+7.8 Incident Reporting
+All suspected or confirmed security incidents, including phishing attempts, malware infections, unauthorized access, and data breaches, must be reported to the IT Security team immediately at security@marbledock.com or via the 24/7 security hotline. Failure to report a known security incident is a serious policy violation.
+
+7.9 Third-Party and Vendor Security
+All third-party vendors and partners who access Company systems or handle Company data must comply with Marbledock & Associates' security standards and sign a Data Processing Agreement (DPA) prior to engagement.
+
+---
+
+8. PHYSICAL SECURITY
+
+8.1 Building Access
+Access to Company premises is controlled via electronic key cards. Personnel must not share or lend their access credentials to others. Visitors must be signed in at reception and escorted by authorized Personnel at all times.
+
+8.2 Clean Desk Policy
+Personnel must ensure that sensitive documents, devices, and materials are secured when not in use and at the end of each working day. Computer screens must be locked when Personnel step away from their workstations.
+
+8.3 Secure Document Disposal
+Confidential and Restricted printed materials must be disposed of using Company-provided cross-cut shredders or secure disposal bins. Standard recycling bins must not be used for sensitive documents.
+
+---
+
+9. HEALTH, SAFETY, AND WELLNESS
+
+9.1 Workplace Safety
+Marbledock & Associates is committed to providing a safe working environment in compliance with all applicable occupational health and safety laws and regulations. Personnel are required to report hazardous conditions, accidents, or near-misses to the Office Manager or HR Department immediately.
+
+9.2 Substance-Free Workplace
+The use, possession, distribution, or being under the influence of alcohol or illegal substances on Company premises or during Company-sponsored events is strictly prohibited. Limited alcohol consumption may be permitted at Company-sanctioned events at the discretion of senior management.
+
+9.3 Employee Wellness Program
+Marbledock & Associates offers an Employee Assistance Program (EAP) providing confidential counseling, mental health support, financial guidance, and work-life balance resources. Details are available through the HR Department.
+
+---
+
+10. DISCIPLINARY PROCEDURES
+
+10.1 Progressive Discipline
+Violations of Company policy will generally be addressed through a progressive disciplinary process:
+   Step 1: Verbal warning and documented counseling session.
+   Step 2: Written warning.
+   Step 3: Final written warning and/or suspension without pay.
+   Step 4: Termination of employment.
+
+10.2 Grounds for Immediate Termination
+Certain violations may result in immediate termination without progression through the above steps, including but not limited to:
+   - Theft, fraud, or embezzlement.
+   - Physical violence or threats.
+   - Serious breach of data security.
+   - Gross misconduct or willful policy violations.
+   - Falsification of Company records.
+
+---
+
+11. POLICY COMPLIANCE AND ACKNOWLEDGMENT
+
+11.1 Compliance
+All Personnel are required to read, understand, and comply with this policy in its entirety. Ignorance of this policy does not exempt Personnel from accountability for violations.
+
+11.2 Acknowledgment
+Upon onboarding and upon each subsequent annual policy update, all Personnel must sign a Policy Acknowledgment Form confirming they have read and agree to abide by this policy. Signed acknowledgments are retained in Personnel files.
+
+11.3 Policy Updates
+This policy will be reviewed annually or as needed in response to changes in law, regulation, or business operations. Personnel will be notified of material changes via official Company communication channels.
+
+---
+
+12. CONTACT INFORMATION
+
+Human Resources Department: hr@marbledock.com
+Information Security Team: security@marbledock.com
+Ethics Hotline: ethics@marbledock.com
+General Inquiries: info@marbledock.com
+
+---
+
+Document Control:
+Policy Title: Comprehensive Workplace, Human Resources, and Information Security Policy
+Version: 2.1.0
+Effective Date: August 1, 2025
+Last Reviewed: July 15, 2025
+Next Review Due: August 1, 2026
+Approved By: Executive Leadership Committee, Marbledock & Associates
+
+© 2025 Marbledock & Associates. All rights reserved. This document is confidential and intended for internal use only.

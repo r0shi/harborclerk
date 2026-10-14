@@ -1,0 +1,56 @@
+{
+  "vendor": "Initech Software",
+  "invoice_number": "INV-2025-04817",
+  "date": "2025-11-21",
+  "total_usd": 22747.66,
+  "line_items": [
+    {
+      "description": "Enterprise License \u2013 Project Management Suite (Annual)",
+      "quantity": 1,
+      "unit_price": 8500.0,
+      "amount": 8500.0
+    },
+    {
+      "description": "Professional Services \u2013 System Configuration & Onboarding (hrs)",
+      "quantity": 16,
+      "unit_price": 195.0,
+      "amount": 3120.0
+    },
+    {
+      "description": "Data Migration Package (Legacy System to Initech Cloud)",
+      "quantity": 1,
+      "unit_price": 2750.0,
+      "amount": 2750.0
+    },
+    {
+      "description": "Premium Support Plan (12-Month Subscription)",
+      "quantity": 1,
+      "unit_price": 1800.0,
+      "amount": 1800.0
+    },
+    {
+      "description": "User Training Workshop \u2013 Remote Sessions (per attendee)",
+      "quantity": 5,
+      "unit_price": 350.0,
+      "amount": 1750.0
+    },
+    {
+      "description": "Custom API Integration Development",
+      "quantity": 1,
+      "unit_price": 4200.0,
+      "amount": 4200.0
+    },
+    {
+      "description": "Discount (5% \u2013 Preferred Client)",
+      "quantity": 1,
+      "unit_price": -1106.0,
+      "amount": -1106.0
+    },
+    {
+      "description": "Sales Tax (8.25% \u2013 TX)",
+      "quantity": 1,
+      "unit_price": 1733.66,
+      "amount": 1733.66
+    }
+  ]
+}

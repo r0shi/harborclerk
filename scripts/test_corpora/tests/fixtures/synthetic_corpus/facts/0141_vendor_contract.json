@@ -1,0 +1,20 @@
+{
+  "vendor": "Cyberdyne IT",
+  "term_months": 24,
+  "monthly_fee_usd": 12500.0,
+  "governing_law": "State of New York",
+  "signatures": {
+    "client_signatory": {
+      "name": "Jonathan P. Harwell",
+      "title": "Managing Partner",
+      "organization": "Marbledock & Associates",
+      "date": "2025-09-25"
+    },
+    "vendor_signatory": {
+      "name": "Sarah K. Tanaka",
+      "title": "Chief Executive Officer",
+      "organization": "Cyberdyne IT",
+      "date": "2025-09-25"
+    }
+  }
+}

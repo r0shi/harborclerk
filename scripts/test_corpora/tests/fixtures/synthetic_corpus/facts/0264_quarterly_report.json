@@ -1,0 +1,15 @@
+{
+  "quarter": "Q1",
+  "year": 2025,
+  "revenue_usd": 4872500,
+  "key_initiatives": {
+    "initiative_1": {
+      "name": "Integrated Analytics Platform (IAP) Rollout",
+      "description": "Deployment of real-time financial and operational dashboards for key client accounts, launched January 2025."
+    },
+    "initiative_2": {
+      "name": "Sustainable Growth Advisory (SGA) Program",
+      "description": "Strategic advisory program aligning client operations and reporting with ESG benchmarks ahead of anticipated H2 2025 regulatory requirements."
+    }
+  }
+}

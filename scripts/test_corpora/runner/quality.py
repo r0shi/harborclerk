@@ -238,6 +238,16 @@ _OPENING_NOTHING_FOUND_SIGNATURES = (
     # excerpts", then a party "in Nevada", the keyed answer.
     "not explicitly stated",
     "could not find",
+    # The French forms of the same, for the synthetic key's French variants: an answer in French that opens by
+    # saying the thing is absent and then names it in passing is the #713 answer in the other language. Read with
+    # the typographic apostrophe folded to the plain one (`_normalize_for_match`), since models write both.
+    "je n'ai pas trouvé",
+    "je n'ai pas pu trouver",
+    "aucune information",
+    "aucun document",
+    "n'est pas précisé",
+    "n'est pas mentionné",
+    "n'est pas indiqué",
 )
 _BASELINE_PLACEHOLDER_SIGNATURES = (
     "unfilled template placeholder",
@@ -255,8 +265,9 @@ def _normalize_for_match(text: str) -> str:
     individual words like ``**empty**`` mid-sentence, which would otherwise
     prevent a substring match against "is currently empty". The asterisks
     carry no semantic load — they're a presentation artifact — so removing
-    them before matching is safe and makes the marker list short."""
-    return text.lower().replace("*", "")
+    them before matching is safe and makes the marker list short. The typographic apostrophe becomes the plain one
+    for the same reason: "n’est pas" and "n'est pas" are one phrasing."""
+    return text.lower().replace("*", "").replace("\u2019", "'")
 
 
 def nothing_found_signature(text: str, *, at_opening: bool = False) -> str | None:

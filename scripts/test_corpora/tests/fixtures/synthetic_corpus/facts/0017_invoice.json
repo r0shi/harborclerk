@@ -1,0 +1,62 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04417",
+  "date": "2025-05-21",
+  "total_usd": 13137.49,
+  "line_items": [
+    {
+      "description": "Managed IT Support - Monthly Retainer",
+      "quantity": 1,
+      "unit_price": 2500.0,
+      "amount": 2500.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Licenses",
+      "quantity": 25,
+      "unit_price": 22.0,
+      "amount": 550.0
+    },
+    {
+      "description": "Network Security Audit & Penetration Testing (On-Site, May 12-14 2025)",
+      "quantity": 1,
+      "unit_price": 4800.0,
+      "amount": 4800.0
+    },
+    {
+      "description": "Cisco Meraki MX68 Firewall (Hardware)",
+      "quantity": 2,
+      "unit_price": 895.0,
+      "amount": 1790.0
+    },
+    {
+      "description": "Remote Backup Solution - Annual License",
+      "quantity": 1,
+      "unit_price": 1200.0,
+      "amount": 1200.0
+    },
+    {
+      "description": "Help Desk Support Hours (Senior Tier)",
+      "quantity": 18,
+      "unit_price": 95.0,
+      "amount": 1710.0
+    },
+    {
+      "description": "SSL Certificate Installation & Configuration",
+      "quantity": 3,
+      "unit_price": 75.0,
+      "amount": 225.0
+    },
+    {
+      "description": "Discount (5% - Preferred Client)",
+      "quantity": 1,
+      "unit_price": -638.75,
+      "amount": -638.75
+    },
+    {
+      "description": "Sales Tax (8.25% - Travis County, TX)",
+      "quantity": 1,
+      "unit_price": 1001.24,
+      "amount": 1001.24
+    }
+  ]
+}

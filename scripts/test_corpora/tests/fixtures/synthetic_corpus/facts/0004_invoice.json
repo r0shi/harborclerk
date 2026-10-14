@@ -1,0 +1,56 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04782",
+  "date": "2025-04-08",
+  "total_usd": 13229.23,
+  "line_items": [
+    {
+      "description": "Managed Cloud Infrastructure (monthly)",
+      "quantity": 1,
+      "unit_price": 2850.0,
+      "total": 2850.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium Licenses",
+      "quantity": 18,
+      "unit_price": 22.0,
+      "total": 396.0
+    },
+    {
+      "description": "Cybersecurity Endpoint Protection (seats)",
+      "quantity": 18,
+      "unit_price": 14.5,
+      "total": 261.0
+    },
+    {
+      "description": "On-Site IT Support \u2013 Senior Engineer",
+      "quantity": 12,
+      "unit_price": 175.0,
+      "total": 2100.0
+    },
+    {
+      "description": "Network Switch Replacement (Cisco C9200)",
+      "quantity": 2,
+      "unit_price": 1847.0,
+      "total": 3694.0
+    },
+    {
+      "description": "Structured Cabling & Installation Labor",
+      "quantity": 1,
+      "unit_price": 1320.0,
+      "total": 1320.0
+    },
+    {
+      "description": "Data Backup & Disaster Recovery Setup",
+      "quantity": 1,
+      "unit_price": 950.0,
+      "total": 950.0
+    },
+    {
+      "description": "Remote Help Desk Support Block (10 hrs)",
+      "quantity": 1,
+      "unit_price": 650.0,
+      "total": 650.0
+    }
+  ]
+}

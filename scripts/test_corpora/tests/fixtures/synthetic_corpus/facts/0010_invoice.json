@@ -1,0 +1,56 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-04471",
+  "date": "2025-02-13",
+  "total_usd": 10734.07,
+  "line_items": [
+    {
+      "description": "Managed IT Support Services (Monthly retainer - February 2025)",
+      "quantity": 1,
+      "unit_price": 2800.0,
+      "amount": 2800.0
+    },
+    {
+      "description": "Network Security Monitoring (Firewall management & threat detection - February 2025)",
+      "quantity": 1,
+      "unit_price": 1250.0,
+      "amount": 1250.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium User Licenses (monthly)",
+      "quantity": 18,
+      "unit_price": 22.0,
+      "amount": 396.0
+    },
+    {
+      "description": "Cloud Backup & Disaster Recovery (500 GB managed backup - Feb 2025)",
+      "quantity": 1,
+      "unit_price": 480.0,
+      "amount": 480.0
+    },
+    {
+      "description": "On-Site Technician Visit - Network infrastructure audit (January 28, 2025)",
+      "quantity": 4,
+      "unit_price": 185.0,
+      "amount": 740.0
+    },
+    {
+      "description": "Hardware Supply - Cisco Catalyst 1000-24T Network Switch",
+      "quantity": 2,
+      "unit_price": 1340.0,
+      "amount": 2680.0
+    },
+    {
+      "description": "Structured Cabling & Installation - Conference room A & B patch panel termination (Jan 30, 2025)",
+      "quantity": 1,
+      "unit_price": 920.0,
+      "amount": 920.0
+    },
+    {
+      "description": "Security Awareness Training Platform License (Annual - prorated 1 month)",
+      "quantity": 1,
+      "unit_price": 650.0,
+      "amount": 650.0
+    }
+  ]
+}

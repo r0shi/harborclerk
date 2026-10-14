@@ -1,0 +1,50 @@
+{
+  "vendor": "Cyberdyne IT",
+  "invoice_number": "CDI-2025-08847",
+  "date": "2025-12-22",
+  "total_usd": 22616.79,
+  "line_items": [
+    {
+      "description": "Managed Cloud Infrastructure Services (Monthly managed hosting & monitoring, AWS environment, Nov-Dec 2025)",
+      "quantity": 1,
+      "unit_price": 4200.0,
+      "amount": 4200.0
+    },
+    {
+      "description": "Microsoft 365 Business Premium License Procurement & Setup (Per-seat annual license, prorated Q4)",
+      "quantity": 18,
+      "unit_price": 220.0,
+      "amount": 3960.0
+    },
+    {
+      "description": "Network Security Audit & Penetration Testing - Full Scope Assessment",
+      "quantity": 1,
+      "unit_price": 3500.0,
+      "amount": 3500.0
+    },
+    {
+      "description": "Help Desk Support - Tier 1 & 2 (On-demand remote support hours, Oct 15 \u2013 Dec 15, 2025)",
+      "quantity": 40,
+      "unit_price": 95.0,
+      "amount": 3800.0
+    },
+    {
+      "description": "Cisco Catalyst 9200 48-Port Switch (Hardware supply & configuration)",
+      "quantity": 2,
+      "unit_price": 1847.5,
+      "amount": 3695.0
+    },
+    {
+      "description": "Data Backup & Disaster Recovery Configuration - Veeam Cloud Connect",
+      "quantity": 1,
+      "unit_price": 1150.0,
+      "amount": 1150.0
+    },
+    {
+      "description": "VoIP System Upgrade Consultation (Engineer hours @ $175/hr)",
+      "quantity": 6,
+      "unit_price": 175.0,
+      "amount": 1050.0
+    }
+  ]
+}
