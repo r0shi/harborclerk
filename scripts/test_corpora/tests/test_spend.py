@@ -44,7 +44,10 @@ def _config(cap: float = 1.00) -> SpendConfig:
         cap_usd=cap,
         prices={
             "m": Price(input=10.0, output=100.0),
-            "cached": Price(10.0, 100.0, cache_write=20.0, cache_read=1.0),
+            "cached": Price(10.0, 100.0, cache_write_5m=12.5, cache_write_1h=20.0, cache_read=1.0),
+            # An OpenAI-shaped row: one write rate (1.25x) under both lifetimes, a cached read at a tenth.
+            "oai": Price(10.0, 100.0, cache_write_5m=12.5, cache_write_1h=12.5, cache_read=1.0),
+            "newer": Price(10.0, 100.0, tokenizer=2.0),
             "claude-sonnet-4-6": Price(input=3.0, output=15.0),
         },
         prices_verified="2026-01-01",
@@ -59,8 +62,34 @@ def _config(cap: float = 1.00) -> SpendConfig:
 def test_the_shipped_policy_is_the_adrs():
     c = spend.load_config()
     assert c.cap_usd == 25.00
-    assert c.price("claude-sonnet-4-6") == Price(input=3.0, output=15.0, cache_write=6.0, cache_read=0.30)
-    assert c.price("gpt-4o") == Price(input=2.5, output=10.0)
+    assert c.price("claude-sonnet-4-6") == Price(3.0, 15.0, cache_write_5m=3.75, cache_write_1h=6.0, cache_read=0.30)
+    assert c.price("gpt-4o") == Price(input=2.5, output=10.0, cache_read=1.25)
+    # The cloud subjects (read 2026-10-14). Claude 4.7 and later count about 30% more tokens than Sonnet 4.6.
+    assert c.price("claude-fable-5-1") == Price(10.0, 50.0, 12.5, 20.0, 0.25, tokenizer=1.3)
+    assert c.price("claude-opus-5-5") == Price(4.0, 20.0, 5.0, 8.0, 0.20, tokenizer=1.3)
+    assert c.price("gpt-6-astra") == Price(10.0, 50.0, cache_write_5m=12.5, cache_write_1h=12.5, cache_read=1.0)
+    assert c.price("gpt-6.1-sol") == Price(2.0, 10.0, cache_write_5m=2.5, cache_write_1h=2.5, cache_read=0.10)
+    assert c.price("gpt-5.6-luna").read == 0.02 and c.price("claude-sonnet-4-6").tokenizer == 1.0
+    assert c.prices_verified == "2026-10-14"
+
+
+def test_a_price_row_is_read_in_either_vendors_words(tmp_path):
+    """Anthropic prices a write by lifetime; OpenAI has `cached_input` and one `cache_write`. A key nobody knows
+    is refused, and so is a write rate given both ways."""
+
+    def load(models: str):
+        body = f"cap_usd: 25\nprices:\n  verified: x\n  models:\n{models}chars_per_token: 2\nestimates: {{}}\n"
+        (tmp_path / "s.yaml").write_text(body)
+        return spend.load_config(tmp_path / "s.yaml")
+
+    c = load("    o: {input: 2.0, cached_input: 0.2, cache_write: 2.5, output: 10.0}\n")
+    assert c.price("o") == Price(2.0, 10.0, cache_write_5m=2.5, cache_write_1h=2.5, cache_read=0.2)
+    with pytest.raises(ValueError, match="unknown price key"):
+        load("    o: {input: 2.0, output: 10.0, cache_hit: 0.2}\n")
+    with pytest.raises(ValueError, match="not both"):
+        load("    o: {input: 2.0, output: 10.0, cache_write: 2.5, cache_write_1h: 4.0}\n")
+    with pytest.raises(ValueError, match="tokenizer"):
+        load("    o: {input: 2.0, output: 10.0, tokenizer: 0}\n")
 
 
 def test_every_model_the_harness_names_by_default_is_priced():
@@ -159,6 +188,82 @@ def test_cost_is_tokens_times_price_per_million():
     assert c.cost("m", Usage(0, 0, cache_write_tokens=1_000_000, cache_read_tokens=1_000_000)) == 30.0
 
 
+def test_a_cache_write_is_priced_by_its_lifetime_and_at_the_hour_rate_when_the_response_does_not_say():
+    """Anthropic bills a five-minute write at 1.25x input and an hour write at 2x. The loop asks for five minutes
+    and the meter charged every write as an hour (1.6x too much on Sonnet 4.6, 885 K tokens a run)."""
+    c = _config()
+    five = Usage(0, 0, cache_write_tokens=1_000_000, cache_write_5m_tokens=1_000_000)
+    mixed = Usage(0, 0, cache_write_tokens=1_000_000, cache_write_5m_tokens=600_000)
+    unsaid = Usage(0, 0, cache_write_tokens=1_000_000)
+    assert (c.cost("cached", five), c.cost("cached", mixed), c.cost("cached", unsaid)) == (12.5, 15.5, 20.0)
+    assert (mixed.cache_write_1h_tokens, unsaid.cache_write_1h_tokens, unsaid.cache_write_5m_tokens) == (
+        400_000,
+        1_000_000,
+        None,
+    )
+    # No cache price in the config: the published multipliers, 1.25x and 2x.
+    assert (c.cost("m", five), c.cost("m", unsaid)) == (12.5, 20.0)
+    with pytest.raises(ValueError):
+        Usage(0, 0, cache_write_tokens=10, cache_write_5m_tokens=11)
+
+
+def test_the_anthropic_usage_block_says_which_lifetime_was_written():
+    def usage(**cache_creation):
+        breakdown = SimpleNamespace(**cache_creation) if cache_creation else None
+        u = SimpleNamespace(
+            input_tokens=10,
+            output_tokens=5,
+            cache_creation_input_tokens=300,
+            cache_read_input_tokens=1000,
+            cache_creation=breakdown,
+        )
+        return SimpleNamespace(usage=u)
+
+    said = spend._anthropic_usage(usage(ephemeral_5m_input_tokens=200, ephemeral_1h_input_tokens=100))
+    assert said == Usage(10, 5, 300, 1000, cache_write_5m_tokens=200)
+    # No breakdown, a breakdown that does not add up to the total, or one that is not a count: the hour rate.
+    assert spend._anthropic_usage(usage()).cache_write_5m_tokens is None
+    assert (
+        spend._anthropic_usage(usage(ephemeral_5m_input_tokens=200, ephemeral_1h_input_tokens=50)).cache_write_5m_tokens
+        is None
+    )
+    from unittest.mock import MagicMock
+
+    assert spend._anthropic_usage(
+        SimpleNamespace(
+            usage=SimpleNamespace(
+                input_tokens=1,
+                output_tokens=1,
+                cache_creation_input_tokens=5,
+                cache_read_input_tokens=0,
+                cache_creation=MagicMock(),
+            )
+        )
+    ) == Usage(1, 1, 5, 0, None)
+
+
+def test_openai_cached_tokens_are_priced_at_the_cached_rate_and_the_rest_at_input():
+    """OpenAI's prompt_tokens includes the cached prefix (a tenth of input on GPT-5.6 and later) and, on those
+    models, the cache writes (1.25x). The meter charged the whole figure at the input price: about 3x too much
+    on a tool loop, where most of every call is the prefix the API had just seen."""
+    details = SimpleNamespace(cached_tokens=2000, cache_write_tokens=500)
+    chat = SimpleNamespace(
+        usage=SimpleNamespace(prompt_tokens=3000, completion_tokens=200, prompt_tokens_details=details)
+    )
+    split = Usage(500, 200, cache_write_tokens=500, cache_read_tokens=2000, cache_write_5m_tokens=500)
+    assert spend._openai_usage(chat) == split
+    responses = SimpleNamespace(
+        usage=SimpleNamespace(input_tokens=3000, output_tokens=200, input_tokens_details=details)
+    )
+    assert spend._openai_responses_usage(responses) == split
+    # No details (an older model, a mocked response): every prompt token at input, as before.
+    plain = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=3000, completion_tokens=200))
+    assert spend._openai_usage(plain) == Usage(3000, 200)
+    c = _config()
+    assert c.cost("oai", split) == pytest.approx(0.005 + 0.02 + 0.00625 + 0.002)
+    assert c.cost("oai", Usage(3000, 200)) == pytest.approx(0.05), "3x the cached figure's prompt cost"
+
+
 # ── the hard stop ──
 
 
@@ -230,6 +335,8 @@ def test_the_ledger_is_rewritten_after_every_call_and_a_resumed_run_inherits_it(
         "cache_tokens": 0,
         "cache_write_tokens": 0,
         "cache_read_tokens": 0,
+        "cache_write_5m_tokens": 0,
+        "cache_write_1h_tokens": 0,
         "output_tokens": 100,
         "usd": 0.02,
     }
@@ -256,6 +363,30 @@ def test_the_ledger_names_the_judge_exists_before_any_call_and_refuses_a_second_
         SpendMeter(_config(), ledger_path=ledger, run_info={"judge_model": "claude-sonnet-5"})
     # An entry point that names no judge (the cross-judge audit) resumes without complaint and keeps the record.
     assert SpendMeter(_config(), ledger_path=ledger).snapshot()["run"]["judge_model"] == "claude-sonnet-4-6"
+
+
+def test_a_run_keeps_its_baseline_model_and_a_resume_with_another_is_refused(tmp_path):
+    """The judge rule, for the cloud subject: two models' answers under one set of baselines would be scored as
+    one. A ledger from before the field (answer-eval's) records nothing and refuses nothing."""
+    ledger = tmp_path / "spend.json"
+    SpendMeter(_config(), ledger_path=ledger, run_info={"run_id": "r1", "baseline_model": "claude-fable-5-1"})
+    same = SpendMeter(_config(), ledger_path=ledger, run_info={"baseline_model": "claude-fable-5-1"})
+    assert same.snapshot()["run"]["baseline_model"] == "claude-fable-5-1"
+    with pytest.raises(spend.SpendConfigError, match="new --run-id for a different baseline model"):
+        SpendMeter(_config(), ledger_path=ledger, run_info={"baseline_model": "gpt-6-astra"})
+    assert SpendMeter(_config(), ledger_path=ledger).snapshot()["run"]["baseline_model"] == "claude-fable-5-1"
+    older = tmp_path / "older.json"
+    SpendMeter(_config(), ledger_path=older, run_info={"judge_model": "m"})
+    SpendMeter(_config(), ledger_path=older, run_info={"judge_model": "m", "baseline_model": "gpt-6-astra"})
+
+
+def test_the_ledger_books_cache_writes_by_lifetime_as_priced():
+    m = _use()
+    m.settle("cached", "baseline_question", 0.0, Usage(0, 0, 300, 0, cache_write_5m_tokens=200))
+    m.settle("cached", "baseline_question", 0.0, Usage(0, 0, 100, 0))  # the response did not say: the hour
+    row = m.snapshot()["by_kind"]["baseline_question"]
+    assert (row["cache_write_tokens"], row["cache_write_5m_tokens"], row["cache_write_1h_tokens"]) == (400, 200, 200)
+    assert row["usd"] == pytest.approx((200 * 12.5 + 200 * 20.0) / 1_000_000)
 
 
 def test_a_no_judge_resume_neither_erases_the_judge_nor_opens_the_door_to_a_second(tmp_path):
@@ -302,6 +433,33 @@ def test_the_ledger_keeps_the_commit_and_start_of_the_run_and_notes_a_resume_at_
 
 
 # ── the pre-run estimate ──
+
+
+def test_the_estimate_prices_each_kind_of_token_at_the_models_rate_and_scales_by_its_tokenizer():
+    """The estimate was 152,000 input-token equivalents at the plain input price: right for Sonnet 4.6 by
+    construction, USD 30 for Fable 5.1 on the 20 keyed questions, whose cache hit is 2.5% of input. The split
+    measured on Sonnet 4.6, at each model's own cache rates and tokenizer, is what the run will cost."""
+    assert Usage(10, 0, 100, 1000, 60).scaled(1.3) == Usage(13, 0, 130, 1300, 78)
+    assert Usage(10, 1, 100, 1000).scaled(2.0) == Usage(20, 2, 200, 2000, None)
+    c = _config()
+    c.estimates["work"] = Usage(
+        1000, 100, cache_write_tokens=1000, cache_read_tokens=10_000, cache_write_5m_tokens=1000
+    )
+    m = SpendMeter(c)
+    # No cache price on "m": the writes at the published 1.25x, the reads at plain input.
+    assert m.estimate([("work", "m", 1)]) == pytest.approx((1000 * 10 + 100 * 100 + 1000 * 12.5 + 10_000 * 10) / 1e6)
+    assert m.estimate([("judge", "newer", 1)]) == pytest.approx(2 * m.estimate([("judge", "m", 1)])), "tokenizer 2.0"
+    assert m.estimate([("work", "cached", 1)]) == pytest.approx(
+        (1000 * 10 + 100 * 100 + 1000 * 12.5 + 10_000 * 1.0) / 1e6
+    )
+    shipped = spend.load_config()
+    keyed = {m: SpendMeter(shipped).estimate([("baseline_question", m, 20)]) for m in shipped.prices}
+    assert keyed["claude-sonnet-4-6"] == pytest.approx(4.62, abs=0.01), "the measured run, at the rate it asked for"
+    assert keyed["claude-fable-5-1"] == pytest.approx(17.15, abs=0.01)
+    assert keyed["gpt-6-astra"] == pytest.approx(15.40, abs=0.01)
+    assert keyed["claude-opus-5-5"] < keyed["gpt-6-astra"] < keyed["claude-fable-5-1"] < shipped.cap_usd
+    old_shape = shipped.cost("claude-fable-5-1", Usage(152_000, 3100).scaled(1.3)) * 20
+    assert old_shape > shipped.cap_usd, "the estimate this replaced refused the run"
 
 
 def test_a_run_estimated_over_the_cap_does_not_start():
@@ -401,6 +559,10 @@ def test_the_report_header_line_names_spend_cap_judge_and_price_date():
         "Cloud spend: USD 0.12 of a 1.00 cap over 2 calls (1 charged at their worst case); "
         "judge claude-sonnet-4-6; prices as of 2026-01-01."
     )
+    subject = SpendMeter(_config(), run_info={"judge_model": "", "baseline_model": "claude-fable-5-1"})
+    assert spend.header_line(subject.snapshot()) == (
+        "Cloud spend: USD 0.00 of a 1.00 cap over 0 calls; judge none; baseline claude-fable-5-1; prices as of 2026-01-01."
+    )
 
 
 def test_the_sweeps_plan_counts_pending_cloud_work(tmp_path):
@@ -417,6 +579,12 @@ def test_the_sweeps_plan_counts_pending_cloud_work(tmp_path):
 
     assert dict((k, n) for k, _, n in plan()) == {"synthetic_doc": 280, "baseline_question": 2, "judge": 2}
     assert plan()[2][1] == "j" and plan()[0][1] == "claude-sonnet-4-6"
+    assert plan()[1][1] == cfg.BASELINE_MODEL == "claude-sonnet-4-6"
+    chosen = sweep._spend_plan(
+        units, phases={1}, workdir=tmp_path, judge_model="j", no_judge=True, baseline_model="gpt-6-astra"
+    )
+    assert chosen[1] == ("baseline_question", "gpt-6-astra", 2), "the plan prices the cloud subject the run names"
+    assert sweep.missing_keys_for(chosen, {"ANTHROPIC_API_KEY": "k"}) == ["OPENAI_API_KEY"]
     assert plan(no_judge=True)[2][2] == 0
     # state.json keeps every phase ever planned for the run id; only the phases asked for will run.
     assert dict((k, n) for k, _, n in plan({1})) == {"synthetic_doc": 0, "baseline_question": 2, "judge": 0}
@@ -500,6 +668,32 @@ def test_a_refused_spend_setting_is_exit_code_3_not_a_traceback(tmp_path, flags,
         assert sweep.main([*base, *flags]) == 3
         assert sweep.main([*base, "--mode", "answer-eval", "--label", "x", *flags]) == 3
     assert caplog.text.count("stopped by the spend cap") == 2
+
+
+def test_the_baseline_model_is_the_runs_and_a_resume_with_another_or_an_unpriced_one_is_refused(tmp_path, caplog):
+    from scripts.test_corpora.runner import sweep
+
+    base = ["--run-id", "r1", "--workdir", str(tmp_path), "--phases", "1", "--corpora", "cuad"]
+    assert sweep.main([*base, "--baseline-model", "gpt-6-astra", "--spend-cap-usd", "0.01"]) == 3
+    ledger = tmp_path / "results" / "r1" / "spend.json"
+    assert json.loads(ledger.read_text())["run"]["baseline_model"] == "gpt-6-astra"
+    with caplog.at_level("ERROR"):
+        assert sweep.main([*base, "--resume"]) == 3, "the default, Sonnet 4.6, is another model"
+    assert "different baseline model" in caplog.text
+    assert sweep.main([*base, "--resume", "--baseline-model", "gpt-6-astra", "--spend-cap-usd", "0.01"]) == 3
+    caplog.clear()
+    with caplog.at_level("ERROR"):
+        assert sweep.main(["--run-id", "r2", *base[2:], "--baseline-model", "claude-nonesuch"]) == 3
+    assert "no price in spend.yaml" in caplog.text
+    assert sweep._run_info(sweep.make_parser().parse_args(["--run-id", "r"]))["baseline_model"] == "claude-sonnet-4-6"
+
+
+def test_the_sweep_builds_the_metered_client_of_the_baselines_vendor():
+    from scripts.test_corpora.runner import sweep
+
+    assert isinstance(sweep._baseline_client("claude-fable-5-1"), spend.MeteredAnthropic)
+    assert isinstance(sweep._baseline_client("gpt-6-astra"), spend.MeteredOpenAI)
+    assert sweep._baseline_client("gpt-6-astra").kind == "baseline_question"
 
 
 def test_a_cap_that_is_not_a_number_and_a_second_judge_are_refused_the_same_way(tmp_path, monkeypatch):
@@ -1032,7 +1226,7 @@ def test_the_metered_client_can_do_nothing_but_create():
             reach()
     inner = SimpleNamespace(responses="unmetered", beta="unmetered", chat=SimpleNamespace(completions="unmetered"))
     oai = spend.MeteredOpenAI("cross_judge", inner)
-    for reach in (lambda: oai.responses, lambda: oai.chat.completions.stream, lambda: oai.beta):
+    for reach in (lambda: oai.responses.stream, lambda: oai.chat.completions.stream, lambda: oai.beta):
         with pytest.raises(spend.UnmeteredAttribute):
             reach()
 
@@ -1064,6 +1258,33 @@ def test_openai_calls_are_metered_by_their_own_usage_names_and_output_limit():
     with pytest.raises(SpendCapExceeded):
         client.chat.completions.create(model="m", max_completion_tokens=600, messages=[])
     assert len(calls) == 1
+
+
+def test_openai_responses_calls_are_metered_by_their_own_usage_names_and_output_limit():
+    """GPT-6 takes its tools through the Responses API (runner/providers/openai_provider.py), whose output limit
+    is max_output_tokens and whose usage block names input_tokens / input_tokens_details."""
+    meter = _use()
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        details = SimpleNamespace(cached_tokens=2000, cache_write_tokens=0)
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=3000, output_tokens=200, input_tokens_details=details)
+        )
+
+    inner = SimpleNamespace(responses=SimpleNamespace(create=create), chat="unmetered")
+    client = spend.MeteredOpenAI("baseline_question", inner)
+    client.responses.create(model="oai", max_output_tokens=600, input=[])
+    assert meter.total_usd == pytest.approx((1000 * 10 + 2000 * 1.0 + 200 * 100) / 1e6)
+    row = meter.snapshot()["by_kind"]["baseline_question"]
+    assert (row["input_tokens"], row["cache_read_tokens"], row["output_tokens"]) == (1000, 2000, 200), "cached apart"
+    _use(cap=0.05)
+    with pytest.raises(SpendCapExceeded):
+        client.responses.create(model="oai", max_output_tokens=600, input=[])
+    assert len(calls) == 1
+    with pytest.raises(spend.UnmeterableCall):
+        client.responses.create(model="oai", max_output_tokens=10, input=[], stream=True)
 
 
 def test_the_openai_client_is_not_built_until_it_is_used(monkeypatch):

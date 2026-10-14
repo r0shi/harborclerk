@@ -23,6 +23,11 @@ supports three related views of quality:
   with grounded citations and adequate completeness.
 - **Agent-memory eval**: whether external agent harnesses can use Harbor Clerk
   as a cited memory layer through MCP or the CLI.
+- **Cloud-subject eval**: how a frontier cloud model does when it is the one
+  using Harbor Clerk's MCP tools (`--baseline-model`), scored against the same
+  human answer key the local models are scored against, under the per-run spend
+  cap. This is what a "local model X does Y% of what Fable does on this corpus"
+  statement would have to cite; the report's "Cloud subject" table is that row.
 
 The harness writes artifacts under the configured test-corpora workdir, commonly
 `~/Library/Application Support/Harbor Clerk/test-corpora/`. Reports should
@@ -91,6 +96,15 @@ and should remain a fast-follow unless the checklist in
 This keeps the public claim honest: local AI runs locally, MCP/cloud connectors
 receive scoped tool responses, and future in-app cloud mode would send selected
 prompt/context to the chosen provider.
+
+The eval harness can run a cloud model as the subject of a benchmark (one model
+and one corpus per run, priced before it starts at the model's own cache rates;
+`scripts/test_corpora/spend.yaml`). The resulting row is a measurement of that
+model over Harbor Clerk's tools on that corpus and key, on the date of the run.
+It supports statements of the form "on the 20 keyed CUAD questions, model M
+scored S against the key for USD D"; it does not support frontier-parity claims
+for the local models, which stay under "Avoid for now" above until a current run
+shows parity on the same key.
 
 ## Agent memory and OpenClaw
 

@@ -260,3 +260,156 @@ def test_openai_provider_records_a_truncation_as_a_truncation():
         question="q", question_id="q", corpus="cuad"
     )
     assert res.stopped_by == "length"
+
+
+# ── GPT-6: the Responses API ──
+
+
+def _mk_response(*, output, status="completed", incomplete_reason=None):
+    """A minimal Responses API object: `output` items, `status`, `incomplete_details`."""
+    details = SimpleNamespace(reason=incomplete_reason) if incomplete_reason else None
+    return SimpleNamespace(status=status, output=list(output), incomplete_details=details)
+
+
+def _message(text: str, *, refusal: bool = False):
+    parts = (
+        [SimpleNamespace(type="refusal", refusal=text)] if refusal else [SimpleNamespace(type="output_text", text=text)]
+    )
+    return SimpleNamespace(type="message", role="assistant", content=parts)
+
+
+def _function_call(call_id: str, name: str, args: dict):
+    return SimpleNamespace(type="function_call", call_id=call_id, name=name, arguments=json.dumps(args))
+
+
+def _reasoning(item_id: str):
+    return SimpleNamespace(type="reasoning", id=item_id, summary=[])
+
+
+def test_gpt_6_takes_its_tools_through_the_responses_api():
+    """OpenAI's function-calling guide (2026-10-14): GPT-6 Astra and GPT-6.1 Sol "require the Responses API for
+    tool calling". Flat tools, `instructions` for the system prompt, `max_output_tokens` for the limit, and the
+    model's whole output (its reasoning items included) echoed back before the function_call_output items."""
+    from scripts.test_corpora.runner.providers.base import DEFAULT_SYSTEM_PROMPT
+    from scripts.test_corpora.runner.providers.openai_provider import MAX_OUTPUT_TOKENS, uses_responses_api
+
+    assert [uses_responses_api(m) for m in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-luna", "gpt-4o")] == [
+        True, True, True, False, False,
+    ]  # fmt: skip
+    mcp = MagicMock()
+    mcp.list_tools.return_value = [
+        SimpleNamespace(name="kb_search", description="search", inputSchema={"type": "object"})
+    ]
+    mcp.call_tool.side_effect = [
+        SimpleNamespace(content=[SimpleNamespace(text='{"doc_id": "doc-a", "doc_title": "Alpha"}')]),
+        SimpleNamespace(content=[SimpleNamespace(text='{"doc_id": "doc-b", "doc_title": "Beta"}')]),
+    ]
+    client = MagicMock()
+    client.responses.create.side_effect = [
+        _mk_response(
+            output=[
+                _reasoning("rs_1"),
+                _function_call("call-1", "kb_search", {"query": "alpha"}),
+                _function_call("call-2", "kb_search", {"query": "beta"}),
+            ]
+        ),
+        _mk_response(output=[_reasoning("rs_2"), _message("Per doc-a and doc-b.")]),
+    ]
+    p = OpenAIProvider(mcp_session=mcp, model="gpt-6-astra", client=client)
+    res = p.run_question(question="Find both.", question_id="q6", corpus="cuad")
+
+    assert res.answer == "Per doc-a and doc-b." and res.model == "gpt-6-astra" and res.stopped_by == "end_turn"
+    assert res.tool_call_count == 2 and res.model_call_count == 2
+    assert res.cited_doc_ids == ["doc-a", "doc-b"] and res.cited_doc_titles == ["Alpha", "Beta"]
+    assert [e["args"]["query"] for e in res.tool_transcript] == ["alpha", "beta"]
+    assert not client.chat.completions.create.called
+
+    first, second = (c.kwargs for c in client.responses.create.call_args_list)
+    assert first["model"] == "gpt-6-astra" and first["instructions"] == DEFAULT_SYSTEM_PROMPT
+    assert first["max_output_tokens"] == MAX_OUTPUT_TOKENS and "max_completion_tokens" not in first
+    assert first["tools"] == [
+        {"type": "function", "name": "kb_search", "description": "search", "parameters": {"type": "object"}}
+    ]
+    assert first["tool_choice"] == "auto" and "temperature" not in first and "reasoning" not in first
+    assert first["input"] == [{"role": "user", "content": "Find both."}]
+    # The second request carries the first's whole output, then one output item per call_id.
+    items = second["input"]
+    assert items[0] == {"role": "user", "content": "Find both."}
+    assert items[1] == {"type": "reasoning", "id": "rs_1", "summary": []}
+    assert [i["type"] for i in items[2:4]] == ["function_call", "function_call"]
+    assert items[4:] == [
+        {"type": "function_call_output", "call_id": "call-1", "output": '{"doc_id": "doc-a", "doc_title": "Alpha"}'},
+        {"type": "function_call_output", "call_id": "call-2", "output": '{"doc_id": "doc-b", "doc_title": "Beta"}'},
+    ]
+
+
+def test_the_responses_loop_is_bounded_and_the_last_call_has_no_tools():
+    from scripts.test_corpora.runner.providers.base import ANSWER_NOW, MAX_MODEL_CALLS
+
+    mcp = MagicMock()
+    mcp.list_tools.return_value = [SimpleNamespace(name="kb_search", description="s", inputSchema={"type": "object"})]
+    mcp.call_tool.return_value = SimpleNamespace(content=[SimpleNamespace(text='{"doc_id": "d"}')])
+
+    def respond(**kwargs):
+        if kwargs["tool_choice"] == "none":
+            return _mk_response(output=[_message("what I have so far")])
+        return _mk_response(output=[_function_call("c", "kb_search", {})])
+
+    client = MagicMock()
+    client.responses.create.side_effect = respond
+    res = OpenAIProvider(mcp_session=mcp, model="gpt-6.1-sol", client=client).run_question("q", "q1", "cuad")
+    calls = client.responses.create.call_args_list
+    assert len(calls) == MAX_MODEL_CALLS == res.model_call_count
+    assert [c.kwargs["tool_choice"] for c in calls] == ["auto"] * 15 + ["none"]
+    assert calls[-1].kwargs["input"][-1] == {"role": "user", "content": ANSWER_NOW}
+    assert res.tool_call_count == 15 and res.answer == "what I have so far" and res.stopped_by == "model_call_limit"
+
+
+def test_a_responses_answer_that_was_cut_short_or_refused_says_so():
+    for response, expected in (
+        (
+            _mk_response(output=[_message("half an ans")], status="incomplete", incomplete_reason="max_output_tokens"),
+            "max_output_tokens",
+        ),
+        (_mk_response(output=[_message("no", refusal=True)]), "refusal"),
+        (_mk_response(output=[_message("done")]), "end_turn"),
+        (_mk_response(output=[_reasoning("rs")]), "end_turn"),
+    ):
+        client = MagicMock()
+        client.responses.create.return_value = response
+        res = OpenAIProvider(mcp_session=None, model="gpt-6-astra", client=client).run_question("q", "q", "c")
+        assert res.stopped_by == expected, expected
+    assert "tools" not in client.responses.create.call_args.kwargs, "no MCP session: no tools, no tool_choice"
+    client.responses.create.return_value = _mk_response(output=[_message("no", refusal=True)])
+    assert OpenAIProvider(mcp_session=None, model="gpt-6-astra", client=client).run_question("q", "q", "c").answer == ""
+
+
+def test_the_responses_loop_retries_a_429_like_the_chat_loop(monkeypatch):
+    import httpx
+    import openai
+
+    import scripts.test_corpora.runner.providers.openai_provider as openai_mod
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    err = openai.RateLimitError("rate limited", response=httpx.Response(429, request=request), body=None)
+    client = MagicMock()
+    client.responses.create.side_effect = [err, _mk_response(output=[_message("through")])]
+    sleeps: list[float] = []
+    monkeypatch.setattr(openai_mod.time, "sleep", sleeps.append)
+    res = OpenAIProvider(mcp_session=None, model="gpt-6-astra", client=client).run_question("q", "q", "c")
+    assert res.answer == "through" and sleeps == [30.0]
+
+
+def test_a_real_sdk_output_item_goes_back_as_the_dict_it_dumps_to():
+    from scripts.test_corpora.runner.providers.openai_provider import _as_item
+
+    class Item:
+        def model_dump(self, exclude_none=False):
+            return {"type": "reasoning", "id": "rs", "summary": []}
+
+    assert _as_item(Item()) == {"type": "reasoning", "id": "rs", "summary": []}
+    assert _as_item({"type": "message"}) == {"type": "message"}
+    assert _as_item(SimpleNamespace(type="function_call", call_id="c", status=None)) == {
+        "type": "function_call",
+        "call_id": "c",
+    }

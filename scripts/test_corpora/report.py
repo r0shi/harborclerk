@@ -24,9 +24,12 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from scripts.test_corpora.runner import spend
+from scripts.test_corpora.runner import answer_key, spend
 
 REPO = Path(__file__).resolve().parents[2]
+HARNESS = Path(__file__).resolve().parent
+# The answer key's kinds, in the order the table shows them; a kind the key file declares beyond these follows.
+KEY_KINDS = ("fact", "date", "list")
 JUDGED_PHASES = {"4", "5"}
 # The phases that run a local model, in the order the sweep runs them.
 MODEL_PHASES = {
@@ -122,6 +125,97 @@ def baselines_cut_short(run_dir: Path) -> list[str]:
 
 def _mean(values: list[float]) -> str:
     return f"{statistics.fmean(values):.2f}" if values else "n/a"
+
+
+def _key_dir(ledger: dict | None) -> Path:
+    """Where the run's answer keys are: the --questions-dir the ledger records (relative to the repository root,
+    as the skill passes it, or absolute), else the standard questions, which have none."""
+    recorded = ((ledger or {}).get("run") or {}).get("questions_dir") or ""
+    if not recorded:
+        return HARNESS / "questions"
+    path = Path(recorded).expanduser()
+    return path if path.is_absolute() else REPO / path
+
+
+def cloud_subject_table(run_dir: Path, ledger: dict | None) -> list[str]:
+    """One row per cloud model that answered phase 1 for a corpus with an answer key: its baselines scored against
+    the key exactly as phase 4's answers are (runner/answer_key.py), with no judge. This is the "scored offline"
+    row of the 2026-09-28 report made a part of the report. Nothing for a run without a key, or whose baselines
+    are not keyed questions."""
+    key_dir = _key_dir(ledger)
+    by_model = (ledger or {}).get("by_model") or {}
+    by_kind = (ledger or {}).get("by_kind") or {}
+    groups: dict[tuple[str, str], list[tuple[str, dict, dict]]] = defaultdict(list)
+    for path in sorted((run_dir / "baselines").glob("*/*.json")):
+        corpus = path.parent.name
+        key = _load(key_dir / f"{corpus}.key.json") or {}
+        entry = key.get(path.stem)
+        baseline = _load(path)
+        if entry and baseline is not None:
+            groups[(corpus, str(baseline.get("model") or "unrecorded"))].append((path.stem, entry, baseline))
+    if not groups:
+        return []
+    # Scored first: the columns are the kinds that were scored, and a kind this checkout's scorer does not know
+    # is said below, not a crash.
+    scored: dict[tuple[str, str], tuple[list[tuple[str, float]], list[dict]]] = {}
+    unknown: list[str] = []
+    for (corpus, model), keyed in sorted(groups.items()):
+        scores: list[tuple[str, float]] = []
+        rows: list[dict] = []
+        for qid, entry, baseline in keyed:
+            try:
+                scores.append((entry["kind"], answer_key.score(entry, baseline.get("answer") or "")["score"]))
+            except ValueError:
+                unknown.append(f"`{corpus}/{qid}` ({entry['kind']})")
+                continue
+            rows.append(baseline)
+        if rows:
+            scored[(corpus, model)] = (scores, rows)
+    if not scored:
+        return []
+    kinds = list(KEY_KINDS) + sorted({k for scores, _ in scored.values() for k, _ in scores} - set(KEY_KINDS))
+    columns = ["corpus", "model", "questions", "calls", "stopped at call limit", "answer key (0-1)", *kinds, "USD"]
+    out = [
+        "## Cloud subject",
+        "",
+        "The phase-1 baseline, scored against the corpus's answer key as phase 4 is (no judge, no reference), over "
+        "every keyed question it answered. `calls` are model calls; `USD` is the model's spend in this run from "
+        "spend.json, which with one corpus per run is this corpus's.",
+        "",
+        "| " + " | ".join(columns) + " |",
+        "|" + "---|" * len(columns),
+    ]
+    for (corpus, model), (scores, rows) in scored.items():
+        # Model calls per baseline, where every file has the field; an older run has them only in the ledger, and
+        # only for the run as a whole.
+        counted = [b.get("model_call_count") for b in rows]
+        if all(isinstance(c, int) and c > 0 for c in counted):
+            calls: str | int = sum(counted)
+        elif len(groups) == 1 and by_kind.get("baseline_question", {}).get("calls"):
+            calls = by_kind["baseline_question"]["calls"]
+        else:
+            calls = "n/a"
+        usd = by_model.get(model, {}).get("usd")
+        cells = [
+            corpus,
+            f"`{model}`",
+            len(rows),
+            calls,
+            sum(1 for b in rows if b.get("stopped_by") == "model_call_limit"),
+            _mean([s for _, s in scores]),
+            *[_mean([s for k, s in scores if k == kind]) for kind in kinds],
+            f"{usd:.4f}" if isinstance(usd, (int, float)) else "n/a",
+        ]
+        out.append("| " + " | ".join(str(c) for c in cells) + " |")
+    out.append("")
+    if unknown:
+        out += [
+            f"{len(unknown)} keyed baseline(s) have a kind this scorer does not know and are not in the table: "
+            + ", ".join(unknown)
+            + ".",
+            "",
+        ]
+    return out
 
 
 RAN = ("done", "degraded", "error", "failed")
@@ -255,6 +349,8 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
         lines += [f"  - {c['status']}: {c['name']}: {c['detail']}" for c in problems]
     lines.append("")
 
+    lines += cloud_subject_table(run_dir, ledger)
+
     planned = planned_units(state)
     for phase, title in MODEL_PHASES.items():
         table = model_table(rows, phase, planned)
@@ -320,6 +416,15 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
                 f"| {row['usd']:.4f} |"
             )
         lines.append("")
+        # The writes by lifetime, as the meter priced them (a write the response did not break down is under the
+        # hour): what corrects spend.yaml's estimate, and what tells a 5-minute run from an hour one.
+        by_ttl = [
+            f"{kind} {row['cache_write_5m_tokens']:,} at five minutes, {row['cache_write_1h_tokens']:,} at an hour"
+            for kind, row in sorted(ledger["by_kind"].items())
+            if row.get("cache_write_tokens") and "cache_write_5m_tokens" in row
+        ]
+        if by_ttl:
+            lines += ["Cache writes by lifetime, as priced: " + "; ".join(by_ttl) + ".", ""]
     lines += [
         "## Reading",
         "",

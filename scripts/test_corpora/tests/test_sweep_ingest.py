@@ -324,7 +324,7 @@ def test_no_ingest_flag_never_calls_ingest_corpus(tmp_path: Path, monkeypatch) -
 
     with (
         patch("scripts.test_corpora.runner.sweep.HarborClerkClient", return_value=fake_hc),
-        patch("scripts.test_corpora.runner.sweep.anthropic.Anthropic"),
+        patch("scripts.test_corpora.runner.sweep._baseline_client"),
         patch("scripts.test_corpora.runner.sweep.JudgeClient"),
         patch("scripts.test_corpora.runner.sweep.SyncMcpSession", return_value=fake_mcp),
         patch("scripts.test_corpora.runner.sweep._phase1_baseline", return_value=fake_baseline_result),
@@ -398,7 +398,7 @@ def test_a_metrics_file_from_a_newer_sweep_is_refused_before_any_unit_runs(tmp_p
     fake_hc.get_bearer_token.return_value = "fake-token"
     with (
         patch("scripts.test_corpora.runner.sweep.HarborClerkClient", return_value=fake_hc),
-        patch("scripts.test_corpora.runner.sweep.anthropic.Anthropic"),
+        patch("scripts.test_corpora.runner.sweep._baseline_client"),
         patch("scripts.test_corpora.runner.sweep.JudgeClient"),
         patch("scripts.test_corpora.runner.sweep.SyncMcpSession", return_value=MagicMock()),
         patch("scripts.test_corpora.runner.sweep._phase1_baseline") as baseline,
@@ -458,7 +458,7 @@ def test_a_run_that_would_call_a_model_without_its_key_stops_before_spending(tmp
     fake_hc.document_count.return_value = 0
     with (
         patch("scripts.test_corpora.runner.sweep.HarborClerkClient", return_value=fake_hc),
-        patch("scripts.test_corpora.runner.sweep.anthropic.Anthropic"),
+        patch("scripts.test_corpora.runner.sweep._baseline_client"),
         patch("scripts.test_corpora.runner.sweep.SyncMcpSession", return_value=MagicMock()),
         patch("scripts.test_corpora.runner.sweep._phase1_baseline") as baseline,
         patch("scripts.test_corpora.runner.sweep._ingest_corpus"),

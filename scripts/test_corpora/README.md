@@ -28,7 +28,7 @@ uv picks the harness venv but the cwd stays at the repo root (so the
 `scripts.test_corpora.runner.sweep` module path resolves):
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."   # the Claude baselines
+export ANTHROPIC_API_KEY="sk-ant-..."   # the baselines (a claude-* --baseline-model; a gpt-* one needs OPENAI_API_KEY)
 export OPENAI_API_KEY="sk-proj-..."     # the judge (gpt-5.6-luna); a run without a judged phase does not need it
 export HC_USERNAME="admin@example.com"
 export HC_PASSWORD="..."
@@ -147,10 +147,25 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
   one question that took 24 calls cost USD 5.98 (#682). The loop is bounded at `MAX_MODEL_CALLS` (16; the last
   call is made with tools off and told to answer, the baseline records `stopped_by: model_call_limit`, and the
   report names it),
-  and every call carries prompt-cache breakpoints. At the measured figure **one corpus is about USD 19 and a
-  run over more than one corpus is refused before it starts**: run them one at a time until a cached run has
-  corrected the estimate (`spend.yaml` says how: not from `input_tokens`, which caching empties). answer-eval
-  and `rerun_pr_j` pay for a `candidate_answer`, priced apart and still provisional.
+  and every call carries prompt-cache breakpoints. The estimate is the split measured on the 20 keyed CUAD
+  questions (per question 44 K tokens written to the cache, 147 K read, 1.4 K out), priced at each model's own
+  cache rates and scaled by its tokenizer (`spend.yaml`): Sonnet 4.6 USD 4.6, Opus 5.5 USD 7.2, Fable 5.1
+  USD 17, gpt-6-astra USD 15 for the 20. The other corpora cost 40 to 60% more a question, so **one corpus per
+  run**, and a frontier model's second corpus is refused before it starts. Correct the estimate from a run as
+  `spend.yaml` says: not from `input_tokens`, which caching empties. answer-eval and `rerun_pr_j` pay for a
+  `candidate_answer`, priced apart and still provisional.
+- **The meter prices what the vendor bills.** An Anthropic cache write by its lifetime (the five-minute rate the
+  loop asks for, from `usage.cache_creation`; the hour rate when a response does not say), a cache read at the
+  read rate; an OpenAI cached prefix (`usage.*_tokens_details.cached_tokens`) at the cached rate and a cache write
+  at 1.25x, the rest at input. Before 2026-10-14 every Anthropic write was priced as an hour (1.6x) and every
+  OpenAI prompt token as uncached input (about 3x on a tool loop). `spend.json` and the report's Cloud spend table
+  show the writes by lifetime and the cached and uncached tokens apart.
+- **`--baseline-model` names the cloud model that answers phase 1** (default `claude-sonnet-4-6`; must be priced
+  in `spend.yaml`). It is the reference phase 4 is scored against, and, on a keyed corpus, the *cloud subject*
+  the report scores against the answer key in its own table (model, questions, calls, answers stopped at the
+  call limit, the key mean and per-kind means, USD). A run keeps its baseline model: a resume with another is
+  refused, as a second judge is. One model per run and one corpus per run; a GPT-6 model takes its tools through
+  OpenAI's Responses API (`runner/providers/openai_provider.py`) and needs `OPENAI_API_KEY`.
 - **Before each call**, its worst case (request size plus `max_tokens`, at the cache-write price when the
   request carries cache breakpoints) is reserved against the running
   total. A call that could cross the cap is not made, and the run stops with exit code 3 (the sweep,
@@ -221,7 +236,7 @@ uv run python -m scripts.test_corpora.runner.sweep \
 | -------------------------------------------------------- | ------------------------------------------------------------- |
 | `state.json`                                             | resumable state — every (phase, corpus, model, q, depth) cell |
 | `spend.json`                                             | cloud spend so far: cap, total, calls, tokens and USD per model and per call kind, judge and baseline model |
-| `baselines/<corpus>/<question_id>.json`                  | Claude Sonnet 4.6 baseline output                             |
+| `baselines/<corpus>/<question_id>.json`                  | the cloud baseline (`--baseline-model`, default Sonnet 4.6); the file names its model |
 | `responses/<corpus>/<model>/<question_id>__<depth>.json` | local-model response                                          |
 | `judge/<corpus>/<model>/<question_id>__<depth>.json`     | Phase-5 judge verdict                                         |
 | `metrics.csv`                                            | one row per completion                                        |

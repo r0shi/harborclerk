@@ -146,6 +146,7 @@ def test_a_question_makes_a_bounded_number_of_model_calls_and_the_last_has_no_to
     assert not any(ANSWER_NOW in str(c.kwargs["messages"]) for c in calls[:-1])
     assert res.answer == "what I have so far"
     assert res.stopped_by == "model_call_limit", "a reference cut short must say so"
+    assert res.model_call_count == MAX_MODEL_CALLS, "what the report's calls column sums"
 
 
 def test_a_question_that_finishes_on_its_own_says_so():
@@ -155,6 +156,7 @@ def test_a_question_that_finishes_on_its_own_says_so():
     fake.messages.create.return_value = MagicMock(content=[MagicMock(text="done", type="text")], stop_reason="end_turn")
     res = BaselineGenerator(client=fake, mcp_session=None).run_question(question="q", question_id="q1", corpus="cuad")
     assert fake.messages.create.call_count == 1 and res.stopped_by == "end_turn"
+    assert res.model_call_count == 1
     assert "tool_choice" not in fake.messages.create.call_args.kwargs
 
 

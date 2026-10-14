@@ -6,60 +6,88 @@
 # this file, which means a PR.
 cap_usd: 25.00
 
-# USD per million tokens, list price, first-party API, global routing. A model that is not listed here
-# cannot be called: a call that cannot be priced cannot be capped. Add the model, its price and the date
-# you read it; do not guess.
+# USD per million tokens, list price, first-party API, global routing, standard context (no long-context premium
+# applies at the sizes the harness sends: Claude 4.6 and later have none, OpenAI's starts at 272K input tokens
+# in one request). A model that is not listed here cannot be called: a call that cannot be priced cannot be
+# capped. Add the model, its price and the date you read it; do not guess.
+#
+# Keys. `input` and `output` are required. Anthropic bills a prompt-cache write by its lifetime, `cache_write_5m`
+# (1.25x input) or `cache_write_1h` (2x), and a hit at `cache_read`; the meter reads which lifetime was used from
+# the response's `usage.cache_creation` and, when a response does not say, prices every write at the hour rate,
+# the dearer. OpenAI bills a cached prefix at `cached_input` and, on GPT-5.6 and later, a cache write at
+# `cache_write` (1.25x input; one rate, the lifetime is the API's), both read from `usage.*_tokens_details`. A
+# model with no cache price is charged the published multiplier on a write (1.25x, 2x) and plain input on a hit.
+# `tokenizer`: tokens this model counts for text Sonnet 4.6 counts as one token (default 1.0). The estimates
+# below were measured on Sonnet 4.6 and the pre-run estimate multiplies them by this. Claude 4.7 and later
+# (Opus 5, Fable 5.1, Opus 5.5, Sonnet 5.5, Sonnet 5) tokenize about 30% more tokens for the same text, the
+# pricing page says; OpenAI's tokenizers have not been measured against Sonnet 4.6, so their models keep 1.0 and
+# are estimated at Sonnet's volumes.
 prices:
-  verified: "2026-09-21"
+  verified: "2026-10-14"
   sources:
     - https://platform.claude.com/docs/en/about-claude/pricing
     - https://developers.openai.com/api/docs/pricing
   models:
-    # No long-context premium for Claude 4.6 and later. cache_write is the 1-hour rate, the dearer of the
-    # two, because the usage block does not say which was used.
-    claude-sonnet-4-6: {input: 3.00, output: 15.00, cache_write: 6.00, cache_read: 0.30}
-    # Not used by default. Listed so that moving the judge is a one-line change. Claude 4.7 and later
-    # tokenize the same text into about 30% more tokens, so a newer judge costs more per call than the
-    # price ratio suggests, and its scores are not comparable with a Sonnet 4.6 judge's.
-    claude-sonnet-5: {input: 2.00, output: 10.00, cache_write: 4.00, cache_read: 0.20}
-    claude-opus-5: {input: 5.00, output: 25.00, cache_write: 10.00, cache_read: 0.50}
-    claude-haiku-4-5: {input: 1.00, output: 5.00, cache_write: 2.00, cache_read: 0.10}
-    # Cached input is billed at 1.25; the meter charges every prompt token at the full rate.
-    gpt-4o: {input: 2.50, output: 10.00}
-    # Read 2026-09-21 for the judge bake-off (#661). gpt-5.6-luna is the sweep's judge since 2026-09-22
-    # (docs/reports/2026-09-22-rubric-test.md); the other two are priced to be callable, not endorsed. OpenAI
-    # bills a cached prefix at a tenth of input on these; the meter charges every prompt token at the full rate.
-    gpt-5.6-sol: {input: 4.00, output: 20.00}
-    gpt-5.6-terra: {input: 2.00, output: 12.00}
-    gpt-5.6-luna: {input: 0.20, output: 1.20}
+    # The sweep's default baseline (conftest.BASELINE_MODEL), and the model every estimate below was measured on.
+    claude-sonnet-4-6: {input: 3.00, output: 15.00, cache_write_5m: 3.75, cache_write_1h: 6.00, cache_read: 0.30}
+    # Cloud subjects: run through Harbor Clerk's MCP tools as the phase-1 baseline (--baseline-model) and scored
+    # against the answer key. One model per run, one corpus per run, under the cap; the report has a row for it.
+    claude-fable-5-1: {input: 10.00, output: 50.00, cache_write_5m: 12.50, cache_write_1h: 20.00, cache_read: 0.25, tokenizer: 1.3}
+    claude-opus-5-5: {input: 4.00, output: 20.00, cache_write_5m: 5.00, cache_write_1h: 8.00, cache_read: 0.20, tokenizer: 1.3}
+    claude-sonnet-5-5: {input: 2.00, output: 10.00, cache_write_5m: 2.50, cache_write_1h: 4.00, cache_read: 0.10, tokenizer: 1.3}
+    gpt-6-astra: {input: 10.00, cached_input: 1.00, cache_write: 12.50, output: 50.00}
+    gpt-6.1-sol: {input: 2.00, cached_input: 0.10, cache_write: 2.50, output: 10.00}
+    gpt-6-sol: {input: 2.00, cached_input: 0.20, cache_write: 2.50, output: 10.00}
+    # Not used by default. Listed so that moving the judge is a one-line change; a newer judge's scores are not
+    # comparable with a Sonnet 4.6 judge's.
+    claude-sonnet-5: {input: 2.00, output: 10.00, cache_write_5m: 2.50, cache_write_1h: 4.00, cache_read: 0.20, tokenizer: 1.3}
+    claude-opus-5: {input: 5.00, output: 25.00, cache_write_5m: 6.25, cache_write_1h: 10.00, cache_read: 0.50, tokenizer: 1.3}
+    claude-haiku-4-5: {input: 1.00, output: 5.00, cache_write_5m: 1.25, cache_write_1h: 2.00, cache_read: 0.10}
+    # An older OpenAI model: cached input at half price and no cache-write charge.
+    gpt-4o: {input: 2.50, cached_input: 1.25, output: 10.00}
+    # Read 2026-09-21 for the judge bake-off (#661), re-read 2026-10-14. gpt-5.6-luna is the sweep's judge since
+    # 2026-09-22 (docs/reports/2026-09-22-rubric-test.md); the other two are priced to be callable, not endorsed.
+    gpt-5.6-sol: {input: 4.00, cached_input: 0.40, cache_write: 5.00, output: 20.00}
+    gpt-5.6-terra: {input: 2.00, cached_input: 0.20, cache_write: 2.50, output: 12.00}
+    gpt-5.6-luna: {input: 0.20, cached_input: 0.02, cache_write: 0.25, output: 1.20}
 
 # Before a call the meter reserves its worst case: the request's size in characters divided by this, at
-# the input price, plus max_tokens at the output price. English runs near 4 characters per token; 2.5
-# over-reserves on purpose, since the reservation is what stops a run before the cap, not after it.
+# the input price (the hour cache-write price when the request carries breakpoints), plus max_tokens at the
+# output price. English runs near 4 characters per token; 2.5 over-reserves on purpose, since the reservation is
+# what stops a run before the cap, not after it.
 chars_per_token: 2.5
 
 # Tokens per unit of work, for the pre-run estimate that refuses to start a run over the cap. The estimate has
-# to stop a run that is plainly too big; the per-call hard stop is the guard. Correct these from spend.json's
-# by_kind: tokens divided by `units`, never by `calls`. An estimate is per unit of work, and a baseline question
-# is a tool loop of several calls.
+# to stop a run that is plainly too big; the per-call hard stop is the guard. An estimate is per unit of work,
+# and a baseline question is a tool loop of several calls. Keys: input_tokens, output_tokens, and optionally
+# cache_write_5m_tokens, cache_write_1h_tokens, cache_read_tokens; each is priced at the model's own rate for
+# that kind of token, and the whole is scaled by the model's `tokenizer`.
 #
-# baseline_question is MEASURED, on the bounded, cached loop (#682, MAX_MODEL_CALLS = 16): bench-20260922-2305
-# on ix, CUAD, claude-sonnet-4-6, 16 questions, 83 calls, USD 7.98 (docs/reports/2026-09-23-benchmark-ix-
-# bench-20260922-2305.md). Per question: 7 plain input tokens, 63,786 cache-write, 235,400 cache-read, 3,017
-# out, USD 0.4986. Stated in input-token equivalents by the rule below: 151,119 in and 3,017 out, rounded up.
-# The unbounded, uncached loop before it (bench-20260921-0041) was 375,859 in and 3,171 out per question, USD
-# 18.80 for the same 16 (#682); the 20,000 and 1,500 guessed before anything was metered told the owner
-# USD 2.64 for a run that cost 19.58. Three things about the figure:
-#   - It is CUAD: long contracts, research-type questions of up to 16 calls. The other corpora have not been
-#     metered, and an estimate that is right for CUAD is a ceiling for them, which is the safe side.
-#   - The ledger prices a cache write at the one-hour rate while the code asks for five-minute breakpoints, so
-#     usd overstates, and so does this: the safe side again.
-#   - HOW TO CORRECT IT FROM A CACHED RUN. Not "input_tokens divided by units": with breakpoints on, the API's
-#     input_tokens is only what came after the last breakpoint, close to nothing, and that rule would put a
-#     few tokens here and rebuild the underestimate this replaced. An estimate holds input and output tokens
-#     only, priced as plain input, so state the cost in input-token equivalents:
-#         input_tokens = (usd / units - output_tokens / units * output price) / input price, per million
-#     from the kind's row in spend.json (the report's Cloud spend table shows the same row).
+# baseline_question is MEASURED on the bounded, cached loop (#682, MAX_MODEL_CALLS = 16, five-minute
+# breakpoints): bench-20260928-1050-keyed on ix, CUAD, the 20 keyed questions, claude-sonnet-4-6, 78 calls
+# (docs/reports/2026-09-28-benchmark-ix-bench-20260928-1050-keyed.md): 118 plain input tokens, 885,157
+# cache-write, 2,946,578 cache-read, 27,779 out. Per question: 6 / 44,258 / 147,329 / 1,389. The ledger said
+# USD 6.61 with every write priced as an hour; at the five-minute rate the loop asked for it is 4.62. Until
+# 2026-10-14 this was stated as 152,000 "input-token equivalents" at the plain input price, which was right
+# for Sonnet 4.6 by construction and wrong for every other model: Fable 5.1, whose cache hit is 2.5% of input,
+# came out at USD 30 for the 20 questions and the run was refused, when its cache-aware figure is USD 17.
+# Three things about the figure:
+#   - It is the keyed CUAD set: single-hop facts, dates and lists, 3.9 calls a question. The standard CUAD
+#     questions (bench-20260922-2305: 63,786 write, 235,400 read, 3,017 out a question), Enron
+#     (bench-20260928-2156: 62,414 / 214,615 / 2,808) and the synthetic corpus (bench-20260929-1943: 52,816 /
+#     190,673 / 3,081) each cost 40 to 60% more a question. The estimate is a floor for them, not a ceiling;
+#     at Fable 5.1's prices each is still one corpus under the cap (about USD 20 for 16 to 18 questions), and
+#     the per-call stop is what holds the line.
+#   - HOW TO CORRECT IT FROM A RUN. From the kind's row in spend.json (the report's Cloud spend table shows the
+#     same row), each token column divided by `units`, never by `calls`: input_tokens, output_tokens,
+#     cache_read_tokens, and cache_write_5m_tokens / cache_write_1h_tokens (the writes as the meter priced them;
+#     a write the response did not break down by lifetime is under 1h). Not "input_tokens alone": with
+#     breakpoints on, the API's input_tokens is only what came after the last breakpoint, close to nothing, and
+#     an estimate built from it would be the underestimate this replaced. A run on a model other than Sonnet
+#     4.6 has to be divided by that model's `tokenizer` first: the figures here are Sonnet 4.6 tokens.
+#   - An OpenAI model is estimated at the same volumes, its cache-read share at cached_input and its writes at
+#     cache_write. Nothing OpenAI has been metered through the tool loop yet (the judge sends no cacheable
+#     prefix); correct it from the first run the same way.
 # candidate_answer is what answer-eval and rerun_pr_j pay a cloud model per item. It was priced as a
 # baseline_question until that became CUAD's measured figure, which refused answer-eval on the synthetic corpus
 # outright (29 one-hop lookups at the price of 29 contract research questions). PROVISIONAL, not metered: the
@@ -70,7 +98,7 @@ chars_per_token: 2.5
 # The rest are still PROVISIONAL, from RUNBOOK.md's old cost table.
 estimates:
   synthetic_doc: {input_tokens: 600, output_tokens: 1000}
-  baseline_question: {input_tokens: 152000, output_tokens: 3100}
+  baseline_question: {input_tokens: 6, output_tokens: 1389, cache_write_5m_tokens: 44258, cache_read_tokens: 147329}
   candidate_answer: {input_tokens: 120000, output_tokens: 1500}
   judge: {input_tokens: 3000, output_tokens: 700}
   answer_judge: {input_tokens: 3000, output_tokens: 400}

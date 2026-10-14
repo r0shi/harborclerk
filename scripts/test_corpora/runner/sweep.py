@@ -5,7 +5,8 @@ pending unit, dispatches to the right handler, updates state, repeats.
 
 Phases:
   0. acquire   — download / generate the three corpora
-  1. baseline  — Sonnet 4.6 + Harbor Clerk MCP, save baselines/<corpus>/<q>.json
+  1. baseline  — a cloud model + Harbor Clerk MCP (--baseline-model, default Sonnet 4.6), save
+                 baselines/<corpus>/<q>.json; scored against the answer key in the report
   2. smoke     — one large model × one corpus, iterate on bugs
   3. depth     — same model × all three depths
   4. models    — all 8 × all 3 corpora × standard, completion-only
@@ -30,7 +31,6 @@ import sys
 import time
 from pathlib import Path
 
-import anthropic
 import httpx
 import yaml
 from anthropic._exceptions import OverloadedError, RateLimitError
@@ -42,7 +42,7 @@ from scripts.test_corpora.runner import answer_key, spend
 from scripts.test_corpora.runner.circuit_breaker import CircuitBreaker, is_operational_failure
 from scripts.test_corpora.runner.claude_baseline import BaselineGenerator
 from scripts.test_corpora.runner.client import HarborClerkClient, SyncMcpSession
-from scripts.test_corpora.runner.judge import JudgeClient
+from scripts.test_corpora.runner.judge import JudgeClient, vendor_of
 from scripts.test_corpora.runner.metrics import citation_extra, citation_overlap, entity_overlap
 from scripts.test_corpora.runner.quality import (
     baseline_quality_problem,
@@ -510,6 +510,16 @@ def make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--baseline-model",
+        default=cfg.BASELINE_MODEL,
+        help=(
+            "the cloud model that answers phase 1 through Harbor Clerk's MCP tools: the reference phase 4 is scored "
+            "against, and the cloud subject the report scores against the answer key. Recorded in spend.json; a "
+            "run is resumed with the one it started with, or not at all. One model per run, one corpus per run "
+            "(the cap). Must be priced in spend.yaml."
+        ),
+    )
+    p.add_argument(
         "--spend-cap-usd",
         type=float,
         default=None,
@@ -755,7 +765,13 @@ def missing_keys_for(plan: list[tuple[str, str, int]], env: dict[str, str] | Non
 
 
 def _spend_plan(
-    units, *, phases: set[int], workdir: Path, judge_model: str, no_judge: bool
+    units,
+    *,
+    phases: set[int],
+    workdir: Path,
+    judge_model: str,
+    no_judge: bool,
+    baseline_model: str = cfg.BASELINE_MODEL,
 ) -> list[tuple[str, str, int]]:
     """The cloud calls this invocation will make, as (kind, model, units), for the pre-run estimate: the
     pending units in the phases asked for. state.json holds every phase ever planned for the run id, and
@@ -770,7 +786,7 @@ def _spend_plan(
         synthetic_docs = synthetic.planned_generation_count(workdir / "synthetic")
     return [
         ("synthetic_doc", synthetic.GENERATION_MODEL, synthetic_docs),
-        ("baseline_question", cfg.BASELINE_MODEL, sum(1 for u in pending if u.phase == 1)),
+        ("baseline_question", baseline_model, sum(1 for u in pending if u.phase == 1)),
         ("judge", judge_model, 0 if no_judge else sum(1 for u in pending if u.phase in (4, 5))),
     ]
 
@@ -791,7 +807,9 @@ def _run_info(args: argparse.Namespace) -> dict[str, str]:
         # The machine that ran it, which need not be the one that renders the report.
         "host": platform.node().split(".")[0] or "unknown",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "baseline_model": cfg.BASELINE_MODEL,
+        # The cloud model that answers phase 1. Recorded so that a resume with another is refused: two models'
+        # answers under one set of baselines would be scored as one.
+        "baseline_model": args.baseline_model,
         "judge_model": "" if args.no_judge else args.judge_model,
         # A run is its questions. Recorded so that a resume without --questions-dir is refused instead of asking
         # the standard questions under the keyed ids and writing rows with no answer_key_score (review of #697).
@@ -809,10 +827,36 @@ def _phase0_acquire(corpus_id: str, workdir: Path) -> CorpusManifest:
     raise ValueError(f"unknown corpus {corpus_id}")
 
 
+def _baseline_client(model: str):
+    """The metered client of the baseline model's vendor, built before the first unit so that a missing key or an
+    unpriced model fails here and not after an ingest."""
+    return (
+        spend.anthropic_client("baseline_question")
+        if vendor_of(model) == "anthropic"
+        else spend.openai_client("baseline_question")
+    )
+
+
+def _baseline_provider(model: str, *, client, mcp_session):
+    """The provider that answers phase 1 with `model` over `mcp_session`, on `client` (a metered client of the
+    model's vendor, or None to build one on first use)."""
+    if vendor_of(model) == "anthropic":
+        return BaselineGenerator(client=client, mcp_session=mcp_session, model=model)
+    from scripts.test_corpora.runner.providers.openai_provider import OpenAIProvider
+
+    return OpenAIProvider(client=client, mcp_session=mcp_session, model=model)
+
+
 def _phase1_baseline(
-    client: anthropic.Anthropic, mcp_session, corpus: str, question_id: str, question_text: str, results_dir: Path
+    client,
+    mcp_session,
+    corpus: str,
+    question_id: str,
+    question_text: str,
+    results_dir: Path,
+    model: str = cfg.BASELINE_MODEL,
 ) -> dict:
-    gen = BaselineGenerator(client=client, mcp_session=mcp_session)
+    gen = _baseline_provider(model, client=client, mcp_session=mcp_session)
     res = gen.run_question(question=question_text, question_id=question_id, corpus=corpus)
     BaselineGenerator.write(res, results_dir, corpus)
     return dataclasses.asdict(res)
@@ -1509,7 +1553,12 @@ def main(argv: list[str] | None = None) -> int:
         # Refuse a run that is estimated over the cap before it has spent anything or touched Harbor Clerk
         # (ADR 0001, decision 6).
         plan = _spend_plan(
-            sf.units(), phases=phases, workdir=workdir, judge_model=args.judge_model, no_judge=args.no_judge
+            sf.units(),
+            phases=phases,
+            workdir=workdir,
+            judge_model=args.judge_model,
+            no_judge=args.no_judge,
+            baseline_model=args.baseline_model,
         )
         if not args.dry_run:
             estimate = meter.require_within_cap(plan)
@@ -1551,7 +1600,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.dry_run and (missing := missing_keys_for(plan)):
             log.error("this run will call a model whose key is not set: %s. Nothing was spent.", ", ".join(missing))
             return 3
-        anthro = spend.anthropic_client("baseline_question")
+        baseline_client = _baseline_client(args.baseline_model)
         judge = JudgeClient(model=args.judge_model)
 
         # Per-model circuit breaker. Caps the damage from a dead-LLM cascade
@@ -1863,8 +1912,16 @@ def main(argv: list[str] | None = None) -> int:
                             )
                             sf.save()  # no metrics row follows a unit that was never asked, so it is saved here
                             continue
-                        out = _with_anthropic_retry(
-                            _phase1_baseline, anthro, mcp_session, u.corpus, u.question_id, text, run_dir
+                        out = _with_provider_retry(
+                            _phase1_baseline,
+                            baseline_client,
+                            mcp_session,
+                            u.corpus,
+                            u.question_id,
+                            text,
+                            run_dir,
+                            args.baseline_model,
+                            client_kind=vendor_of(args.baseline_model),
                         )
                     elif phase in (2, 3, 4, 5, 6):
                         owning_corpus = (

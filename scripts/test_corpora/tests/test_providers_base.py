@@ -26,6 +26,7 @@ def test_baseline_result_is_a_dataclass_with_expected_fields():
         "elapsed_seconds",
         "model",
         "timestamp",
+        "model_call_count",
     }
 
 

@@ -434,3 +434,121 @@ def test_forced_answers_are_counted_and_judged_beside_the_chosen_ones(tmp_path):
     assert "forced by the app" not in text
     row = next(line for line in text.splitlines() if line.startswith("| cuad | `m` |"))
     assert "| 0 | 0 |" in row  # forced, forced pass
+
+
+def _subject_run(tmp_path: Path, *, model: str = "claude-fable-5-1", calls: bool = True, questions_dir=None) -> Path:
+    """A keyed run: three keyed baselines (two governing-law facts, one date), one unkeyed research baseline, and
+    the key file where the ledger says the questions came from."""
+    keys = tmp_path / "keyed"
+    keys.mkdir(parents=True, exist_ok=True)
+    (keys / "cuad.key.json").write_text(
+        json.dumps(
+            {
+                "cuad-key-1": {"kind": "fact", "all_of": [["California"]]},
+                "cuad-key-2": {"kind": "fact", "all_of": [["New York"]]},
+                "cuad-key-3": {"kind": "date", "date": "2022-03-15"},
+                "cuad-key-4": {"kind": "list", "positives": ["A_x"], "universe": ["A_x", "B_y"]},
+            }
+        )
+    )
+    ledger = {
+        **LEDGER,
+        "run": {
+            **LEDGER["run"],
+            "baseline_model": model,
+            "questions_dir": str(keys if questions_dir is None else questions_dir),
+        },
+        "by_model": {model: {"calls": 7, "usd": 1.2345}},
+    }
+    run = _run_dir(tmp_path, ROWS, ledger=ledger)
+    folder = run / "baselines" / "cuad"
+    folder.mkdir(parents=True)
+    answers = {
+        "cuad-key-1": ("California law governs.", "end_turn", 2),
+        "cuad-key-2": ("Delaware law governs.", "model_call_limit", 3),
+        "cuad-key-3": ("Dated March 15, 2022.", "end_turn", 2),
+        "cuad-research-1": ("not a keyed question", "end_turn", 5),
+    }
+    for qid, (answer, stopped_by, n) in answers.items():
+        record = {"question_id": qid, "answer": answer, "model": model, "stopped_by": stopped_by}
+        if calls:
+            record["model_call_count"] = n
+        (folder / f"{qid}.json").write_text(json.dumps(record))
+    return run
+
+
+def test_the_cloud_subject_is_scored_against_the_answer_key_in_its_own_table(tmp_path):
+    """The 2026-09-28 report scored the Claude baseline against the key by hand ("scored offline"). The report
+    does it: the baselines of a keyed corpus, scored as phase 4 is, with calls, the ones stopped at the limit,
+    the per-kind means and the model's spend."""
+    text = _render(_subject_run(tmp_path))
+    assert "## Cloud subject" in text
+    assert (
+        "| corpus | model | questions | calls | stopped at call limit | answer key (0-1) | fact | date | list | USD |"
+        in text
+    )
+    assert "| cuad | `claude-fable-5-1` | 3 | 7 | 1 | 0.67 | 0.50 | 1.00 | n/a | 1.2345 |" in text
+    assert "cuad-research-1" not in text.split("## Cloud subject")[1].split("##")[0], (
+        "an unkeyed baseline is not scored"
+    )
+    assert text.index("## Cloud subject") < text.index("## Phase 4"), "above the phase tables"
+    assert "baseline claude-fable-5-1; prices as of" in text, "the header names the subject"
+
+
+def test_a_cloud_subject_run_from_before_the_call_count_takes_its_calls_from_the_ledger(tmp_path):
+    text = _render(_subject_run(tmp_path, model="claude-sonnet-4-6", calls=False))
+    assert "| cuad | `claude-sonnet-4-6` | 3 | 20 | 1 | 0.67 | 0.50 | 1.00 | n/a | 1.2345 |" in text
+
+
+def test_a_run_without_a_key_has_no_cloud_subject_table(tmp_path):
+    run = _run_dir(tmp_path, ROWS, ledger=LEDGER)
+    folder = run / "baselines" / "cuad"
+    folder.mkdir(parents=True)
+    (folder / "cuad-research-1.json").write_text(json.dumps({"answer": "a", "model": "claude-sonnet-4-6"}))
+    assert "Cloud subject" not in _render(run)
+    # A keyed questions directory that is not where the ledger says: no table rather than a wrong one.
+    assert "Cloud subject" not in _render(_subject_run(tmp_path / "elsewhere", questions_dir=tmp_path / "absent"))
+
+
+def test_a_kind_the_key_declares_beyond_the_three_gets_a_column_and_one_the_scorer_refuses_is_said(
+    tmp_path, monkeypatch
+):
+    """The key file may declare kinds beyond fact, date and list (the synthetic corpus's key is being written):
+    each gets a column. A kind this checkout's scorer does not know is left out and named, not a crash."""
+    from scripts.test_corpora.runner import answer_key
+
+    run = _subject_run(tmp_path)
+    key_path = Path(json.loads((run / "spend.json").read_text())["run"]["questions_dir"]) / "cuad.key.json"
+    key = json.loads(key_path.read_text())
+    key["cuad-key-5"] = {"kind": "number", "value": 42}
+    key["cuad-key-6"] = {"kind": "colour", "value": "red"}
+    key_path.write_text(json.dumps(key))
+    for qid in ("cuad-key-5", "cuad-key-6"):
+        (run / "baselines" / "cuad" / f"{qid}.json").write_text(
+            json.dumps({"answer": "42", "model": "claude-fable-5-1", "model_call_count": 1})
+        )
+    original = answer_key.score
+
+    def score(entry, answer):
+        return {"score": 1.0} if entry["kind"] == "number" else original(entry, answer)
+
+    monkeypatch.setattr(report.answer_key, "score", score)
+    text = _render(run)
+    assert "| answer key (0-1) | fact | date | list | number | USD |" in text
+    assert "| cuad | `claude-fable-5-1` | 4 | 8 | 1 | 0.75 | 0.50 | 1.00 | n/a | 1.00 | 1.2345 |" in text
+    assert (
+        "1 keyed baseline(s) have a kind this scorer does not know and are not in the table: `cuad/cuad-key-6` (colour)"
+        in text
+    )
+
+
+def test_cache_writes_are_shown_by_lifetime_when_the_ledger_has_them(tmp_path):
+    """What corrects spend.yaml's estimate: the writes as the meter priced them. A ledger from before the split
+    says nothing."""
+    assert "by lifetime" not in _render(_run_dir(tmp_path, ROWS, ledger=LEDGER))
+    split = json.loads(json.dumps(LEDGER))
+    split["by_kind"]["baseline_question"].update({"cache_write_5m_tokens": 200000, "cache_write_1h_tokens": 0})
+    split["by_kind"]["judge"].update({"cache_write_5m_tokens": 0, "cache_write_1h_tokens": 0})
+    text = _render(_run_dir(tmp_path / "s", ROWS, ledger=split))
+    assert "Cache writes by lifetime, as priced: baseline_question 200,000 at five minutes, 0 at an hour.\n" in text
+    assert "judge 0 at" not in text, "a kind that wrote nothing has nothing to break down"

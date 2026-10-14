@@ -56,6 +56,9 @@ class BaselineResult:
     # reference that was cut short or truncated is a worse one, and what is scored against it should be able to
     # say so. "unrecorded" is a provider that does not say (the local one) and every baseline from before this.
     stopped_by: str = "unrecorded"
+    # Model calls the loop made for this question (tool_call_count is the tools those calls asked for). What the
+    # report's "calls" column sums; 0 in a baseline from before the field.
+    model_call_count: int = 0
 
 
 # Model calls one baseline question may make, the last of them with tools switched off so that it answers from

@@ -108,6 +108,24 @@ def test_phase1_baseline_retry_recovers_from_anthropic_529(tmp_path):
     assert (tmp_path / "baselines" / "cuad" / "q1.json").exists()
 
 
+def test_phase1_baseline_answers_with_the_model_the_run_names_in_the_same_layout(tmp_path):
+    """A GPT-6 cloud subject goes through the Responses API on the run's metered OpenAI client; the baseline lands
+    where every reader of baselines/ looks, naming its model."""
+    import json
+    from types import SimpleNamespace
+
+    client = MagicMock()
+    client.responses.create.return_value = SimpleNamespace(
+        status="completed",
+        output=[SimpleNamespace(type="message", content=[SimpleNamespace(type="output_text", text="Astra's answer.")])],
+    )
+    out = _phase1_baseline(client, None, "cuad", "q1", "What are the notice periods?", tmp_path, "gpt-6-astra")
+    assert out["answer"] == "Astra's answer." and out["model"] == "gpt-6-astra" and out["model_call_count"] == 1
+    assert client.responses.create.call_count == 1 and not client.chat.completions.create.called
+    written = json.loads((tmp_path / "baselines" / "cuad" / "q1.json").read_text())
+    assert written["model"] == "gpt-6-astra" and written["stopped_by"] == "end_turn"
+
+
 # ── provider-aware retry (PR-C) ─────────────────────────────────────────────
 
 

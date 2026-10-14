@@ -4,6 +4,14 @@
 Body is the pre-refactor BaselineGenerator.run_question loop, lifted out of
 claude_baseline.py verbatim. claude_baseline.py becomes a thin re-export
 shim in Task 3 so sweep.py's existing import sites stay untouched.
+
+Checked against the Messages API for Claude Fable 5.1 and Opus 5.5 (2026-10-14, platform.claude.com docs): no
+beta header; `max_tokens` up to 128K (8000 here); `tool_choice: {"type": "none"}` is accepted where `any` and
+`tool` are refused on those models; thinking is always on and no `thinking` parameter is sent; the sampling
+parameters are not sent (they are refused there); a safety refusal arrives as `stop_reason: "refusal"`, which
+the loop records as the baseline's `stopped_by`. The cache breakpoints below are the five-minute lifetime
+(`{"type": "ephemeral"}`; the hour is `{"type": "ephemeral", "ttl": "1h"}`), and the meter reads which was
+used from `usage.cache_creation`.
 """
 
 from __future__ import annotations
@@ -32,7 +40,8 @@ log = logging.getLogger(__name__)
 # prompt cache and read back, at a tenth of the input price, by the next call that starts the same way.
 # Without any, the 16 CUAD baselines sent 6.0 M input tokens, nearly all of them a prefix the API had seen on
 # the previous call of the same question, and cost USD 18.80 (#682). Five-minute lifetime: the next call of a
-# question follows in seconds. spend.yaml prices a write at the dearer one-hour rate, so the meter overstates.
+# question follows in seconds. The meter prices each write by the lifetime the response reports
+# (`usage.cache_creation.ephemeral_5m_input_tokens`); until 2026-10-14 it priced every write at the hour rate.
 _EPHEMERAL = {"type": "ephemeral"}
 
 
@@ -135,6 +144,7 @@ class AnthropicProvider:
         tools = self._list_tools()
         messages: list[dict] = [{"role": "user", "content": question}]
         tool_call_count = 0
+        model_call_count = 0
         tool_transcript: list[dict] = []
         resp = None
 
@@ -160,6 +170,7 @@ class AnthropicProvider:
                 messages=list(messages) if last else _cached_up_to_the_last_block(messages),
                 **({"tool_choice": {"type": "none"}} if last and tools else {}),
             )
+            model_call_count += 1
             messages.append({"role": "assistant", "content": resp.content})
 
             if last:
@@ -216,11 +227,14 @@ class AnthropicProvider:
             model=self._model,
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             stopped_by=stopped_by,
+            model_call_count=model_call_count,
         )
 
     @staticmethod
     def write(result: BaselineResult, results_dir: Path, corpus: str) -> Path:
-        """Write a BaselineResult JSON under results_dir/baselines/<corpus>/.
+        """Write a BaselineResult JSON under results_dir/baselines/<corpus>/, whichever vendor answered: the file
+        names its model, and a run has one baseline model (the ledger refuses a resume with another), so the
+        layout every reader of baselines/ knows is kept and old runs stay readable.
 
         Kept as a @staticmethod (not a free function) for shim compatibility:
         the sweep.py phase-1 baseline calls `BaselineGenerator.write(...)`,

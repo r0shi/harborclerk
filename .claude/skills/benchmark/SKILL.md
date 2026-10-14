@@ -86,12 +86,12 @@ Scope to the question. A full sweep is 17 to 25 hours of model time; one corpus,
 the models being compared, phases `0,1,4` is usually the whole question. A large
 corpus adds its summaries before the first unit: the sweep waits for them so every
 model measures the same corpus (about 20 documents a minute on the mini; #717).
-**One corpus per run**: at the measured price of a Claude baseline (about USD 19
-for a corpus of 16 questions, #682) two corpora are refused before they start.
-The sweep prices the pending cloud work before it starts and refuses a run
-estimated over the cap; the per-call hard stop is the real guard
-(`scripts/test_corpora/spend.yaml`, README "Cloud spend is capped").
-`--spend-cap-usd N` lowers the cap for this run. Raising it is a PR.
+**One corpus per run**: the sweep prices the pending cloud work before it starts
+at each model's own cache rates and refuses a run estimated over the cap (20
+keyed CUAD baselines: Sonnet 4.6 about USD 5, Fable 5.1 about 17, gpt-6-astra
+about 15; the other corpora cost 40 to 60% more a question). The per-call hard
+stop is the real guard (`scripts/test_corpora/spend.yaml`, README "Cloud spend
+is capped"). `--spend-cap-usd N` lowers the cap for this run. Raising it is a PR.
 
 Keep the judge at its default unless the owner asked to change it: scores from
 different judges are not comparable (#661).
@@ -116,6 +116,23 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.swee
   --run-id "$RUN" --workdir "$WORKDIR" --phases 0,1,4 --corpora cuad --models "$MODELS" \
   > "$WORKDIR/results/$RUN/console.log" 2>&1; echo "sweep exit: $?"
 ```
+
+**A cloud model as the subject.** To measure a frontier model through Harbor
+Clerk's MCP tools against the answer key, run phases 0 and 1 only, naming it:
+
+```bash
+  --phases 0,1 --baseline-model claude-fable-5-1 --corpora cuad \
+  --questions-dir scripts/test_corpora/questions/keyed
+```
+
+One model per run and one corpus per run (the cap; a resume with another model
+is refused), its own `--run-id`, the model priced in `spend.yaml`. A `gpt-*`
+model needs the OpenAI key instead of the Anthropic one; GPT-6 goes through
+OpenAI's Responses API. The report then has a "Cloud subject" table: the key
+mean and per-kind means over its baselines, calls, answers stopped at the call
+limit, and USD. Its answers are also the reference for any phase 4 that follows
+in the same run, so compare like with like: a local model scored against Fable
+is not comparable with one scored against Sonnet 4.6.
 
 Run it in the background and watch `results/$RUN/log.txt`; do not poll faster
 than the work moves. Exit codes: **0** complete; **3** stopped by the spend cap
