@@ -223,7 +223,11 @@ async def list_documents(
                     s.watch_source_path = f"{folder_path}/{wf.relative_path}" if folder_path else wf.relative_path
                     s.watch_status = wf.status.value
                     if folder is not None:
-                        s.folder_name = folder.display_name or posixpath.basename(folder.path)
+                        # Without a display name the label is the last component of the
+                        # on-disk path; a key gets no path component (see ABSOLUTE_PATH_FIELDS).
+                        s.folder_name = folder.display_name or (
+                            None if principal.type == "api_key" else posixpath.basename(folder.path)
+                        )
         except Exception:
             # watched_files table may not exist if migration 0011 hasn't run
             await session.rollback()

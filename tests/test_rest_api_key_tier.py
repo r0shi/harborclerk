@@ -74,6 +74,8 @@ HUMAN_ONLY_READS: list[tuple[str, str]] = [
     ("GET", "/api/chat/conversations"),
     ("GET", "/api/chat/models"),
     ("GET", "/api/chat/models/status"),
+    ("GET", "/api/research"),
+    ("GET", "/api/research/active"),
 ]
 HUMAN_ONLY_STREAMS = ("/jobs/stream", "/watch/folders/stream")
 
@@ -380,20 +382,34 @@ async def test_admin_session_still_reaches_the_human_only_reads(client, corpus, 
     assert conversations.status_code == 200
 
 
+async def test_key_gets_no_folder_label_derived_from_the_on_disk_path(
+    client, db_session, corpus, make_key, admin_user, admin_token
+) -> None:
+    """Without a display name the label falls back to the folder path's last
+    component — a path component, so a key gets none; a human still does."""
+    corpus.folder.display_name = None
+    await db_session.flush()
+
+    human = await client.get("/api/docs", headers=auth_header(admin_token))
+    assert human.json()["items"][0]["folder_name"] == "Secret Folder"
+
+    key = await client.get("/api/docs", headers=auth_header(await make_key("full")))
+    (item,) = key.json()["items"]
+    assert item["folder_name"] is None
+    assert "Secret Folder" not in key.text
+
+
 # --- audit log --------------------------------------------------------------
 
 
-async def test_rest_tier_denial_is_logged_as_denied(db_session: AsyncSession, _engine, corpus, make_key) -> None:
-    """MCP logs an out-of-tier call as status 'denied'; the REST middleware must
-    too, instead of a generic HTTP 403 error, so the dashboard counts them alike."""
+async def _logged_rest_rows(db_session: AsyncSession, _engine, raw_key: str, path: str):
+    """GET ``path`` with ``raw_key`` through the real audit middleware; return (response, log rows)."""
     from harbor_clerk.api.app import create_app
     from harbor_clerk.api.middleware import ApiKeyRequestLogMiddleware
     from harbor_clerk.db import get_session
     from harbor_clerk.models.api_request_log import ApiRequestLog
 
-    raw = await make_key("search")
     await db_session.commit()  # the middleware resolves the key through its own session
-
     app = create_app()
 
     async def _override_session():
@@ -405,11 +421,30 @@ async def test_rest_tier_denial_is_logged_as_denied(db_session: AsyncSession, _e
     with patch("harbor_clerk.db.async_session_factory", factory):
         transport = ASGITransport(app=ApiKeyRequestLogMiddleware(app))
         async with AsyncClient(transport=transport, base_url="http://test") as c:
-            resp = await c.get(f"/api/docs/{corpus.doc.doc_id}", headers=auth_header(raw))
-    assert resp.status_code == 403
+            resp = await c.get(path, headers=auth_header(raw_key))
 
     async with factory() as fresh:
         rows = (await fresh.execute(select(ApiRequestLog).where(ApiRequestLog.request_type == "rest"))).scalars().all()
+    return resp, rows
+
+
+async def test_rest_tier_denial_is_logged_as_denied(db_session: AsyncSession, _engine, corpus, make_key) -> None:
+    """MCP logs an out-of-tier call as status 'denied'; the REST middleware must
+    too, instead of a generic HTTP 403 error, so the dashboard counts them alike."""
+    raw = await make_key("search")
+    resp, rows = await _logged_rest_rows(db_session, _engine, raw, f"/api/docs/{corpus.doc.doc_id}")
+    assert resp.status_code == 403
     assert [r.status for r in rows] == ["denied"]
     assert rows[0].endpoint == "GET /api/docs/{id}"
     assert "kb_get_document" in (rows[0].status_detail or "")
+
+
+async def test_rest_human_only_refusal_is_logged_as_denied(db_session: AsyncSession, _engine, corpus, make_key) -> None:
+    """A key on a human-only read is a denial too, not an error — the dashboard's
+    denied count would otherwise miss every jobs/stats/watch/chat probe."""
+    raw = await make_key("full")
+    resp, rows = await _logged_rest_rows(db_session, _engine, raw, "/api/jobs/active")
+    assert resp.status_code == 403
+    assert [r.status for r in rows] == ["denied"]
+    assert rows[0].endpoint == "GET /api/jobs/active"
+    assert "API keys" in (rows[0].status_detail or "")

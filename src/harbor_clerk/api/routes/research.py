@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import Principal, require_human_user, require_user
+from harbor_clerk.api.deps import Principal, require_human_user
 from harbor_clerk.api.schemas.research import (
     ResearchActiveCheck,
     ResearchDetail,
@@ -28,15 +28,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["research"])
 
 
-def _require_human(principal: Principal) -> None:
-    """Raise 403 if the caller is not a human user (i.e. API key)."""
-    if principal.type != "user":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Research mode requires a human user session",
-        )
-
-
 # ---------------------------------------------------------------------------
 # GET /research/active — is a research task currently running?
 # ---------------------------------------------------------------------------
@@ -44,10 +35,9 @@ def _require_human(principal: Principal) -> None:
 
 @router.get("/research/active", response_model=ResearchActiveCheck)
 async def check_active(
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
-    _require_human(principal)
     result = await session.execute(select(ResearchState).where(ResearchState.status == "running"))
     running = result.scalar_one_or_none()
     if running:
@@ -62,10 +52,9 @@ async def check_active(
 
 @router.get("/research", response_model=list[ResearchSummary])
 async def list_research(
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
-    _require_human(principal)
     result = await session.execute(
         select(Conversation, ResearchState)
         .join(ResearchState, ResearchState.conversation_id == Conversation.conversation_id)
@@ -98,10 +87,9 @@ async def list_research(
 @router.get("/research/{conv_id}", response_model=ResearchDetail)
 async def get_research(
     conv_id: uuid.UUID,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
-    _require_human(principal)
 
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id or conv.mode != "research":

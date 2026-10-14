@@ -274,6 +274,32 @@ def test_rest_access_gates_are_derived_for_every_operation() -> None:
     assert by_path[("/api/docs/{doc_id}/content", "GET")] == "key ≥ full (kb_read_document)"
     assert by_path[("/api/jobs/active", "GET")] == "human only"
     assert by_path[("/api/watch/folders", "GET")] == "human only"
+    assert by_path[("/api/research", "GET")] == "human only"
+    # A blank gate is a route any API key can reach with no table entry — exactly
+    # what #646 was. Only the public routes and the /me routes (which reject keys
+    # in the body with 400) may have one; everything else must be derived.
+    public = {
+        ("/api/auth/login", "POST"),
+        ("/api/auth/logout", "POST"),
+        ("/api/auth/refresh", "POST"),
+        ("/api/setup", "POST"),
+        ("/api/system/health", "GET"),
+        ("/api/system/ping", "GET"),
+        ("/api/system/setup-status", "GET"),
+        ("/.well-known/oauth-authorization-server", "GET"),
+        ("/.well-known/oauth-protected-resource", "GET"),
+        ("/oauth/authorize", "GET"),
+        ("/oauth/authorize", "POST"),
+        ("/oauth/register", "POST"),
+        ("/oauth/revoke", "POST"),
+        ("/oauth/token", "POST"),
+    }
+    in_body = {("/api/me", "GET"), ("/api/me/password", "POST"), ("/api/me/preferences", "PATCH")}
+    blank = {key for key, access in by_path.items() if not access}
+    assert blank == public | in_body, {
+        "unexpected blank gate": blank - public - in_body,
+        "gone": (public | in_body) - blank,
+    }
 
 
 def test_every_entry_point_is_described() -> None:

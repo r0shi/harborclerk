@@ -150,26 +150,23 @@ async def get_current_principal(
     return Principal(type="api_key", id=api_key.key_id, role="user", key_scope=scope)
 
 
-async def require_user(
-    principal: Principal = Depends(get_current_principal),
-) -> Principal:
-    """Any authenticated user (human or API key)."""
-    return principal
-
-
 async def require_human_user(
+    request: Request,
     principal: Principal = Depends(get_current_principal),
 ) -> Principal:
-    """Human user only — rejects read-only API keys.
+    """Human user only — rejects API keys.
 
-    Use this for mutating endpoints (uploads, chat, watched folders, etc.)
-    to enforce the project's read-only API key contract.
+    Use this for mutating endpoints (uploads, chat, watched folders, etc.), to
+    enforce the project's read-only API key contract, and for reads that have no
+    MCP counterpart (jobs, stats, watched folders, chat, research). There is no
+    "any authenticated principal" dependency on purpose: a key reaches a route
+    only through ``require_read_access`` and its ``REST_ROUTE_TOOLS`` entry.
     """
     if principal.type == "api_key":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="API keys are read-only and cannot access this endpoint",
-        )
+        detail = "API keys cannot access this endpoint"
+        # ApiKeyRequestLogMiddleware reads this so the audit log records a denial, as MCP does.
+        request.state.api_key_denied = detail
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
     return principal
 
 

@@ -474,7 +474,7 @@ Queue subscriptions:
 <!-- BEGIN GENERATED: rest-endpoints -->
 <!-- Do not edit by hand. Regenerate: uv run python -m scripts.gen_docs -->
 
-**142 operations**, 122 of them access-gated. Generated from the FastAPI OpenAPI schema; the Access column is derived from each route's dependency tree. **admin** needs an admin session; **human only** rejects API keys; **key ≥ tier (tool)** admits an API key whose tier, or a per-key tool override, grants the named MCP tool — the one that governs the route, per `REST_ROUTE_TOOLS` in `api/scope.py`. Keys never receive absolute on-disk paths at any tier.
+**142 operations**, 125 of them access-gated. Generated from the FastAPI OpenAPI schema; the Access column is derived from each route's dependency tree. **admin** needs an admin session; **human only** rejects API keys; **key ≥ tier (tool)** admits an API key whose tier, or a per-key tool override, grants the named MCP tool — the one that governs the route, per `REST_ROUTE_TOOLS` in `api/scope.py`. Keys never receive absolute on-disk paths at any tier.
 
 ### `api-keys`
 
@@ -597,11 +597,11 @@ Queue subscriptions:
 
 | Method | Path | Access | Summary |
 |---|---|---|---|
-| `GET` | `/api/research` | — | List Research |
+| `GET` | `/api/research` | **human only** | List Research |
 | `POST` | `/api/research` | **human only** | Start Research |
-| `GET` | `/api/research/active` | — | Check Active |
+| `GET` | `/api/research/active` | **human only** | Check Active |
 | `DELETE` | `/api/research/{conv_id}` | **human only** | Delete Research |
-| `GET` | `/api/research/{conv_id}` | — | Get Research |
+| `GET` | `/api/research/{conv_id}` | **human only** | Get Research |
 | `POST` | `/api/research/{conv_id}/resume` | **human only** | Resume Research |
 
 ### `search`
