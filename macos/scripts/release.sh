@@ -29,7 +29,10 @@
 #   bash macos/scripts/release.sh vX.Y.Z --skip-build
 #
 # The last step verifies the bundles carry vX.Y.Z, pushes the tag, and uploads
-# build/output/HarborClerk.dmg when it exists, the two app zips otherwise.
+# build/output/HarborClerk.dmg when it exists, the two app zips otherwise. If the
+# upload fails after the push, the same command resumes: a tag already on origin
+# at HEAD with no GitHub release is accepted, not refused. A tag this script
+# created is deleted again on any failure before the push.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -98,6 +101,7 @@ fi
 
 # A dirty tree builds as "${EXPECTED}+0.g<hash>.dirty" and is refused by the
 # stamp check below anyway; say so before anything is tagged.
+git update-index -q --refresh  # a touched-but-unchanged file otherwise reads as modified
 if ! git diff-index --quiet HEAD --; then
     echo "ERROR: the working tree has uncommitted changes to tracked files; a release is built from a clean tree." >&2
     git status --short --untracked-files=no >&2
@@ -110,15 +114,34 @@ if [ -n "$tag_commit" ] && [ "$tag_commit" != "$head_commit" ]; then
     echo "ERROR: tag ${VERSION} already exists and points at ${tag_commit:0:7}, not at HEAD (${head_commit:0:7})." >&2
     exit 1
 fi
+# A tag already on origin normally means the release exists. The exception is a
+# publish that failed *after* the push (v0.9.2: the DMG was over GitHub's 2 GiB
+# asset limit): the tag is upstream at HEAD and no release has it, so a re-run
+# must resume rather than refuse. `ls-remote` lists an annotated tag twice, the
+# tag object and its peeled commit (`^{}`); take the peeled line when present.
+remote_tag_at_head=0
 if git remote get-url origin >/dev/null 2>&1; then
-    if [ -n "$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags origin "refs/tags/${VERSION}" 2>/dev/null)" ]; then
-        echo "ERROR: tag ${VERSION} is already on origin; that release exists (or was at least tagged) upstream." >&2
-        exit 1
+    remote_refs="$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags origin "refs/tags/${VERSION}" "refs/tags/${VERSION}^{}" 2>/dev/null || true)"
+    if [ -n "$remote_refs" ]; then
+        remote_commit="$(printf '%s\n' "$remote_refs" | awk '/\^\{\}$/ { peeled = $1 } !/\^\{\}$/ { plain = $1 } END { print (peeled != "" ? peeled : plain) }')"
+        if [ "$remote_commit" != "$head_commit" ]; then
+            echo "ERROR: tag ${VERSION} is already on origin at ${remote_commit:0:7}, not at HEAD (${head_commit:0:7}); that release exists upstream." >&2
+            exit 1
+        fi
+        if command -v gh >/dev/null 2>&1 && gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "ERROR: tag ${VERSION} is on origin and GitHub already has release ${VERSION}; nothing to do." >&2
+            exit 1
+        fi
+        remote_tag_at_head=1
+        echo "==> Tag ${VERSION} is already on origin at HEAD with no GitHub release: resuming the publish (the tag push is skipped)."
     fi
 fi
 
+tag_state="is free"
+if [ "$remote_tag_at_head" = 1 ]; then tag_state="is on origin at HEAD, release pending"
+elif [ -n "$tag_commit" ]; then tag_state="exists locally at HEAD"; fi
 echo "==> Preflight OK: pyproject.toml, package.json and package-lock.json all say ${EXPECTED};" \
-     "tree clean at ${head_commit:0:7}; tag ${VERSION} $([ -n "$tag_commit" ] && echo 'exists locally at HEAD' || echo 'is free')"
+     "tree clean at ${head_commit:0:7}; tag ${VERSION} ${tag_state}"
 if [ "$CHECK_ONLY" = true ]; then
     echo "==> Ready to release ${VERSION}."
     exit 0
@@ -146,13 +169,19 @@ if [ -z "$tag_commit" ]; then
     git tag -a "$VERSION" -m "Release $VERSION"
     created_tag=1
 fi
-undo_tag() {
-    if [ "$created_tag" = 1 ]; then
+# On EXIT, not ERR: an ERR trap does not fire on an explicit `exit 1`, and
+# without `set -E` it is not inherited into functions, so a PlistBuddy failure
+# inside verify_build or the "apps not found" exit below would have left the tag
+# behind. EXIT fires on every path out of the script, including Ctrl-C during
+# the build; the status decides whether there is anything to undo.
+undo_tag_on_failure() {
+    local rc=$?
+    if [ "$rc" -ne 0 ] && [ "$created_tag" = 1 ]; then
         git tag -d "$VERSION" >/dev/null 2>&1 || true
         echo "    (removed the local tag ${VERSION}; nothing was pushed)" >&2
     fi
 }
-trap undo_tag ERR
+trap undo_tag_on_failure EXIT
 
 # ── Build ──
 
@@ -197,8 +226,12 @@ verify_build
 
 # ── Push the tag ──
 
-echo "==> Pushing tag ${VERSION}"
-git push origin "$VERSION"
+if [ "$remote_tag_at_head" = 1 ]; then
+    echo "==> Tag ${VERSION} is already on origin; not pushing again"
+else
+    echo "==> Pushing tag ${VERSION}"
+    git push origin "$VERSION"
+fi
 created_tag=0  # it is upstream now; a later failure must not delete it locally
 
 # ── Package ──
@@ -238,6 +271,13 @@ fi
 # ── Create release ──
 
 echo "==> Creating GitHub release $VERSION"
+publish_failed() {
+    echo "ERROR: 'gh release create ${VERSION}' failed. The tag is pushed and the build is verified;" >&2
+    echo "       fix the cause (asset size, auth, network) and resume with:" >&2
+    echo "         bash macos/scripts/release.sh ${VERSION} --skip-build" >&2
+    echo "       which recognises the pushed tag and publishes without re-tagging." >&2
+    exit 1
+}
 gh release create "$VERSION" \
     "${assets[@]}" \
     --title "Harbor Clerk $VERSION" \
@@ -262,7 +302,7 @@ ${notes_rows}
 - macOS 15.0 (Sequoia) or later
 - 16 GB RAM minimum
 EOF
-)"
+)" || publish_failed
 
 # ── Cleanup ──
 

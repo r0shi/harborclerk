@@ -390,17 +390,19 @@ def build_version() -> str:
     development build is never mistaken for a release.
 
     Without the stamp — Docker, ``uv run``, a bundle assembled before the stamp
-    existed — this is the installed package's version, i.e. ``pyproject.toml``'s,
-    which ``release.sh`` holds equal to the tag; ``build`` says ``dev`` alongside.
+    existed — this is the installed package's version (``pyproject.toml``'s,
+    which ``release.sh`` holds equal to the tag) with ``+unstamped`` appended:
+    the package version is the same for every commit after the bump, so a bare
+    number must stay something only a stamped release build can report.
     Read per call rather than at import so a test can set the environment.
     """
     stamped = os.environ.get("BUILD_VERSION", "").strip()
     if stamped:
         return stamped
     try:
-        return importlib.metadata.version("harbor-clerk")
+        return f"{importlib.metadata.version('harbor-clerk')}+unstamped"
     except importlib.metadata.PackageNotFoundError:
-        return "unknown"
+        return "0.0.0+unstamped"
 
 
 def create_app() -> FastAPI:

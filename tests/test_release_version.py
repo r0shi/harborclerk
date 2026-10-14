@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -87,9 +88,11 @@ def _git(*args: str, cwd: Path = REPO) -> subprocess.CompletedProcess[str]:
 
 def test_a_tagged_head_carries_the_checked_in_version() -> None:
     """Only checkable on a release commit; everywhere else the reason is the skip."""
-    exact = _git("describe", "--tags", "--match", "v*", "--exact-match", "HEAD")
+    exact = _git("describe", "--tags", "--match", "v[0-9]*", "--exact-match", "HEAD")
     if exact.returncode != 0:
-        nearest = _git("describe", "--tags", "--match", "v*", "--long", "--always").stdout.strip() or "no tag reachable"
+        nearest = (
+            _git("describe", "--tags", "--match", "v[0-9]*", "--long", "--always").stdout.strip() or "no tag reachable"
+        )
         pytest.skip(f"HEAD is not a tagged commit ({nearest}); the tag/version agreement is checked on release commits")
     tag = exact.stdout.strip()
     assert tag == f"v{_pyproject_version()}", (
@@ -184,16 +187,42 @@ def test_build_version_derivation(describe: str, expected: dict[str, str]) -> No
     assert _parse(result.stdout) == expected
 
 
-def test_build_version_rejects_what_it_cannot_parse() -> None:
-    result = _derive("release-candidate")
-    assert result.returncode != 0, "an unparseable describe must fail the build, not stamp something"
-    assert result.stderr.strip()
+@pytest.mark.parametrize(
+    "describe",
+    [
+        "release-candidate",
+        # The output is `eval`ed by package.sh and the Makefile: a tag is text
+        # anyone with push rights can write, and this one must fail, not run.
+        "v1.2.3;echo-0-gabc1234",
+        'v1.2.3"$(id)-0-gabc1234',
+        # `--match 'v*'` used to accept this and derive MARKETING_VERSION=endor-x.
+        "vendor-x-0-gabc1234",
+        "v1.2-0-gabc1234",
+    ],
+    ids=["not-a-describe", "shell-metachar", "command-substitution", "vendor-tag", "two-part"],
+)
+def test_build_version_rejects_what_it_cannot_parse(describe: str) -> None:
+    result = _derive(describe)
+    assert result.returncode != 0, f"{describe!r} must fail the build, not stamp something: {result.stdout!r}"
+    assert "cannot derive" in result.stderr
+    assert not result.stdout.strip(), "nothing may reach eval on the error path"
+
+
+def test_build_version_accepts_a_pre_release_suffix() -> None:
+    result = _derive("v1.0.0-rc1-0-gabc1234")
+    assert result.returncode == 0, result.stderr
+    parsed = _parse(result.stdout)
+    assert parsed["HC_VERSION"] == "1.0.0-rc1" and parsed["HC_VERSION_FULL"] == "1.0.0-rc1"
+
+
+def test_build_version_matches_only_numeric_v_tags() -> None:
+    assert "--match 'v[0-9]*'" in BUILD_VERSION_SH.read_text(encoding="utf-8")
 
 
 def test_build_version_describes_this_checkout_through_the_same_parser() -> None:
     """The no-argument path runs `git describe` itself; its answer must equal the
     fixed-input path fed the same string, and must be a usable version."""
-    describe = _git("describe", "--tags", "--match", "v*", "--long", "--dirty", "--always").stdout.strip()
+    describe = _git("describe", "--tags", "--match", "v[0-9]*", "--long", "--dirty", "--always").stdout.strip()
     live, fixed = _derive(), _derive(describe)
     assert live.returncode == 0, live.stderr
     assert _parse(live.stdout) == _parse(fixed.stdout)
@@ -243,11 +272,14 @@ def test_package_sh_passes_the_version_to_every_xcodebuild_and_stamps_the_venv()
 def test_makefile_no_longer_stamps_the_venv_itself() -> None:
     """Two writers of build-hash.txt would disagree the moment one ran without the
     other; the stamp lives where the bundle is assembled."""
-    recipes = [line for line in (MACOS / "Makefile").read_text(encoding="utf-8").splitlines() if line.startswith("\t")]
+    # Join backslash continuations first: `make dev` is one recipe line spread
+    # over several, and the derivation and the xcodebuild must be on the same one.
+    text = (MACOS / "Makefile").read_text(encoding="utf-8").replace("\\\n", " ")
+    recipes = [line for line in text.splitlines() if line.startswith("\t")]
     assert not [r for r in recipes if "build-hash.txt" in r], "the Makefile writes build-hash.txt; package.sh owns it"
-    assert any("build-version.sh" in r and "xcodebuild" in r for r in recipes) or any(
-        "build-version.sh" in r for r in recipes
-    ), "make dev no longer derives the version"
+    assert any("build-version.sh" in r and "xcodebuild" in r for r in recipes), (
+        "no recipe both derives the version (build-version.sh) and runs xcodebuild; make dev lost the stamps"
+    )
 
 
 # ── release.sh refuses to mint a tag the sources contradict ─────────────────
@@ -283,10 +315,65 @@ def _fixture(tmp_path: Path, *, pyproject: str = "9.9.9", package: str = "9.9.9"
         + "\n",
         encoding="utf-8",
     )
+    # `make clean && make all` must run and do nothing, so release.sh gets past
+    # the build and to the paths that own the tag.
+    (root / "macos" / "Makefile").write_text(".PHONY: clean all\nclean:\n\t@true\nall:\n\t@true\n", encoding="utf-8")
     _fixture_git(root, "init", "-q")
     _fixture_git(root, "add", "-A")
     _fixture_git(root, "commit", "-q", "-m", "fixture")
     return root
+
+
+def _stub_gh(tmp_path: Path) -> Path:
+    """A `gh` that says no release exists (unless FIXTURE_GH_RELEASE_EXISTS=1),
+    records `release create` calls in FIXTURE_GH_LOG, and names a repo."""
+    d = tmp_path / "stub-bin"
+    d.mkdir(exist_ok=True)
+    gh = d / "gh"
+    gh.write_text(
+        "#!/bin/sh\n"
+        'case "$1 $2" in\n'
+        '  "release view") [ "${FIXTURE_GH_RELEASE_EXISTS:-0}" = 1 ] && exit 0 || exit 1 ;;\n'
+        '  "release create") printf \'%s\\n\' "$*" >> "${FIXTURE_GH_LOG:-/dev/null}"; exit "${FIXTURE_GH_CREATE_RC:-0}" ;;\n'
+        '  "repo view") echo fixture/repo ;;\n'
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    return d
+
+
+def _add_origin(root: Path) -> Path:
+    remote = root.parent / "origin.git"
+    _fixture_git(root, "init", "-q", "--bare", str(remote))
+    _fixture_git(root, "remote", "add", "origin", str(remote))
+    return remote
+
+
+def _fake_output(root: Path, *, short: str = "9.9.9", num: str = "0", stamp: str = "9.9.9") -> None:
+    """What package.sh leaves in build/output, reduced to what verify_build reads."""
+    out = root / "macos" / "build" / "output"
+    plist = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0"><dict>\n'
+        f"<key>CFBundleShortVersionString</key><string>{short}</string>\n"
+        f"<key>CFBundleVersion</key><string>{num}</string>\n"
+        "</dict></plist>\n"
+    )
+    for app in ("HarborClerkServer", "HarborClerk"):
+        contents = out / f"{app}.app" / "Contents"
+        (contents / "MacOS").mkdir(parents=True, exist_ok=True)
+        (contents / "Info.plist").write_text(plist, encoding="utf-8")
+    venv = out / "HarborClerkServer.app" / "Contents" / "Resources" / "venv"
+    venv.mkdir(parents=True, exist_ok=True)
+    (venv / "build-version.txt").write_text(stamp + "\n", encoding="utf-8")
+
+
+def _remote_tags(remote: Path) -> list[str]:
+    out = subprocess.run(["git", "-C", str(remote), "tag", "--list"], capture_output=True, text=True, check=True)
+    return out.stdout.split()
 
 
 def _fixture_git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -313,8 +400,20 @@ def _fixture_git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def _release(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+def _release(root: Path, *args: str, gh: Path | None = None, **extra_env: str) -> subprocess.CompletedProcess[str]:
+    env = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        # release.sh runs a bare `git tag -a`, which needs an identity.
+        "GIT_COMMITTER_NAME": "fixture",
+        "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+        "GIT_AUTHOR_NAME": "fixture",
+        "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+        **extra_env,
+    }
+    if gh is not None:
+        env["PATH"] = f"{gh}{os.pathsep}{env['PATH']}"
     return subprocess.run(
         ["bash", str(root / "macos" / "scripts" / "release.sh"), *args],
         cwd=root,
@@ -394,3 +493,99 @@ def test_release_rejects_a_malformed_version(tmp_path: Path) -> None:
         result = _release(root, bad, "--check")
         assert result.returncode != 0, f"{bad!r} was accepted"
     assert _tags(root) == []
+
+
+# ── The tag lifecycle: created only for a build that carries it ─────────────
+
+NEEDS_MACOS = pytest.mark.skipif(
+    sys.platform != "darwin", reason="verify_build reads plists with PlistBuddy; zips with ditto"
+)
+
+
+def test_release_removes_its_tag_when_the_build_leaves_no_apps(tmp_path: Path) -> None:
+    """Preflight passes, the tag is created, the (no-op) build produces no
+    bundles: the explicit `exit 1` that follows must still take the tag with
+    it. An ERR trap did not fire there, and the tag survived."""
+    root = _fixture(tmp_path)
+    result = _release(root, "v9.9.9", gh=_stub_gh(tmp_path))
+    assert result.returncode != 0
+    assert "Built apps not found" in result.stdout + result.stderr, result.stdout + result.stderr
+    assert "removed the local tag v9.9.9" in result.stderr
+    assert _tags(root) == [], "the tag release.sh created outlived the failed release"
+
+
+def test_release_skip_build_without_a_tag_refuses(tmp_path: Path) -> None:
+    root = _fixture(tmp_path)
+    _fake_output(root)
+    result = _release(root, "v9.9.9", "--skip-build", gh=_stub_gh(tmp_path))
+    assert result.returncode != 0
+    assert "does not exist" in result.stderr, result.stderr
+    assert _tags(root) == []
+
+
+@NEEDS_MACOS
+@pytest.mark.parametrize(
+    ("output", "says"),
+    [
+        ({"num": "2"}, "carries version 9.9.9 (2)"),  # built before the tag existed
+        ({"short": "9.9.8", "num": "0"}, "carries version 9.9.8 (0)"),  # another release's bundle
+        ({"stamp": "9.9.9+0.gabc1234.dirty"}, "stamped '9.9.9+0.gabc1234.dirty'"),  # dirty tree
+    ],
+    ids=["distance", "other-version", "dirty-stamp"],
+)
+def test_release_refuses_a_bundle_that_does_not_carry_the_tag(tmp_path: Path, output: dict, says: str) -> None:
+    """The hand flow tags first and publishes with --skip-build; a bundle that
+    says anything but X.Y.Z (0) is refused, and a tag the script did not create
+    is left alone — it is the owner's."""
+    root = _fixture(tmp_path)
+    _fixture_git(root, "tag", "v9.9.9")
+    _fake_output(root, **output)
+    result = _release(root, "v9.9.9", "--skip-build", gh=_stub_gh(tmp_path))
+    assert result.returncode != 0
+    assert says in result.stderr, result.stderr
+    assert _tags(root) == ["v9.9.9"], "a tag release.sh did not create must not be deleted"
+
+
+@NEEDS_MACOS
+def test_release_removes_its_tag_when_verify_build_fails_inside_the_function(tmp_path: Path) -> None:
+    """PlistBuddy failing on a plist without the key aborts under `set -e`
+    inside verify_build; the EXIT trap must still remove the tag."""
+    root = _fixture(tmp_path)
+    _fake_output(root)
+    for app in ("HarborClerkServer", "HarborClerk"):
+        (root / "macos" / "build" / "output" / f"{app}.app" / "Contents" / "Info.plist").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict></dict></plist>\n', encoding="utf-8"
+        )
+    result = _release(root, "v9.9.9", gh=_stub_gh(tmp_path))
+    assert result.returncode != 0
+    assert _tags(root) == [], "the tag outlived a verify_build failure"
+
+
+@NEEDS_MACOS
+def test_release_publishes_then_resumes_after_a_failed_upload(tmp_path: Path) -> None:
+    """Happy path against a bare origin and a stub gh, then the v0.9.2 case:
+    the tag is pushed, the upload fails, and a re-run must resume rather than
+    refuse 'already on origin'; once the release exists it is refused."""
+    root = _fixture(tmp_path)
+    remote = _add_origin(root)
+    _fixture_git(root, "push", "-q", "-u", "origin", "HEAD")
+    _fake_output(root)
+    gh = _stub_gh(tmp_path)
+    log = tmp_path / "gh.log"
+
+    failed = _release(root, "v9.9.9", gh=gh, FIXTURE_GH_LOG=str(log), FIXTURE_GH_CREATE_RC="1")
+    assert failed.returncode != 0
+    assert "resume with" in failed.stderr and "--skip-build" in failed.stderr, failed.stderr
+    assert _tags(root) == ["v9.9.9"] and _remote_tags(remote) == ["v9.9.9"], "a pushed tag must stay"
+
+    resumed = _release(root, "v9.9.9", "--skip-build", gh=gh, FIXTURE_GH_LOG=str(log))
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "resuming the publish" in resumed.stdout and "not pushing again" in resumed.stdout
+    assert "Release v9.9.9 published" in resumed.stdout
+    # The stub logs the whole argument list, release notes included; count the calls.
+    creates = [line for line in log.read_text(encoding="utf-8").splitlines() if line.startswith("release create ")]
+    assert len(creates) == 2 and all("HarborClerkServer-v9.9.9.zip" in line for line in creates), creates
+
+    exists = _release(root, "v9.9.9", "--skip-build", gh=gh, FIXTURE_GH_RELEASE_EXISTS="1")
+    assert exists.returncode != 0
+    assert "already has release" in exists.stderr, exists.stderr

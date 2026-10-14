@@ -1290,8 +1290,11 @@ async def test_health_check_reports_the_stamped_build_version(client, monkeypatc
 async def test_health_check_falls_back_to_the_package_version_without_a_stamp(client, monkeypatch, stamp):
     """Docker, `uv run`, and a bundle assembled before the stamp existed export
     no BUILD_VERSION (or nothing useful); health must still answer with the
-    installed package's version — pyproject's — not fail or report ''."""
+    installed package's version — pyproject's — not fail or report ''. It is
+    marked `+unstamped`: the package version is the same for every commit after
+    the bump, so a bare number stays something only a stamped release reports."""
     import importlib.metadata
+    import re
     import tomllib
     from pathlib import Path
 
@@ -1302,6 +1305,7 @@ async def test_health_check_falls_back_to_the_package_version_without_a_stamp(cl
     resp = await client.get("/api/system/health")
     assert resp.status_code == 200
     version = resp.json()["version"]
-    assert version == importlib.metadata.version("harbor-clerk")
+    assert version == f"{importlib.metadata.version('harbor-clerk')}+unstamped"
     pyproject = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
-    assert version == pyproject["project"]["version"]
+    assert version == f"{pyproject['project']['version']}+unstamped"
+    assert not re.fullmatch(r"\d+\.\d+\.\d+", version), "a bare X.Y.Z is reserved for a stamped release build"

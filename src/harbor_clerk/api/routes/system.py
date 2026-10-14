@@ -232,7 +232,8 @@ async def health_check(
         "status": "healthy" if overall else "degraded",
         # Commit of the running build ("dev" outside a packaged app) and the
         # tag-derived version: "0.9.3" only for a clean build of the tagged
-        # commit, "0.9.3+2.g887c3fb[.dirty]" otherwise. See build_version().
+        # commit, "0.9.3+2.g887c3fb[.dirty]" past it, "0.9.3+unstamped" where
+        # no build stamp exists (Docker, uv run). See build_version().
         "build": BUILD_HASH,
         "version": build_version(),
         "checks": checks,

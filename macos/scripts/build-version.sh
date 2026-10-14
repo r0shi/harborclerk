@@ -34,8 +34,15 @@ if [ "$#" -ge 1 ]; then
 else
     # --always falls back to the bare short hash when no tag matches, so the one
     # failure mode left is "not a git checkout at all", which yields "".
-    describe="$(git -C "$PROJECT_ROOT" describe --tags --match 'v*' --long --dirty --always 2>/dev/null || true)"
+    # 'v[0-9]*', not 'v*': a tag such as `vendor-x` would otherwise describe as a version.
+    describe="$(git -C "$PROJECT_ROOT" describe --tags --match 'v[0-9]*' --long --dirty --always 2>/dev/null || true)"
 fi
+
+# The output is `eval`ed by package.sh and the Makefile, so every value is
+# validated here: a tag is text anyone with push rights can write, and
+# `v1.2.3;echo` must fail, not run. X.Y.Z with an optional pre-release suffix
+# (`1.0.0-rc1`, `1.0.0.post1`); release.sh itself only ever tags X.Y.Z.
+VERSION_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$'
 
 dirty=""
 if [[ "$describe" =~ ^v(.+)-([0-9]+)-g([0-9a-f]+)(-dirty)?$ ]]; then
@@ -43,6 +50,10 @@ if [[ "$describe" =~ ^v(.+)-([0-9]+)-g([0-9a-f]+)(-dirty)?$ ]]; then
     distance="${BASH_REMATCH[2]}"
     hash="${BASH_REMATCH[3]}"
     dirty="${BASH_REMATCH[4]}"
+    if ! [[ "$version" =~ $VERSION_PATTERN ]]; then
+        echo "ERROR: cannot derive a version from git describe output '${describe}': tag '${version}' is not X.Y.Z[-suffix]" >&2
+        exit 1
+    fi
     if [ "$distance" = "0" ] && [ -z "$dirty" ]; then
         full="$version"
     else

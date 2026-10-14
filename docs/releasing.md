@@ -32,7 +32,9 @@ reachable, is `0.0.0-dev (0)` or `0.0.0+untagged…` — recognisable, never a
 release number.
 
 Without the stamp (Docker, `uv run`), health reports the installed package's
-version, which is `pyproject.toml`'s, next to `build: dev`.
+version — `pyproject.toml`'s — as `0.9.3+unstamped`, next to `build: dev`. The
+package version is the same for every commit after the bump, so the marker is
+what keeps a bare `0.9.3` release-only across deployments.
 
 ## Cutting a release
 
@@ -60,8 +62,13 @@ Signing is a human step, so the sequence is split around it.
    `bump-release-badge` workflow then opens the README badge PR.
 
 Without `--skip-build`, `release.sh vX.Y.Z` does steps 3 and 5 itself with an
-unsigned build, deleting its local tag again if the build or the stamp check
-fails; nothing is pushed until the bundles carry the version.
+unsigned build. A tag it created is deleted again on any exit before the push
+(an EXIT trap keyed on the status, so an explicit refusal, a failure inside the
+plist check and Ctrl-C during the build all clean up); nothing is pushed until
+the bundles carry the version. If the GitHub upload fails *after* the push —
+v0.9.2's DMG was over the 2 GiB asset limit — re-run step 5: a tag already on
+origin at HEAD with no release is resumed, not refused; one that already has a
+release is refused.
 
 ## Why the tag and not the files
 
