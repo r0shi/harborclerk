@@ -73,7 +73,9 @@ def _as_item(output_item: Any) -> Any:
         return output_item
     dump = getattr(output_item, "model_dump", None)
     if callable(dump):
-        return dump(exclude_none=True)
+        # By alias: the SDK spells a field the API calls `async` as `async_`, and a dump by field name would send
+        # an unknown parameter back on the next call.
+        return dump(exclude_none=True, by_alias=True)
     return {k: v for k, v in vars(output_item).items() if v is not None}
 
 

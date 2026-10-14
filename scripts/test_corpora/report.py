@@ -143,7 +143,6 @@ def cloud_subject_table(run_dir: Path, ledger: dict | None) -> list[str]:
     row of the 2026-09-28 report made a part of the report. Nothing for a run without a key, or whose baselines
     are not keyed questions."""
     key_dir = _key_dir(ledger)
-    by_model = (ledger or {}).get("by_model") or {}
     by_kind = (ledger or {}).get("by_kind") or {}
     groups: dict[tuple[str, str], list[tuple[str, dict, dict]]] = defaultdict(list)
     for path in sorted((run_dir / "baselines").glob("*/*.json")):
@@ -179,23 +178,28 @@ def cloud_subject_table(run_dir: Path, ledger: dict | None) -> list[str]:
         "## Cloud subject",
         "",
         "The phase-1 baseline, scored against the corpus's answer key as phase 4 is (no judge, no reference), over "
-        "every keyed question it answered. `calls` are model calls; `USD` is the model's spend in this run from "
-        "spend.json, which with one corpus per run is this corpus's.",
+        "every keyed question it answered. `calls` are model calls; `USD` is the run's baseline_question spend from "
+        "spend.json, which is this row's when the run has one subject on one corpus (n/a otherwise).",
         "",
         "| " + " | ".join(columns) + " |",
         "|" + "---|" * len(columns),
     ]
     for (corpus, model), (scores, rows) in scored.items():
-        # Model calls per baseline, where every file has the field; an older run has them only in the ledger, and
-        # only for the run as a whole.
+        # Model calls per baseline, where every file has the field; an older run has them only in the ledger, for
+        # the run as a whole, which is this row's only when the run has one subject and every baseline is keyed.
         counted = [b.get("model_call_count") for b in rows]
+        ledger_is_this_row = len(groups) == 1 and len(rows) == len(
+            list((run_dir / "baselines" / corpus).glob("*.json"))
+        )
         if all(isinstance(c, int) and c > 0 for c in counted):
             calls: str | int = sum(counted)
-        elif len(groups) == 1 and by_kind.get("baseline_question", {}).get("calls"):
+        elif ledger_is_this_row and by_kind.get("baseline_question", {}).get("calls"):
             calls = by_kind["baseline_question"]["calls"]
         else:
             calls = "n/a"
-        usd = by_model.get(model, {}).get("usd")
+        # The kind's spend, not the model's: a run that also generated the synthetic corpus with the same model
+        # would otherwise count its generation dollars here.
+        usd = by_kind.get("baseline_question", {}).get("usd") if len(groups) == 1 else None
         cells = [
             corpus,
             f"`{model}`",

@@ -401,13 +401,20 @@ def test_the_responses_loop_retries_a_429_like_the_chat_loop(monkeypatch):
 
 
 def test_a_real_sdk_output_item_goes_back_as_the_dict_it_dumps_to():
+    """By alias: the SDK's function-call item spells the API's `async` field `async_`, and a dump by field name
+    would send an unknown parameter back on the next call (second review of #811)."""
+    from openai.types.responses import ResponseFunctionToolCall
+
     from scripts.test_corpora.runner.providers.openai_provider import _as_item
 
     class Item:
-        def model_dump(self, exclude_none=False):
-            return {"type": "reasoning", "id": "rs", "summary": []}
+        def model_dump(self, exclude_none=False, by_alias=False):
+            return {"type": "reasoning", "id": "rs", "summary": [], "by_alias": by_alias}
 
-    assert _as_item(Item()) == {"type": "reasoning", "id": "rs", "summary": []}
+    assert _as_item(Item()) == {"type": "reasoning", "id": "rs", "summary": [], "by_alias": True}
+    wire = {"type": "function_call", "call_id": "c", "name": "kb_search", "arguments": "{}", "async": False}
+    back = _as_item(ResponseFunctionToolCall.model_validate(wire))
+    assert back == wire and "async_" not in back
     assert _as_item({"type": "message"}) == {"type": "message"}
     assert _as_item(SimpleNamespace(type="function_call", call_id="c", status=None)) == {
         "type": "function_call",

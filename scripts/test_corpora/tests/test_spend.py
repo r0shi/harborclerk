@@ -1325,6 +1325,10 @@ def test_an_openai_request_is_reserved_at_the_write_rate_because_openai_caches_w
     _use(cap=0.13)
     spend.MeteredOpenAI("judge", inner).chat.completions.create(model="oai", max_completion_tokens=1, messages=body)
     assert len(calls) == 1
+    # A row with no write price (gpt-4o: no cache-write charge) is reserved as plain input, not at a 2x default.
+    _use(cap=0.11)
+    spend.MeteredOpenAI("judge", inner).chat.completions.create(model="m", max_completion_tokens=1, messages=body)
+    assert len(calls) == 2
 
 
 def test_openai_responses_calls_are_metered_by_their_own_usage_names_and_output_limit():

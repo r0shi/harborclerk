@@ -376,14 +376,24 @@ class SpendMeter:
         with self._lock:
             return self.cap_usd - self._total - self._outstanding
 
-    def reserve(self, model: str, input_tokens: int, max_output_tokens: int, cache_writes: bool = False) -> float:
+    def reserve(
+        self,
+        model: str,
+        input_tokens: int,
+        max_output_tokens: int,
+        cache_writes: bool = False,
+        implicit_cache_writes: bool = False,
+    ) -> float:
         """Set aside one call's worst case, or refuse the call. A request that carries cache breakpoints can be
-        billed as a cache write from end to end, which costs more than plain input: that is its worst case."""
-        prompt = (
-            Usage(0, max_output_tokens, cache_write_tokens=input_tokens)
-            if cache_writes
-            else Usage(input_tokens, max_output_tokens)
-        )
+        billed as a cache write from end to end, at the hour rate, the dearer: that is its worst case. A request
+        to a vendor that caches on its own (`implicit_cache_writes`) can be billed at that vendor's one write rate,
+        when its row has one; a row without one (gpt-4o) is billed as plain input."""
+        if cache_writes:
+            prompt = Usage(0, max_output_tokens, cache_write_tokens=input_tokens)
+        elif implicit_cache_writes and self.config.price(model).cache_write_5m is not None:
+            prompt = Usage(0, max_output_tokens, cache_write_tokens=input_tokens, cache_write_5m_tokens=input_tokens)
+        else:
+            prompt = Usage(input_tokens, max_output_tokens)
         worst = max(self.config.cost(model, prompt), self.config.cost(model, Usage(input_tokens, max_output_tokens)))
         with self._lock:
             if self._total + self._outstanding + worst > self.cap_usd:
@@ -660,11 +670,17 @@ class _MeteredCreate:
         estimate = _estimate_tokens(request, meter.config.chars_per_token)
         # A request that carries breakpoints can be billed as a write from end to end; so can any request to a
         # vendor that caches on its own (OpenAI), where nothing in the request says so.
-        cache_writes = self._owner.implicit_cache_writes or '"cache_control"' in json.dumps(request, default=str)
+        cache_writes = '"cache_control"' in json.dumps(request, default=str)
         # The SDK clients are built with max_retries=0 and the retries happen here, so that every attempt
         # is reserved and settled. A retry inside the SDK would be an attempt the ledger never saw.
         for attempt in range(1 + MAX_RETRIES):
-            reserved = meter.reserve(model, estimate, int(limit), cache_writes=cache_writes)
+            reserved = meter.reserve(
+                model,
+                estimate,
+                int(limit),
+                cache_writes=cache_writes,
+                implicit_cache_writes=self._owner.implicit_cache_writes,
+            )
             try:
                 resp = self._send(**kwargs)
             except BaseException as exc:

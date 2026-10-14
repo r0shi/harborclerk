@@ -487,7 +487,9 @@ def test_the_cloud_subject_is_scored_against_the_answer_key_in_its_own_table(tmp
         "| corpus | model | questions | calls | stopped at call limit | answer key (0-1) | fact | date | list | USD |"
         in text
     )
-    assert "| cuad | `claude-fable-5-1` | 3 | 7 | 1 | 0.67 | 0.50 | 1.00 | n/a | 1.2345 |" in text
+    # USD is the kind's spend (baseline_question), not the model's, which would count synthetic generation too.
+    assert "| cuad | `claude-fable-5-1` | 3 | 7 | 1 | 0.67 | 0.50 | 1.00 | n/a | 1.8500 |" in text
+    assert "1.2345" not in text
     assert "cuad-research-1" not in text.split("## Cloud subject")[1].split("##")[0], (
         "an unkeyed baseline is not scored"
     )
@@ -496,8 +498,13 @@ def test_the_cloud_subject_is_scored_against_the_answer_key_in_its_own_table(tmp
 
 
 def test_a_cloud_subject_run_from_before_the_call_count_takes_its_calls_from_the_ledger(tmp_path):
-    text = _render(_subject_run(tmp_path, model="claude-sonnet-4-6", calls=False))
-    assert "| cuad | `claude-sonnet-4-6` | 3 | 20 | 1 | 0.67 | 0.50 | 1.00 | n/a | 1.2345 |" in text
+    """The ledger counts the whole run's baseline calls; they are this row's only when every baseline is keyed."""
+    run = _subject_run(tmp_path, model="claude-sonnet-4-6", calls=False)
+    assert "| cuad | `claude-sonnet-4-6` | 3 | n/a | 1 | 0.67 | 0.50 | 1.00 | n/a | 1.8500 |" in _render(run), (
+        "an unkeyed research baseline is among the 20 calls"
+    )
+    (run / "baselines" / "cuad" / "cuad-research-1.json").unlink()
+    assert "| cuad | `claude-sonnet-4-6` | 3 | 20 | 1 | 0.67 | 0.50 | 1.00 | n/a | 1.8500 |" in _render(run)
 
 
 def test_a_run_without_a_key_has_no_cloud_subject_table(tmp_path):
@@ -535,7 +542,7 @@ def test_a_kind_the_key_declares_beyond_the_three_gets_a_column_and_one_the_scor
     monkeypatch.setattr(report.answer_key, "score", score)
     text = _render(run)
     assert "| answer key (0-1) | fact | date | list | number | USD |" in text
-    assert "| cuad | `claude-fable-5-1` | 4 | 8 | 1 | 0.75 | 0.50 | 1.00 | n/a | 1.00 | 1.2345 |" in text
+    assert "| cuad | `claude-fable-5-1` | 4 | 8 | 1 | 0.75 | 0.50 | 1.00 | n/a | 1.00 | 1.8500 |" in text
     assert (
         "1 keyed baseline(s) have a kind this scorer does not know and are not in the table: `cuad/cuad-key-6` (colour)"
         in text

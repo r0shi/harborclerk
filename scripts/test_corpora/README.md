@@ -156,6 +156,14 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
   corpora cost 40 to 60% more a question, so **one corpus per run**, and a frontier model's second corpus is
   refused before it starts. Correct the estimate from a run as `spend.yaml` says: not from `input_tokens`, which
   caching empties. answer-eval and `rerun_pr_j` pay for a `candidate_answer`, priced apart and still provisional.
+  A GPT-6 figure is a floor until the first metered run: it transfers Sonnet 4.6's measured cache split to a vendor
+  whose caching is automatic and best-effort, and a read that misses bills at input (astra: 10 instead of 1,
+  up to about USD 26 more over 20 questions).
+- **An estimate near the cap does not finish.** Before each call the meter reserves that call's worst case (the
+  whole transcript at the hour-write rate plus `max_tokens` at the output price: about USD 5.6 for a late Fable
+  5.1 call with a 150K-token transcript), and a reservation that would cross the cap is refused. So a run admitted
+  at USD 24 of 25 is expected to stop with exit 3 around its 17th or 18th question, finished units saved. Rule of
+  thumb: the estimate plus the largest single-call reservation must fit under the cap for the run to finish.
 - **The meter prices what the vendor bills.** An Anthropic cache write by its lifetime (the five-minute rate the
   loop asks for, from `usage.cache_creation`; the hour rate when a response does not say), a cache read at the
   read rate; an OpenAI cached prefix (`usage.*_tokens_details.cached_tokens`) at the cached rate and a cache write

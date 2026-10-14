@@ -83,7 +83,8 @@ chars_per_token: 2.5
 # on each of the 3.9 calls (Fable 5.1: USD 24 for the 20, not 17), PROVISIONAL until a run meters it. Until
 # 2026-10-14 this was stated as 152,000 "input-token equivalents" at the plain input price, which was right
 # for Sonnet 4.6 by construction and wrong for every other model: Fable 5.1, whose cache hit is 2.5% of input,
-# came out at USD 30 for the 20 questions and the run was refused, when its cache-aware figure is USD 17.
+# came out at USD 30 for the 20 questions and the run was refused, when its cache-aware figure was USD 17 (the
+# figure before the thinking was counted; with thinking_output_tokens it is 24, see above).
 # Three things about the figure:
 #   - It is the keyed CUAD set: single-hop facts, dates and lists, 3.9 calls a question. The standard CUAD
 #     questions (bench-20260922-2305: 63,786 write, 235,400 read, 3,017 out a question), Enron

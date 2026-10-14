@@ -88,10 +88,15 @@ corpus adds its summaries before the first unit: the sweep waits for them so eve
 model measures the same corpus (about 20 documents a minute on the mini; #717).
 **One corpus per run**: the sweep prices the pending cloud work before it starts
 at each model's own cache rates and refuses a run estimated over the cap (20
-keyed CUAD baselines: Sonnet 4.6 about USD 5, Fable 5.1 about 17, gpt-6-astra
-about 15; the other corpora cost 40 to 60% more a question). The per-call hard
-stop is the real guard (`scripts/test_corpora/spend.yaml`, README "Cloud spend
-is capped"). `--spend-cap-usd N` lowers the cap for this run. Raising it is a PR.
+keyed CUAD baselines: Sonnet 4.6 about USD 5, Fable 5.1 about 24, gpt-6-astra
+about 22, with a provisional 1,500 tokens of thinking a call; the other corpora
+cost 40 to 60% more a question). The per-call hard stop is the real guard
+(`scripts/test_corpora/spend.yaml`, README "Cloud spend is capped"), and it
+reserves each call's worst case first, about USD 5.6 for a late Fable call. **A
+run estimated within that of the cap is expected to be cut short by a refused
+call, not to finish** (exit 3, finished units saved; the rest is a new cap): tell
+the owner so before it starts. `--spend-cap-usd N` lowers the cap for this run.
+Raising it is a PR.
 
 Keep the judge at its default unless the owner asked to change it: scores from
 different judges are not comparable (#661).
