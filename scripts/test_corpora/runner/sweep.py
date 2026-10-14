@@ -1468,7 +1468,25 @@ def main(argv: list[str] | None = None) -> int:
         try:
             answer_key.refuse_foreign_keys(answer_keys, questions_by_corpus, workdir)
         except answer_key.CorpusMismatch as exc:
-            log.error("not starting: %s", exc)
+            if args.dry_run or _phase_range(args.phases) == {0}:  # nothing is scored: say so and go on
+                log.warning("the answer key does not match the corpus; this run scores nothing, so it goes on: %s", exc)
+            else:
+                log.error("not starting: %s", exc)
+                return 4
+        # A resumed run whose state names questions this run's set does not have was started under another
+        # --questions-dir (questions/keyed has had a synthetic set since #812, so a keyed run from before it holds
+        # synthetic units under the standard ids). Refused here, not as a KeyError at the first such unit.
+        known = {c: set(_question_ids(q)) for c, q in questions_by_corpus.items()}
+        stale = sorted(
+            {u.question_id for u in sf.units() if u.corpus in known and u.question_id not in known[u.corpus] | {"-"}}
+        )
+        if stale:
+            log.error(
+                "not continuing: state.json names %d question(s) this run's question set does not have (%s): the run "
+                "was started under another --questions-dir. Resume with the one it started with, or start a new run.",
+                len(stale),
+                ", ".join(stale[:5]),
+            )
             return 4
 
         # Apply --models filter: scope phase 2-6 model loops to listed models. Used for

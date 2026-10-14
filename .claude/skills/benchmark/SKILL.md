@@ -98,11 +98,15 @@ different judges are not comparable (#661).
 
 ## 5. Run
 
-For CUAD, ask the keyed questions as well (`--questions-dir scripts/test_corpora/questions/keyed`, its own
-`--run-id`): every answer is also scored against the corpus's human annotations, with no judge and no baseline,
-and the report shows it as "answer key (0-1)". It is the one column that sees recall, and it found two model
-behaviours no judge reported (docs/reports/2026-09-22-rubric-test.md). A keyed run and a standard run are two
-runs; do not compare their judge columns.
+For CUAD and the synthetic corpus, ask the keyed questions as well (`--questions-dir
+scripts/test_corpora/questions/keyed`, its own `--run-id`): every answer is also scored against the corpus's own
+labels (CUAD's annotations; the synthetic corpus's fact sidecars), with no judge and no baseline, and the report
+shows it as "answer key (0-1)". It is the one column that sees recall, and it found two model behaviours no judge
+reported (docs/reports/2026-09-22-rubric-test.md). The synthetic key is tied to one corpus generation (the
+`_generation` header of `synthetic.key.json`): the instance must hold that generation, acquired by a standard run
+first, or the keyed run refuses to start and says so; a regenerated corpus means regenerating the key
+(`corpora/synthetic_key.py --snapshot --redo`, a PR). A keyed run and a standard run are two runs; do not compare
+their judge columns.
 
 
 ```bash

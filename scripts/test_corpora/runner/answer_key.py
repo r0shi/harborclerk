@@ -257,10 +257,18 @@ _MONTH_WORD = "|".join(
 _MONTH_DAY = re.compile(rf"\b(?:{_MONTH_WORD})\b\.?\s+\d{{1,2}}\b(?:,?\s*\d{{4}})?")
 _DAY_MONTH = re.compile(rf"\b\d{{1,2}}\s+(?:{_MONTH_WORD})\b\.?(?:,?\s*\d{{4}})?")
 _MONTH_YEAR = re.compile(rf"\b(?:{_MONTH_WORD})\b\.?,?\s*(?:19|20)\d{{2}}\b")  # "Sept 2025" is a month, not seven
+# Two months joined ("Jul–Sept", "July and Sept.", "juin au septembre") are months; so is "sept." with its full stop,
+# which costs a French seven written "sept." at the end of a sentence (review of #812: "Sept" alone was seven).
+_MONTH_SPAN = re.compile(rf"\b(?:{_MONTH_WORD})\b\.?\s*(?:[-–—]|to|and|et|au|a)\s*(?:{_MONTH_WORD})\b\.?")
+_SEPT_ABBREVIATED = re.compile(r"\bsept\.")
 _NUMERIC_DATE = re.compile(r"\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b")
-_RANGE = re.compile(r"\b\d+\s*[-–]\s*\d+\b")
+_RANGE = re.compile(r"\b\d+\s*[-–]\s*\d+\b")  # read after the years, so "2025 – 11 meetings" is not a range
 _YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
-_MONEY = re.compile(r"[$€£]\s*\d[\d,.\s]*|\d[\d,.\s]*\s*(?:[$€£]|\b(?:usd|cad|eur|dollars?)\b)")
+# A space inside a money amount is a thousands separator, so only before exactly three digits, and never a line
+# break: "$275,926.50\n15 invoices" is an amount and then a count (review of #812).
+_SP = r"[ \t\u00a0\u202f]"
+_GROUPED = rf"\d(?:[\d,.]|{_SP}(?=\d{{3}}(?!\d)))*"
+_MONEY = re.compile(rf"[$€£]{_SP}*{_GROUPED}|{_GROUPED}{_SP}*(?:[$€£]|\b(?:usd|cad|eur|dollars?)\b)")
 # A list marker is a number at the start of a line with text after it on that line; "15." alone is an answer.
 _LINE_MARKER = re.compile(r"(?m)^\s*(?:[-*•]|\d+[.)])[ \t]+(?=\S)")
 # A standalone integer: digits, or digit groups of three with a comma, not touching a letter, an underscore, a
@@ -273,14 +281,16 @@ def counts_in(text: str) -> list[int]:
     """Every integer an answer states on its own, in the order stated, each once: as digits ("15", "1,234") or as a
     word up to ninety-nine in English or sixty-nine in French ("fifteen", "quinze", "vingt-cinq"). Read after
     stripping what carries digits without being a count: list markers at line starts (the fifteenth item of a list
-    is not "15"), dates in any spelling, a month with a year ("Sept 2025" is not seven), years, numeric ranges,
-    money, decimals and percentages. What it cannot strip is stated: a day number beside a misspelt month survives,
-    and "one", "un" and "une" are not read on their own (see `_STANDALONE_WORDS`)."""
+    is not "15"), dates in any spelling, a month with a year or beside another month ("Sept 2025", "Jul–Sept" and
+    "sept." are not seven), money, years, numeric ranges, decimals and percentages. What it cannot strip is stated:
+    a day number beside a misspelt month survives, "one", "un" and "une" are not read on their own (see
+    `_STANDALONE_WORDS`), and a French seven written "sept." at the end of a sentence is a month."""
     low = fold(text).lower()
     low = _LINE_MARKER.sub(" ", low)
     low = re.sub(r"(?<=\d)(st|nd|rd|th|er|re|e)\b", "", low)
-    for pattern in (_MONTH_DAY, _DAY_MONTH, _MONTH_YEAR, _NUMERIC_DATE, _RANGE, _YEAR, _MONEY):
+    for pattern in (_MONTH_DAY, _DAY_MONTH, _MONTH_YEAR, _MONTH_SPAN, _SEPT_ABBREVIATED, _NUMERIC_DATE, _MONEY):
         low = pattern.sub(" ", low)
+    low = _RANGE.sub(" ", _YEAR.sub(" ", low))
     found: list[tuple[int, int]] = [(m.start(), int(m.group(1).replace(",", ""))) for m in _INT.finditer(low)]
     compounds = list(_TENS_UNITS.finditer(low))  # "vingt-cinq" is 25, and neither 20 nor 5
     found += [(m.start(), NUMBER_WORDS[m.group(1)] + NUMBER_WORDS[m.group(2)]) for m in compounds]
@@ -367,7 +377,7 @@ def generation_id(facts_dir: Path) -> str:
 
 
 _bound_root: Path | None = None
-_generations: dict[Path, str] = {}
+_generations: dict[Path, tuple[tuple, str]] = {}  # facts dir -> (what the sidecars looked like, their generation)
 
 
 def bind_corpus_root(root: Path | str | None) -> None:
@@ -376,6 +386,12 @@ def bind_corpus_root(root: Path | str | None) -> None:
     global _bound_root
     _bound_root = Path(root).expanduser() if root is not None else None
     _generations.clear()
+
+
+def _sidecar_stats(facts: Path) -> tuple:
+    """Name, size and mtime of every sidecar: cheap to read at every score, and a change in any of them is the cue
+    to hash again, so a corpus regenerated under a run is caught (review of #812)."""
+    return tuple((p.name, p.stat().st_size, p.stat().st_mtime_ns) for p in sorted(facts.glob("*.json")))
 
 
 def corpus_root() -> Path:
@@ -403,21 +419,27 @@ def _workdir_from_argv() -> Path | None:
 
 
 def check_generation(expected: str, corpus: str = "synthetic") -> None:
-    """Refuse (`CorpusMismatch`) unless `<corpus_root()>/<corpus>/facts` is generation `expected`."""
-    facts = corpus_root() / corpus / "facts"
-    if facts not in _generations:
-        try:
-            _generations[facts] = generation_id(facts)
-        except FileNotFoundError as exc:
-            raise CorpusMismatch(
-                f"the key is for {corpus} generation {expected}, but there is no {corpus} corpus to score it "
-                f"against ({exc}); bind the workdir (answer_key.bind_corpus_root, ${WORKDIR_ENV} or --workdir)"
-            ) from None
-    if _generations[facts] != expected:
+    """Refuse (`CorpusMismatch`) unless `<corpus_root()>/<corpus>/facts` is generation `expected`. The sidecars are
+    hashed again whenever their names, sizes or mtimes changed since the last look."""
+    root = corpus_root()
+    facts = root / corpus / "facts"
+    stats = _sidecar_stats(facts)
+    cached = _generations.get(facts)
+    try:
+        actual = cached[1] if cached and cached[0] == stats else generation_id(facts)
+    except FileNotFoundError:
         raise CorpusMismatch(
-            f"the key is for {corpus} generation {expected}; the corpus under {facts} is generation "
-            f"{_generations[facts]}. Regenerate the key from this corpus (corpora/synthetic_key.py --redo) or "
-            "score against the corpus it was written for; a count is only true of the documents it counted."
+            f"the key is for {corpus} generation {expected}, but there is no {corpus} corpus under {root}. A keyed "
+            "run does not generate one: acquire the corpus first with a run on the standard questions (no "
+            "--questions-dir; --phases 0 is enough), then regenerate the key from it (corpora/synthetic_key.py "
+            f"--snapshot --redo, a new PR), or put the corpus of generation {expected} there."
+        ) from None
+    _generations[facts] = (stats, actual)
+    if actual != expected:
+        raise CorpusMismatch(
+            f"the key is for {corpus} generation {expected}; the {corpus} corpus under {root} is generation {actual}. "
+            "Regenerate the key from this corpus (corpora/synthetic_key.py --snapshot --redo, a new PR) or score "
+            "against the corpus the key was written for; a count is only true of the documents it counted."
         )
 
 

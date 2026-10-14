@@ -347,6 +347,8 @@ def _no_corpus_lookup():
         "Fifteen (15) invoices, dated 2025-01-13, 2025-01-20, February 2, 2025 and 12 others.",
         "I count 15: INV-2025-00847 (six times), INV-2025-04417, INV-2025-04872, INV-2025-04817 (three times)...",
         "- 0008_invoice.txt\n- 0012_invoice.txt\n\nTotal: 15 invoices from Initech in 2025, worth $275,926.50 (15% of spend).",
+        "Total billed by Initech: $275,926.50\n15 invoices were issued in 2025.",
+        "In 2025 - 15 invoices were issued.",
     ],
 )
 def test_a_count_is_found_as_digits_or_as_a_word_in_either_language(answer, _no_corpus_lookup):
@@ -372,6 +374,29 @@ def test_another_number_is_not_the_count(answer, _no_corpus_lookup):
     time or a file name. The count is the first number stated (review of #812): a wrong answer that mentions the
     right number later is wrong, and so, as the rule's cost, is a right answer that states another number first."""
     assert score({"kind": "count", "count": 15}, answer)["score"] == 0.0, answer
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Q3 2025 – 11 board meetings.",
+        "During Q3 2025 (Jul–Sept), the board held 11 meetings.",
+        "Between July and Sept., the board held 11 meetings.",
+        "Du juin au septembre 2025, le conseil a tenu 11 réunions.",
+        "Meetings: $0 cost\n11 in Q3.",
+    ],
+)
+def test_a_year_before_a_dash_a_month_beside_another_or_an_english_sept_is_not_a_count(answer, _no_corpus_lookup):
+    """Second review of #812: a year and a dash read as a range, "Sept" as the French seven, and a money amount
+    swallowed the digits on the next line."""
+    assert score({"kind": "count", "count": 11}, answer) == {"score": 1.0, "numbers": [11]}, answer
+
+
+def test_the_french_seven_is_read_as_a_word_but_not_with_a_full_stop(_no_corpus_lookup):
+    from scripts.test_corpora.runner.answer_key import counts_in
+
+    assert counts_in("sept factures, puis sept réunions") == [7]
+    assert counts_in("Il y en a sept.") == [], "the cost of reading 'Sept.' as September, stated in the module"
 
 
 def test_the_first_number_is_the_count_whoever_it_belongs_to(_no_corpus_lookup):

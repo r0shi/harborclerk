@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from scripts.test_corpora.corpora import synthetic_key
+from scripts.test_corpora.corpora.manifest import CorpusManifest
 from scripts.test_corpora.corpora.synthetic_key import (
     Corpus,
     SnapshotIncomplete,
@@ -166,7 +167,7 @@ def test_scoring_refuses_a_key_from_another_generation(tmp_path):
     (other / "0001_invoice.json").write_text('{"vendor": "Someone Else"}')
     answer_key.bind_corpus_root(tmp_path / "other")
     with pytest.raises(
-        CorpusMismatch, match=f"for synthetic generation {entry[GEN]}; the corpus under .* is generation"
+        CorpusMismatch, match=f"for synthetic generation {entry[GEN]}; the synthetic corpus under .* is generation"
     ):
         score(entry, "Globex Supplies")
     # The same key against the corpus it was written for scores; an entry without a generation never looks.
@@ -211,13 +212,105 @@ def test_a_foreign_key_refuses_the_run_before_any_unit_starts(tmp_path, monkeypa
 
 
 def test_the_metrics_cell_is_blank_and_an_error_is_logged_when_the_corpus_changed_under_a_run(tmp_path, caplog):
+    """The sidecars are looked at again at every score (names, sizes, mtimes; hashed again when any changed), so a
+    corpus regenerated under a run is caught at the next scored answer, not trusted from the first look."""
     from scripts.test_corpora.runner.state import Status
 
     _, key = _committed()
+    entry, answer = key["synthetic-key-2"], {"answer": "Globex Supplies"}
+    facts = tmp_path / "synthetic" / "facts"
+    shutil.copytree(SNAPSHOT / "facts", facts)
+    answer_key.bind_corpus_root(tmp_path)
+    assert sweep.key_score_cell(entry, answer, Status.DONE) == "1.000"
+    assert sweep.key_score_cell(entry, answer, Status.DONE) == "1.000", "the second look is the cheap one"
+    with (facts / "0001_invoice.json").open("a") as f:
+        f.write("\n")  # a regeneration under the run: another byte, another size
+    with caplog.at_level("ERROR"):
+        assert sweep.key_score_cell(entry, answer, Status.DONE) == ""
+    assert "answer key not scored" in caplog.text and "is generation" in caplog.text
+    caplog.clear()
     answer_key.bind_corpus_root(tmp_path / "nowhere")
     with caplog.at_level("ERROR"):
-        assert sweep.key_score_cell(key["synthetic-key-2"], {"answer": "Globex Supplies"}, Status.DONE) == ""
-    assert "answer key not scored" in caplog.text and "no synthetic corpus" in caplog.text
+        assert sweep.key_score_cell(entry, answer, Status.DONE) == ""
+    assert "no synthetic corpus" in caplog.text and "acquire the corpus first" in caplog.text
+
+
+def _sweep_patches():
+    fake_hc = MagicMock()
+    fake_hc.get_bearer_token.return_value = "fake-token"
+    return (
+        patch("scripts.test_corpora.runner.sweep.HarborClerkClient", return_value=fake_hc),
+        patch("scripts.test_corpora.runner.sweep.anthropic.Anthropic"),
+        patch("scripts.test_corpora.runner.sweep.JudgeClient"),
+        patch("scripts.test_corpora.runner.sweep.SyncMcpSession", return_value=MagicMock()),
+        patch("scripts.test_corpora.runner.sweep._ingest_corpus"),
+        patch("scripts.test_corpora.runner.spend.SpendMeter.estimate", return_value=0.0),
+    )
+
+
+def test_a_dry_run_or_a_phase_0_run_goes_on_past_a_foreign_key_with_a_warning(tmp_path, monkeypatch, caplog):
+    """Second review of #812: neither scores anything, and a first run has no corpus yet to match."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    questions, key = _committed()
+    keyed = tmp_path / "keyed"
+    keyed.mkdir()
+    (keyed / "synthetic.yaml").write_text(yaml.safe_dump(questions, sort_keys=False, allow_unicode=True))
+    (keyed / "synthetic.key.json").write_text(json.dumps(key))
+    common = ["--workdir", str(tmp_path), "--questions-dir", str(keyed), "--corpora", "synthetic", "--no-ingest"]
+    common += ["--no-hc-logs", "--skip-canary", "--no-judge"]
+    hc, anthropic, judge, mcp, ingest, estimate = _sweep_patches()
+    with (
+        hc,
+        anthropic,
+        judge,
+        mcp,
+        ingest,
+        estimate,
+        patch("scripts.test_corpora.runner.sweep._phase1_baseline") as baseline,
+    ):
+        with caplog.at_level("WARNING"):
+            assert sweep.main(["--run-id", "dry", "--phases", "1", "--dry-run", *common]) == 0
+        assert "this run scores nothing, so it goes on" in caplog.text and "acquire the corpus first" in caplog.text
+        baseline.assert_not_called()
+        caplog.clear()
+        with patch("scripts.test_corpora.runner.sweep._phase0_acquire") as acquire, caplog.at_level("WARNING"):
+            acquire.return_value = CorpusManifest("synthetic", tmp_path / "synthetic" / "ingest", 0, 0, "generated")
+            rc = sweep.main(["--run-id", "acquire", "--phases", "0", *common])
+        assert rc == 0 and "this run scores nothing, so it goes on" in caplog.text
+        # The same key with a phase that scores is still refused.
+        assert sweep.main(["--run-id", "scored", "--phases", "1", *common]) == 4
+
+
+def test_a_resumed_run_whose_state_names_questions_of_another_set_is_refused(tmp_path, monkeypatch, caplog):
+    """A keyed run from before #812 holds synthetic units under the standard ids; resumed with the keyed set, it
+    raised KeyError at the first such unit. It is refused where the questions are loaded, naming the cause."""
+    from scripts.test_corpora.runner.state import StateFile, Unit
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    _bind_snapshot(tmp_path)  # the corpus matches the key: this refusal is about the ids, not the generation
+    run_dir = tmp_path / "results" / "old"
+    run_dir.mkdir(parents=True)
+    sf = StateFile(run_dir / "state.json")
+    sf.register(
+        [Unit(phase=1, corpus="synthetic", model="claude-baseline", question_id="synthetic-ask-1", depth="n/a")]
+    )
+    sf.save()
+    args = ["--run-id", "old", "--resume", "--workdir", str(tmp_path), "--questions-dir", str(KEYED), "--corpora"]
+    args += ["synthetic", "--phases", "1", "--no-ingest", "--no-hc-logs", "--skip-canary", "--no-judge"]
+    hc, anthropic, judge, mcp, ingest, estimate = _sweep_patches()
+    with (
+        hc,
+        anthropic,
+        judge,
+        mcp,
+        ingest,
+        estimate,
+        patch("scripts.test_corpora.runner.sweep._phase1_baseline") as baseline,
+        caplog.at_level("ERROR"),
+    ):
+        assert sweep.main(args) == 4
+    baseline.assert_not_called()
+    assert "synthetic-ask-1" in caplog.text and "another --questions-dir" in caplog.text
 
 
 def test_the_corpus_root_is_the_bound_one_then_the_environment_then_the_command_line_then_the_default(

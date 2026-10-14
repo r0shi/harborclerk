@@ -279,12 +279,6 @@ class _Builder:
                 return False
             self.asked.add(document)
             entry = {**entry, "document": document}
-        if entry["kind"] == "fact":  # an alternative the question states is credited to any answer that repeats it
-            asked_text = normalize(text + (fr or ""))
-            entry = {
-                **entry,
-                "all_of": [[a for a in group if normalize(a) not in asked_text] or group for group in entry["all_of"]],
-            }
         qid = f"{ID_PREFIX}-{len(self.questions) + 1}"
         entry = {**entry, "generation": self.generation}
         if fr is None:
@@ -509,7 +503,8 @@ class _Builder:
             if self.add(
                 f"Who signed the internal memo with the subject “{f['subject'].strip()}”?",
                 {"kind": "fact", "all_of": [_name_alternatives(sender)]},
-                f"from = {f['from']!r} in facts/{stem}.json, read as {sender!r}; the one memo with that subject",
+                f"from = {f['from']!r} in facts/{stem}.json, read as {sender!r}; the one memo with that subject. The "
+                "signature block names the signer; the FROM header may name an office, which is not credited",
                 document=stem,
             ):
                 break

@@ -67,7 +67,8 @@ ask:
   text: Who signed the internal memo with the subject “Implementation of Revised Remote Work and Flexible Scheduling
     Policy”?
   notes: from = 'Victoria L. Hargrove, Managing Director, Marbledock & Associates' in facts/0161_internal_memo.json,
-    read as 'Victoria L. Hargrove'; the one memo with that subject
+    read as 'Victoria L. Hargrove'; the one memo with that subject. The signature block names the signer; the FROM
+    header may name an office, which is not credited
 - id: synthetic-key-15
   text: On what date did the board of Marbledock & Associates meet in January 2025?
   notes: date = 2025-01-12 in facts/0113_board_minutes.json; the only board minutes dated 2025-01
