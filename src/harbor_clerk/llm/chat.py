@@ -59,10 +59,15 @@ _FINAL_ANSWER_THINKING_SECONDS = 120.0
 # runs) its own count ran 1.95 to 2.31 times the estimate: a search stopped at an estimated 76% of the context,
 # less the tool schema the forced call does not send, was 18,224 tokens by the tokenizer, and the other three were
 # 17,887, 19,240 and 21,228 against estimates of about 9,200. Tool results are JSON thick with identifiers, which
-# tokenize at under two characters a token, not the prose the constant was set for. So the forced prompt is held
-# to half the budget its estimate would get, which covers three of the four; the fourth is caught by the retry,
-# which trims against the server's count (``_refused_prompt_tokens``). Covering 2.31 outright would hold the
-# prompt to a third of the context and discard most of a search that, in twenty cases of twenty-four, fit as it was.
+# tokenize at under two characters a token, not the prose the constant was set for. The prompt is sent as it
+# stands all the same: the refusal is immediate (the server counts before it reads) and names its count, so a
+# refused prompt is trimmed against that count, with the response reserve, and sent once more (the forced call,
+# below). Trimming beforehand to cover the error would have discarded about half the retrieved evidence on every
+# context-budget stop, including the twenty of twenty-four that fit as they were. What this does not guarantee is
+# the reserve: the server refuses at the slot's context, not at the reserve, so a prompt the estimate puts at 60%
+# and the tokenizer at 95% is accepted and leaves the answer 5%. An answer cut there ends with finish_reason
+# "length": content already streamed stands as it is, and a thought alone is shown under the "context ran out"
+# lead. The factor is what the outer deadline reads the prompt at (``_forced_call_outer_deadline``).
 _FORCED_CALL_ESTIMATE_FACTOR = 2.0
 # A tool result is not shrunk below this many characters: what is left names the tool and says it was cut.
 _FORCED_CALL_RESULT_FLOOR_CHARS = 400
@@ -842,26 +847,14 @@ async def chat_stream(
             # This turn's results, not the history's: an earlier turn's tool rows are in ``messages`` too, and
             # "the results above" would point the model at them.
             search_over = _SEARCH_OVER_MESSAGE if searched_this_turn else _SEARCH_OVER_UNSEARCHED_MESSAGE
-            # The prompt must fit the context with the response reserve kept (#774): the search stopped at an
-            # estimated 75% of the context, and the estimate runs at half the tokenizer's count on tool results
-            # (_FORCED_CALL_ESTIMATE_FACTOR). The tool results are shrunk, largest first, until it does; the rows
-            # the conversation keeps are untouched.
-            untrimmed = [*messages, {"role": "user", "content": search_over}]
-            untrimmed_estimate = _estimate_messages_tokens(untrimmed)
-            forced_budget = int(context_tokens * (1 - _RESPONSE_RESERVE) / _FORCED_CALL_ESTIMATE_FACTOR)
-            forced_messages = _trim_for_forced_call(untrimmed, forced_budget)
+            # The prompt goes as it stands (#774): the estimate runs at half the tokenizer's count on tool results,
+            # but trimming on the estimate alone would discard evidence from every forced call to fit the ones the
+            # server would refuse. The server refuses before it reads and says how many tokens it counted, so a
+            # refused prompt is trimmed against that count and sent once more (below); the rows the conversation
+            # keeps are untouched either way.
+            forced_messages = [*messages, {"role": "user", "content": search_over}]
             forced_estimate = _estimate_messages_tokens(forced_messages)
-            if forced_estimate < untrimmed_estimate:
-                logger.info(
-                    "Forced final prompt trimmed from %d to %d estimated tokens to fit the context (%d tokens; "
-                    "budget %d at %.1fx the estimate) (conversation=%s)",
-                    untrimmed_estimate,
-                    forced_estimate,
-                    context_tokens,
-                    forced_budget,
-                    _FORCED_CALL_ESTIMATE_FACTOR,
-                    conversation_id,
-                )
+            deadline_estimate = forced_estimate  # what the outer deadline was read at, for the log
             if deadline is not None:
                 outer_deadline = _forced_call_outer_deadline(stopped_at, forced_estimate)
             for attempt in range(2):
@@ -893,17 +886,11 @@ async def chat_stream(
                             if response.status_code >= 500:
                                 report_llm_error(response.status_code)
                             server_failure = f"HTTP {response.status_code}"
-                            logger.warning(
-                                "Forced final answer failed: %s %s (conversation=%s)",
-                                server_failure,
-                                detail[:500],
-                                conversation_id,
-                            )
                             if attempt == 0 and _is_context_overflow(response.status_code, detail):
                                 # The refusal is immediate (the server counts before it reads) and names its
                                 # count, so the second trim is calibrated: the estimate is scaled by the server's
                                 # count of the prompt it refused, with a safety; a refusal without a count halves
-                                # the budget. Either way the prompt gets shorter, or there is no point sending it.
+                                # the prompt. Either way the prompt gets shorter, or there is no point sending it.
                                 counted = _refused_prompt_tokens(detail)
                                 harder = forced_estimate // 2  # no count, or one that would trim nothing: halve
                                 if counted:
@@ -928,6 +915,13 @@ async def chat_stream(
                                     forced_estimate = retried_estimate
                                     server_failure = None
                                     retry_shorter = True
+                            if not retry_shorter:
+                                logger.warning(
+                                    "Forced final answer failed: %s %s (conversation=%s)",
+                                    server_failure,
+                                    detail[:500],
+                                    conversation_id,
+                                )
                         else:
                             last_sent = _now()
                             async with aclosing(_iter_with_keepalive(response.aiter_lines())) as lines:
@@ -994,10 +988,11 @@ async def chat_stream(
                             elif cut == "outer":
                                 logger.info(
                                     "Final answer cut at its outer bound, %.0fs after the search stopped (%d "
-                                    "estimated prompt tokens at %.0f tokens/s, the thinking bound and the grace); "
-                                    "%d chars of content, %d of reasoning (conversation=%s)",
+                                    "estimated prompt tokens at %.1fx, %.0f tokens/s, the thinking bound and the "
+                                    "grace); %d chars of content, %d of reasoning (conversation=%s)",
                                     _now() - stopped_at,
-                                    forced_estimate,
+                                    deadline_estimate,
+                                    _FORCED_CALL_ESTIMATE_FACTOR,
                                     _PREFILL_TOKENS_PER_SECOND,
                                     len(assistant_content),
                                     len(reasoning_buffer),
