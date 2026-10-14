@@ -66,31 +66,36 @@ _FINAL_ANSWER_THINKING_SECONDS = 120.0
 # last chunk when the request asks for it (``stream_options: {"include_usage": true}``; at the pin, v0.4.1, the usage
 # chunk carries an empty ``choices`` array, as the OpenAI spec has it, and without the option no usage is sent).
 # The count is of the whole prompt, cached prefix included. The next prompt is predicted from it
-# (``_predict_prompt_tokens``): the server's exact count of the last prompt it counted, plus the raw estimate of the
-# messages appended since, read at the model's ratio, so the ratio touches only the increment, a tool result and
-# the call that asked for it. With no count yet (the first call of a conversation) the whole estimate is read at the
-# ratio. The prediction is what the context-budget stop, the history trim and the forced call's outer deadline
-# compare against; the context percentage the UI shows is the last count itself when there is one. A refusal of the
-# forced prompt (below) names the server's count of it and is recorded too. The one figure read bare is the
+# (``_predict_prompt_tokens``): the server's exact count of the last prompt it counted, plus the messages appended
+# since, weighted per message (``_predict_messages_tokens``): a tool result and the call that asked for it at the
+# model's ratio, prose (the system prompt, the user's and the assistant's words) and the tool schema at _PROSE_RATIO,
+# the 1.2 a tool-less prompt measures at. With no count yet (the first call of a conversation, and the history trim
+# before it) the whole prompt is weighted the same way; reading all of it at the tool ratio trimmed twenty prose
+# exchanges on a 16,384 slot to four, every turn for the life of the process, where the server at 70% takes
+# thirteen (the third review of #806). The prediction is what the context-budget stop, the history trim and the
+# forced call's outer deadline compare against; the context percentage the UI shows is the last count itself when
+# there is one. A count below _ESTIMATE_RATIO_MIN times the estimate is distrusted (a build counting something
+# else): it is not kept, and the next prompt is predicted from the weights alone. The one figure read bare is the
 # per-result truncation cap (``tool_result_max_chars``), deliberately: dividing it by the ratio halves the evidence
 # a search returns, a retrieval change for a benchmark to decide.
 #
-# The ratio is per model, lives for the process (a fresh conversation starts from the model's table), and is measured
-# only from prompts that held a tool result, because that is the only text it is applied to: the first call of a
-# conversation (system prompt, schema, question) tokenizes at about 1.2x, and a ratio taken from it read the first
-# at-cap result at 1.2x, passed the budget check, and would have sent the next prompt at 106% of a 16,384 slot (the
-# second review of #806). A prose conversation never touches the table, so a tool-heavy conversation after a run of
-# prose ones starts from the default all the same. The default is the tool-heavy figure, 2.0, because the stop it
-# governs fires only after a tool round, and the one place it acts before any measurement is the history trim of the
-# first call of the process: too high there trims a prose history early (soft); too low admits a prompt the server
-# refuses (hard). It is never replaced: every measurement, the first included, is blended in at half weight from
-# whatever stands, since the next increment is like the last and the half kept guards against a single odd count.
-# The table is process-wide, so two conversations running at once blend their measurements; every model runs one
-# slot, so that is rare, and keying the table by conversation, seeded from the model's, is the change if it is not.
-# A measurement is clamped before it is blended: a count the estimate cannot explain (a server counting something
-# else, a corrupt body) moves the ratio at most half way to the clamp, never off the scale. The clamp's top is 3.0:
-# it covers the 2.31 observed with margin, and at 4.0 a 16,384 context left the history trim a budget below the
-# system prompt alone.
+# The ratio is per model, lives for the process (a fresh conversation starts from the model's table), and is
+# measured as the increment between two counted prompts of the loop: the difference of the counts over the estimate
+# of the messages appended between them, which is the tool result and its call and nothing else. Measured over the
+# whole prompt, the system prompt and the schema (about 3,800 raw tokens at 1.2x) diluted a 2.3 density to 1.9; the
+# whole prompt is measured only when a conversation's first counted prompt already holds results (a resumed
+# conversation). A tool-less prompt measures nothing: a ratio taken from one read the first at-cap result at 1.2x
+# (the second review). The forced call measures nothing either: it drops the tools, so its count against the last
+# is not an increment, and its whole-prompt figure is the diluted one; its count is kept for the bookkeeping. So a
+# prose conversation never touches the table, and a tool-heavy one after a run of prose ones starts from the
+# default. The default is the tool-heavy figure, 2.0: too high stops a search a round before the server would have
+# (soft); too low admits a prompt the server refuses (hard). It is never replaced: every measurement, the first
+# included, is blended in at half weight from whatever stands, since the next increment is like the last and the
+# half kept guards against a single odd count. The table is process-wide, so two conversations running at once
+# blend their measurements; every model runs one slot, so that is rare, and keying the table by conversation,
+# seeded from the model's, is the change if it is not. A measurement is clamped before it is blended: a count the
+# estimate cannot explain moves the ratio at most half way to the clamp, never off the scale. The clamp's top is
+# 3.0: it covers the 2.31 observed with margin.
 #
 # The forced prompt goes as the calibrated estimate stands, not trimmed beforehand: the server refuses before it reads
 # and names its count, so a refused prompt is trimmed against that count, with the response reserve, and sent once
@@ -107,6 +112,9 @@ _FINAL_ANSWER_THINKING_SECONDS = 120.0
 _ESTIMATE_RATIO_DEFAULT = 2.0
 _ESTIMATE_RATIO_MIN = 0.5
 _ESTIMATE_RATIO_MAX = 3.0
+# What a tool-less prompt (the system prompt, the schema, the user's and the assistant's words) tokenizes at over the
+# estimate: the figure measured on first calls, and what prose is weighted at in a prediction with no count behind it.
+_PROSE_RATIO = 1.2
 _ESTIMATE_RATIO_SMOOTHING = 0.5  # the weight of the newest measurement, the first included
 # The history trim's target, as a fraction of the context: under the response reserve and under the tool-loop budget
 # by a margin, so a trimmed first call is not already at the budget when its first result comes back (the second
@@ -332,16 +340,44 @@ def _record_estimate_ratio(model_id: str | None, counted: int, estimated: int) -
     return ratio
 
 
+def _predict_messages_tokens(messages: list[dict], ratio: float) -> float:
+    """The tokenizer's count of ``messages`` as predicted with no server count to go on: each message's raw estimate
+    (with its per-message overhead) at the measured ``ratio`` for a tool result or the assistant call that asked for
+    it, at _PROSE_RATIO for everything else."""
+    total = 0.0
+    for msg in messages:
+        tokens = _estimate_tokens(msg.get("content") or "") + 4
+        if msg.get("tool_calls"):
+            tokens += _estimate_tokens(json.dumps(msg["tool_calls"]))
+        dense = msg.get("role") == "tool" or bool(msg.get("tool_calls"))
+        total += tokens * (ratio if dense else _PROSE_RATIO)
+    return total
+
+
 def _predict_prompt_tokens(
     messages: list[dict], counted: int | None, counted_upto: int, tools_tokens: int, ratio: float
 ) -> int:
     """The tokenizer's count of the next prompt, as best predicted: the server's exact ``counted`` tokens of the last
-    prompt it counted (which held ``messages[:counted_upto]``, and the tools), plus the raw estimate of the messages
-    appended since, read at ``ratio``; or, with no count yet, the whole estimate and ``tools_tokens`` read at
-    ``ratio``."""
+    prompt it counted (which held ``messages[:counted_upto]``, and the tools), plus the messages appended since,
+    weighted (``_predict_messages_tokens``); or, with no count yet, the whole of ``messages`` weighted and the
+    schema's ``tools_tokens`` at _PROSE_RATIO."""
     if counted is None:
-        return int((_estimate_messages_tokens(messages) + tools_tokens) * ratio)
-    return int(counted + _estimate_messages_tokens(messages[counted_upto:]) * ratio)
+        return int(_predict_messages_tokens(messages, ratio) + tools_tokens * _PROSE_RATIO)
+    return int(counted + _predict_messages_tokens(messages[counted_upto:], ratio))
+
+
+def _measure_ratio(
+    model_id: str | None, counted: int, sent_estimate: int, previous_count: int | None, increment: list[dict]
+) -> float | None:
+    """Record a tool-bearing prompt's count. With a previous count, as the increment: the counts' difference over
+    the estimate of ``increment``, the messages appended between the two prompts, when a tool result is among them
+    (nothing else is: the system prompt and the schema, measured over the whole prompt, diluted the figure). Without
+    one, over the whole prompt: the conversation's first counted prompt already held results."""
+    if previous_count is not None:
+        if not any(m.get("role") == "tool" for m in increment):
+            return None
+        return _record_estimate_ratio(model_id, counted - previous_count, _estimate_messages_tokens(increment))
+    return _record_estimate_ratio(model_id, counted, sent_estimate)
 
 
 def _trim_to_budget(messages: list[dict], context_window: int, model: "ModelInfo | None", ratio: float) -> list[dict]:
@@ -352,15 +388,18 @@ def _trim_to_budget(messages: list[dict], context_window: int, model: "ModelInfo
     are what is sent, and the server says whether they fit (the floor; before
     it, a budget below the system prompt alone sent the whole history
     untrimmed). Removes messages from the front of history, keeping tool
-    call/result pairs together. The budget is in raw estimated tokens: the
-    context, less the response reserve, read at the model's measured ``ratio``.
+    call/result pairs together. The budget is _TRIM_BUDGET_FRACTION of the
+    context, less the schema at _PROSE_RATIO; the messages are weighted as a
+    prediction with no count is (``_predict_messages_tokens``): results and
+    their calls at the model's measured ``ratio``, prose at _PROSE_RATIO.
+    Reading prose at the tool ratio kept four of twenty exchanges where the
+    server took thirteen.
 
     Returns a new list (does not mutate the input).
     """
-    budget = int(context_window * _TRIM_BUDGET_FRACTION / ratio)
-    budget -= _get_tool_schema_tokens(model)
+    budget = int(context_window * _TRIM_BUDGET_FRACTION - _get_tool_schema_tokens(model) * _PROSE_RATIO)
 
-    if _estimate_messages_tokens(messages) <= budget or len(messages) < 3:
+    if _predict_messages_tokens(messages, ratio) <= budget or len(messages) < 3:
         return messages
 
     # System prompt (index 0) and the question (last) are always kept. Trim from index 1 onward.
@@ -369,7 +408,7 @@ def _trim_to_budget(messages: list[dict], context_window: int, model: "ModelInfo
     history = messages[1:-1]
 
     # Remove from the front of history until we fit
-    while history and _estimate_messages_tokens(system + history + question) > budget:
+    while history and _predict_messages_tokens(system + history + question, ratio) > budget:
         removed = history.pop(0)
         # If we removed an assistant message with tool_calls, also remove
         # the following tool result messages (they reference it).
@@ -753,6 +792,7 @@ async def chat_stream(
                         return
 
                     report_llm_success()
+                    call_usage: dict | None = None  # the last usage the stream carried: read once, after it
                     # Keepalives are keyed to the client's silence, not the model's (#731): a tool call or a
                     # model's thinking streams lines the client hears nothing of, for minutes at a time.
                     last_sent = _now()
@@ -797,27 +837,8 @@ async def chat_stream(
                             # The usage chunk has no choices at all (an empty array, per the OpenAI spec).
                             choices = chunk.get("choices") or [{}]
                             delta = choices[0].get("delta", {})
-                            usage = chunk.get("usage")
-                            if usage:
-                                completion_tokens = usage.get("completion_tokens")
-                                if isinstance(completion_tokens, int):
-                                    completion_tokens_total += completion_tokens
-                                    completion_tokens_last = completion_tokens
-                                prompt_tokens = usage.get("prompt_tokens")
-                                if isinstance(prompt_tokens, int):
-                                    prompt_tokens_last = prompt_tokens
-                                    counted_upto = sent_count
-                                    if sent_tool_bearing:  # the ratio is of tool results: see the module comment
-                                        ratio_now = _record_estimate_ratio(
-                                            active_model_id, prompt_tokens, sent_estimate
-                                        )
-                                        logger.debug(
-                                            "Prompt counted at %d tokens against %d estimated; ratio now %.2f (model=%s)",
-                                            prompt_tokens,
-                                            sent_estimate,
-                                            ratio_now if ratio_now is not None else float("nan"),
-                                            active_model_id,
-                                        )
+                            if chunk.get("usage"):
+                                call_usage = chunk["usage"]
 
                             # Accumulate tool calls from deltas
                             if "tool_calls" in delta:
@@ -851,6 +872,44 @@ async def chat_stream(
                             elif _now() - last_sent >= _KEEPALIVE_INTERVAL:
                                 yield ": keepalive\n\n"
                                 last_sent = _now()
+                    if call_usage:
+                        # Once per call, from the last chunk that carried usage: a build that puts usage on the
+                        # finish chunk as well must not count twice.
+                        completion_tokens = call_usage.get("completion_tokens")
+                        if isinstance(completion_tokens, int):
+                            completion_tokens_total += completion_tokens
+                            completion_tokens_last = completion_tokens
+                        counted = call_usage.get("prompt_tokens")
+                        if isinstance(counted, int):
+                            if counted < _ESTIMATE_RATIO_MIN * sent_estimate:
+                                # Below any density the clamp allows: a build counting something else. Not kept;
+                                # the next prompt is predicted from the weighted estimate alone.
+                                logger.warning(
+                                    "Prompt counted at %d tokens against %d estimated, under %.1fx: count distrusted "
+                                    "(conversation=%s)",
+                                    counted,
+                                    sent_estimate,
+                                    _ESTIMATE_RATIO_MIN,
+                                    conversation_id,
+                                )
+                                prompt_tokens_last, counted_upto = None, 0
+                            else:
+                                if sent_tool_bearing:  # the ratio is of tool results: see the module comment
+                                    ratio_now = _measure_ratio(
+                                        active_model_id,
+                                        counted,
+                                        sent_estimate,
+                                        prompt_tokens_last,
+                                        messages[counted_upto:sent_count],
+                                    )
+                                    logger.debug(
+                                        "Prompt counted at %d tokens against %d estimated; ratio now %.2f (model=%s)",
+                                        counted,
+                                        sent_estimate,
+                                        ratio_now if ratio_now is not None else float("nan"),
+                                        active_model_id,
+                                    )
+                                prompt_tokens_last, counted_upto = counted, sent_count
                 finally:
                     await response_obj.aclose()
                     await client_obj.aclose()
@@ -1012,7 +1071,6 @@ async def chat_stream(
             # keeps are untouched either way.
             forced_messages = [*messages, {"role": "user", "content": search_over}]
             forced_estimate = _estimate_messages_tokens(forced_messages)
-            forced_tool_bearing = any(m.get("role") == "tool" for m in forced_messages)
             # What the outer deadline reads the prompt at: predicted from the server's last count (#805), which held
             # the tools this prompt does not, so the allowance errs long, not short.
             deadline_prediction = _predict_prompt_tokens(
@@ -1056,9 +1114,6 @@ async def chat_stream(
                                 # count of the prompt it refused, with a safety; a refusal without a count halves
                                 # the prompt. Either way the prompt gets shorter, or there is no point sending it.
                                 counted = _refused_prompt_tokens(detail)
-                                if counted and forced_tool_bearing:
-                                    # The server's exact count of this prompt: the best measurement there is.
-                                    _record_estimate_ratio(active_model_id, counted, forced_estimate)
                                 # The context to fit is the server's, when the refusal states it: the client's
                                 # figure is the registry's window, which can be 32,768 while the server runs at
                                 # 16,384 (#654), and a retry calibrated to the larger one is refused again.
@@ -1098,6 +1153,7 @@ async def chat_stream(
                                 )
                         else:
                             last_sent = _now()
+                            forced_usage: dict | None = None  # the last usage the stream carried: read once, after
                             async with aclosing(_iter_with_keepalive(response.aiter_lines())) as lines:
                                 async for line in lines:
                                     if line is _KEEPALIVE_SENTINEL:
@@ -1119,17 +1175,8 @@ async def chat_stream(
                                         chunk = json.loads(data)
                                     except json.JSONDecodeError:
                                         continue
-                                    usage = chunk.get("usage")
-                                    if usage:
-                                        if isinstance(usage.get("completion_tokens"), int):
-                                            completion_tokens_total += usage["completion_tokens"]
-                                            completion_tokens_last = usage["completion_tokens"]
-                                        if isinstance(usage.get("prompt_tokens"), int):
-                                            prompt_tokens_last = usage["prompt_tokens"]
-                                            if forced_tool_bearing:
-                                                _record_estimate_ratio(
-                                                    active_model_id, usage["prompt_tokens"], forced_estimate
-                                                )
+                                    if chunk.get("usage"):
+                                        forced_usage = chunk["usage"]
                                     choice = (chunk.get("choices") or [{}])[0]
                                     finish_reason = choice.get("finish_reason") or finish_reason
                                     delta = choice.get("delta", {})
@@ -1156,6 +1203,17 @@ async def chat_stream(
                                         if _now() - last_sent >= _KEEPALIVE_INTERVAL:
                                             yield ": keepalive\n\n"
                                             last_sent = _now()
+                            if forced_usage:
+                                # Bookkeeping, not a measurement (module comment): the forced prompt dropped the
+                                # tools, so its count against the last is no increment. Its count covers all of
+                                # ``messages`` and the search-over line, so a later prediction reads from it.
+                                completion_tokens = forced_usage.get("completion_tokens")
+                                if isinstance(completion_tokens, int):
+                                    completion_tokens_total += completion_tokens
+                                    completion_tokens_last = completion_tokens
+                                counted = forced_usage.get("prompt_tokens")
+                                if isinstance(counted, int) and counted >= _ESTIMATE_RATIO_MIN * forced_estimate:
+                                    prompt_tokens_last, counted_upto = counted, len(messages)
                             if cut == "grace":
                                 logger.info(
                                     "Final answer cut after %.0fs of grace (conversation=%s)",

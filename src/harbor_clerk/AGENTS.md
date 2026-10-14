@@ -105,29 +105,33 @@ a route with a blank gate unless it is public. Keys never receive `source_path` 
 `ABSOLUTE_PATH_FIELDS`, and any free-text field that may quote one (pipeline
 `error` text does) to `ABSOLUTE_PATH_TEXT_FIELDS`.
 
-## The chat token estimate is raw; the bounds are calibrated
+## The chat token estimate is raw; the bounds are predicted
 
 `llm/chat.py` estimates tokens by characters over `_CHARS_PER_TOKEN`, a prose
 figure that runs at about half the tokenizer's count on tool results (#805).
 Every bound (the context-budget stop, the history trim, the forced call's
 outer deadline) compares against the next prompt as **predicted**
 (`_predict_prompt_tokens`): the server's exact `usage.prompt_tokens` of the
-last counted prompt, plus the estimate of what was appended since at the
-model's measured ratio; with no count yet, the whole estimate at the ratio.
-The ratio is kept per model id in `_estimate_ratios` for the life of the
-process, measured only from prompts that held a tool result (the first,
-tool-less call of a conversation tokenizes at ~1.2x and must not calibrate
-the results that follow), blended at half weight from the default, never
-replaced. The one figure read bare, deliberately, is the per-result
+last counted prompt, plus the messages appended since, weighted per message
+(`_predict_messages_tokens`: tool results and their calls at the model's
+measured ratio, prose and the schema at `_PROSE_RATIO`); with no count yet,
+the whole prompt weighted the same way. Reading prose at the tool ratio
+trimmed a 16K history to 4 exchanges of 20 where the server takes 13. The
+ratio is kept per model id in `_estimate_ratios` for the life of the process
+and measured as the **increment** between two counted prompts of the loop (the
+result and its call, nothing else), never from a tool-less prompt, never from
+the forced call (it drops the tools), blended at half weight from the default
+and never replaced. A count under `_ESTIMATE_RATIO_MIN` times the estimate is
+distrusted. The one figure read bare, deliberately, is the per-result
 truncation cap `tool_result_max_chars` (a retrieval-quality knob, not a
 bound). llama-server (pin v0.4.1) sends usage only when the request carries
 `stream_options: {"include_usage": true}`, in a last chunk whose `choices` is
-an **empty array**: `chunk["choices"][0]` raises on it. A new estimate-derived
-figure takes the prediction or the ratio (`_estimate_ratio(model_id)`); a new
-streamed call asks for usage, records it (`_record_estimate_ratio`) and
-tolerates the empty-choices chunk (`research.py`'s streaming reader does not
-ask for usage and still indexes `choices[0]`: asking without fixing the reader
-crashes it).
+an **empty array**: `chunk["choices"][0]` raises on it; read the last usage a
+stream carries, once, after it. A new estimate-derived figure takes the
+prediction or the weights; a new streamed call asks for usage, records it
+(`_record_estimate_ratio`) and tolerates the empty-choices chunk
+(`research.py`'s streaming reader does not ask for usage and still indexes
+`choices[0]`: asking without fixing the reader crashes it).
 
 ## Async gotchas
 
