@@ -122,9 +122,11 @@ ratios are kept per model id for the life of the process (`_estimate_ratios`,
 `_prose_ratios`). A refused first prompt is where a dense history is met: the
 loop records the prose density from the refusal's count and retries the turn
 once, trimmed against that count and the slot the refusal states; a refusal
-later in the loop ends the search like the context budget, and the forced
-call's retry shrinks the results (the history trim would keep the latest tool
-row as the question). The tool ratio is measured only as the **increment**
+once the turn has searched ends the search like the context budget, and the
+forced call's retry shrinks the results (the history trim would keep the
+latest tool row as the question); a first prompt refused twice is the error.
+An increment under `_INCREMENT_FLOOR_TOKENS` raw tokens is not measured.
+The tool ratio is measured only as the **increment**
 between two counted prompts of one turn's loop (the result and its call,
 nothing else): never from a tool-less prompt, never from a turn's first
 prompt even when the history holds results (diluted), never from the forced

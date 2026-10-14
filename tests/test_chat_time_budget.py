@@ -121,7 +121,7 @@ async def _drive(
     budget: float,
     on_tool=None,
     *,
-    result: str | None = None,
+    result=None,
     context_tokens: int | None = None,
     ratios: dict | None = None,
     prose_ratios: dict | None = None,
@@ -147,6 +147,8 @@ async def _drive(
         tool_calls.append(fn_name)
         if on_tool:
             on_tool()
+        if callable(result):
+            return result()
         return result if result is not None else json.dumps({"results": [], "total": 0})
 
     async def run():
@@ -2229,7 +2231,15 @@ async def test_the_clamp_holds_against_an_absurd_count(db_session, admin_user, c
     client, sent, counts, forced_counts, _count = _two_density_client(ctx, with_tools=1000.0, refuse=False)
     table: dict = {}
     text, done, tool_calls = await _drive(
-        conv.conversation_id, admin_user, client, _Clock(), monkeypatch, budget=0.0, context_tokens=ctx, ratios=table
+        conv.conversation_id,
+        admin_user,
+        client,
+        _Clock(),
+        monkeypatch,
+        budget=0.0,
+        result=_big_search_result(5),  # over the increment floor, so the absurd count is measured
+        context_tokens=ctx,
+        ratios=table,
     )
     assert tool_calls == ["search_documents", "search_documents"] and len(sent) == 2, "stopped after the absurd count"
     assert counts[1] > ctx, (
@@ -2987,16 +2997,16 @@ async def test_a_refusals_count_alone_measures_the_prose_density(
     assert count <= chat_module._TRIM_BUDGET_FRACTION * ctx
 
 
-def _refusing_once_client(first: MagicMock):
-    """A server whose first response is ``first`` (a refusal) and every later one a plain answer without usage.
+def _refusing_once_client(*refusals: MagicMock):
+    """A server whose first responses are ``refusals``, in order, and every later one a plain answer without usage.
     Returns the client and the loop's payloads."""
     sent: list[dict] = []
 
     def build(*_a, **_k):
         payload = client.build_request.call_args.kwargs["json"]
         sent.append({**payload, "messages": list(payload["messages"])})
-        if len(sent) == 1:
-            return first
+        if len(sent) <= len(refusals):
+            return refusals[len(sent) - 1]
         return _lines_response([_chunk(content="Answered."), _finish_chunk("stop"), "data: [DONE]"])
 
     client = MagicMock()
@@ -3008,7 +3018,9 @@ def _refusing_once_client(first: MagicMock):
     return client, sent
 
 
-async def _prose_history(db_session, admin_user, exchanges: int = 20, tool_rows: bool = False):
+async def _prose_history(
+    db_session, admin_user, exchanges: int = 20, tool_rows: bool = False, tool_result: str | None = None
+):
     """A conversation with ``exchanges`` prose exchanges in its history (each about 1,450 characters), and an old
     search's call and result in the latest of them when ``tool_rows`` (the oldest would be trimmed away)."""
     from harbor_clerk.models.chat_message import ChatMessage
@@ -3025,7 +3037,10 @@ async def _prose_history(db_session, admin_user, exchanges: int = 20, tool_rows:
             )
             db_session.add(
                 ChatMessage(
-                    conversation_id=conv.conversation_id, role="tool", content=_big_search_result(5), tool_call_id="old"
+                    conversation_id=conv.conversation_id,
+                    role="tool",
+                    content=tool_result or _big_search_result(5),
+                    tool_call_id="old",
                 )
             )
         db_session.add(
@@ -3235,3 +3250,152 @@ async def test_after_a_retried_first_call_the_next_prediction_is_from_the_weight
     predicted = chat_module._predict_prompt_tokens(stopped, None, 0, schema, chat_module._ESTIMATE_RATIO_DEFAULT, 1.8)
     assert predicted >= chat_module._TOOL_LOOP_BUDGET * ctx, "the weighted estimate is what stopped the search"
     assert int(1.8 * chat_module._estimate_messages_tokens(forced)) < ctx, "and the forced prompt fit the slot"
+
+
+@pytest.mark.asyncio
+async def test_a_first_prompt_refused_twice_is_the_error_not_a_forced_answer(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The first prompt is refused, retried trimmed, and refused again (the server's count was wrong, or the floor
+    was reached). Nothing was searched: this is the "context window full" error, as on main, and no forced call
+    asks the model to answer a search that never happened. The retry ran at round one, so keyed on the round it
+    went to the forced call (the fourth review of #808)."""
+    conv = await _prose_history(db_session, admin_user)
+    ctx = 16384
+    client, sent = _refusing_once_client(_refusal(17_000, ctx), _refusal(16_500, ctx))
+    events: list[dict] = []
+    text, done, tool_calls = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        _Clock(),
+        monkeypatch,
+        budget=0.0,
+        context_tokens=ctx,
+        events_out=events,
+    )
+    assert len(sent) == 2 and tool_calls == [], "refused, retried once, refused again"
+    errors = [e for e in events if e.get("type") == "error"]
+    assert len(errors) == 1 and errors[0]["message"] == "Context window full — please start a new conversation"
+    assert text == "" and "stop_reason" not in done and done["context_pct"] == 100
+    assert client.stream.call_count == 0, "no forced call: nothing was searched"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_first_prompt_is_retried_to_the_slot_the_refusal_states(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """Under Compose nothing clamps the registry's window to the server's -c (#654): the client budgets at 32,768
+    while the server runs at 16,384. The refusal states the slot, so the retry is trimmed to fit that one, and the
+    turn budgets against it from then on (the slot is learned for the turn, so the next turn's first prompt meets
+    the same refusal and the same retry); trimmed to the registry's window it would be refused again. Two turns,
+    no error."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _prose_history(db_session, admin_user)
+    server_ctx, registry_ctx = 16384, 32768
+    prose: dict = {}
+    for turn in range(2):
+        client, sent = _counting_client(1.8, rounds=0, ctx=server_ctx)
+        events: list[dict] = []
+        text, done, _ = await _drive(
+            conv.conversation_id,
+            admin_user,
+            client,
+            _Clock(),
+            monkeypatch,
+            budget=0.0,
+            context_tokens=registry_ctx,
+            prose_ratios=prose,
+            events_out=events,
+        )
+        assert text == "Answered on my own." and not [e for e in events if e.get("type") == "error"], (turn, events)
+        counts = [int(1.8 * chat_module._estimate_payload_tokens(p["messages"], p["tools"])) for p in sent]
+        assert len(sent) == 2 and counts[0] > server_ctx, f"the scenario: refused at the server's slot ({counts})"
+        assert counts[1] <= chat_module._TRIM_BUDGET_FRACTION * server_ctx, f"retried to the server's slot: {counts}"
+        assert done["context_pct"] == round(min((counts[-1] + 5) / server_ctx, 1.0) * 100), (
+            "the UI percentage is of the slot the server stated"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_first_prompt_with_dense_old_results_is_retried_above_the_defaults(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The history holds an old search's result the server counts at 3.0x (prose at 1.8x): a tool-bearing first
+    prompt, refused. The refusal records nothing, but its count says the prompt is denser than both tables' defaults,
+    so the retry reads results and prose alike at least at that density and fits first time; read at the defaults
+    the same retry looks far under the target, which is how the defaults alone got it refused again."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _prose_history(
+        db_session, admin_user, exchanges=10, tool_rows=True, tool_result=_big_search_result(20)
+    )
+    ctx = 16384
+    client, sent, counts, _forced, count = _two_density_client(ctx, without_tools=1.8, with_tools=3.0, rounds=0)
+    table: dict = {}
+    prose: dict = {}
+    events: list[dict] = []
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        _Clock(),
+        monkeypatch,
+        budget=0.0,
+        context_tokens=ctx,
+        ratios=table,
+        prose_ratios=prose,
+        events_out=events,
+    )
+    assert text == "Answered on my own." and not [e for e in events if e.get("type") == "error"], events
+    assert len(sent) == 2 and counts[0] > ctx, f"the scenario: refused first ({counts})"
+    assert any(m["role"] == "tool" for m in sent[0]["messages"]), "the scenario: old results in the first prompt"
+    assert table == {}, "a tool-bearing prompt measures nothing of the tool ratio, refused or not"
+    retry_tool_less = not any(m["role"] == "tool" for m in sent[1]["messages"])
+    expected_prose = {_MODEL_KEY: pytest.approx(1.8, abs=0.01)} if retry_tool_less else {}
+    assert prose == expected_prose, (
+        "the refusal recorded nothing; the accepted retry measured its own prose density only if it had no tool row"
+    )
+    density = counts[0] / chat_module._estimate_payload_tokens(sent[0]["messages"], sent[0]["tools"])
+    at_least = density * chat_module._FORCED_CALL_RETRY_SAFETY  # what the retry reads every row at, at least
+    assert at_least > chat_module._ESTIMATE_RATIO_DEFAULT, "the scenario: denser than the tool table's default"
+    assert counts[1] <= chat_module._TRIM_BUDGET_FRACTION * ctx, f"retried at least at the count's density: {counts}"
+    schema = chat_module._get_tool_schema_tokens(None)
+    at_defaults = chat_module._predict_prompt_tokens(
+        sent[1]["messages"], None, 0, schema, chat_module._ESTIMATE_RATIO_DEFAULT, chat_module._PROSE_RATIO_DEFAULT
+    )
+    assert at_defaults < 0.75 * chat_module._TRIM_BUDGET_FRACTION * ctx, (
+        "read at the defaults the retry looks well under the target: the count is what made it fit"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_tiny_increment_does_not_move_a_converged_ratio(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """Six rounds of results converge the table on the server's tool density; the seventh search returns nothing.
+    An empty result and its call are about fifty raw tokens, most of them the template's wrappers, and measured
+    they moved a converged ratio by a tenth or more: under the floor they measure nothing and the table stands."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    ctx = 65536
+    results = [_big_search_result(12)] * 6 + [json.dumps({"results": [], "total": 0})]
+    client, sent, _c, _f, _count = _two_density_client(ctx, rounds=7)
+    table: dict = {}
+    text, done, tool_calls = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        _Clock(),
+        monkeypatch,
+        budget=0.0,
+        result=lambda: results.pop(0),
+        context_tokens=ctx,
+        ratios=table,
+    )
+    assert len(tool_calls) == 7 and text == "Answered on my own." and "stop_reason" not in done
+    tiny = sent[-1]["messages"][len(sent[-2]["messages"]) :]
+    assert chat_module._estimate_messages_tokens(tiny) < chat_module._INCREMENT_FLOOR_TOKENS, "the scenario"
+    assert table[_MODEL_KEY] == pytest.approx(2.2, abs=0.02), f"the empty result left the table at {table}"
