@@ -195,13 +195,14 @@ copy_bundle "$CLIENT_APP" "$OUTPUT_DIR/HarborClerk.app"
 # server needs to spawn llama and Python under the hardened runtime. Silently.
 
 # ── The bundles must say what the tag says ──
+PLISTBUDDY="${PLISTBUDDY:-/usr/libexec/PlistBuddy}"
 # Command-line build settings override the pbxproj, but a renamed setting or a
 # target that stopped reading $(MARKETING_VERSION) in its Info.plist would ship
 # the 0.0.0-dev sentinel silently. Read the plists back.
 for app in "$OUTPUT_DIR/HarborClerkServer.app" "$OUTPUT_DIR/HarborClerk.app"; do
     plist="$app/Contents/Info.plist"
-    short="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")"
-    bundle_version="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist")"
+    short="$("$PLISTBUDDY" -c "Print :CFBundleShortVersionString" "$plist")"
+    bundle_version="$("$PLISTBUDDY" -c "Print :CFBundleVersion" "$plist")"
     if [ "$short" != "$HC_VERSION" ] || [ "$bundle_version" != "$HC_BUILD_NUMBER" ]; then
         echo "ERROR: $(basename "$app") reports version ${short} (${bundle_version}); expected ${HC_VERSION} (${HC_BUILD_NUMBER})." >&2
         echo "       MARKETING_VERSION / CURRENT_PROJECT_VERSION did not reach the target's Info.plist." >&2

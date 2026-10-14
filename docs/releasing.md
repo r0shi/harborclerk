@@ -7,8 +7,10 @@ before the tag can exist. Nothing in the Xcode projects is edited per release.
 
 ## What a build carries
 
-`macos/scripts/build-version.sh` runs `git describe --tags --match 'v*' --long
---dirty` on the commit being built and derives:
+`macos/scripts/build-version.sh` runs `git describe --tags --match 'v[0-9]*'
+--long --dirty` on the commit being built and derives (a tag that is not exactly
+`vX.Y.Z`, such as `v1.0.0-rc1` or `vendor-x`, fails the build rather than
+stamping anything):
 
 | Stamp | Where it lands | Tagged commit, clean | Two commits past the tag | Same, uncommitted changes |
 |---|---|---|---|---|

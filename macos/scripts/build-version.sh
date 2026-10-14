@@ -40,9 +40,10 @@ fi
 
 # The output is `eval`ed by package.sh and the Makefile, so every value is
 # validated here: a tag is text anyone with push rights can write, and
-# `v1.2.3;echo` must fail, not run. X.Y.Z with an optional pre-release suffix
-# (`1.0.0-rc1`, `1.0.0.post1`); release.sh itself only ever tags X.Y.Z.
-VERSION_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$'
+# `v1.2.3;echo` must fail, not run. Exactly X.Y.Z, the only shape release.sh
+# publishes: a hand-tagged `v1.0.0-rc1` is refused here too rather than built
+# as a release that release.sh would then refuse to ship.
+VERSION_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
 
 dirty=""
 if [[ "$describe" =~ ^v(.+)-([0-9]+)-g([0-9a-f]+)(-dirty)?$ ]]; then
@@ -51,7 +52,7 @@ if [[ "$describe" =~ ^v(.+)-([0-9]+)-g([0-9a-f]+)(-dirty)?$ ]]; then
     hash="${BASH_REMATCH[3]}"
     dirty="${BASH_REMATCH[4]}"
     if ! [[ "$version" =~ $VERSION_PATTERN ]]; then
-        echo "ERROR: cannot derive a version from git describe output '${describe}': tag '${version}' is not X.Y.Z[-suffix]" >&2
+        echo "ERROR: cannot derive a version from git describe output '${describe}': tag '${version}' is not X.Y.Z" >&2
         exit 1
     fi
     if [ "$distance" = "0" ] && [ -z "$dirty" ]; then

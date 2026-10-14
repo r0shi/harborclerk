@@ -198,21 +198,17 @@ def test_build_version_derivation(describe: str, expected: dict[str, str]) -> No
         # `--match 'v*'` used to accept this and derive MARKETING_VERSION=endor-x.
         "vendor-x-0-gabc1234",
         "v1.2-0-gabc1234",
+        # A hand-tagged pre-release would otherwise build as HC_RELEASE=1 and then
+        # be refused by release.sh, which only publishes vX.Y.Z.
+        "v1.0.0-rc1-0-gabc1234",
     ],
-    ids=["not-a-describe", "shell-metachar", "command-substitution", "vendor-tag", "two-part"],
+    ids=["not-a-describe", "shell-metachar", "command-substitution", "vendor-tag", "two-part", "pre-release"],
 )
 def test_build_version_rejects_what_it_cannot_parse(describe: str) -> None:
     result = _derive(describe)
     assert result.returncode != 0, f"{describe!r} must fail the build, not stamp something: {result.stdout!r}"
     assert "cannot derive" in result.stderr
     assert not result.stdout.strip(), "nothing may reach eval on the error path"
-
-
-def test_build_version_accepts_a_pre_release_suffix() -> None:
-    result = _derive("v1.0.0-rc1-0-gabc1234")
-    assert result.returncode == 0, result.stderr
-    parsed = _parse(result.stdout)
-    assert parsed["HC_VERSION"] == "1.0.0-rc1" and parsed["HC_VERSION_FULL"] == "1.0.0-rc1"
 
 
 def test_build_version_matches_only_numeric_v_tags() -> None:
@@ -325,15 +321,25 @@ def _fixture(tmp_path: Path, *, pyproject: str = "9.9.9", package: str = "9.9.9"
 
 
 def _stub_gh(tmp_path: Path) -> Path:
-    """A `gh` that says no release exists (unless FIXTURE_GH_RELEASE_EXISTS=1),
-    records `release create` calls in FIXTURE_GH_LOG, and names a repo."""
+    """A `gh` whose `release view` answers per FIXTURE_GH_RELEASE_VIEW — `missing`
+    (gh's real "release not found" on stderr, exit 1; the default), `exists`
+    (exit 0) or `error` (an auth failure on stderr, exit 1) — records `release
+    create` calls in FIXTURE_GH_LOG with exit FIXTURE_GH_CREATE_RC, and names a
+    repo. Beside it, a `PlistBuddy` that answers `Print :Key` from the one-line
+    XML the fixture writes and fails like the real one on a missing key, so the
+    bundle checks run where /usr/libexec/PlistBuddy does not exist."""
     d = tmp_path / "stub-bin"
     d.mkdir(exist_ok=True)
     gh = d / "gh"
     gh.write_text(
         "#!/bin/sh\n"
         'case "$1 $2" in\n'
-        '  "release view") [ "${FIXTURE_GH_RELEASE_EXISTS:-0}" = 1 ] && exit 0 || exit 1 ;;\n'
+        '  "release view")\n'
+        '    case "${FIXTURE_GH_RELEASE_VIEW:-missing}" in\n'
+        "      exists) exit 0 ;;\n"
+        '      error) echo "HTTP 401: Bad credentials (https://api.github.com/graphql)" >&2; exit 1 ;;\n'
+        '      *) echo "release not found" >&2; exit 1 ;;\n'
+        "    esac ;;\n"
         '  "release create") printf \'%s\\n\' "$*" >> "${FIXTURE_GH_LOG:-/dev/null}"; exit "${FIXTURE_GH_CREATE_RC:-0}" ;;\n'
         '  "repo view") echo fixture/repo ;;\n'
         "esac\n"
@@ -341,6 +347,17 @@ def _stub_gh(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     gh.chmod(0o755)
+    plistbuddy = d / "PlistBuddy"
+    plistbuddy.write_text(
+        "#!/bin/sh\n"
+        '# usage: PlistBuddy -c "Print :Key" file\n'
+        'key="${2#Print :}"; file="$3"\n'
+        'value="$(sed -n "s|.*<key>${key}</key><string>\\([^<]*\\)</string>.*|\\1|p" "$file" | head -1)"\n'
+        'if [ -z "$value" ]; then echo "Print: Entry, \\":${key}\\", Does Not Exist" >&2; exit 1; fi\n'
+        "printf '%s\\n' \"$value\"\n",
+        encoding="utf-8",
+    )
+    plistbuddy.chmod(0o755)
     return d
 
 
@@ -414,6 +431,7 @@ def _release(root: Path, *args: str, gh: Path | None = None, **extra_env: str) -
     }
     if gh is not None:
         env["PATH"] = f"{gh}{os.pathsep}{env['PATH']}"
+        env["PLISTBUDDY"] = str(gh / "PlistBuddy")
     return subprocess.run(
         ["bash", str(root / "macos" / "scripts" / "release.sh"), *args],
         cwd=root,
@@ -497,9 +515,7 @@ def test_release_rejects_a_malformed_version(tmp_path: Path) -> None:
 
 # ── The tag lifecycle: created only for a build that carries it ─────────────
 
-NEEDS_MACOS = pytest.mark.skipif(
-    sys.platform != "darwin", reason="verify_build reads plists with PlistBuddy; zips with ditto"
-)
+NEEDS_DITTO = pytest.mark.skipif(sys.platform != "darwin", reason="the zip fallback uses ditto")
 
 
 def test_release_removes_its_tag_when_the_build_leaves_no_apps(tmp_path: Path) -> None:
@@ -523,7 +539,6 @@ def test_release_skip_build_without_a_tag_refuses(tmp_path: Path) -> None:
     assert _tags(root) == []
 
 
-@NEEDS_MACOS
 @pytest.mark.parametrize(
     ("output", "says"),
     [
@@ -546,7 +561,6 @@ def test_release_refuses_a_bundle_that_does_not_carry_the_tag(tmp_path: Path, ou
     assert _tags(root) == ["v9.9.9"], "a tag release.sh did not create must not be deleted"
 
 
-@NEEDS_MACOS
 def test_release_removes_its_tag_when_verify_build_fails_inside_the_function(tmp_path: Path) -> None:
     """PlistBuddy failing on a plist without the key aborts under `set -e`
     inside verify_build; the EXIT trap must still remove the tag."""
@@ -561,17 +575,36 @@ def test_release_removes_its_tag_when_verify_build_fails_inside_the_function(tmp
     assert _tags(root) == [], "the tag outlived a verify_build failure"
 
 
-@NEEDS_MACOS
-def test_release_publishes_then_resumes_after_a_failed_upload(tmp_path: Path) -> None:
-    """Happy path against a bare origin and a stub gh, then the v0.9.2 case:
-    the tag is pushed, the upload fails, and a re-run must resume rather than
-    refuse 'already on origin'; once the release exists it is refused."""
+def _fake_dmg(root: Path) -> None:
+    (root / "macos" / "build" / "output" / "HarborClerk.dmg").write_bytes(b"not really a disk image\n")
+
+
+def _publishing_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     root = _fixture(tmp_path)
     remote = _add_origin(root)
     _fixture_git(root, "push", "-q", "-u", "origin", "HEAD")
     _fake_output(root)
-    gh = _stub_gh(tmp_path)
-    log = tmp_path / "gh.log"
+    _fake_dmg(root)
+    return root, remote, _stub_gh(tmp_path), tmp_path / "gh.log"
+
+
+def _creates(log: Path) -> list[str]:
+    # The stub logs the whole argument list, release notes included; count the calls.
+    return [line for line in log.read_text(encoding="utf-8").splitlines() if line.startswith("release create ")]
+
+
+def _origin_tag_object(remote: Path) -> str:
+    out = subprocess.run(
+        ["git", "-C", str(remote), "rev-parse", "refs/tags/v9.9.9"], capture_output=True, text=True, check=True
+    )
+    return out.stdout.strip()
+
+
+def test_release_publishes_then_resumes_after_a_failed_upload(tmp_path: Path) -> None:
+    """Happy path against a bare origin and a stub gh, then the v0.9.2 case:
+    the tag is pushed, the upload fails, and a re-run must resume rather than
+    refuse 'already on origin'; once the release exists it is refused."""
+    root, remote, gh, log = _publishing_fixture(tmp_path)
 
     failed = _release(root, "v9.9.9", gh=gh, FIXTURE_GH_LOG=str(log), FIXTURE_GH_CREATE_RC="1")
     assert failed.returncode != 0
@@ -582,10 +615,111 @@ def test_release_publishes_then_resumes_after_a_failed_upload(tmp_path: Path) ->
     assert resumed.returncode == 0, resumed.stderr + resumed.stdout
     assert "resuming the publish" in resumed.stdout and "not pushing again" in resumed.stdout
     assert "Release v9.9.9 published" in resumed.stdout
-    # The stub logs the whole argument list, release notes included; count the calls.
-    creates = [line for line in log.read_text(encoding="utf-8").splitlines() if line.startswith("release create ")]
-    assert len(creates) == 2 and all("HarborClerkServer-v9.9.9.zip" in line for line in creates), creates
+    creates = _creates(log)
+    assert len(creates) == 2 and all("HarborClerk-v9.9.9.dmg" in line for line in creates), creates
 
-    exists = _release(root, "v9.9.9", "--skip-build", gh=gh, FIXTURE_GH_RELEASE_EXISTS="1")
+    exists = _release(root, "v9.9.9", "--skip-build", gh=gh, FIXTURE_GH_RELEASE_VIEW="exists")
     assert exists.returncode != 0
     assert "already has release" in exists.stderr, exists.stderr
+
+
+def test_release_resumes_from_a_clone_that_lost_the_local_tag(tmp_path: Path) -> None:
+    """An interrupted run, another clone or a hand `git tag -d`: the tag is on
+    origin at HEAD and absent locally. Minting a new annotated tag under that
+    name would make the next `git fetch --tags` refuse to clobber origin's;
+    the script must fetch origin's instead, in both modes, and publish."""
+    root, remote, gh, log = _publishing_fixture(tmp_path)
+    failed = _release(root, "v9.9.9", gh=gh, FIXTURE_GH_LOG=str(log), FIXTURE_GH_CREATE_RC="1")
+    assert failed.returncode != 0 and _remote_tags(remote) == ["v9.9.9"]
+    origin_object = _origin_tag_object(remote)
+
+    _fixture_git(root, "tag", "-d", "v9.9.9")
+    check = _release(root, "v9.9.9", "--check", gh=gh)
+    assert check.returncode == 0, check.stderr
+    assert "Fetched tag v9.9.9 from origin" in check.stdout
+    assert _fixture_git(root, "rev-parse", "refs/tags/v9.9.9").stdout.strip() == origin_object
+
+    for mode in (("--skip-build",), ()):
+        _fixture_git(root, "tag", "-d", "v9.9.9")
+        resumed = _release(root, "v9.9.9", *mode, gh=gh, FIXTURE_GH_LOG=str(log))
+        assert resumed.returncode == 0, f"{mode}: {resumed.stderr}{resumed.stdout}"
+        assert "Release v9.9.9 published" in resumed.stdout
+        local_object = _fixture_git(root, "rev-parse", "refs/tags/v9.9.9").stdout.strip()
+        assert local_object == origin_object, f"{mode}: a new tag object was minted under origin's name"
+        assert _origin_tag_object(remote) == origin_object
+    assert len(_creates(log)) == 3
+
+
+def test_release_keeps_the_local_tag_when_the_push_fails(tmp_path: Path) -> None:
+    """created_tag is cleared *before* the push, so a tag that did not make it
+    upstream is the owner's to push or delete; it is never deleted under a tag
+    origin may already hold after a half-finished push."""
+    root = _fixture(tmp_path)
+    remote = _add_origin(root)
+    _fixture_git(root, "push", "-q", "-u", "origin", "HEAD")
+    _fake_output(root)
+    _fake_dmg(root)
+    gh = _stub_gh(tmp_path)
+    # Reject every push on the remote side; ls-remote still works.
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'refused by fixture' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    result = _release(root, "v9.9.9", gh=gh)
+    assert result.returncode != 0
+    assert "refused by fixture" in result.stderr, result.stderr
+    assert _tags(root) == ["v9.9.9"], "a tag that failed to push was deleted"
+    assert "removed the local tag" not in result.stderr
+
+
+def test_release_refuses_when_gh_cannot_say_whether_the_release_exists(tmp_path: Path) -> None:
+    """Expired auth or no network must not read as 'no release yet': the publish
+    would fail with 'already exists' and the resume hint would loop."""
+    root, remote, gh, log = _publishing_fixture(tmp_path)
+    failed = _release(root, "v9.9.9", gh=gh, FIXTURE_GH_LOG=str(log), FIXTURE_GH_CREATE_RC="1")
+    assert failed.returncode != 0 and _remote_tags(remote) == ["v9.9.9"]
+    result = _release(root, "v9.9.9", "--skip-build", gh=gh, FIXTURE_GH_RELEASE_VIEW="error")
+    assert result.returncode != 0
+    assert "could not tell whether release v9.9.9 exists" in result.stderr, result.stderr
+    assert "Bad credentials" in result.stderr
+    assert len(_creates(log)) == 1, "nothing may be published while the release state is unknown"
+
+
+def test_release_refuses_a_tag_on_origin_at_another_commit(tmp_path: Path) -> None:
+    root = _fixture(tmp_path)
+    remote = _add_origin(root)
+    first = _fixture_git(root, "rev-parse", "HEAD").stdout.strip()
+    _fixture_git(root, "tag", "v9.9.9")
+    _fixture_git(root, "push", "-q", "origin", "HEAD", "v9.9.9")
+    _fixture_git(root, "tag", "-d", "v9.9.9")
+    (root / "CHANGES").write_text("second\n", encoding="utf-8")
+    _fixture_git(root, "add", "-A")
+    _fixture_git(root, "commit", "-q", "-m", "second")
+    result = _release(root, "v9.9.9", "--check", gh=_stub_gh(tmp_path))
+    assert result.returncode != 0
+    assert f"already on origin at {first[:7]}, not at HEAD" in result.stderr, result.stderr
+    assert _remote_tags(remote) == ["v9.9.9"] and _tags(root) == []
+
+
+def test_release_refuses_when_origin_is_unreachable(tmp_path: Path) -> None:
+    """Offline, an empty ls-remote answer used to read as 'tag is free'; the
+    preflight must fail instead of tagging and building for an hour."""
+    root = _fixture(tmp_path)
+    _fixture_git(root, "remote", "add", "origin", str(tmp_path / "no-such-remote.git"))
+    for mode in (("--check",), ()):
+        result = _release(root, "v9.9.9", *mode, gh=_stub_gh(tmp_path))
+        assert result.returncode != 0, f"{mode}: {result.stdout}"
+        assert "cannot reach origin" in result.stderr, result.stderr
+        assert _tags(root) == []
+
+
+@NEEDS_DITTO
+def test_release_zips_both_apps_when_there_is_no_dmg(tmp_path: Path) -> None:
+    root = _fixture(tmp_path)
+    _add_origin(root)
+    _fixture_git(root, "push", "-q", "-u", "origin", "HEAD")
+    _fake_output(root)
+    gh, log = _stub_gh(tmp_path), tmp_path / "gh.log"
+    result = _release(root, "v9.9.9", gh=gh, FIXTURE_GH_LOG=str(log))
+    assert result.returncode == 0, result.stderr + result.stdout
+    (create,) = _creates(log)
+    assert "HarborClerkServer-v9.9.9.zip" in create and "HarborClerk-v9.9.9.zip" in create and ".dmg" not in create

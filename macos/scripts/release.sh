@@ -39,6 +39,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MACOS_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_ROOT="$(dirname "$MACOS_DIR")"
 BUILD_OUTPUT="$MACOS_DIR/build/output"
+# Overridable so the lifecycle tests can run where PlistBuddy does not exist.
+PLISTBUDDY="${PLISTBUDDY:-/usr/libexec/PlistBuddy}"
 
 # ── Parse args ──
 
@@ -121,19 +123,51 @@ fi
 # tag object and its peeled commit (`^{}`); take the peeled line when present.
 remote_tag_at_head=0
 if git remote get-url origin >/dev/null 2>&1; then
-    remote_refs="$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags origin "refs/tags/${VERSION}" "refs/tags/${VERSION}^{}" 2>/dev/null || true)"
+    # The rc is kept apart from the output: offline, an empty answer used to read
+    # as "tag is free", and a full run would tag and build for an hour before the
+    # push told the truth.
+    ls_rc=0
+    remote_refs="$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags origin "refs/tags/${VERSION}" "refs/tags/${VERSION}^{}" 2>/dev/null)" || ls_rc=$?
+    if [ "$ls_rc" -ne 0 ]; then
+        echo "ERROR: cannot reach origin to check whether tag ${VERSION} exists there (git ls-remote exited ${ls_rc})." >&2
+        echo "       A release needs the remote: check the network and 'git remote get-url origin', then retry." >&2
+        exit 1
+    fi
     if [ -n "$remote_refs" ]; then
         remote_commit="$(printf '%s\n' "$remote_refs" | awk '/\^\{\}$/ { peeled = $1 } !/\^\{\}$/ { plain = $1 } END { print (peeled != "" ? peeled : plain) }')"
         if [ "$remote_commit" != "$head_commit" ]; then
             echo "ERROR: tag ${VERSION} is already on origin at ${remote_commit:0:7}, not at HEAD (${head_commit:0:7}); that release exists upstream." >&2
             exit 1
         fi
-        if command -v gh >/dev/null 2>&1 && gh release view "$VERSION" >/dev/null 2>&1; then
+        # Only "no such release" means resume. Any other failure of gh (expired
+        # auth, no network) must stop here: treating it as "no release" would
+        # make `gh release create` fail with "already exists" and the resume
+        # hint point back at this same command, forever.
+        if ! command -v gh >/dev/null 2>&1; then
+            echo "ERROR: tag ${VERSION} is on origin; gh is needed to tell whether release ${VERSION} already exists. Install with: brew install gh" >&2
+            exit 1
+        fi
+        view_rc=0
+        view_err="$(gh release view "$VERSION" 2>&1 >/dev/null)" || view_rc=$?
+        if [ "$view_rc" -eq 0 ]; then
             echo "ERROR: tag ${VERSION} is on origin and GitHub already has release ${VERSION}; nothing to do." >&2
+            exit 1
+        elif ! printf '%s\n' "$view_err" | grep -qi 'release not found'; then
+            echo "ERROR: could not tell whether release ${VERSION} exists: 'gh release view' failed with:" >&2
+            printf '%s\n' "$view_err" | sed 's/^/       /' >&2
             exit 1
         fi
         remote_tag_at_head=1
         echo "==> Tag ${VERSION} is already on origin at HEAD with no GitHub release: resuming the publish (the tag push is skipped)."
+        if [ -z "$tag_commit" ]; then
+            # The local tag is gone (an interrupted run, another clone, a hand
+            # `git tag -d`). Minting a new tag object under the same name would
+            # make the next `git fetch --tags` refuse to clobber origin's; take
+            # origin's instead and treat it as pre-existing in both modes.
+            git fetch -q origin "refs/tags/${VERSION}:refs/tags/${VERSION}"
+            tag_commit="$(git rev-parse -q --verify "refs/tags/${VERSION}^{commit}")"
+            echo "==> Fetched tag ${VERSION} from origin"
+        fi
     fi
 fi
 
@@ -174,8 +208,10 @@ fi
 # inside verify_build or the "apps not found" exit below would have left the tag
 # behind. EXIT fires on every path out of the script, including Ctrl-C during
 # the build; the status decides whether there is anything to undo.
+STAGING=""
 undo_tag_on_failure() {
     local rc=$?
+    [ -n "$STAGING" ] && rm -rf "$STAGING"
     if [ "$rc" -ne 0 ] && [ "$created_tag" = 1 ]; then
         git tag -d "$VERSION" >/dev/null 2>&1 || true
         echo "    (removed the local tag ${VERSION}; nothing was pushed)" >&2
@@ -188,7 +224,8 @@ trap undo_tag_on_failure EXIT
 if [ "$SKIP_BUILD" = false ]; then
     echo "==> Building apps..."
     cd "$MACOS_DIR"
-    make clean && make all
+    make clean
+    make all
     cd "$PROJECT_ROOT"
 fi
 
@@ -205,8 +242,8 @@ verify_build() {
     local app plist short num stamp
     for app in HarborClerkServer HarborClerk; do
         plist="$BUILD_OUTPUT/$app.app/Contents/Info.plist"
-        short="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")"
-        num="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist")"
+        short="$("$PLISTBUDDY" -c "Print :CFBundleShortVersionString" "$plist")"
+        num="$("$PLISTBUDDY" -c "Print :CFBundleVersion" "$plist")"
         if [ "$short" != "$EXPECTED" ] || [ "$num" != "0" ]; then
             echo "ERROR: ${app}.app carries version ${short} (${num}); release ${VERSION} needs ${EXPECTED} (0)." >&2
             echo "       The bundle was built before the tag existed, from another commit, or from a dirty tree." >&2
@@ -226,13 +263,18 @@ verify_build
 
 # ── Push the tag ──
 
+# From here the tag is treated as upstream *before* the push runs: an
+# interruption between a successful push and this line would otherwise delete
+# the local tag while origin keeps it, and the next run would mint a second tag
+# object under the same name. A push that fails leaves a local tag the owner
+# can push by hand or delete; the resume path above handles a pushed one.
+created_tag=0
 if [ "$remote_tag_at_head" = 1 ]; then
     echo "==> Tag ${VERSION} is already on origin; not pushing again"
 else
     echo "==> Pushing tag ${VERSION}"
     git push origin "$VERSION"
 fi
-created_tag=0  # it is upstream now; a later failure must not delete it locally
 
 # ── Package ──
 
@@ -304,9 +346,7 @@ ${notes_rows}
 EOF
 )" || publish_failed
 
-# ── Cleanup ──
-
-rm -rf "$STAGING"
+# STAGING is removed by the EXIT trap on every path out.
 
 echo "==> Release $VERSION published!"
 echo "    https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases/tag/$VERSION"
