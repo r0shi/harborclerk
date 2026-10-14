@@ -4,7 +4,7 @@ version = "0.8.0"
 description = "Harbor Clerk - document dropbox with hybrid retrieval"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115.0",
+    "fastapi>=0.137.0",  # include_router keeps the APIRouter: api/scope.py REST_ROUTE_TOOLS keys on router-relative route paths
     "uvicorn[standard]>=0.32.0",
     "sqlalchemy[asyncio]>=2.0.49",
     "asyncpg>=0.30.0",

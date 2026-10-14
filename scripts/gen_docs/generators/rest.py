@@ -74,6 +74,8 @@ def _key_access_of(route) -> str:
 
     tools: set[str] = set()
     for method in sorted(route.methods):
+        if method == "HEAD":  # a HEAD declared beside GET is the same operation
+            continue
         tool = REST_ROUTE_TOOLS.get((method, route.path))
         if tool is None:
             raise RuntimeError(

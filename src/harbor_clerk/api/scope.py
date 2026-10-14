@@ -1,5 +1,6 @@
 """Per-API-key scope computation: tiers, tool sets, and query filters."""
 
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Protocol
@@ -88,7 +89,12 @@ def minimum_tier_for_tool(tool: str) -> str | None:
 #
 # Keys are (HTTP method, route template as FastAPI registers it: the router's
 # own prefix included, the app-level ``/api`` mount excluded) — what
-# ``request.scope["route"].path`` yields inside a dependency.
+# ``request.scope["route"].path`` yields inside a dependency. That shape dates
+# from FastAPI 0.137.0, where ``include_router`` stopped copying routes under
+# the prefix and started keeping the ``APIRouter`` (pyproject floors it there);
+# if it ever changes back, every entry here stops matching, the lookup fails
+# closed, and ``test_rest_route_tools_table_matches_the_routes_that_admit_keys``
+# fails because it compares the live route templates to these keys.
 #
 # A route that uses ``require_read_access`` but has no entry here is CLOSED to
 # API keys; ``tests/test_rest_api_key_tier.py`` holds the two in step. Routes
@@ -181,34 +187,64 @@ class _ScopedPrincipal(Protocol):
 # (tests/test_mcp_source_ref.py) and REST follows the same contract.
 ABSOLUTE_PATH_FIELDS: frozenset[str] = frozenset({"source_path", "watch_source_path"})
 
+# Free-text fields that may quote a path without being one: a stage records
+# ``describe_error(exc)``, and an OSError's text is "[Errno 2] No such file or
+# directory: '/Users/.../packet.pdf'". These keep their message for a key with
+# every path-like token replaced by ``[path]``.
+ABSOLUTE_PATH_TEXT_FIELDS: frozenset[str] = frozenset({"error"})
+
+# A path-like token: rooted at "/" or "~", quoted (so it may contain spaces) or
+# running to the next whitespace; not the "//" or trailing "/x" of a URL, not
+# "1/2", not "a/b" (the lookbehind refuses a word character, ":", "." or "/").
+_PATH_TOKEN_RE = re.compile(r"""(?<![\w:./])(?:'(?:~|/)[^']*'|"(?:~|/)[^"]*"|(?:~|/)[^\s'"]+)""")
+PATH_PLACEHOLDER = "[path]"
+
+
+def redact_path_tokens(text: str) -> str:
+    """Replace every absolute or home-rooted path-like token in ``text`` with ``[path]``."""
+    return _PATH_TOKEN_RE.sub(PATH_PLACEHOLDER, text)
+
 
 def redact_paths_for_principal[Payload](payload: Payload, principal: _ScopedPrincipal) -> Payload:
-    """Blank every ``ABSOLUTE_PATH_FIELDS`` member throughout ``payload`` for an API-key caller.
+    """Redact on-disk paths throughout ``payload`` for an API-key caller.
 
-    Walks pydantic models, dicts, lists and tuples in place and returns ``payload``,
-    so a route can wrap its return value. No-op for human principals.
+    ``ABSOLUTE_PATH_FIELDS`` are blanked; ``ABSOLUTE_PATH_TEXT_FIELDS`` keep their
+    text with path-like tokens replaced. Walks pydantic models, dicts, lists and
+    tuples **in place** and returns ``payload`` so a route can wrap its return
+    value: pass a response object built for this request, never a cached or
+    shared one (a deep copy would cost a full extra pass over large listings for
+    a case no caller has). No-op for human principals.
     """
     if principal.type == "api_key":
-        _blank_path_fields(payload)
+        _redact_path_fields(payload)
     return payload
 
 
-def _blank_path_fields(obj: object) -> None:
+def _redacted(name: str, value: object) -> object:
+    if name in ABSOLUTE_PATH_FIELDS:
+        return None
+    if name in ABSOLUTE_PATH_TEXT_FIELDS and isinstance(value, str):
+        return redact_path_tokens(value)
+    return value
+
+
+def _redact_path_fields(obj: object) -> None:
     if isinstance(obj, BaseModel):
         for name in type(obj).model_fields:
-            if name in ABSOLUTE_PATH_FIELDS:
-                setattr(obj, name, None)
+            value = getattr(obj, name, None)
+            if name in ABSOLUTE_PATH_FIELDS or name in ABSOLUTE_PATH_TEXT_FIELDS:
+                setattr(obj, name, _redacted(name, value))
             else:
-                _blank_path_fields(getattr(obj, name, None))
+                _redact_path_fields(value)
     elif isinstance(obj, dict):
         for key in list(obj):
-            if key in ABSOLUTE_PATH_FIELDS:
-                obj[key] = None
+            if key in ABSOLUTE_PATH_FIELDS or key in ABSOLUTE_PATH_TEXT_FIELDS:
+                obj[key] = _redacted(key, obj[key])
             else:
-                _blank_path_fields(obj[key])
+                _redact_path_fields(obj[key])
     elif isinstance(obj, (list, tuple)):
         for item in obj:
-            _blank_path_fields(item)
+            _redact_path_fields(item)
 
 
 def build_user_scope(scope_dict: dict | None) -> "UserScope | None":

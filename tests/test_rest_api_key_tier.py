@@ -24,11 +24,12 @@ from harbor_clerk.api.scope import (
     FULL_TIER_TOOLS,
     REST_ROUTE_TOOLS,
     minimum_tier_for_tool,
+    redact_path_tokens,
     redact_paths_for_principal,
 )
 from harbor_clerk.auth import generate_api_key, hash_api_key
-from harbor_clerk.models import ApiKey, Chunk, Document, DocumentPage
-from harbor_clerk.models.enums import PipelineStatus
+from harbor_clerk.models import ApiKey, Chunk, Document, DocumentPage, IngestionJob
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from tests.conftest import auth_header
 
@@ -309,6 +310,55 @@ async def test_no_key_reachable_route_leaks_the_folder_path(
     assert resp.status_code < 400, (resp.status_code, resp.text[:300])
     assert corpus.folder.path not in resp.text
     assert corpus.folder.path not in str(dict(resp.headers))
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "OSError: [Errno 2] No such file or directory: '/Users/alex/Secret Folder/board/packet.pdf'",
+            "OSError: [Errno 2] No such file or directory: [path]",
+        ),
+        ('Cannot open "/Volumes/Archive/2024 Q3/minutes.docx" for reading', "Cannot open [path] for reading"),
+        ("Tika failed for /data/watch/a.pdf (HTTP 500)", "Tika failed for [path] (HTTP 500)"),
+        ("home ~/Documents/x.pdf missing", "home [path] missing"),
+        ("fetch https://tika.local:9998/tika timed out", "fetch https://tika.local:9998/tika timed out"),
+        ("ratio 1/2 and a / b and a/b", "ratio 1/2 and a / b and a/b"),
+        ("RuntimeError", "RuntimeError"),
+    ],
+)
+def test_redact_path_tokens(text: str, expected: str) -> None:
+    assert redact_path_tokens(text) == expected
+
+
+async def test_key_reads_error_text_with_paths_redacted_human_reads_it_whole(
+    client, db_session, corpus, make_key, admin_user, admin_token
+) -> None:
+    """A stage stores describe_error(exc); an OSError quotes the file. The key
+    keeps the message (what failed) and loses the path; the human keeps both."""
+    message = f"OSError: [Errno 2] No such file or directory: '{corpus.source_path}'"
+    corpus.doc.error = message
+    db_session.add(
+        IngestionJob(
+            doc_id=corpus.doc.doc_id,
+            stage=JobStage.extract,
+            status=JobStatus.error,
+            pipeline_seq=corpus.doc.pipeline_seq,
+            error=message,
+        )
+    )
+    await db_session.flush()
+    url = f"/api/docs/{corpus.doc.doc_id}"
+
+    human = (await client.get(url, headers=auth_header(admin_token))).json()
+    assert human["error"] == message
+    assert human["jobs"][0]["error"] == message
+
+    resp = await client.get(url, headers=auth_header(await make_key("read")))
+    key = resp.json()
+    assert key["error"] == "OSError: [Errno 2] No such file or directory: [path]"
+    assert key["jobs"][0]["error"] == "OSError: [Errno 2] No such file or directory: [path]"
+    assert corpus.folder.path not in resp.text
 
 
 def test_redact_paths_blanks_nested_fields_for_keys_only() -> None:

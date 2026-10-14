@@ -101,8 +101,9 @@ folders, chat, research) are `require_human_user`; there is deliberately no
 "any authenticated principal" dependency, and `tests/test_gen_docs.py` refuses
 a route with a blank gate unless it is public. Keys never receive `source_path` /
 `watch_source_path`: wrap a document-shaped response in
-`redact_paths_for_principal`, and add any new absolute-path field to
-`ABSOLUTE_PATH_FIELDS`.
+`redact_paths_for_principal`, add any new absolute-path field to
+`ABSOLUTE_PATH_FIELDS`, and any free-text field that may quote one (pipeline
+`error` text does) to `ABSOLUTE_PATH_TEXT_FIELDS`.
 
 ## Async gotchas
 
