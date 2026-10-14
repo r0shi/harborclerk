@@ -229,3 +229,20 @@ def test_a_spend_kind_nobody_priced_is_refused_when_the_provider_is_built():
     for provider in (AnthropicProvider, OpenAIProvider):
         with pytest.raises(ValueError, match="cannot be planned for"):
             provider(mcp_session=None, spend_kind="baseline")
+
+
+def test_a_model_whose_thinking_is_always_on_gets_room_for_it_in_max_tokens():
+    """Review of #811: max_tokens covers the thinking as well as the answer on Fable 5.1 and Opus 5.5, and a call
+    that thinks past 8,000 returns stop_reason max_tokens with no text: an empty reference, a subject scored 0."""
+    from unittest.mock import MagicMock
+
+    from scripts.test_corpora.runner.providers.anthropic_provider import MAX_TOKENS, MAX_TOKENS_WITH_THINKING
+
+    for model, limit in (("claude-sonnet-4-6", MAX_TOKENS), ("claude-fable-5-1", MAX_TOKENS_WITH_THINKING)):
+        fake = MagicMock()
+        fake.messages.create.return_value = MagicMock(
+            content=[MagicMock(text="a", type="text")], stop_reason="end_turn"
+        )
+        BaselineGenerator(client=fake, mcp_session=None, model=model).run_question("q", "q", "c")
+        assert fake.messages.create.call_args.kwargs["max_tokens"] == limit, model
+    assert (MAX_TOKENS, MAX_TOKENS_WITH_THINKING) == (8000, 16000)

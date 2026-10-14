@@ -89,6 +89,11 @@ class Price:
     # Tokens this model counts for text Sonnet 4.6 counts as one token. The estimates in spend.yaml were measured
     # on Sonnet 4.6 and are scaled by this before they are priced.
     tokenizer: float = 1.0
+    # Tokens of thinking (reasoning) this model is expected to bill as output per call, over and above the visible
+    # answer: adaptive thinking is always on for Claude 4.7 and later, and GPT-6 reasons on every call. PROVISIONAL
+    # until a run has metered it (the ledger's thinking_tokens / calls). 0: the model thinks only when asked, or
+    # the estimates for it already carry its reasoning.
+    thinking_output_tokens: int = 0
 
     @property
     def write_5m(self) -> float:
@@ -112,10 +117,15 @@ class Usage:
     # Of cache_write_tokens, those written with the five-minute lifetime. None: the response did not break its
     # writes down by lifetime, and every one of them is priced at the hour rate, the dearer.
     cache_write_5m_tokens: int | None = None
+    # Of output_tokens, those that were thinking (Anthropic `usage.output_tokens_details.thinking_tokens`, OpenAI
+    # `*_tokens_details.reasoning_tokens`). Billed as output; kept apart so the estimate's figure can be corrected.
+    thinking_tokens: int = 0
 
     def __post_init__(self) -> None:
         if self.cache_write_5m_tokens is not None and not 0 <= self.cache_write_5m_tokens <= self.cache_write_tokens:
             raise ValueError("cache_write_5m_tokens is a part of cache_write_tokens")
+        if not 0 <= self.thinking_tokens <= self.output_tokens:
+            raise ValueError("thinking_tokens is a part of output_tokens")
 
     @property
     def cache_write_1h_tokens(self) -> int:
@@ -131,6 +141,26 @@ class Usage:
             round(self.cache_write_tokens * factor),
             round(self.cache_read_tokens * factor),
             None if five is None else round(five * factor),
+            round(self.thinking_tokens * factor),
+        )
+
+    def thinking(self, per_call: int, calls: float) -> Usage:
+        """This work on a model that thinks `per_call` tokens on each of its `calls`: the thinking is billed as
+        output, and on the models that keep prior turns' thinking blocks in context (Claude 4.6 and later, GPT-6's
+        reasoning items passed back) each call's thinking is written to the cache with the next call's prompt and
+        read by every call after that. Writes (calls - 1) x per_call, reads (calls - 1)(calls - 2) / 2 x per_call."""
+        if per_call <= 0 or calls <= 0:
+            return self
+        thought = round(per_call * calls)
+        written = round(per_call * max(0.0, calls - 1))
+        read = round(per_call * max(0.0, (calls - 1) * (calls - 2) / 2))
+        return Usage(
+            self.input_tokens,
+            self.output_tokens + thought,
+            self.cache_write_tokens + written,
+            self.cache_read_tokens + read,
+            (self.cache_write_5m_tokens or 0) + written,
+            self.thinking_tokens + thought,
         )
 
 
@@ -141,6 +171,9 @@ class SpendConfig:
     prices_verified: str
     chars_per_token: float
     estimates: dict[str, Usage]
+    # Model calls one unit of a kind makes (a baseline question is a tool loop); 1 for a kind not listed. What a
+    # model's per-call thinking is multiplied by in the estimate.
+    calls_per_unit: dict[str, float] = dataclasses.field(default_factory=dict)
 
     def price(self, model: str) -> Price:
         try:
@@ -164,7 +197,15 @@ class SpendConfig:
         ) / 1_000_000
 
 
-_PRICE_KEYS = {"input", "output", "cache_write_5m", "cache_write_1h", "cache_read", "tokenizer"}
+_PRICE_KEYS = {
+    "input",
+    "output",
+    "cache_write_5m",
+    "cache_write_1h",
+    "cache_read",
+    "tokenizer",
+    "thinking_output_tokens",
+}
 _ESTIMATE_KEYS = {
     "input_tokens",
     "output_tokens",
@@ -188,7 +229,7 @@ def _price(model: str, raw: dict) -> Price:
             raise ValueError(
                 f"{model}: unknown price key {key!r}; known: {sorted(_PRICE_KEYS | {'cached_input', 'cache_write'})}"
             )
-        fields[key] = float(value)
+        fields[key] = int(value) if key == "thinking_output_tokens" else float(value)
     price = Price(**fields)
     if not (price.input > 0 and price.output > 0):
         raise ValueError(f"{model}: a price of zero would make the cap meaningless")
@@ -197,17 +238,22 @@ def _price(model: str, raw: dict) -> Price:
     return price
 
 
-def _estimate(kind: str, raw: dict) -> Usage:
-    if unknown := set(raw) - _ESTIMATE_KEYS:
+def _estimate(kind: str, raw: dict) -> tuple[Usage, float]:
+    """(the tokens of one unit, the model calls it makes)."""
+    if unknown := set(raw) - _ESTIMATE_KEYS - {"calls_per_unit"}:
         raise ValueError(f"estimate {kind}: unknown keys {sorted(unknown)}; known: {sorted(_ESTIMATE_KEYS)}")
     five, hour = int(raw.get("cache_write_5m_tokens", 0)), int(raw.get("cache_write_1h_tokens", 0))
-    return Usage(
+    usage = Usage(
         int(raw["input_tokens"]),
         int(raw["output_tokens"]),
         cache_write_tokens=five + hour,
         cache_read_tokens=int(raw.get("cache_read_tokens", 0)),
         cache_write_5m_tokens=five,
     )
+    calls = float(raw.get("calls_per_unit", 1))
+    if not calls > 0:
+        raise ValueError(f"estimate {kind}: calls_per_unit must be positive")
+    return usage, calls
 
 
 def load_config(path: Path | None = None) -> SpendConfig:
@@ -220,7 +266,14 @@ def load_config(path: Path | None = None) -> SpendConfig:
     if not chars > 0:
         raise ValueError("chars_per_token must be positive")
     estimates = {k: _estimate(k, v) for k, v in raw["estimates"].items()}
-    return SpendConfig(cap, prices, str(raw["prices"]["verified"]), chars, estimates)
+    return SpendConfig(
+        cap,
+        prices,
+        str(raw["prices"]["verified"]),
+        chars,
+        {k: usage for k, (usage, _) in estimates.items()},
+        {k: calls for k, (_, calls) in estimates.items() if calls != 1},
+    )
 
 
 _EMPTY_ROW = {"calls": 0, "units": 0, "input_tokens": 0, "cache_tokens": 0, "output_tokens": 0, "usd": 0.0}
@@ -373,6 +426,8 @@ class SpendMeter:
                         usage.cache_write_5m_tokens or 0
                     )
                     row["cache_write_1h_tokens"] = row.get("cache_write_1h_tokens", 0) + usage.cache_write_1h_tokens
+                    # Of the output, the thinking: billed as output already, kept apart to correct the estimate.
+                    row["thinking_tokens"] = row.get("thinking_tokens", 0) + usage.thinking_tokens
                     row["output_tokens"] += usage.output_tokens
                 row["usd"] = round(row["usd"] + actual, 6)
             self._persist_locked()
@@ -390,14 +445,16 @@ class SpendMeter:
     def estimate(self, plan: list[tuple[str, str, int]]) -> float:
         """USD for a plan of (kind, model, units), from the per-kind token estimates in spend.yaml: each kind of
         token at the model's own rate, the volumes scaled by the model's tokenizer (the estimates are Sonnet 4.6
-        tokens)."""
+        tokens), plus the model's thinking on each call of the unit (Usage.thinking)."""
         total = 0.0
         for kind, model, count in plan:
             if count <= 0:
                 continue
             if kind not in self.config.estimates:
                 raise KeyError(f"no estimate for call kind {kind!r} in {CONFIG_PATH.name}")
-            usage = self.config.estimates[kind].scaled(self.config.price(model).tokenizer)
+            price = self.config.price(model)
+            usage = self.config.estimates[kind].scaled(price.tokenizer)
+            usage = usage.thinking(price.thinking_output_tokens, self.config.calls_per_unit.get(kind, 1.0))
             total += count * self.config.cost(model, usage)
         return total
 
@@ -517,10 +574,18 @@ def _anthropic_usage(resp: Any) -> Usage | None:
     hour = _as_count(getattr(breakdown, "ephemeral_1h_input_tokens", None))
     if five is None or hour is None or five + hour != written:
         five = None
-    return Usage(i, o, written, _as_count(getattr(u, "cache_read_input_tokens", None)) or 0, five)
+    # `usage.output_tokens_details.thinking_tokens`: the part of the output that was thinking, where reported.
+    thought = _thought(getattr(u, "output_tokens_details", None), "thinking_tokens", o)
+    return Usage(i, o, written, _as_count(getattr(u, "cache_read_input_tokens", None)) or 0, five, thought)
 
 
-def _openai_prompt(prompt: int, completion: int, details: Any) -> Usage:
+def _thought(details: Any, name: str, output: int) -> int:
+    """The thinking share of `output` from a details object, 0 where it is absent or not a count within the output."""
+    count = _as_count(getattr(details, name, None))
+    return count if count is not None and count <= output else 0
+
+
+def _openai_prompt(prompt: int, completion: int, details: Any, reasoning: int) -> Usage:
     """OpenAI counts every prompt token in one figure, the cached prefix and the cache writes included, and breaks
     the two out in the details object (`cached_tokens`, `cache_write_tokens`). The rest is plain input."""
     cached = _as_count(getattr(details, "cached_tokens", None)) or 0
@@ -528,7 +593,7 @@ def _openai_prompt(prompt: int, completion: int, details: Any) -> Usage:
     plain = max(0, prompt - cached - written)
     # One write rate on OpenAI, held under both lifetimes in the config; a write is booked as 5m so that nothing is
     # left to the "did not say" rule, which is Anthropic's. No write: nothing to break down.
-    return Usage(plain, completion, written, cached, cache_write_5m_tokens=written or None)
+    return Usage(plain, completion, written, cached, cache_write_5m_tokens=written or None, thinking_tokens=reasoning)
 
 
 def _openai_usage(resp: Any) -> Usage | None:
@@ -536,7 +601,8 @@ def _openai_usage(resp: Any) -> Usage | None:
     i, o = _as_count(getattr(u, "prompt_tokens", None)), _as_count(getattr(u, "completion_tokens", None))
     if i is None or o is None:
         return None
-    return _openai_prompt(i, o, getattr(u, "prompt_tokens_details", None))
+    reasoning = _thought(getattr(u, "completion_tokens_details", None), "reasoning_tokens", o)
+    return _openai_prompt(i, o, getattr(u, "prompt_tokens_details", None), reasoning)
 
 
 def _openai_responses_usage(resp: Any) -> Usage | None:
@@ -545,7 +611,8 @@ def _openai_responses_usage(resp: Any) -> Usage | None:
     i, o = _as_count(getattr(u, "input_tokens", None)), _as_count(getattr(u, "output_tokens", None))
     if i is None or o is None:
         return None
-    return _openai_prompt(i, o, getattr(u, "input_tokens_details", None))
+    reasoning = _thought(getattr(u, "output_tokens_details", None), "reasoning_tokens", o)
+    return _openai_prompt(i, o, getattr(u, "input_tokens_details", None), reasoning)
 
 
 def _response_headers(exc: BaseException) -> dict[str, str]:
@@ -591,7 +658,9 @@ class _MeteredCreate:
         self._owner._client()  # a client that cannot be built (no key) has spent nothing: fail before reserving
         request = {k: v for k, v in kwargs.items() if k not in ("model", *self._output_limit_keys)}
         estimate = _estimate_tokens(request, meter.config.chars_per_token)
-        cache_writes = '"cache_control"' in json.dumps(request, default=str)
+        # A request that carries breakpoints can be billed as a write from end to end; so can any request to a
+        # vendor that caches on its own (OpenAI), where nothing in the request says so.
+        cache_writes = self._owner.implicit_cache_writes or '"cache_control"' in json.dumps(request, default=str)
         # The SDK clients are built with max_retries=0 and the retries happen here, so that every attempt
         # is reserved and settled. A retry inside the SDK would be an attempt the ledger never saw.
         for attempt in range(1 + MAX_RETRIES):
@@ -618,10 +687,12 @@ class _MeteredClient:
     """A cloud client that can create a completion and nothing else. There is no attribute passthrough:
     `messages.stream`, `messages.batches`, `beta`, `embeddings` and the rest would spend without being seen."""
 
-    def __init__(self, kind: str, factory, inner: Any | None):
+    def __init__(self, kind: str, factory, inner: Any | None, *, implicit_cache_writes: bool = False):
         self.kind = kind
         self._factory = factory
         self._inner = inner
+        # The vendor caches prompts without being asked, so a request is reserved at the write rate whatever it says.
+        self.implicit_cache_writes = implicit_cache_writes
 
     def _known_unbilled(self, exc: BaseException) -> bool:
         """True only where the request is known not to have been served: the API answered with an error
@@ -692,7 +763,7 @@ class MeteredOpenAI(_MeteredClient):
         import openai
 
         self._sdk = lambda: openai
-        super().__init__(kind, lambda: openai.OpenAI(max_retries=0), inner)
+        super().__init__(kind, lambda: openai.OpenAI(max_retries=0), inner, implicit_cache_writes=True)
         self.chat = _Completions(
             _MeteredCreate(
                 self,

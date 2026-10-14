@@ -6,7 +6,8 @@ claude_baseline.py verbatim. claude_baseline.py becomes a thin re-export
 shim in Task 3 so sweep.py's existing import sites stay untouched.
 
 Checked against the Messages API for Claude Fable 5.1 and Opus 5.5 (2026-10-14, platform.claude.com docs): no
-beta header; `max_tokens` up to 128K (8000 here); `tool_choice: {"type": "none"}` is accepted where `any` and
+beta header; `max_tokens` up to 128K (MAX_TOKENS below: 16,000 on a model whose thinking is always on, since the
+limit covers its thinking as well as its answer, 8,000 otherwise); `tool_choice: {"type": "none"}` is accepted where `any` and
 `tool` are refused on those models; thinking is always on and no `thinking` parameter is sent; the sampling
 parameters are not sent (they are refused there); a safety refusal arrives as `stop_reason: "refusal"`, which
 the loop records as the baseline's `stopped_by`. The cache breakpoints below are the five-minute lifetime
@@ -43,6 +44,21 @@ log = logging.getLogger(__name__)
 # question follows in seconds. The meter prices each write by the lifetime the response reports
 # (`usage.cache_creation.ephemeral_5m_input_tokens`); until 2026-10-14 it priced every write at the hour rate.
 _EPHEMERAL = {"type": "ephemeral"}
+# Output limit per call. On a model whose thinking is always on (Claude 4.7 and later: spend.yaml gives it a
+# thinking_output_tokens figure) the limit covers the thinking too, and a call that thinks past it returns
+# stop_reason "max_tokens" with no text: an empty reference, a subject scored 0. Twice the room there; the meter
+# reserves it at the output price before every call (about USD 0.80 a call at Fable 5.1's price).
+MAX_TOKENS = 8000
+MAX_TOKENS_WITH_THINKING = 16000
+
+
+def max_tokens_for(model: str) -> int:
+    """MAX_TOKENS_WITH_THINKING for a model spend.yaml expects to think on every call, MAX_TOKENS otherwise."""
+    try:
+        thinks = bool(spend.get_meter().config.price(model).thinking_output_tokens)
+    except spend.UnpricedModel:
+        thinks = False  # it cannot be called anyway; the metered client refuses it with the reason
+    return MAX_TOKENS_WITH_THINKING if thinks else MAX_TOKENS
 
 
 def _cached_up_to_the_last_block(messages: list[dict]) -> list[dict]:
@@ -164,7 +180,7 @@ class AnthropicProvider:
                 messages[-1] = {**messages[-1], "content": [*blocks, {"type": "text", "text": ANSWER_NOW}]}
             resp = self._client.messages.create(
                 model=self._model,
-                max_tokens=8000,
+                max_tokens=max_tokens_for(self._model),
                 system=system,
                 tools=tools,
                 messages=list(messages) if last else _cached_up_to_the_last_block(messages),

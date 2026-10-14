@@ -14,7 +14,9 @@ wire protocols, chosen by model:
   count against it), the model answers with `function_call` output items (call_id, name, arguments) answered by
   `function_call_output` input items, and the model's whole output goes back with them: "any reasoning items
   returned in model responses with tool calls must also be passed back with tool call outputs". Reasoning effort
-  is left at the model's default (medium); `temperature` is not sent (the reasoning models refuse it). The
+  is left at the model's default (the guide states medium for GPT-6.1 Sol and does not state GPT-6 Astra's);
+  `temperature` is not sent (the reasoning models refuse it). Reasoning tokens are billed as output and reported
+  in `usage.output_tokens_details.reasoning_tokens`, which the meter keeps apart. The
   cached prefix is in `usage.input_tokens_details.cached_tokens` (`prompt_tokens_details` on chat), which the
   meter prices at the cached rate.
 

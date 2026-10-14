@@ -425,6 +425,15 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
         ]
         if by_ttl:
             lines += ["Cache writes by lifetime, as priced: " + "; ".join(by_ttl) + ".", ""]
+        # The thinking inside the output tokens, where the vendor reported it: what corrects spend.yaml's
+        # provisional thinking_output_tokens (divide by the kind's calls).
+        thought = [
+            f"{kind} {row['thinking_tokens']:,} of {row['output_tokens']:,}"
+            for kind, row in sorted(ledger["by_kind"].items())
+            if row.get("thinking_tokens")
+        ]
+        if thought:
+            lines += ["Thinking among the output tokens: " + "; ".join(thought) + ".", ""]
     lines += [
         "## Reading",
         "",

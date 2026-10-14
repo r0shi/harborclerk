@@ -149,11 +149,13 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
   report names it),
   and every call carries prompt-cache breakpoints. The estimate is the split measured on the 20 keyed CUAD
   questions (per question 44 K tokens written to the cache, 147 K read, 1.4 K out), priced at each model's own
-  cache rates and scaled by its tokenizer (`spend.yaml`): Sonnet 4.6 USD 4.6, Opus 5.5 USD 7.2, Fable 5.1
-  USD 17, gpt-6-astra USD 15 for the 20. The other corpora cost 40 to 60% more a question, so **one corpus per
-  run**, and a frontier model's second corpus is refused before it starts. Correct the estimate from a run as
-  `spend.yaml` says: not from `input_tokens`, which caching empties. answer-eval and `rerun_pr_j` pay for a
-  `candidate_answer`, priced apart and still provisional.
+  cache rates and scaled by its tokenizer (`spend.yaml`), plus, on a model whose thinking is always on (Claude 4.7
+  and later, GPT-6), a **provisional** 1,500 tokens of thinking a call billed as output and carried in the cache:
+  Sonnet 4.6 USD 4.6, Opus 5.5 USD 10, Fable 5.1 USD 24, gpt-6-astra USD 22 for the 20. The thinking figure is a
+  guess until the first metered run (`spend.json` records `thinking_tokens`; the report shows them) and the other
+  corpora cost 40 to 60% more a question, so **one corpus per run**, and a frontier model's second corpus is
+  refused before it starts. Correct the estimate from a run as `spend.yaml` says: not from `input_tokens`, which
+  caching empties. answer-eval and `rerun_pr_j` pay for a `candidate_answer`, priced apart and still provisional.
 - **The meter prices what the vendor bills.** An Anthropic cache write by its lifetime (the five-minute rate the
   loop asks for, from `usage.cache_creation`; the hour rate when a response does not say), a cache read at the
   read rate; an OpenAI cached prefix (`usage.*_tokens_details.cached_tokens`) at the cached rate and a cache write
@@ -203,6 +205,11 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
   independence: `docs/reports/2026-09-22-rubric-test.md`), so the default run needs `OPENAI_API_KEY` as well as
   `ANTHROPIC_API_KEY` for the baselines; a Claude judge works too. Scores from different judges are not
   comparable: change it for a whole comparison, never halfway through one.
+
+**First-run gotchas for a cloud subject.** Claude Fable 5.1 requires 30-day data retention on the organization
+and returns 400 otherwise: check the Console before a run, because the sweep wipes the instance and ingests the
+corpus before the first baseline call can fail. A `gpt-*` subject needs `OPENAI_API_KEY`, not the Anthropic key.
+A thinking model's first run is the one that corrects the provisional thinking figure: read `spend.json` after it.
 
 **One cap per process and ledger.** The sweep reads its ledger under the run's lock. The modes that take no
 lock, and a run split across two machines (RUNBOOK: phase 4), each count from their own ledger, so a split

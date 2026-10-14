@@ -552,3 +552,13 @@ def test_cache_writes_are_shown_by_lifetime_when_the_ledger_has_them(tmp_path):
     text = _render(_run_dir(tmp_path / "s", ROWS, ledger=split))
     assert "Cache writes by lifetime, as priced: baseline_question 200,000 at five minutes, 0 at an hour.\n" in text
     assert "judge 0 at" not in text, "a kind that wrote nothing has nothing to break down"
+
+
+def test_thinking_is_shown_among_the_output_tokens_when_the_ledger_has_it(tmp_path):
+    """What corrects spend.yaml's provisional thinking_output_tokens. Nothing for a run that recorded none."""
+    assert "Thinking among" not in _render(_run_dir(tmp_path, ROWS, ledger=LEDGER))
+    thought = json.loads(json.dumps(LEDGER))
+    thought["by_kind"]["baseline_question"]["thinking_tokens"] = 6000
+    thought["by_kind"]["judge"]["thinking_tokens"] = 0
+    text = _render(_run_dir(tmp_path / "t", ROWS, ledger=thought))
+    assert "Thinking among the output tokens: baseline_question 6,000 of 8,000.\n" in text
