@@ -29,7 +29,7 @@ says so.
 other two into the venv it bundles, and then reads the built `Info.plist`s back
 and fails if they do not carry what it passed. `make dev` passes the same two,
 so a Debug build's About box reads `0.9.3 (2)` rather than the project files'
-sentinel. A build made from Xcode directly, or from a clone with no `v*` tag
+sentinel. A build made from Xcode directly, or from a clone with no `v[0-9]*` tag
 reachable, is `0.0.0-dev (0)` or `0.0.0+untagged…` — recognisable, never a
 release number.
 
