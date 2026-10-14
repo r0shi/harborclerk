@@ -59,6 +59,9 @@ final class LlamaService: ManagedService {
     }
 
     func start() async throws {
+        // Every start decides afresh: a refusal left standing past a model
+        // whose file has since gone would say "does not fit" over "not found".
+        refusal = nil
         let settings = self.settings
         let modelPath = settings.activeModelPath
         guard !modelPath.isEmpty else {
@@ -136,7 +139,6 @@ final class LlamaService: ManagedService {
             state = .errored
             return
         }
-        refusal = nil
         if contextWindow < requestedContext {
             Log.logger("llm").warning(
                 "Context clamped from \(requestedContext) to \(contextWindow) tokens to fit \(ramBytes / 1_000_000_000) GB of memory"

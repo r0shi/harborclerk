@@ -510,11 +510,13 @@ async def llm_status(
     # Whether the launcher starts the active model on this Mac at all (#709): the Models page's arithmetic
     # (`max_context_here` is 0), so a "loading" that never ends can say why. A memory-budget change can leave
     # an installed app with an active model that no longer fits; the launcher refuses it, and this is how the
-    # web app learns that. None when nothing is configured, the registry does not know the id, or memory
-    # cannot be read (nothing is refused then).
+    # web app learns that. Only under the native app (`native_config_file` is set, as system.py reads it):
+    # on Compose nothing refuses a model, llama-server runs at the fixed `-c` in docker-compose.yml, and a
+    # host whose memory makes the arithmetic say 0 may still be loading. None there, and when nothing is
+    # configured, the registry does not know the id, or memory cannot be read (nothing is refused then).
     does_not_fit_here = None
     ram = system_ram_bytes()
-    if info is not None and ram > 0:
+    if settings.native_config_file and info is not None and ram > 0:
         wanted = requested_context(info, settings.llm_yarn_enabled)
         if max_context(info, ram, wanted) == 0:
             does_not_fit_here = {"system_ram_gb": round(ram / GIB, 1), "min_ram_gb": min_ram_gb(info, wanted)}

@@ -739,8 +739,10 @@ class ServiceManager: ObservableObject {
         guard service.state != .shutdownPending else { return }
         // A refused model is terminal until the setting names another: the
         // figures a start computes do not change between attempts, so a
-        // restart would refuse again, and five of them in a row would spend
-        // the flap budget on a model that was never going to load (#709).
+        // restart would refuse again (#709). Defensive: today no caller
+        // reaches here from a refusal, since a refused start spawns nothing
+        // for `onUnexpectedExit` to report and the health checker probes
+        // only `running` services. The guard is for the caller that does.
         if let refusal = service.startRefusal {
             Log.logger("lifecycle").notice(
                 "[\(service.name, privacy: .public)] Not restarting \(refusal.modelId, privacy: .public): \(refusal.message, privacy: .public)")

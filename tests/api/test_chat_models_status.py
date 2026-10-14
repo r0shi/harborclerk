@@ -335,6 +335,12 @@ async def test_status_says_when_the_active_model_does_not_fit_this_mac(
     _afm_binary(False)
     _set_llm_model_id("qwen36-35b-a3b")
     monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 16 * 1024**3)
+    # Under Compose there is no launcher and nothing refuses a model: the server may well be loading.
+    monkeypatch.setattr(get_settings(), "native_config_file", "")
+    body = (await client.get("/api/chat/models/status", headers=auth_header(admin_token))).json()
+    assert body["state"] == "loading" and body["does_not_fit_here"] is None
+
+    monkeypatch.setattr(get_settings(), "native_config_file", "/tmp/not-read-here/config.json")
     body = (await client.get("/api/chat/models/status", headers=auth_header(admin_token))).json()
     assert body["state"] == "loading"
     assert body["does_not_fit_here"] == {"system_ram_gb": 16.0, "min_ram_gb": 48}

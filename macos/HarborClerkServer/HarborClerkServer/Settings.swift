@@ -179,7 +179,10 @@ final class AppSettings: @unchecked Sendable {
     var postgresDataDir: URL { Self.dataDir.appendingPathComponent("postgres-data") }
     var originalsDir: URL { Self.dataDir.appendingPathComponent("originals") }
     var logsDir: URL { Self.dataDir.appendingPathComponent("logs") }
-    var modelsDir: URL { Self.dataDir.appendingPathComponent("models") }
+    /// Where the GGUF files are. A test points it elsewhere, so a start it
+    /// drives never finds (or probes the port of) the live app's models.
+    var modelsDirOverride: URL?
+    var modelsDir: URL { modelsDirOverride ?? Self.dataDir.appendingPathComponent("models") }
 
     /// Resolved path to the active model GGUF file, or empty string if none.
     var activeModelPath: String {

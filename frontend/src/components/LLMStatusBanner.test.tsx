@@ -8,15 +8,19 @@ vi.mock('../hooks/useLLMStatus', () => ({ useLLMStatus: vi.fn() }))
 
 const useLLMStatusMock = vi.mocked(useLLMStatus)
 
+// A fresh element each time: React skips re-rendering a subtree handed the identical element object, and a
+// `rerender` that reused one would never re-read the mocked hook.
+const tree = () => (
+  <MemoryRouter>
+    <LLMStatusProvider>
+      <LLMStatusBanner />
+    </LLMStatusProvider>
+  </MemoryRouter>
+)
+
 function renderWith(status: LLMStatus) {
   useLLMStatusMock.mockReturnValue({ status, markTransitioning: vi.fn() })
-  render(
-    <MemoryRouter>
-      <LLMStatusProvider>
-        <LLMStatusBanner />
-      </LLMStatusProvider>
-    </MemoryRouter>,
-  )
+  return render(tree())
 }
 
 describe('LLMStatusBanner when the active model does not fit this Mac (#709)', () => {
@@ -42,6 +46,29 @@ describe('LLMStatusBanner when the active model does not fit this Mac (#709)', (
     renderWith({ state: 'loading', model_id: 'qwen35-4b', model_name: 'Qwen3.5 4B', does_not_fit_here: null })
     expect(screen.getByRole('status').textContent).toContain('Loading model')
     expect(screen.queryByText('Model not started')).not.toBeInTheDocument()
+  })
+
+  it('flashes the ready check mark, not the warning, when a loading model comes up while the field is stale', () => {
+    // The field is computed per poll; one stale answer can arrive with `ready`. The warning is for a server
+    // that is not loading, so it is tied to `loading`, and the loading→ready flash keeps its own words.
+    const unfit = { system_ram_gb: 16, min_ram_gb: 48 }
+    const { rerender } = renderWith({
+      state: 'loading',
+      model_id: 'qwen36-35b-a3b',
+      model_name: 'Qwen3.6 35B-A3B',
+      does_not_fit_here: unfit,
+    })
+    expect(screen.getByRole('status').textContent).toContain('Model not started')
+
+    useLLMStatusMock.mockReturnValue({
+      status: { state: 'ready', model_id: 'qwen36-35b-a3b', model_name: 'Qwen3.6 35B-A3B', does_not_fit_here: unfit },
+      markTransitioning: vi.fn(),
+    })
+    rerender(tree())
+
+    const banner = screen.getByRole('status')
+    expect(banner.textContent).toContain('Model ready')
+    expect(banner.textContent).not.toContain('Model not started')
   })
 
   it('shows nothing once the server is ready, whatever the field says', () => {

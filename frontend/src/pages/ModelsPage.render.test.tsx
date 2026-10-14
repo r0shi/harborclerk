@@ -139,7 +139,7 @@ describe('ModelsPage memory budget (#556)', () => {
     const rows = screen.getAllByRole('row')
     const q8 = rows.find((r) => r.textContent?.includes('Qwen3 8B'))!
     expect(q8.textContent).toContain(
-      'This Mac (16 GB) gives it 22,528 tokens of context; the full window needs about 36 GB.',
+      'This Mac (16 GB) runs it at up to 22,528 tokens of context; the full window needs about 36 GB.',
     )
     expect(q8.textContent).not.toContain('Fits this Mac')
     expect(q8.textContent).toContain('(22,528 here)')

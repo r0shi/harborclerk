@@ -386,6 +386,35 @@ final class ServiceManagerRelaunchTests: XCTestCase {
         XCTAssertEqual(llama.startRefusal, Self.doesNotFit, "back to the refused one: the answer has not changed")
     }
 
+    /// A refusal is about the model the settings named at that start. A later start that errors for another
+    /// reason (the file is gone) or finds no model must not leave "does not fit" standing over it.
+    func testAStartThatDoesNotReachTheFitCheckClearsAnOlderRefusal() async throws {
+        let settings = AppSettings(configURL: tempDir.appendingPathComponent("config.json"))
+        settings.modelsDirOverride = tempDir  // holds no GGUF, so the file guard returns before any port probe
+        settings.llamaPort = 1
+        settings.llmModelId = "qwen35-4b"
+        let llama = LlamaService()
+        llama.settingsOverride = settings
+        llama.portOverride = 1
+        llama.refusal = LaunchRefusal(modelId: "qwen35-4b", message: Self.doesNotFit.message)
+        XCTAssertNotNil(llama.startRefusal)
+
+        llama.state = .starting
+        try await llama.start()
+
+        XCTAssertEqual(llama.state, .errored, "the file is missing")
+        XCTAssertNil(llama.refusal, "that is not a fit refusal, and the old one is not this start's")
+        XCTAssertNil(llama.startRefusal)
+
+        llama.refusal = Self.doesNotFit
+        settings.llmModelId = ""
+        llama.state = .starting
+        try await llama.start()
+
+        XCTAssertEqual(llama.state, .stopped, "no model selected")
+        XCTAssertNil(llama.refusal)
+    }
+
     // MARK: - the health wait sleeps even on a cancelled Task
 
     func testSleepEvenIfCancelledStillWaits() async {
