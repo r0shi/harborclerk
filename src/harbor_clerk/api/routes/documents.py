@@ -24,7 +24,7 @@ from harbor_clerk.api.schemas.documents import (
     PaginatedDocuments,
     RelatedDocumentsResponse,
 )
-from harbor_clerk.api.scope import apply_key_scope, redact_paths_for_principal
+from harbor_clerk.api.scope import apply_key_scope, is_human, redact_paths_for_principal
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
@@ -224,9 +224,10 @@ async def list_documents(
                     s.watch_status = wf.status.value
                     if folder is not None:
                         # Without a display name the label is the last component of the
-                        # on-disk path; a key gets no path component (see ABSOLUTE_PATH_FIELDS).
+                        # on-disk path for the signed-in human; an agent gets no path
+                        # component (see ABSOLUTE_PATH_FIELDS).
                         s.folder_name = folder.display_name or (
-                            None if principal.type == "api_key" else posixpath.basename(folder.path)
+                            posixpath.basename(folder.path) if is_human(principal) else None
                         )
         except Exception:
             # watched_files table may not exist if migration 0011 hasn't run

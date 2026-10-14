@@ -23,7 +23,7 @@ from harbor_clerk.api.schemas.search import (
     SearchRequest,
     SearchResponse,
 )
-from harbor_clerk.api.scope import apply_folder_scope, apply_key_scope
+from harbor_clerk.api.scope import apply_folder_scope, apply_key_scope, is_human
 from harbor_clerk.api.scope_validation import validate_scope_folders
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
@@ -235,10 +235,10 @@ async def search(
 
     has_more = body.offset + body.k < result.total_candidates
     # Without a display name a folder is labelled by its path's last component for the
-    # signed-in human only (`type == "user"`, as folder_name in documents.py); a key gets
-    # no path component. Find All and passages below apply the same rule.
+    # signed-in human only (is_human, as folder_name in documents.py); an agent gets no
+    # path component. Find All and passages below apply the same rule.
     source_context = await load_source_ref_context(
-        session, [h.doc_id for h in result.hits], folder_label_from_path=principal.type == "user"
+        session, [h.doc_id for h in result.hits], folder_label_from_path=is_human(principal)
     )
     hits_out = [
         _hit_to_out(
@@ -386,7 +386,7 @@ async def search_find_all(
 
     source_context = (
         await load_source_ref_context(
-            session, [h.doc_id for h in result.hits], folder_label_from_path=principal.type == "user"
+            session, [h.doc_id for h in result.hits], folder_label_from_path=is_human(principal)
         )
         if result.hits
         else None
@@ -456,7 +456,7 @@ async def read_passages(
     doc_ids = {c.doc_id for c in chunks.values()}
     docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids))))
     docs_by_id = {d.doc_id: d for d in docs_result.scalars().all()}
-    source_context = await load_source_ref_context(session, doc_ids, folder_label_from_path=principal.type == "user")
+    source_context = await load_source_ref_context(session, doc_ids, folder_label_from_path=is_human(principal))
 
     # Optionally load surrounding chunks for context
     context_before: dict[uuid.UUID, str] = {}

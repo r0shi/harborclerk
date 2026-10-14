@@ -138,7 +138,11 @@ research tools, which run the `kb_*` functions in-process under
 are `api_key` and `oauth`, and both are external agents: they keep the MCP
 contract of never receiving a path component (`tests/test_mcp_source_ref.py`),
 while the human keeps the folder leaf in chat citations and the whole error text
-in a tool chip, exactly as the web app shows them.
+in a tool chip, exactly as the web app shows them. The test describes the
+credential, not the client: any JWT holder on the MCP port is the human, so a
+harness that wants the agent view (the eval runner, a scripted client) must
+authenticate with an API key — `answer_eval.py` warns when it falls back to a
+login.
 
 Concretely, in `mcp_server.py`: `_human_session()` is the predicate; every tool
 loads its SourceRef context through `_source_context()`, which passes

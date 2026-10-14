@@ -123,10 +123,11 @@ async def load_source_ref_context(
 
     ``folder_label_from_path`` lets a folder with no display name be labelled by
     the last component of its on-disk path. That component is part of an
-    absolute path, so it is off by default and only a human session's REST
-    routes turn it on (``api/routes/search.py``); MCP never does, whatever the
-    principal, so a citation over MCP names a folder only by the name the
-    operator gave it (``tests/test_mcp_source_ref.py``).
+    absolute path, so it is off by default and turned on only for the signed-in
+    human (``api.scope.is_human``): by a human session's REST routes
+    (``api/routes/search.py``) and by ``mcp_server._source_context``. An API key
+    or OAuth agent never gets it, so a citation it receives names a folder only
+    by the name the operator gave it (``tests/test_mcp_source_ref.py``).
     """
     normalized_ids = [_coerce_uuid(doc_id) for doc_id in doc_ids]
     unique_ids = list(dict.fromkeys(normalized_ids))

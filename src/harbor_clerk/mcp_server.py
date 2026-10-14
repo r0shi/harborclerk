@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from harbor_clerk.api.deps import Principal
-from harbor_clerk.api.scope import redact_path_tokens
+from harbor_clerk.api.scope import is_human, redact_path_tokens
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.config import get_settings, refresh_cli_access_setting
 from harbor_clerk.db import async_session_factory
@@ -327,7 +327,7 @@ def _human_session() -> bool:
     of never receiving a path component (``tests/test_mcp_source_ref.py``).
     """
     principal = _mcp_principal.get()
-    return principal is not None and principal.type == "user"
+    return principal is not None and is_human(principal)
 
 
 def _error_text(text: str | None) -> str | None:

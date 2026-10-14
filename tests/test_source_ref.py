@@ -208,7 +208,8 @@ def test_to_dict_omits_empty_optional_fields() -> None:
 
 def test_folder_without_display_name_has_no_label_unless_the_caller_asks_for_the_path_leaf() -> None:
     """The leaf of the on-disk folder path is a path component: absent by default,
-    present only for a caller that opts in (a human session's REST routes)."""
+    present only for a caller that opts in for the signed-in human (a human
+    session's REST routes and ``mcp_server._source_context``)."""
     doc = _doc(title="NDA")
     unnamed = WatchedFolder(path="/Users/alex/private/Secret Contracts", display_name=None)
     watched_file = WatchedFile(

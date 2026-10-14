@@ -301,7 +301,11 @@ def _live_capture_fn(*, api_base: str, corpus: str, model: str, insecure: bool) 
             hc.login(user, password)
             if not hc.get_bearer_token():
                 raise RuntimeError("HC login did not yield a bearer token — check HC_USERNAME / HC_PASSWORD")
-            log.warning("HC_API_KEY unset — using an unscoped login; search is NOT corpus-restricted")
+            log.warning(
+                "HC_API_KEY unset — using an unscoped login; search is NOT corpus-restricted, and a JWT is the "
+                "signed-in human's view: folder labels fall back to on-disk names and pipeline errors keep their "
+                "paths (an API key sees the agent view; see src/harbor_clerk/AGENTS.md, Paths over MCP)"
+            )
             # A login token lasts 30 minutes; the session asks for the current one and re-logs in on a 401 (#681).
             mcp = SyncMcpSession(url=mcp_url, bearer=hc.get_bearer_token, refresh_bearer=hc.refresh_bearer_token)
         provider = make_provider(model, mcp_session=mcp, spend_kind="candidate_answer")

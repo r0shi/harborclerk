@@ -277,7 +277,13 @@ def failed_document(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -
             pytest.fail(f"the failed document's error does not quote its path, so D5 cannot test redaction: {error!r}")
         yield doc
     finally:
+        # Until here the document sits in pipeline_status=error for the rest of
+        # the session (every check after D5 must tolerate that). Restoring the
+        # mode and reprocessing brings it back to ready, so a corpus-wide
+        # readiness check added after D5 does not trip on it; the folder delete
+        # at session end does not wait for the reprocess.
         path.chmod(mode)
+        admin.reprocess_document(doc_id)
 
 
 @pytest.fixture(scope="session")

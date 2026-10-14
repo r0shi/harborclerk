@@ -181,6 +181,19 @@ class _ScopedPrincipal(Protocol):
     key_scope: KeyScope | None
 
 
+def is_human(principal: _ScopedPrincipal) -> bool:
+    """True for the signed-in human: a JWT ``user`` principal.
+
+    The one test behind every "the human keeps it, an agent does not" decision
+    — REST ``folder_name`` and the SourceRef ``folder_label``, path redaction in
+    ``redact_paths_for_principal`` and ``mcp_server._error_text`` — so the
+    surfaces cannot diverge. An API key or OAuth agent is not the human. The
+    test describes the credential, not the client: any JWT holder is the human,
+    so a harness that wants the agent view must use an API key.
+    """
+    return principal.type == "user"
+
+
 # Response fields that carry an absolute on-disk path. Human sessions keep them
 # (the web app renders them and Reveal in Finder needs them); an API key never
 # receives one, at any tier — MCP payloads have never carried them
@@ -190,8 +203,9 @@ ABSOLUTE_PATH_FIELDS: frozenset[str] = frozenset({"source_path", "watch_source_p
 # Free-text fields that may quote a path without being one: a stage records
 # ``describe_error(exc)``, and an OSError's text is "[Errno 2] No such file or
 # directory: '/Users/.../packet.pdf'". These keep their message for a key with
-# every path-like token replaced by ``[path]``.
-ABSOLUTE_PATH_TEXT_FIELDS: frozenset[str] = frozenset({"error"})
+# every path-like token replaced by ``[path]``. ``pipeline_error`` is the same
+# text as ``kb_get_document`` reports it (``error`` there means the call failed).
+ABSOLUTE_PATH_TEXT_FIELDS: frozenset[str] = frozenset({"error", "pipeline_error"})
 
 # A path-like token: rooted at "/" or "~", quoted (so it may contain spaces) or
 # running to the next whitespace; not the "//" or trailing "/x" of a URL, not
@@ -213,9 +227,9 @@ def redact_paths_for_principal[Payload](payload: Payload, principal: _ScopedPrin
     tuples **in place** and returns ``payload`` so a route can wrap its return
     value: pass a response object built for this request, never a cached or
     shared one (a deep copy would cost a full extra pass over large listings for
-    a case no caller has). No-op for human principals.
+    a case no caller has). No-op for the signed-in human (``is_human``).
     """
-    if principal.type == "api_key":
+    if not is_human(principal):
         _redact_path_fields(payload)
     return payload
 
