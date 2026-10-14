@@ -109,14 +109,21 @@ a route with a blank gate unless it is public. Keys never receive `source_path` 
 
 `llm/chat.py` estimates tokens by characters over `_CHARS_PER_TOKEN`, a prose
 figure that runs at about half the tokenizer's count on tool results (#805).
-The estimate is never used bare: every bound (the context-budget stop, the
-history trim, the forced call's outer deadline, the UI percentage) multiplies
-it by the model's measured ratio, kept per model id in `_estimate_ratios` for
-the life of the process and measured from `usage.prompt_tokens` on every
-completed call. llama-server (pin v0.4.1) sends usage only when the request
-carries `stream_options: {"include_usage": true}`, in a last chunk whose
-`choices` is an **empty array**: `chunk["choices"][0]` raises on it. A new
-estimate-derived figure takes the ratio (`_estimate_ratio(model_id)`); a new
+Every bound (the context-budget stop, the history trim, the forced call's
+outer deadline) compares against the next prompt as **predicted**
+(`_predict_prompt_tokens`): the server's exact `usage.prompt_tokens` of the
+last counted prompt, plus the estimate of what was appended since at the
+model's measured ratio; with no count yet, the whole estimate at the ratio.
+The ratio is kept per model id in `_estimate_ratios` for the life of the
+process, measured only from prompts that held a tool result (the first,
+tool-less call of a conversation tokenizes at ~1.2x and must not calibrate
+the results that follow), blended at half weight from the default, never
+replaced. The one figure read bare, deliberately, is the per-result
+truncation cap `tool_result_max_chars` (a retrieval-quality knob, not a
+bound). llama-server (pin v0.4.1) sends usage only when the request carries
+`stream_options: {"include_usage": true}`, in a last chunk whose `choices` is
+an **empty array**: `chunk["choices"][0]` raises on it. A new estimate-derived
+figure takes the prediction or the ratio (`_estimate_ratio(model_id)`); a new
 streamed call asks for usage, records it (`_record_estimate_ratio`) and
 tolerates the empty-choices chunk (`research.py`'s streaming reader does not
 ask for usage and still indexes `choices[0]`: asking without fixing the reader
