@@ -317,18 +317,38 @@ def _get_principal() -> Principal:
     return p
 
 
-def _redacted_error(text: str | None) -> str | None:
-    """Pipeline error text with every path-like token replaced by ``[path]``.
+def _human_session() -> bool:
+    """True when the caller is the signed-in human: a JWT ``user`` principal.
+
+    On every surface ``type == "user"`` means a signed-in human — a web-app
+    request over REST, or the chat and research tools running the ``kb_*``
+    functions in-process (``llm/tools.py`` sets ``Principal(type="user")``).
+    An API key and an OAuth agent are external agents and keep the MCP contract
+    of never receiving a path component (``tests/test_mcp_source_ref.py``).
+    """
+    principal = _mcp_principal.get()
+    return principal is not None and principal.type == "user"
+
+
+def _error_text(text: str | None) -> str | None:
+    """Pipeline error text, with every path-like token replaced by ``[path]`` for an agent.
 
     A stage stores ``describe_error(exc)`` on the job and the document, and an
     OSError quotes the on-disk file: "[Errno 13] Permission denied:
-    '/Users/.../packet.pdf'". MCP payloads never carry an absolute path for any
-    principal (tests/test_mcp_source_ref.py) — a key, an OAuth agent, or the
-    chat tools running as the signed-in user — so unlike REST's
-    ``redact_paths_for_principal`` this does not branch on the principal. The
-    human reads the whole text in the web app.
+    '/Users/.../packet.pdf'". The signed-in human reads it whole, as over REST
+    (``redact_paths_for_principal``); a key or an OAuth agent keeps the message
+    and loses the path (#804).
     """
-    return redact_path_tokens(text) if text else text
+    if not text or _human_session():
+        return text
+    return redact_path_tokens(text)
+
+
+async def _source_context(session: AsyncSession, doc_ids) -> SourceRefContext:
+    """``load_source_ref_context`` for the current principal: a folder with no
+    display name is labelled by its on-disk leaf for the signed-in human only.
+    Every tool loads its context through here so no site can forget the rule."""
+    return await load_source_ref_context(session, doc_ids, folder_label_from_path=_human_session())
 
 
 def _filter_tools_for_principal(tool_names, principal):
@@ -984,7 +1004,7 @@ async def kb_search(
             text_contains=text_contains,
         )
         heading_map = await _resolve_headings(session, result.hits)
-        source_context = await load_source_ref_context(session, [h.doc_id for h in result.hits])
+        source_context = await _source_context(session, [h.doc_id for h in result.hits])
         # Compute discriminator_hint if applicable. Cheap post-processing:
         # one indexed SELECT for top-K candidate docs' metadata. Skips when
         # fewer than 2 hits.
@@ -1267,7 +1287,7 @@ async def kb_find_all(
             metadata_filter=metadata_filter,
             presentation=presentation,
         )
-        source_context = await load_source_ref_context(session, [h.doc_id for h in result.hits])
+        source_context = await _source_context(session, [h.doc_id for h in result.hits])
 
     # Build per-hit response dicts
     results = []
@@ -1440,7 +1460,7 @@ async def kb_batch_search(
                 metadata_filter=metadata_filter,
             )
             heading_map = await _resolve_headings(session, result.hits)
-            source_context = await load_source_ref_context(session, [h.doc_id for h in result.hits])
+            source_context = await _source_context(session, [h.doc_id for h in result.hits])
             resp = _format_search_response(
                 result,
                 detail,
@@ -1526,7 +1546,7 @@ async def kb_read_passages(
         doc_ids = {c.doc_id for c in chunks.values()}
         docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids))))
         docs = {d.doc_id: d for d in docs_result.scalars().all()}
-        source_context = await load_source_ref_context(session, doc_ids)
+        source_context = await _source_context(session, doc_ids)
 
         # Snippet truncation limit from key scope, if any
         snippet_limit: int | None = None
@@ -1634,7 +1654,7 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
         neighbours = result.scalars().all()
 
         doc = (await session.execute(select(Document).where(Document.doc_id == target.doc_id))).scalar_one_or_none()
-        source_context = await load_source_ref_context(session, [target.doc_id])
+        source_context = await _source_context(session, [target.doc_id])
 
         # Snippet truncation limit from key scope, if any
         snippet_limit: int | None = None
@@ -1682,8 +1702,8 @@ async def kb_get_document(doc_id: str) -> str:
 
     What you get back:
       - Title, mime_type, summary (LLM-generated 1-paragraph overview), section
-        headings outline, ingestion status (with the pipeline `error` text when a
-        stage failed), chunk count
+        headings outline, ingestion status (plus `pipeline_error`, present only
+        when a stage failed), chunk count
       - `metadata`: the document's structured metadata extracted at ingest
         (sidecar facts, Tika fields, frontmatter, etc.). The keys here are
         EXACTLY the filter keys you can pass to kb_search via metadata_filter
@@ -1723,17 +1743,16 @@ async def kb_get_document(doc_id: str) -> str:
             .order_by(IngestionJob.created_at)
         )
         jobs = [
-            {"stage": j.stage.value, "status": j.status.value, "error": _redacted_error(j.error)}
+            {"stage": j.stage.value, "status": j.status.value, "error": _error_text(j.error)}
             for j in jobs_result.scalars().all()
         ]
-        source_context = await load_source_ref_context(session, [did])
+        source_context = await _source_context(session, [did])
 
     payload = {
         "doc_id": str(doc.doc_id),
         "title": doc.title,
         "status": doc.status,
         "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
-        "error": _redacted_error(doc.error),
         "summary": doc.summary,
         "mime_type": doc.mime_type,
         "size_bytes": doc.size_bytes,
@@ -1742,6 +1761,11 @@ async def kb_get_document(doc_id: str) -> str:
         "metadata": doc.doc_metadata,
         "jobs": jobs,
     }
+    if doc.error:
+        # Not ``error``: the chat tools read that key as "the call failed" and
+        # render it verbatim with no citation (llm/tools.py, llm/citations.py).
+        # Present only when a stage failed, so a healthy document is unchanged.
+        payload["pipeline_error"] = _error_text(doc.error)
     _enrich_doc_payload_with_source(payload, source_context)
 
     return json.dumps(payload, indent=2)
@@ -1782,7 +1806,7 @@ async def kb_list_recent(limit: int = 20) -> str:
 
         result = await session.execute(list_q)
         docs = result.scalars().all()
-        source_context = await load_source_ref_context(session, [doc.doc_id for doc in docs])
+        source_context = await _source_context(session, [doc.doc_id for doc in docs])
 
     items = []
     for doc in docs:
@@ -1927,7 +1951,7 @@ async def kb_corpus_overview(limit: int = 50) -> str:
             list_q = list_q.where(Document.doc_id.in_(visible_ids))
         result = await session.execute(list_q)
         docs = result.scalars().all()
-        source_context = await load_source_ref_context(session, [doc.doc_id for doc in docs])
+        source_context = await _source_context(session, [doc.doc_id for doc in docs])
 
     items = []
     for doc in docs:
@@ -1994,7 +2018,7 @@ async def kb_ingest_status(doc_id: str) -> str:
                 "stage": j.stage.value,
                 "status": j.status.value,
                 "progress": f"{j.progress_current}/{j.progress_total}" if j.progress_total else None,
-                "error": _redacted_error(j.error),
+                "error": _error_text(j.error),
                 "started_at": j.started_at.isoformat() if j.started_at else None,
                 "finished_at": j.finished_at.isoformat() if j.finished_at else None,
             }
@@ -2087,7 +2111,7 @@ async def kb_document_outline(doc_id: str) -> str:
         chunk_count = (
             await session.execute(select(func.count()).select_from(Chunk).where(Chunk.doc_id == did))
         ).scalar_one()
-        source_context = await load_source_ref_context(session, [did])
+        source_context = await _source_context(session, [did])
 
     payload = {
         "doc_id": str(doc.doc_id),
@@ -2236,7 +2260,7 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
             select(Document).where(Document.doc_id.in_(merged_ids), Document.status == "active")
         )
         related_docs = {d.doc_id: d for d in docs_result.scalars().all()}
-        source_context = await load_source_ref_context(session, merged_ids)
+        source_context = await _source_context(session, merged_ids)
 
     items = []
     for rid in merged_ids:
@@ -2815,7 +2839,7 @@ async def kb_verify_identifier(identifier: str) -> str:
             candidates = result.get("candidates")
             if isinstance(candidates, list):
                 payloads.extend(candidate for candidate in candidates if isinstance(candidate, dict))
-        source_context = await load_source_ref_context(session, _valid_doc_ids_from_payloads(payloads))
+        source_context = await _source_context(session, _valid_doc_ids_from_payloads(payloads))
         for payload in payloads:
             _enrich_doc_payload_with_source(payload, source_context)
     # Response-level anti-hedge directive for the not_found case. The docstring
@@ -2920,7 +2944,7 @@ async def kb_documents_by_date(
         )
         rows = result.get("results") if isinstance(result, dict) else None
         if isinstance(rows, list):
-            source_context = await load_source_ref_context(
+            source_context = await _source_context(
                 session,
                 _valid_doc_ids_from_payloads([row for row in rows if isinstance(row, dict)]),
             )

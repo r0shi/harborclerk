@@ -131,20 +131,29 @@ crashes it).
 
 ## Paths over MCP
 
-MCP never emits an absolute path for any principal — a key, an OAuth agent, or
-the chat and research tools, which run the `kb_*` functions in-process as the
-signed-in user (`llm/tools.py`). There is no human branch to preserve, so unlike
-REST the redaction does not consult the principal: a tool that emits pipeline
-`error` text passes it through `_redacted_error` (`redact_path_tokens` from
-`api/scope.py`; `kb_get_document` and `kb_ingest_status` today), and a
-`SourceRef` labels a folder only by its display name. The leaf of the on-disk
-folder path is a path component: `load_source_ref_context(...,
-folder_label_from_path=True)` is the opt-in, and only the REST search and
-passage routes pass it, for a human session (`principal.type != "api_key"`,
-the same test `documents.py` applies to `folder_name`). Never pass it from
-`mcp_server.py`. `tests/test_mcp_source_ref.py` holds the contract; acceptance
-D5 checks it against a live instance with a document whose extract stage
-failed on a path-quoting OSError.
+The rule on both surfaces is the same, and keyed on one test: `principal.type
+== "user"` is the signed-in human — a web-app request over REST, or the chat and
+research tools, which run the `kb_*` functions in-process under
+`Principal(type="user")` (`llm/tools.py`). The only other MCP principal types
+are `api_key` and `oauth`, and both are external agents: they keep the MCP
+contract of never receiving a path component (`tests/test_mcp_source_ref.py`),
+while the human keeps the folder leaf in chat citations and the whole error text
+in a tool chip, exactly as the web app shows them.
+
+Concretely, in `mcp_server.py`: `_human_session()` is the predicate; every tool
+loads its SourceRef context through `_source_context()`, which passes
+`folder_label_from_path=_human_session()` to `load_source_ref_context` (never
+call the loader directly from a tool); and pipeline error text goes through
+`_error_text()` — `redact_path_tokens` from `api/scope.py` for an agent,
+unchanged for the human (`kb_get_document` and `kb_ingest_status` today). The
+REST search, find-all and passage routes pass `folder_label_from_path=
+principal.type == "user"`, the test `documents.py` applies to `folder_name`.
+`kb_get_document` reports a stage failure as `pipeline_error`, present only when
+one failed: the chat tools read a top-level `error` key as "the call failed"
+and render it verbatim with no citation (`llm/tools.py::summarize_tool_result`,
+`llm/citations.py`), so no healthy payload may carry a key of that name.
+Acceptance D5 checks the agent branch against a live instance with a document
+whose extract stage failed on a path-quoting OSError.
 
 ## Async gotchas
 

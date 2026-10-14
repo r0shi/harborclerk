@@ -256,16 +256,22 @@ def failed_document(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -
     reading it and fails with ``PermissionError: [Errno 13] Permission denied:
     '<absolute path>'`` — the text `describe_error` stores on the job and the
     document. Read permission is restored when the session ends, before the
-    folder and its files are removed. The fixture fails rather than yields
-    when the recorded error does not quote the path (the instance runs as a
-    user the mode does not bind, say), since D5 would then prove nothing."""
-    path = corpus.fixtures[failure_target(corpus.groundtruth)].path
-    doc_id = corpus.doc_id(failure_target(corpus.groundtruth))
+    folder and its files are removed. When the worker ignores the mode (a
+    Compose instance with no `user:` runs as root) the document becomes ready
+    again and the check is skipped with that reason; when it fails but the
+    recorded error does not quote the path, the fixture fails rather than
+    yields, since D5 would then prove nothing."""
+    name = failure_target(corpus.groundtruth)
+    path = corpus.fixtures[name].path
+    doc_id = corpus.doc_id(name)
     mode = path.stat().st_mode
     path.chmod(0)
     try:
         admin.reprocess_document(doc_id)
-        doc = admin.wait_for_document_error(doc_id, timeout_s=cfg.ingest_timeout_s)
+        try:
+            doc = admin.wait_for_document_error(doc_id, timeout_s=cfg.ingest_timeout_s)
+        except RuntimeError as e:  # became ready: the file mode did not bind the worker
+            pytest.skip(f"cannot inject an unreadable source on this instance: {e}")
         error = doc.get("error") or ""
         if corpus.folder_path not in error:
             pytest.fail(f"the failed document's error does not quote its path, so D5 cannot test redaction: {error!r}")

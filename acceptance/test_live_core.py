@@ -346,7 +346,7 @@ def test_d5_mcp_payloads_never_contain_an_absolute_path(
         assert not leaked, f"{name} payload contains {leaked}"
     detail = tool_json(session.call_tool("kb_get_document", {"doc_id": failed_id}))
     assert detail["pipeline_status"] == "error"
-    assert "[path]" in (detail["error"] or ""), detail["error"]
+    assert "[path]" in detail["pipeline_error"], detail["pipeline_error"]
     job_errors = [j["error"] for j in detail["jobs"] if j["error"]]
     assert job_errors and all("[path]" in e for e in job_errors), job_errors
 

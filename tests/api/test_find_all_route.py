@@ -71,6 +71,7 @@ async def test_search_find_all_forwards_filters_and_returns_sources(monkeypatch)
 
     async def fake_load_source_ref_context(session, doc_ids, **kwargs):
         captured["source_doc_ids"] = list(doc_ids)
+        captured["folder_label_from_path"] = kwargs.get("folder_label_from_path")
         return SourceContext()
 
     monkeypatch.setattr(search_route, "find_all", fake_find_all)
@@ -117,6 +118,7 @@ async def test_search_find_all_forwards_filters_and_returns_sources(monkeypatch)
     assert captured["job_status"] == "done"
     assert captured["job_issue"] == "summary_pending"
     assert captured["source_doc_ids"] == [str(doc_id)]
+    assert captured["folder_label_from_path"] is True  # a signed-in user keeps the folder's on-disk leaf
 
     assert response.total_matches == 1
     assert response.returned == 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from harbor_clerk.llm.citations import dedupe_citations, extract_citations_from_tool_result
+from harbor_clerk.llm.tools import summarize_tool_result
 
 # ── shape coverage ──
 
@@ -224,6 +225,27 @@ def test_extract_from_kb_get_document() -> None:
     )
     cites = extract_citations_from_tool_result(raw)
     assert cites == [{"doc_id": "D1", "doc_title": "Single Doc"}]
+
+
+FAILED_DOCUMENT = {
+    "doc_id": "D1",
+    "title": "Board Packet",
+    "pipeline_status": "error",
+    # kb_get_document reports a stage failure under this key, never under "error":
+    # that key means the *call* failed and is rendered verbatim with no citation.
+    "pipeline_error": "PermissionError: [Errno 13] Permission denied: [path]",
+    "jobs": [{"stage": "extract", "status": "error", "error": "PermissionError: [Errno 13] Permission denied: [path]"}],
+}
+
+
+def test_extract_from_kb_get_document_with_a_pipeline_error_still_cites_it() -> None:
+    cites = extract_citations_from_tool_result(json.dumps(FAILED_DOCUMENT))
+    assert cites == [{"doc_id": "D1", "doc_title": "Board Packet"}]
+
+
+def test_summarize_tool_result_does_not_read_a_pipeline_error_as_a_failed_call() -> None:
+    assert summarize_tool_result(json.dumps(FAILED_DOCUMENT)) == "Done"
+    assert summarize_tool_result(json.dumps({"error": "Document not found"})) == "Error: Document not found"
 
 
 # ── error/edge cases ──

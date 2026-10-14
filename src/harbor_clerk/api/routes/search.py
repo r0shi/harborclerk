@@ -234,10 +234,11 @@ async def search(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     has_more = body.offset + body.k < result.total_candidates
-    # Without a display name a folder is labelled by its path's last component for a
-    # human session only; a key gets no path component (as folder_name in documents.py).
+    # Without a display name a folder is labelled by its path's last component for the
+    # signed-in human only (`type == "user"`, as folder_name in documents.py); a key gets
+    # no path component. Find All and passages below apply the same rule.
     source_context = await load_source_ref_context(
-        session, [h.doc_id for h in result.hits], folder_label_from_path=principal.type != "api_key"
+        session, [h.doc_id for h in result.hits], folder_label_from_path=principal.type == "user"
     )
     hits_out = [
         _hit_to_out(
@@ -385,7 +386,7 @@ async def search_find_all(
 
     source_context = (
         await load_source_ref_context(
-            session, [h.doc_id for h in result.hits], folder_label_from_path=principal.type != "api_key"
+            session, [h.doc_id for h in result.hits], folder_label_from_path=principal.type == "user"
         )
         if result.hits
         else None
@@ -455,7 +456,7 @@ async def read_passages(
     doc_ids = {c.doc_id for c in chunks.values()}
     docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids))))
     docs_by_id = {d.doc_id: d for d in docs_result.scalars().all()}
-    source_context = await load_source_ref_context(session, doc_ids, folder_label_from_path=principal.type != "api_key")
+    source_context = await load_source_ref_context(session, doc_ids, folder_label_from_path=principal.type == "user")
 
     # Optionally load surrounding chunks for context
     context_before: dict[uuid.UUID, str] = {}
