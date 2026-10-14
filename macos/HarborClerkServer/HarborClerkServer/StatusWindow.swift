@@ -126,9 +126,11 @@ struct StatusWindow: View {
                 Text(service.name)
                     .font(.body)
                 // Why "Errored", when the service declined rather than failed:
-                // the active model does not fit this Mac (#709). Stays for as
-                // long as the settings name that model.
-                if let refusal = service.startRefusal {
+                // the active model does not fit this Mac (#709). Shown for as
+                // long as the settings name that model and the row says so; a
+                // Stop leaves the refusal standing (the manager still consults
+                // it) but a "Stopped" row has nothing to explain.
+                if service.state == .errored, let refusal = service.startRefusal {
                     Text(refusal.message)
                         .font(.caption2)
                         .foregroundStyle(.red)

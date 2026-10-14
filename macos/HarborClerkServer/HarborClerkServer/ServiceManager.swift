@@ -19,8 +19,10 @@ extension Notification.Name {
 /// names another model; a retry buys nothing (#709).
 struct LaunchRefusal: Equatable {
     let modelId: String
-    /// The Models page's words ("Does not fit this Mac (N GB): needs about M
-    /// GB.") plus what to do, so the two surfaces say the same thing.
+    /// The Models page's figures ("Does not fit this Mac (N GB): needs about M
+    /// GB.") plus what to do, so the two surfaces agree. Same arithmetic; the
+    /// weights are the file's size here and the registry's `size_bytes` there,
+    /// which coincide for a complete download.
     let message: String
 }
 

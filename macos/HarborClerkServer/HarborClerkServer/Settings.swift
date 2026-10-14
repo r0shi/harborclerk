@@ -490,8 +490,8 @@ enum MemoryBudget {
     }
 
     /// What the user is told when the weights alone do not fit (`maxContext`
-    /// is 0): the Models page's line for that model, word for word, and what
-    /// to do about it (#709).
+    /// is 0): the Models page's line for that model, with its figures, and
+    /// what to do about it (#709).
     static func refusalMessage(modelBytes: Int, kvBytesPerToken: Int, fixedBytes: Int, requested: Int, ramBytes: Int) -> String {
         let needs = minRamGB(modelBytes: modelBytes, kvBytesPerToken: kvBytesPerToken, fixedBytes: fixedBytes, context: requested)
         return "Does not fit this Mac (\(systemRamLabel(ramBytes)) GB): needs about \(needs) GB. Open the Models page and pick a model that fits."

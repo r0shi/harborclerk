@@ -750,3 +750,7 @@ def test_swift_mirrors_the_registrys_memory_tables():
         ("promptCacheMinTokens", PROMPT_CACHE_MIN_TOKENS),
     ):
         assert re.search(rf"static let {name} = {value:_}\b", swift), name
+    from harbor_clerk.llm.models import MAC_RAM_TIERS_GB
+
+    # The launcher's refusal says "needs about M GB" from the same tiers the Models page rounds to (#709).
+    assert f"static let macRamTiersGB = [{', '.join(str(t) for t in MAC_RAM_TIERS_GB)}]" in swift

@@ -123,8 +123,8 @@ final class LlamaService: ManagedService {
         )
         if contextWindow == 0 {
             // Terminal for this model id: the manager says so to the user once
-            // and does not auto-restart into it (#709). The words are the Models
-            // page's, so the two surfaces agree.
+            // and does not auto-restart into it (#709). The figures are the
+            // Models page's, so the two surfaces agree.
             let why = MemoryBudget.refusalMessage(
                 modelBytes: modelBytes,
                 kvBytesPerToken: settings.activeModelKvBytesPerToken,

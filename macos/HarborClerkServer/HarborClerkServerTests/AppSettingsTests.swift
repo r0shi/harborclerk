@@ -272,7 +272,6 @@ final class AppSettingsTests: XCTestCase {
         func minRam(_ bytes: Int, _ perToken: Int = 147_456, _ fixed: Int = 0, _ context: Int = 32768) -> Int {
             MemoryBudget.minRamGB(modelBytes: bytes, kvBytesPerToken: perToken, fixedBytes: fixed, context: context)
         }
-        XCTAssertEqual(MemoryBudget.macRamTiersGB, [8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512])
         // 5 + 4.8 + 1 + 8 = 18.8e9 bytes and a tenth of the Mac free on top: 20.9e9 = 19.5 GiB.
         XCTAssertEqual(MemoryBudget.ramRequiredBytes(modelBytes: 5_000_000_000, kvBytesPerToken: 147_456, fixedBytes: 0, context: 32768), 20_924_264_676, "ceil(18.831e9 * 10 / 9)")
         XCTAssertEqual(minRam(5_000_000_000), 24)
@@ -284,8 +283,9 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(minRam(600_000_000_000), 636, "past the largest Mac, the exact number of GiB")
     }
 
-    /// The refusal is the Models page's line for that model, word for word, so the user reads the same
-    /// thing in the notice, the status window and the page it sends them to.
+    /// The refusal carries the Models page's figures for that model (this Mac's memory, the tier it needs),
+    /// so the user reads the same numbers in the notice, the status window and the page it sends them to.
+    /// `test_llm_models.py` pins `macRamTiersGB` to the Python tiers.
     func testRefusalMessageUsesTheModelsPagesWords() {
         let gib = 1_073_741_824
         XCTAssertEqual(MemoryBudget.systemRamLabel(16 * gib), "16")
