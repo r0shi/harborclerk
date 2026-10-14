@@ -94,9 +94,11 @@ _FINAL_ANSWER_THINKING_SECONDS = 120.0
 # calls measured on the benchmark models; a constant had no feedback, and at 16,384 a prose history that tokenizes
 # at 1.5x (pasted logs, tables) put a trimmed first prompt at 87% of the slot and one at 1.8x (CJK text under the
 # Qwen tokenizers) at 105%, refused on every turn for the life of the process (the review of #808). A refused first
-# prompt is where that density is met: the loop records it from the refusal and retries the turn once with the
-# history trimmed against the count and the slot the refusal states (the loop's overflow branch), so the next
-# conversation's first prompt is trimmed to fit and the refused one still gets its answer. The first prose
+# prompt is where that density is met: the loop records it from the refusal and, at a turn's first call, retries
+# the turn once with the history trimmed against the count and the slot the refusal states (the loop's overflow
+# branch), so the next conversation's first prompt is trimmed to fit and the refused one still gets its answer. A
+# refusal later in the loop ends the search as the context budget does, and the forced call's calibrated retry
+# shrinks the results. The first prose
 # measurement replaces the seed, which is a placeholder and not a measurement (the tool ratio's default is never
 # replaced because its measurements once came from the wrong density, which cannot happen to the prose ratio);
 # later ones blend in at _ESTIMATE_RATIO_SMOOTHING, under the same clamp. A limitation: once a conversation's
@@ -790,28 +792,59 @@ async def chat_stream(
 
                         # Detect context overflow from llama-server
                         is_context_overflow = _is_context_overflow(response.status_code, detail)
+                        counted = _refused_prompt_tokens(detail) if is_context_overflow else None
+                        if counted and counted < _ESTIMATE_RATIO_MIN * sent_estimate:
+                            # Below any density the clamp allows, as in the accepted path: not believed, so the
+                            # refusal is treated as one that names no count.
+                            logger.warning(
+                                "Refusal counted the prompt at %d tokens against %d estimated, under %.1fx: count "
+                                "distrusted (conversation=%s)",
+                                counted,
+                                sent_estimate,
+                                _ESTIMATE_RATIO_MIN,
+                                conversation_id,
+                            )
+                            counted = None
+                        if is_context_overflow and counted and not sent_tool_bearing:
+                            # A tool-less prompt's count is the model's prose density, exactly (module comment).
+                            _record_prose_ratio(active_model_id, counted, sent_estimate)
+                        if is_context_overflow and _round > 0:
+                            # The prompt holds this turn's results. The search ends here as it does at the context
+                            # budget: the forced call's count-calibrated retry shrinks the results and keeps every
+                            # user and assistant message whole (``_trim_for_forced_call``). The history trim below
+                            # would not: mid-loop the last message is the latest tool row, which it keeps as the
+                            # "question" while it pops the real one and the call the row answers (the third review
+                            # of #808). Reachable when the server's slot is smaller than the registry's window
+                            # (#654) or when light increments have dragged the tool ratio low.
+                            logger.info(
+                                "Prompt refused as too long in tool round %d (%s tokens by the server against %d "
+                                "estimated); ending the search and forcing the answer (conversation=%s)",
+                                _round + 1,
+                                counted if counted else "unknown",
+                                sent_estimate,
+                                conversation_id,
+                            )
+                            budget_exhausted = True
+                            break
                         if is_context_overflow and not overflow_retried:
                             # A turn's first prompt is refused when the history was trimmed at a density below the
                             # tokenizer's (a 1.8x prose history read at the 1.2 seed, the review of #808). The
-                            # refusal is immediate and names its count: a tool-less prompt's count is the model's
-                            # prose density, recorded, and the turn is sent once more with the history trimmed
-                            # against the count and the slot the refusal states, as the forced call's retry is.
-                            # Telling the user to start a new conversation sent the next one to the same refusal.
-                            # The retry takes a round of the cap, and it is the one retry: a second refusal is the
-                            # error below. Without a count, the weights are doubled, which halves the history.
-                            counted = _refused_prompt_tokens(detail)
+                            # refusal is immediate and names its count, recorded above when the prompt had no tool
+                            # row, and the turn is sent once more with the history trimmed against the count and the
+                            # slot the refusal states, as the forced call's retry is. Telling the user to start a new
+                            # conversation sent the next one to the same refusal. The retry takes a round of the cap,
+                            # and it is the one retry: a second refusal is the error below. Without a count, the
+                            # weights are doubled, which halves the history. At a turn's first call the last message
+                            # is the user's question, which the trim keeps.
                             server_context = _refused_context_tokens(detail)
                             fits_in = min(context_tokens, server_context) if server_context else context_tokens
-                            if counted and not sent_tool_bearing:
-                                _record_prose_ratio(active_model_id, counted, sent_estimate)
                             tool_ratio, prose_ratio = _estimate_ratio(active_model_id), _prose_ratio(active_model_id)
                             if counted:
                                 at_least = counted / sent_estimate * _FORCED_CALL_RETRY_SAFETY
+                                tool_ratio, prose_ratio = max(tool_ratio, at_least), max(prose_ratio, at_least)
                             else:
-                                at_least = 2.0 * max(tool_ratio, prose_ratio)
-                            shorter = _trim_to_budget(
-                                messages, fits_in, model, max(tool_ratio, at_least), max(prose_ratio, at_least)
-                            )
+                                tool_ratio, prose_ratio = 2.0 * tool_ratio, 2.0 * prose_ratio
+                            shorter = _trim_to_budget(messages, fits_in, model, tool_ratio, prose_ratio)
                             if len(shorter) < len(messages):
                                 logger.info(
                                     "Prompt refused as too long (%s tokens by the server against %d estimated, "
@@ -825,6 +858,9 @@ async def chat_stream(
                                 )
                                 messages = shorter
                                 overflow_retried = True
+                                # Nothing has been counted yet at a turn's first call; kept explicit so a retry
+                                # moved later in the loop could not read a count of the untrimmed list.
+                                prompt_tokens_last, counted_upto = None, 0
                                 continue
                         if is_context_overflow:
                             error_summary = "Context window full — please start a new conversation"
