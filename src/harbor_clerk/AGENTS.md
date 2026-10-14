@@ -113,25 +113,30 @@ Every bound (the context-budget stop, the history trim, the forced call's
 outer deadline) compares against the next prompt as **predicted**
 (`_predict_prompt_tokens`): the server's exact `usage.prompt_tokens` of the
 last counted prompt, plus the messages appended since, weighted per message
-(`_predict_messages_tokens`: tool results and their calls at the model's
-measured ratio, prose and the schema at `_PROSE_RATIO`); with no count yet,
+(`_predict_messages_tokens`: tool results and their calls at the model's tool
+ratio, prose and the schema at the model's prose ratio); with no count yet,
 the whole prompt weighted the same way. Reading prose at the tool ratio
-trimmed a 16K history to 4 exchanges of 20 where the server takes 13. The
-ratio is kept per model id in `_estimate_ratios` for the life of the process
-and measured as the **increment** between two counted prompts of the loop (the
-result and its call, nothing else), never from a tool-less prompt, never from
-the forced call (it drops the tools), blended at half weight from the default
-and never replaced. A count under `_ESTIMATE_RATIO_MIN` times the estimate is
-distrusted. The one figure read bare, deliberately, is the per-result
+trimmed a 16K history to 4 exchanges of 20 where the server takes 13; a
+constant prose weight let a 1.8x (CJK) history be refused on every turn. Both
+ratios are kept per model id for the life of the process (`_estimate_ratios`,
+`_prose_ratios`). The tool ratio is measured only as the **increment** between
+two counted prompts of one turn's loop (the result and its call, nothing
+else): never from a tool-less prompt, never from a turn's first prompt even
+when the history holds results (diluted), never from the forced call (it
+drops the tools); blended at half weight from the default, never replaced.
+The prose ratio is measured over every prompt with no tool row (seed 1.2,
+replaced by the first measurement, blended after). A count under
+`_ESTIMATE_RATIO_MIN` times the estimate is distrusted, in the loop and in the
+forced call. The one figure read bare, deliberately, is the per-result
 truncation cap `tool_result_max_chars` (a retrieval-quality knob, not a
 bound). llama-server (pin v0.4.1) sends usage only when the request carries
 `stream_options: {"include_usage": true}`, in a last chunk whose `choices` is
 an **empty array**: `chunk["choices"][0]` raises on it; read the last usage a
 stream carries, once, after it. A new estimate-derived figure takes the
-prediction or the weights; a new streamed call asks for usage, records it
-(`_record_estimate_ratio`) and tolerates the empty-choices chunk
-(`research.py`'s streaming reader does not ask for usage and still indexes
-`choices[0]`: asking without fixing the reader crashes it).
+prediction or the weights; a new streamed call asks for usage, records it and
+tolerates the empty-choices chunk (`research.py`'s streaming reader does not
+ask for usage and still indexes `choices[0]`: asking without fixing the reader
+crashes it).
 
 ## Async gotchas
 
