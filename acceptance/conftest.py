@@ -244,6 +244,15 @@ def failure_target(groundtruth: dict[str, Any]) -> str:
     return next(name for name, spec in groundtruth["fixtures"].items() if spec.get("failure_target"))
 
 
+def _wait_for_injected_failure(admin: HarborClerk, doc_id: str, *, timeout_s: float) -> dict[str, Any]:
+    """The failed document, or a skip when it became ready instead: the file
+    mode did not bind the worker (a Compose instance with no `user:` runs as root)."""
+    try:
+        return admin.wait_for_document_error(doc_id, timeout_s=timeout_s)
+    except RuntimeError as e:
+        pytest.skip(f"cannot inject an unreadable source on this instance: {e}")
+
+
 @pytest.fixture(scope="session")
 def failed_document(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[dict[str, Any]]:
     """A fixture document whose extract stage failed with an error quoting its
@@ -268,10 +277,7 @@ def failed_document(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -
     path.chmod(0)
     try:
         admin.reprocess_document(doc_id)
-        try:
-            doc = admin.wait_for_document_error(doc_id, timeout_s=cfg.ingest_timeout_s)
-        except RuntimeError as e:  # became ready: the file mode did not bind the worker
-            pytest.skip(f"cannot inject an unreadable source on this instance: {e}")
+        doc = _wait_for_injected_failure(admin, doc_id, timeout_s=cfg.ingest_timeout_s)
         error = doc.get("error") or ""
         if corpus.folder_path not in error:
             pytest.fail(f"the failed document's error does not quote its path, so D5 cannot test redaction: {error!r}")
