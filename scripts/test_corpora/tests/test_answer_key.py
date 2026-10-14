@@ -425,6 +425,9 @@ def test_what_counts_in_reads_and_what_it_strips(_no_corpus_lookup):
     assert counts_in("une réunion, one of them, un seul; vingt-et-un, twenty-one") == [21], (
         "one, un and une are an article and a pronoun before they are a number; inside a compound they count"
     )
+    assert counts_in("Paid $1,000\n150 invoices were issued.") == [150], (
+        "a line break is not a thousands separator, whatever follows it (second review of #812)"
+    )
     assert counts_in("15.") == [15] and counts_in("15.\n") == [15] and counts_in("1. INV-2025-00847\n2. B") == [], (
         "a list marker has text after it on its line; a bare number with a full stop is the answer"
     )
