@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from harbor_clerk.api.deps import Principal
+from harbor_clerk.api.scope import redact_path_tokens
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.config import get_settings, refresh_cli_access_setting
 from harbor_clerk.db import async_session_factory
@@ -314,6 +315,20 @@ def _get_principal() -> Principal:
     if p is None:
         raise PermissionError("Not authenticated")
     return p
+
+
+def _redacted_error(text: str | None) -> str | None:
+    """Pipeline error text with every path-like token replaced by ``[path]``.
+
+    A stage stores ``describe_error(exc)`` on the job and the document, and an
+    OSError quotes the on-disk file: "[Errno 13] Permission denied:
+    '/Users/.../packet.pdf'". MCP payloads never carry an absolute path for any
+    principal (tests/test_mcp_source_ref.py) — a key, an OAuth agent, or the
+    chat tools running as the signed-in user — so unlike REST's
+    ``redact_paths_for_principal`` this does not branch on the principal. The
+    human reads the whole text in the web app.
+    """
+    return redact_path_tokens(text) if text else text
 
 
 def _filter_tools_for_principal(tool_names, principal):
@@ -1667,7 +1682,8 @@ async def kb_get_document(doc_id: str) -> str:
 
     What you get back:
       - Title, mime_type, summary (LLM-generated 1-paragraph overview), section
-        headings outline, ingestion status, chunk count
+        headings outline, ingestion status (with the pipeline `error` text when a
+        stage failed), chunk count
       - `metadata`: the document's structured metadata extracted at ingest
         (sidecar facts, Tika fields, frontmatter, etc.). The keys here are
         EXACTLY the filter keys you can pass to kb_search via metadata_filter
@@ -1707,7 +1723,8 @@ async def kb_get_document(doc_id: str) -> str:
             .order_by(IngestionJob.created_at)
         )
         jobs = [
-            {"stage": j.stage.value, "status": j.status.value, "error": j.error} for j in jobs_result.scalars().all()
+            {"stage": j.stage.value, "status": j.status.value, "error": _redacted_error(j.error)}
+            for j in jobs_result.scalars().all()
         ]
         source_context = await load_source_ref_context(session, [did])
 
@@ -1716,6 +1733,7 @@ async def kb_get_document(doc_id: str) -> str:
         "title": doc.title,
         "status": doc.status,
         "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
+        "error": _redacted_error(doc.error),
         "summary": doc.summary,
         "mime_type": doc.mime_type,
         "size_bytes": doc.size_bytes,
@@ -1976,7 +1994,7 @@ async def kb_ingest_status(doc_id: str) -> str:
                 "stage": j.stage.value,
                 "status": j.status.value,
                 "progress": f"{j.progress_current}/{j.progress_total}" if j.progress_total else None,
-                "error": j.error,
+                "error": _redacted_error(j.error),
                 "started_at": j.started_at.isoformat() if j.started_at else None,
                 "finished_at": j.finished_at.isoformat() if j.finished_at else None,
             }

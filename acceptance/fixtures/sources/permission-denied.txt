@@ -1,0 +1,6 @@
+PERMISSION DENIED FIXTURE
+
+Ingested with the rest of the corpus like any other note. The acceptance suite
+then removes read permission from this file and reprocesses it, so the extract
+stage fails with an operating-system error that quotes the file's absolute
+path. No query, phrase or entity check depends on this document.

@@ -14,7 +14,7 @@ import time
 import pytest
 
 from acceptance.conftest import Corpus, KeyFactory, documents_under
-from acceptance.hc_client import FOREGROUND_STAGES, HarborClerk, tool_text
+from acceptance.hc_client import FOREGROUND_STAGES, HarborClerk, tool_json, tool_text
 
 pytestmark = pytest.mark.acceptance
 
@@ -323,20 +323,32 @@ def test_d4_email_citation_uses_email_metadata(admin: HarborClerk, corpus: Corpu
     assert {h["doc_id"] for h in mail_hits} == {corpus.doc_id("invoice-thread.eml")}
 
 
-def test_d5_mcp_payloads_never_contain_an_absolute_path(corpus: Corpus, keys: KeyFactory, mcp) -> None:
+def test_d5_mcp_payloads_never_contain_an_absolute_path(
+    corpus: Corpus, keys: KeyFactory, mcp, failed_document: dict
+) -> None:
+    """Including a document whose pipeline error quotes its on-disk path: the
+    key reads what failed with the path replaced by `[path]` (#804)."""
     raw = keys.create("d5-full", scope_folder_ids=[corpus.folder_id])["raw_key"]
     session = mcp.bearer(raw)
     forbidden = (corpus.folder_path, "/Users/", "/private/", "/home/")
+    failed_id = failed_document["doc_id"]
     for name, args in (
         ("kb_search", {"query": "Harbourside Lane", "k": 20}),
         ("kb_find_all", {"query": "standing order"}),
         ("kb_get_document", {"doc_id": corpus.doc_id("lease-agreement.pdf")}),
+        ("kb_get_document", {"doc_id": failed_id}),
+        ("kb_ingest_status", {"doc_id": failed_id}),
     ):
         result = session.call_tool(name, args)
         text = tool_text(result)
         assert text, name
         leaked = [f for f in forbidden if f in text]
         assert not leaked, f"{name} payload contains {leaked}"
+    detail = tool_json(session.call_tool("kb_get_document", {"doc_id": failed_id}))
+    assert detail["pipeline_status"] == "error"
+    assert "[path]" in (detail["error"] or ""), detail["error"]
+    job_errors = [j["error"] for j in detail["jobs"] if j["error"]]
+    assert job_errors and all("[path]" in e for e in job_errors), job_errors
 
 
 def test_d6_search_tier_key_cannot_read_documents_over_rest(

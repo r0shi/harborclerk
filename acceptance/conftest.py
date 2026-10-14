@@ -239,6 +239,41 @@ def keys(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[
         pytest.fail(f"API keys created by this run could not be deleted and are still active: {failed}")
 
 
+def failure_target(groundtruth: dict[str, Any]) -> str:
+    """The fixture `groundtruth.yaml` marks `failure_target`; D5 breaks this one."""
+    return next(name for name, spec in groundtruth["fixtures"].items() if spec.get("failure_target"))
+
+
+@pytest.fixture(scope="session")
+def failed_document(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[dict[str, Any]]:
+    """A fixture document whose extract stage failed with an error quoting its
+    absolute path, for D5.
+
+    The file is ingested with the rest of the corpus, then made unreadable and
+    reprocessed. The order matters: the watcher hashes a file before it
+    registers it, so a file that is unreadable from the start never becomes a
+    document, while the extract stage checks only that the path exists before
+    reading it and fails with ``PermissionError: [Errno 13] Permission denied:
+    '<absolute path>'`` — the text `describe_error` stores on the job and the
+    document. Read permission is restored when the session ends, before the
+    folder and its files are removed. The fixture fails rather than yields
+    when the recorded error does not quote the path (the instance runs as a
+    user the mode does not bind, say), since D5 would then prove nothing."""
+    path = corpus.fixtures[failure_target(corpus.groundtruth)].path
+    doc_id = corpus.doc_id(failure_target(corpus.groundtruth))
+    mode = path.stat().st_mode
+    path.chmod(0)
+    try:
+        admin.reprocess_document(doc_id)
+        doc = admin.wait_for_document_error(doc_id, timeout_s=cfg.ingest_timeout_s)
+        error = doc.get("error") or ""
+        if corpus.folder_path not in error:
+            pytest.fail(f"the failed document's error does not quote its path, so D5 cannot test redaction: {error!r}")
+        yield doc
+    finally:
+        path.chmod(mode)
+
+
 @pytest.fixture(scope="session")
 def empty_folder(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[dict[str, Any]]:
     """A second, registered, empty watched folder: a key scoped to it can see

@@ -129,6 +129,23 @@ tolerates the empty-choices chunk (`research.py`'s streaming reader does not
 ask for usage and still indexes `choices[0]`: asking without fixing the reader
 crashes it).
 
+## Paths over MCP
+
+MCP never emits an absolute path for any principal — a key, an OAuth agent, or
+the chat and research tools, which run the `kb_*` functions in-process as the
+signed-in user (`llm/tools.py`). There is no human branch to preserve, so unlike
+REST the redaction does not consult the principal: a tool that emits pipeline
+`error` text passes it through `_redacted_error` (`redact_path_tokens` from
+`api/scope.py`; `kb_get_document` and `kb_ingest_status` today), and a
+`SourceRef` labels a folder only by its display name. The leaf of the on-disk
+folder path is a path component: `load_source_ref_context(...,
+folder_label_from_path=True)` is the opt-in, and only the REST search and
+passage routes pass it, for a human session (`principal.type != "api_key"`,
+the same test `documents.py` applies to `folder_name`). Never pass it from
+`mcp_server.py`. `tests/test_mcp_source_ref.py` holds the contract; acceptance
+D5 checks it against a live instance with a document whose extract stage
+failed on a path-quoting OSError.
+
 ## Async gotchas
 
 - `enqueue_stage()` uses a **sync** session. Calling it in a loop from an async

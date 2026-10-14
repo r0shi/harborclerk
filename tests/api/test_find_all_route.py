@@ -69,7 +69,7 @@ async def test_search_find_all_forwards_filters_and_returns_sources(monkeypatch)
                 citation="Vendor Contract, p. 2",
             )
 
-    async def fake_load_source_ref_context(session, doc_ids):
+    async def fake_load_source_ref_context(session, doc_ids, **kwargs):
         captured["source_doc_ids"] = list(doc_ids)
         return SourceContext()
 
@@ -149,7 +149,7 @@ async def test_search_find_all_clamps_max_results(monkeypatch) -> None:
             presentation="brief",
         )
 
-    async def fake_load_source_ref_context(session, doc_ids):
+    async def fake_load_source_ref_context(session, doc_ids, **kwargs):
         raise AssertionError("empty find-all results should not need source context")
 
     monkeypatch.setattr(search_route, "get_settings", lambda: Settings())

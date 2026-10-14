@@ -131,3 +131,36 @@ async def test_context_accepts_string_doc_ids(db_session) -> None:
 
     assert ref.doc_id == str(doc.doc_id)
     assert ref.citation == "String id, p. 1"
+
+
+@pytest.mark.asyncio
+async def test_context_labels_an_unnamed_folder_by_its_path_leaf_only_on_request(db_session) -> None:
+    """Without a display name the only candidate label is the last component of
+    the on-disk path; the context emits it only when loaded with the flag."""
+    folder = WatchedFolder(path="/Users/alex/private/Secret Contracts", display_name=None)
+    db_session.add(folder)
+    await db_session.flush()
+
+    doc = _doc(title="NDA", source_path="/Users/alex/private/Secret Contracts/client-a/nda.pdf")
+    db_session.add(doc)
+    await db_session.flush()
+
+    db_session.add(
+        WatchedFile(
+            folder_id=folder.folder_id,
+            relative_path="client-a/nda.pdf",
+            bookmark_data=b"",
+            sha256=doc.sha256,
+            doc_id=doc.doc_id,
+            status=WatchedFileStatus.active,
+        )
+    )
+    await db_session.flush()
+
+    default = (await load_source_ref_context(db_session, [doc.doc_id])).ref_for_doc(doc.doc_id).to_dict()
+    assert "folder_label" not in default
+    assert default["relative_path"] == "client-a/nda.pdf"
+    assert "Secret Contracts" not in str(default)
+
+    human_ctx = await load_source_ref_context(db_session, [doc.doc_id], folder_label_from_path=True)
+    assert human_ctx.ref_for_doc(doc.doc_id).to_dict()["folder_label"] == "Secret Contracts"

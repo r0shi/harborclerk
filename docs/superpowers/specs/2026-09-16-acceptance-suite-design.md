@@ -104,7 +104,7 @@ release template can be filled from the run.
 | D2 | `GET /api/docs/{id}/content` returns page text matching the source; a `pages` range selects pages |
 | D3 | `GET /api/docs/{id}/entities` finds the named people and organisations planted in the fixture |
 | D4 | The `.eml` fixture's citation is `source_kind=email` with sender or subject in `source_label`. An on-disk `.eml` yields exactly one document: attachments become child documents only through IMAP ingest (`mail/ingest.py:198`), so the attachment's text is checked as part of the email's content, not as its own source |
-| D5 | Every MCP tool payload for fixture documents contains no absolute path: the fixture root string is absent from the serialised JSON |
+| D5 | Every MCP tool payload for fixture documents contains no absolute path: the fixture root string is absent from the serialised JSON, including `kb_get_document` and `kb_ingest_status` for a document whose pipeline error quotes its on-disk path, where the key reads the message with `[path]` in place of the path (#804) |
 | D6 | `GET /api/docs/{id}` and `/content` via an API key of any tier: record that they succeed and that `source_path` (absolute) is present. Tier is enforced only in MCP (`api/deps.py:187`); see open question 1 |
 | D7 | `GET /api/docs` filters narrow the list: `language=fr` returns the French fixture, `mime_type=application/pdf` the two PDFs, `q=` a title match |
 
@@ -167,6 +167,7 @@ folder at run time:
 | `bail-commercial.txt` | French text | C2, `language=fr` |
 | `invoice-thread.eml` (built with `tests/mail/fixtures/build_eml.py`) with a small `.txt` attachment | email + attachment | D4, `email.from_address` filter |
 | `handbook.docx` (minimal OOXML package written by the renderer) | Office | B2 via Tika |
+| `permission-denied.txt` | plain text, made unreadable after ingest and reprocessed so its pipeline error quotes the absolute path | D5 |
 | `notes.xyz` | unsupported extension | B5 |
 
 Ground truth records, per fixture, the expected `pipeline_status`, language,

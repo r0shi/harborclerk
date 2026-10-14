@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal
+from harbor_clerk.api.scope import KeyScope
 from harbor_clerk.mcp_server import (
     _mcp_principal,
     kb_batch_search,
@@ -19,13 +20,14 @@ from harbor_clerk.mcp_server import (
     kb_find_all,
     kb_find_related,
     kb_get_document,
+    kb_ingest_status,
     kb_list_recent,
     kb_read_passages,
     kb_search,
     kb_verify_identifier,
 )
-from harbor_clerk.models import Chunk, Document, DocumentLink
-from harbor_clerk.models.enums import PipelineStatus
+from harbor_clerk.models import Chunk, Document, DocumentLink, IngestionJob
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.search import FindAllHit, FindAllResult, SearchHit, SearchResult
 
@@ -33,6 +35,23 @@ from harbor_clerk.search import FindAllHit, FindAllResult, SearchHit, SearchResu
 @pytest.fixture
 def mcp_principal(admin_user):
     token = _mcp_principal.set(Principal(type="user", id=admin_user.user_id, role="admin"))
+    yield
+    _mcp_principal.reset(token)
+
+
+@pytest.fixture
+def mcp_key_principal():
+    """An unscoped full-tier API key: the external caller the MCP contract is written for."""
+    scope = KeyScope(
+        scope_topic_ids=None,
+        scope_folder_ids=None,
+        permission_tier="full",
+        tool_overrides={},
+        max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
+    )
+    token = _mcp_principal.set(Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope))
     yield
     _mcp_principal.reset(token)
 
@@ -67,8 +86,15 @@ def _doc(**kwargs) -> Document:
     return Document(**defaults)
 
 
-async def _add_watched_doc(db_session: AsyncSession, doc: Document, relative_path: str = "client-a/nda.pdf") -> None:
-    folder = WatchedFolder(path="/Users/alex/private/contracts", display_name="Contracts")
+async def _add_watched_doc(
+    db_session: AsyncSession,
+    doc: Document,
+    relative_path: str = "client-a/nda.pdf",
+    *,
+    folder_path: str = "/Users/alex/private/contracts",
+    display_name: str | None = "Contracts",
+) -> None:
+    folder = WatchedFolder(path=folder_path, display_name=display_name)
     db_session.add(folder)
     await db_session.flush()
 
@@ -335,3 +361,87 @@ async def test_kb_verify_identifier_and_documents_by_date_rows_include_source_re
     assert row["citation"] == "Pinnacle Contract"
     assert row["source"]["relative_path"] == "contracts/pinnacle.pdf"
     assert "/Users/alex" not in json.dumps(row)
+
+
+# A stage stores describe_error(exc); an OSError quotes the on-disk file (#804).
+FAILED_ERROR = "PermissionError: [Errno 13] Permission denied: '/Users/alex/private/contracts/board/packet.pdf'"
+REDACTED_ERROR = "PermissionError: [Errno 13] Permission denied: [path]"
+
+
+async def _add_failed_doc(db_session: AsyncSession) -> Document:
+    doc = _doc(title="Board Packet", pipeline_status=PipelineStatus.error, error=FAILED_ERROR)
+    await _add_watched_doc(db_session, doc, relative_path="board/packet.pdf")
+    db_session.add(
+        IngestionJob(
+            doc_id=doc.doc_id,
+            stage=JobStage.extract,
+            status=JobStatus.error,
+            pipeline_seq=doc.pipeline_seq,
+            error=FAILED_ERROR,
+        )
+    )
+    await db_session.flush()
+    return doc
+
+
+async def test_key_reads_a_failed_document_with_paths_redacted_from_every_error(
+    db_session,
+    mcp_key_principal,
+    mock_session_factory,
+) -> None:
+    """The key keeps the message (what failed) and loses the path, on the
+    document and on each job, from both tools that report pipeline errors."""
+    doc = await _add_failed_doc(db_session)
+
+    detail = json.loads(await kb_get_document(str(doc.doc_id)))
+    assert detail["pipeline_status"] == "error"
+    assert detail["error"] == REDACTED_ERROR
+    assert [j["error"] for j in detail["jobs"]] == [REDACTED_ERROR]
+    assert "/Users/alex" not in json.dumps(detail)
+
+    status = json.loads(await kb_ingest_status(str(doc.doc_id)))
+    assert [j["error"] for j in status["jobs"]] == [REDACTED_ERROR]
+    assert "/Users/alex" not in json.dumps(status)
+
+
+async def test_error_redaction_over_mcp_does_not_depend_on_the_principal(
+    db_session,
+    mcp_principal,
+    mock_session_factory,
+) -> None:
+    """The chat tools run MCP functions as the signed-in user and an OAuth agent
+    is neither a key nor a session: MCP redacts for everyone (REST does not)."""
+    doc = await _add_failed_doc(db_session)
+
+    detail = json.loads(await kb_get_document(str(doc.doc_id)))
+    assert detail["error"] == REDACTED_ERROR
+    assert [j["error"] for j in detail["jobs"]] == [REDACTED_ERROR]
+
+
+async def test_folder_without_display_name_yields_no_folder_label_over_mcp(
+    db_session,
+    mcp_principal,
+    mock_session_factory,
+    monkeypatch,
+) -> None:
+    """Without a display name the only candidate label is the last component of
+    the on-disk folder path, so every SourceRef over MCP carries none."""
+    doc = _doc(title="NDA", source_path="/Users/alex/private/Secret Contracts/client-a/nda.pdf")
+    await _add_watched_doc(db_session, doc, folder_path="/Users/alex/private/Secret Contracts", display_name=None)
+    hit = _search_hit(doc)
+
+    async def fake_hybrid_search(*args, **kwargs):
+        return SearchResult(hits=[hit], total_candidates=1)
+
+    monkeypatch.setattr("harbor_clerk.mcp_server.hybrid_search", fake_hybrid_search)
+
+    search = json.loads(await kb_search("termination"))
+    source = search["hits"][0]["source"]
+    assert "folder_label" not in source
+    assert source["relative_path"] == "client-a/nda.pdf"
+
+    detail = json.loads(await kb_get_document(str(doc.doc_id)))
+    assert "folder_label" not in detail["source"]
+
+    for payload in (search, detail):
+        assert "Secret Contracts" not in json.dumps(payload)

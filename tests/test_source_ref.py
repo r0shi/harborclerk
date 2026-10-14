@@ -204,3 +204,33 @@ def test_to_dict_omits_empty_optional_fields() -> None:
     assert "section" not in payload
     assert "None" not in str(payload)
     assert "null" not in str(payload)
+
+
+def test_folder_without_display_name_has_no_label_unless_the_caller_asks_for_the_path_leaf() -> None:
+    """The leaf of the on-disk folder path is a path component: absent by default,
+    present only for a caller that opts in (a human session's REST routes)."""
+    doc = _doc(title="NDA")
+    unnamed = WatchedFolder(path="/Users/alex/private/Secret Contracts", display_name=None)
+    watched_file = WatchedFile(
+        folder_id=uuid4(),
+        relative_path="client-a/nda.pdf",
+        bookmark_data=b"",
+        sha256=b"x" * 32,
+        doc_id=doc.doc_id,
+    )
+
+    payload = build_source_ref(doc=doc, watched_file=watched_file, watched_folder=unnamed).to_dict()
+    assert "folder_label" not in payload
+    assert "Secret Contracts" not in str(payload)
+
+    human = build_source_ref(
+        doc=doc, watched_file=watched_file, watched_folder=unnamed, folder_label_from_path=True
+    ).to_dict()
+    assert human["folder_label"] == "Secret Contracts"
+
+    named = WatchedFolder(path="/Users/alex/private/Secret Contracts", display_name="Contracts")
+    for from_path in (False, True):
+        labelled = build_source_ref(
+            doc=doc, watched_file=watched_file, watched_folder=named, folder_label_from_path=from_path
+        ).to_dict()
+        assert labelled["folder_label"] == "Contracts"

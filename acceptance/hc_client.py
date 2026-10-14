@@ -244,6 +244,21 @@ class HarborClerk:
             f"document {doc_id} not ready in {timeout_s:.0f}s: pipeline_status={doc.get('pipeline_status')}"
         )
 
+    def wait_for_document_error(self, doc_id: str, *, timeout_s: float, poll_s: float = 3.0) -> dict[str, Any]:
+        """The converse of `wait_for_document_ready`, for a failure the suite injected on purpose."""
+        deadline = time.monotonic() + timeout_s
+        doc: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            doc = self.get_document(doc_id)
+            if doc.get("pipeline_status") == "error":
+                return doc
+            if document_ready(doc):
+                raise RuntimeError(f"document {doc_id} became ready; the injected failure did not take")
+            time.sleep(poll_s)
+        raise TimeoutError(
+            f"document {doc_id} did not fail in {timeout_s:.0f}s: pipeline_status={doc.get('pipeline_status')}"
+        )
+
     # ── API keys ────────────────────────────────────────────────────────
 
     def create_api_key(self, name: str, *, permission_tier: str = "full", **fields: Any) -> dict[str, Any]:

@@ -74,6 +74,8 @@ class SourceRefContext:
     watched_files_by_doc: dict[uuid.UUID, WatchedFile]
     watched_folders_by_id: dict[uuid.UUID, WatchedFolder]
     parent_email_docs_by_id: dict[uuid.UUID, Document]
+    # See load_source_ref_context: off unless the caller is a human session.
+    folder_label_from_path: bool = False
 
     def ref_for_doc(
         self,
@@ -107,18 +109,29 @@ class SourceRefContext:
             watched_folder=watched_folder,
             parent_email_doc=parent_email_doc,
             include_relative_path=include_relative_path,
+            folder_label_from_path=self.folder_label_from_path,
         )
 
 
 async def load_source_ref_context(
     session: AsyncSession,
     doc_ids: Iterable[uuid.UUID | str],
+    *,
+    folder_label_from_path: bool = False,
 ) -> SourceRefContext:
-    """Bulk-load source context for the given document ids."""
+    """Bulk-load source context for the given document ids.
+
+    ``folder_label_from_path`` lets a folder with no display name be labelled by
+    the last component of its on-disk path. That component is part of an
+    absolute path, so it is off by default and only a human session's REST
+    routes turn it on (``api/routes/search.py``); MCP never does, whatever the
+    principal, so a citation over MCP names a folder only by the name the
+    operator gave it (``tests/test_mcp_source_ref.py``).
+    """
     normalized_ids = [_coerce_uuid(doc_id) for doc_id in doc_ids]
     unique_ids = list(dict.fromkeys(normalized_ids))
     if not unique_ids:
-        return SourceRefContext({}, {}, {}, {})
+        return SourceRefContext({}, {}, {}, {}, folder_label_from_path=folder_label_from_path)
 
     docs_result = await session.execute(select(Document).where(Document.doc_id.in_(unique_ids)))
     docs_by_id = {doc.doc_id: doc for doc in docs_result.scalars().all()}
@@ -163,6 +176,7 @@ async def load_source_ref_context(
         watched_files_by_doc=watched_files_by_doc,
         watched_folders_by_id=watched_folders_by_id,
         parent_email_docs_by_id=parent_email_docs_by_id,
+        folder_label_from_path=folder_label_from_path,
     )
 
 
@@ -228,12 +242,16 @@ def build_source_ref(
     watched_folder: WatchedFolder | None = None,
     parent_email_doc: Document | None = None,
     include_relative_path: bool = True,
+    folder_label_from_path: bool = False,
 ) -> SourceRef:
-    """Build a SourceRef from preloaded document/source context."""
+    """Build a SourceRef from preloaded document/source context.
+
+    ``folder_label_from_path`` is documented on ``load_source_ref_context``.
+    """
     doc_id = str(doc.doc_id) if doc is not None and doc.doc_id is not None else ""
     relative_path = _safe_relative_path(watched_file.relative_path if watched_file else None)
     doc_title = _document_title(doc, relative_path)
-    folder_label = _folder_label(watched_folder)
+    folder_label = _folder_label(watched_folder, from_path=folder_label_from_path)
 
     if doc is None:
         source_kind: SourceKind = "unknown"
@@ -300,10 +318,19 @@ def _document_title(doc: Document | None, relative_path: str | None) -> str:
     return _clean(doc.title) or _clean(doc.canonical_filename) or _leaf(relative_path) or "Untitled document"
 
 
-def _folder_label(folder: WatchedFolder | None) -> str | None:
+def _folder_label(folder: WatchedFolder | None, *, from_path: bool) -> str | None:
+    """The operator's display name; the path's last component only when asked for.
+
+    The leaf of ``folder.path`` is a component of an absolute on-disk path, so a
+    caller must opt in (see ``load_source_ref_context``). A folder with no
+    display name otherwise has no label, and ``SourceRef.to_dict`` omits it.
+    """
     if folder is None:
         return None
-    return _clean(folder.display_name) or _leaf(folder.path)
+    label = _clean(folder.display_name)
+    if label or not from_path:
+        return label
+    return _leaf(folder.path)
 
 
 def _safe_relative_path(relative_path: str | None) -> str | None:

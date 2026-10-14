@@ -89,6 +89,14 @@ fixtures:
     # H1 soft-deletes this one; no other check depends on it.
     deletion_target: true
     unique_phrase: heron ledger reconciliation
+  permission-denied.txt:
+    render: copy
+    source: permission-denied.txt
+    language: english
+    source_kind: document
+    # D5 makes this one unreadable after ingest and reprocesses it, so its
+    # pipeline error quotes the absolute path; no other check depends on it.
+    failure_target: true
   notes.xyz:
     render: copy
     source: notes.xyz
