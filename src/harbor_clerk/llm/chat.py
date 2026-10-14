@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -52,6 +53,46 @@ _MAX_TOOL_ROUNDS = 25
 # call), so a model whose answer lives in its reasoning channel (gpt-oss) has this long for the whole of it.
 _FINAL_ANSWER_GRACE_SECONDS = 120.0
 _FINAL_ANSWER_THINKING_SECONDS = 120.0
+
+# The forced final call must fit the context (#774). The estimator divides characters by _CHARS_PER_TOKEN; on the four
+# forced prompts llama-server refused (qwen36-35b-a3b at 16,384, bench-20260928-1050-keyed and the Enron and synthetic
+# runs) its own count ran 1.95 to 2.31 times the estimate: a search stopped at an estimated 76% of the context,
+# less the tool schema the forced call does not send, was 18,224 tokens by the tokenizer, and the other three were
+# 17,887, 19,240 and 21,228 against estimates of about 9,200. Tool results are JSON thick with identifiers, which
+# tokenize at under two characters a token, not the prose the constant was set for. So the forced prompt is held
+# to half the budget its estimate would get, which covers three of the four; the fourth is caught by the retry,
+# which trims against the server's count (``_refused_prompt_tokens``). Covering 2.31 outright would hold the
+# prompt to a third of the context and discard most of a search that, in twenty cases of twenty-four, fit as it was.
+_FORCED_CALL_ESTIMATE_FACTOR = 2.0
+# A tool result is not shrunk below this many characters: what is left names the tool and says it was cut.
+_FORCED_CALL_RESULT_FLOOR_CHARS = 400
+# Safety on a trim calibrated by the server's count: the count is of the prompt it refused, the retry's is a
+# different one, and the template's per-message overhead does not shrink with the content.
+_FORCED_CALL_RETRY_SAFETY = 1.1
+
+# The forced call's outer bound (#773). Both clocks above start at the model's first token; before it the prompt is
+# re-read in full (no tools this time, so the prompt cache misses), and the only bound on that read was the client's
+# read timeout of 120 s per silent stretch, which a server that is prefilling never trips. Qwen3.8-27B prefills at 56
+# tokens a second on the 32 GB mini (docs/reports/2026-09-28-benchmark-ix-bench-20260928-1050-keyed.md; the
+# mixture-of-experts models at 240 to 360), so a forced call at 18,000 tokens spent five and a half minutes before
+# either clock started, and a 300 s budget ended 8 to 19 minutes later. The outer deadline runs from the moment the
+# search stopped: the time the slowest registered model needs to read the prompt (its estimated tokens, times the
+# factor above, at this rate), then the thinking bound, then the grace. A constant rather than a registry field: two
+# tiers have been measured, and an unmeasured figure in the registry would be a claim.
+_PREFILL_TOKENS_PER_SECOND = 50.0
+
+# llama-server refuses a prompt longer than the slot's context with HTTP 400 and, at the pin, a message that gives
+# its count: {"error":{"code":400,"message":"request (18224 tokens) exceeds the available context size ...",
+# "type":"exceed_context_size_error"}}. The older wordings are kept for older builds.
+_CONTEXT_OVERFLOW_HINTS = (
+    "exceed_context_size",
+    "exceeds the available context",
+    "context length",
+    "too long",
+    "context window",
+    "max_tokens",
+    "n_ctx",
+)
 
 # The forced final call's last message. Omitting the tool definitions says nothing to a model in the middle of a
 # search: Qwen3.6 wrote the next tool call as text, eight times in ten (#742). Told the search is over, it answers.
@@ -120,17 +161,46 @@ def _cut_thought_answer(thought: str, ran_out: str) -> str:
     return f"_The model was still reasoning when its {ran_out} ran out; what it had:_\n\n{thought.strip()}"
 
 
-def _forced_answer_cut(now: float, thinking_deadline: float | None, final_deadline: float | None) -> str | None:
-    """Why the forced answer is cut at ``now`` ("grace" or "thinking"), or None to keep reading.
+def _forced_answer_cut(
+    now: float,
+    thinking_deadline: float | None,
+    final_deadline: float | None,
+    outer_deadline: float | None = None,
+) -> str | None:
+    """Why the forced answer is cut at ``now`` ("outer", "grace" or "thinking"), or None to keep reading.
 
-    The grace, once running, is the only bound. Before it runs, the thinking bound is, once the model's first
-    token has started it; before that nothing is: the prompt is still being re-read.
+    The outer deadline, measured from the moment the search stopped, holds whatever the inner clocks say: it is
+    what bounds the prompt's re-read before the model's first token (#773). Under it, the grace, once running, is
+    the only bound. Before it runs, the thinking bound is, once the model's first token has started it.
     """
+    if outer_deadline is not None and now >= outer_deadline:
+        return "outer"
     if final_deadline is not None:
         return "grace" if now >= final_deadline else None
     if thinking_deadline is not None and now >= thinking_deadline:
         return "thinking"
     return None
+
+
+def _forced_call_outer_deadline(stopped_at: float, estimated_prompt_tokens: int) -> float:
+    """When the forced call is cut whatever its clocks say: the time the slowest registered model needs to read the
+    prompt (its estimate, times the estimator's measured error, at _PREFILL_TOKENS_PER_SECOND), then the thinking
+    bound, then the grace, from the moment the search stopped."""
+    prefill_allowance = estimated_prompt_tokens * _FORCED_CALL_ESTIMATE_FACTOR / _PREFILL_TOKENS_PER_SECOND
+    return stopped_at + prefill_allowance + _FINAL_ANSWER_THINKING_SECONDS + _FINAL_ANSWER_GRACE_SECONDS
+
+
+def _is_context_overflow(status_code: int, detail: str) -> bool:
+    """Whether llama-server refused the request because the prompt is longer than the slot's context."""
+    lowered = detail.lower()
+    return status_code == 400 and any(hint in lowered for hint in _CONTEXT_OVERFLOW_HINTS)
+
+
+def _refused_prompt_tokens(detail: str) -> int | None:
+    """The server's own count of the prompt it refused, from the 400's message ("request (18224 tokens) exceeds
+    ...") or its ``n_prompt_tokens`` field; None when the body gives neither."""
+    match = re.search(r"request \((\d+) tokens\)", detail) or re.search(r'"n_prompt_tokens"\s*:\s*(\d+)', detail)
+    return int(match.group(1)) if match else None
 
 
 def _estimate_tokens(text: str) -> int:
@@ -206,6 +276,43 @@ def _trim_to_budget(messages: list[dict], context_window: int, model: "ModelInfo
             len(messages) - len(trimmed),
             budget,
         )
+    return trimmed
+
+
+def _shrink_result(content: str, max_chars: int) -> str:
+    """``content`` cut to at most ``max_chars``: the structured cut when it stays within them, a plain one with a
+    marker when it does not (``_truncate_for_llm`` adds its marker after the cut, so a result just above its limit
+    came back no shorter)."""
+    cut = _truncate_for_llm(content, max_chars)
+    if len(cut) <= max_chars:
+        return cut
+    marker = "\n... [cut to fit the context]"
+    return content[: max(0, max_chars - len(marker))] + marker
+
+
+def _trim_for_forced_call(messages: list[dict], budget_tokens: int) -> list[dict]:
+    """``messages`` with its tool results shrunk, largest first, until the estimate is within ``budget_tokens``
+    (#774).
+
+    The system prompt, the user's messages and the assistant's are kept whole, and so is every message: a tool
+    result must follow the call it answers for the template to render. A result is halved at a time (a search's
+    results are ranked, so its head is what the model should keep), down to _FORCED_CALL_RESULT_FLOOR_CHARS, and the
+    largest goes first because one result at the truncation cap is a quarter of the context. When every result is at
+    the floor and the estimate is still over, what is left is sent as it is. Returns a new list; the input is not
+    changed, and the stored rows never were.
+    """
+    trimmed = [dict(m) for m in messages]
+    while _estimate_messages_tokens(trimmed) > budget_tokens:
+        candidates = [
+            i
+            for i, m in enumerate(trimmed)
+            if m.get("role") == "tool" and len(m.get("content") or "") > _FORCED_CALL_RESULT_FLOOR_CHARS
+        ]
+        if not candidates:
+            break
+        largest = max(candidates, key=lambda i: len(trimmed[i]["content"]))
+        content = trimmed[largest]["content"]
+        trimmed[largest]["content"] = _shrink_result(content, max(_FORCED_CALL_RESULT_FLOOR_CHARS, len(content) // 2))
     return trimmed
 
 
@@ -465,10 +572,7 @@ async def chat_stream(
                             report_llm_error(response.status_code)
 
                         # Detect context overflow from llama-server
-                        is_context_overflow = response.status_code == 400 and any(
-                            hint in detail.lower()
-                            for hint in ("context length", "too long", "context window", "max_tokens", "n_ctx")
-                        )
+                        is_context_overflow = _is_context_overflow(response.status_code, detail)
                         if is_context_overflow:
                             error_summary = "Context window full — please start a new conversation"
                         else:
@@ -717,129 +821,205 @@ async def chat_stream(
                 "tool_rounds": f"{_MAX_TOOL_ROUNDS} tool rounds",
             }[stop_reason]
             logger.info("Forcing final text response after %s (conversation=%s)", reason, conversation_id)
-            # The forced answer is bounded too, or the bound is not one. Both clocks start from the model's tokens,
-            # not from the request: the prompt is re-read in full first (no tools this time, so the prompt cache
-            # misses), and on a full context that alone can take most of two minutes, in silence. A keepalive
+            # The forced answer is bounded too, or the bound is not one. Both inner clocks start from the model's
+            # tokens, not from the request: the prompt is re-read in full first (no tools this time, so the prompt
+            # cache misses), and on a full context that read is minutes on a slow model, in silence. A keepalive
             # sentinel is our silence, not the model's token: it starts no clock, though a clock already running is
             # checked on it, so a model that falls silent past its grace is cut then. (The client's read timeout of
             # 120 s is a third bound on that silence, older than both.) The thinking bound runs from the model's
-            # first token, the grace from its first content token (#742). A line carrying no token, the finish
-            # chunk or "[DONE]", is let through whenever it arrives: it cuts nothing, and cutting it would turn a
-            # finished answer into none.
+            # first token, the grace from its first content token (#742). The outer deadline runs from the moment
+            # the search stopped, allowing for the read (#773), and is checked wherever the others are: a model
+            # whose first token never comes is cut at a keepalive. A line carrying no token, the finish chunk or
+            # "[DONE]", is let through whenever it arrives: it cuts nothing, and cutting it would turn a finished
+            # answer into none.
+            stopped_at = _now()
             thinking_deadline: float | None = None
             final_deadline: float | None = None
+            outer_deadline: float | None = None
             cut: str | None = None
             reasoning_buffer = ""  # the model's reasoning channel: the answer when no content comes (below)
             finish_reason: str | None = None  # "stop" when the model ended its answer, "length" when the server did
             # This turn's results, not the history's: an earlier turn's tool rows are in ``messages`` too, and
             # "the results above" would point the model at them.
             search_over = _SEARCH_OVER_MESSAGE if searched_this_turn else _SEARCH_OVER_UNSEARCHED_MESSAGE
-            final_payload = {
-                "messages": [*messages, {"role": "user", "content": search_over}],
-                "stream": True,
-                "temperature": 0.3,
-                # No thinking before the answer: llama-server reads ``enable_thinking`` for the templates that take
-                # it (Qwen3, Gemma 4) and passes ``reasoning_effort`` to gpt-oss's, which thinks regardless and
-                # reasons least at "low". Not "none": at the pin (b29c606) that turns enable_thinking off for every
-                # template and erases the reasoning_effort kwarg, so gpt-oss would get neither hint. Templates that
-                # know neither ignore both.
-                "chat_template_kwargs": {"enable_thinking": False},
-                "reasoning_effort": "low",
-            }
-            try:
-                async with (
-                    httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client,
-                    client.stream(
-                        "POST",
-                        f"{settings.llama_server_url}/v1/chat/completions",
-                        json=final_payload,
-                    ) as response,
-                ):
-                    if response.status_code >= 400:
-                        await response.aread()
-                        if response.status_code >= 500:
-                            report_llm_error(response.status_code)
-                        server_failure = f"HTTP {response.status_code}"
-                        logger.warning(
-                            "Forced final answer failed: %s %s (conversation=%s)",
-                            server_failure,
-                            response.text[:500],
-                            conversation_id,
-                        )
-                    else:
-                        last_sent = _now()
-                        async with aclosing(_iter_with_keepalive(response.aiter_lines())) as lines:
-                            async for line in lines:
-                                if line is _KEEPALIVE_SENTINEL:
-                                    if deadline is not None:
-                                        cut = _forced_answer_cut(_now(), thinking_deadline, final_deadline)
-                                        if cut:
-                                            break
-                                    yield ": keepalive\n\n"
-                                    last_sent = _now()
-                                    continue
-                                if not line.startswith("data: "):
-                                    continue
-                                data = line[6:]
-                                if data.strip() == "[DONE]":
-                                    break
-                                try:
-                                    chunk = json.loads(data)
-                                except json.JSONDecodeError:
-                                    continue
-                                choice = chunk.get("choices", [{}])[0]
-                                finish_reason = choice.get("finish_reason") or finish_reason
-                                delta = choice.get("delta", {})
-                                token = delta.get("content") or ""
-                                thought = delta.get("reasoning_content") or ""
-                                if not token and not thought:
-                                    continue
-                                if deadline is not None:
-                                    if thinking_deadline is None:
-                                        thinking_deadline = _now() + _FINAL_ANSWER_THINKING_SECONDS
-                                    cut = _forced_answer_cut(_now(), thinking_deadline, final_deadline)
-                                    if cut:
-                                        break
-                                    if token and final_deadline is None:
-                                        final_deadline = _now() + _FINAL_ANSWER_GRACE_SECONDS
-                                if token:
-                                    assistant_content += token
-                                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
-                                    last_sent = _now()
-                                else:
-                                    reasoning_buffer += thought
-                                    if _now() - last_sent >= _KEEPALIVE_INTERVAL:
-                                        yield ": keepalive\n\n"
-                                        last_sent = _now()
-                        if cut == "grace":
-                            logger.info(
-                                "Final answer cut after %.0fs of grace (conversation=%s)",
-                                _FINAL_ANSWER_GRACE_SECONDS,
-                                conversation_id,
-                            )
-                        elif cut == "thinking":
-                            logger.info(
-                                "Final answer cut: no content %.0fs after the model's first token, %d chars of "
-                                "reasoning (conversation=%s)",
-                                _FINAL_ANSWER_THINKING_SECONDS,
-                                len(reasoning_buffer),
-                                conversation_id,
-                            )
-            except httpx.TransportError as exc:
-                # A swap or a crash mid-answer resets the connection (#690): that is a lost server too, not a model
-                # that wrote nothing.
-                if isinstance(exc, httpx.TimeoutException):
-                    server_failure = "timed out"
-                elif isinstance(exc, httpx.ConnectError):
-                    server_failure = "unreachable"
-                else:
-                    server_failure = "reset the connection"
-                logger.warning(
-                    "Forced final answer failed: the model server %s (%s) (conversation=%s)",
-                    server_failure,
-                    type(exc).__name__,
+            # The prompt must fit the context with the response reserve kept (#774): the search stopped at an
+            # estimated 75% of the context, and the estimate runs at half the tokenizer's count on tool results
+            # (_FORCED_CALL_ESTIMATE_FACTOR). The tool results are shrunk, largest first, until it does; the rows
+            # the conversation keeps are untouched.
+            untrimmed = [*messages, {"role": "user", "content": search_over}]
+            untrimmed_estimate = _estimate_messages_tokens(untrimmed)
+            forced_budget = int(context_tokens * (1 - _RESPONSE_RESERVE) / _FORCED_CALL_ESTIMATE_FACTOR)
+            forced_messages = _trim_for_forced_call(untrimmed, forced_budget)
+            forced_estimate = _estimate_messages_tokens(forced_messages)
+            if forced_estimate < untrimmed_estimate:
+                logger.info(
+                    "Forced final prompt trimmed from %d to %d estimated tokens to fit the context (%d tokens; "
+                    "budget %d at %.1fx the estimate) (conversation=%s)",
+                    untrimmed_estimate,
+                    forced_estimate,
+                    context_tokens,
+                    forced_budget,
+                    _FORCED_CALL_ESTIMATE_FACTOR,
                     conversation_id,
                 )
+            if deadline is not None:
+                outer_deadline = _forced_call_outer_deadline(stopped_at, forced_estimate)
+            for attempt in range(2):
+                retry_shorter = False  # the server refused the prompt as too long: trim harder and send once more
+                final_payload = {
+                    "messages": forced_messages,
+                    "stream": True,
+                    "temperature": 0.3,
+                    # No thinking before the answer: llama-server reads ``enable_thinking`` for the templates that
+                    # take it (Qwen3, Gemma 4) and passes ``reasoning_effort`` to gpt-oss's, which thinks regardless
+                    # and reasons least at "low". Not "none": at the pin (b29c606) that turns enable_thinking off
+                    # for every template and erases the reasoning_effort kwarg, so gpt-oss would get neither hint.
+                    # Templates that know neither ignore both.
+                    "chat_template_kwargs": {"enable_thinking": False},
+                    "reasoning_effort": "low",
+                }
+                try:
+                    async with (
+                        httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client,
+                        client.stream(
+                            "POST",
+                            f"{settings.llama_server_url}/v1/chat/completions",
+                            json=final_payload,
+                        ) as response,
+                    ):
+                        if response.status_code >= 400:
+                            await response.aread()
+                            detail = response.text[:2000]
+                            if response.status_code >= 500:
+                                report_llm_error(response.status_code)
+                            server_failure = f"HTTP {response.status_code}"
+                            logger.warning(
+                                "Forced final answer failed: %s %s (conversation=%s)",
+                                server_failure,
+                                detail[:500],
+                                conversation_id,
+                            )
+                            if attempt == 0 and _is_context_overflow(response.status_code, detail):
+                                # The refusal is immediate (the server counts before it reads) and names its
+                                # count, so the second trim is calibrated: the estimate is scaled by the server's
+                                # count of the prompt it refused, with a safety; a refusal without a count halves
+                                # the budget. Either way the prompt gets shorter, or there is no point sending it.
+                                counted = _refused_prompt_tokens(detail)
+                                harder = forced_estimate // 2  # no count, or one that would trim nothing: halve
+                                if counted:
+                                    ratio = counted / max(1, forced_estimate)
+                                    calibrated = int(
+                                        context_tokens * (1 - _RESPONSE_RESERVE) / (ratio * _FORCED_CALL_RETRY_SAFETY)
+                                    )
+                                    if calibrated < forced_estimate:
+                                        harder = calibrated
+                                shorter = _trim_for_forced_call(forced_messages, harder)
+                                retried_estimate = _estimate_messages_tokens(shorter)
+                                if retried_estimate < forced_estimate:
+                                    logger.info(
+                                        "Forced final prompt refused as too long (%s tokens by the server against "
+                                        "%d estimated); retrying at %d estimated tokens (conversation=%s)",
+                                        counted if counted else "unknown",
+                                        forced_estimate,
+                                        retried_estimate,
+                                        conversation_id,
+                                    )
+                                    forced_messages = shorter
+                                    forced_estimate = retried_estimate
+                                    server_failure = None
+                                    retry_shorter = True
+                        else:
+                            last_sent = _now()
+                            async with aclosing(_iter_with_keepalive(response.aiter_lines())) as lines:
+                                async for line in lines:
+                                    if line is _KEEPALIVE_SENTINEL:
+                                        if deadline is not None:
+                                            cut = _forced_answer_cut(
+                                                _now(), thinking_deadline, final_deadline, outer_deadline
+                                            )
+                                            if cut:
+                                                break
+                                        yield ": keepalive\n\n"
+                                        last_sent = _now()
+                                        continue
+                                    if not line.startswith("data: "):
+                                        continue
+                                    data = line[6:]
+                                    if data.strip() == "[DONE]":
+                                        break
+                                    try:
+                                        chunk = json.loads(data)
+                                    except json.JSONDecodeError:
+                                        continue
+                                    choice = chunk.get("choices", [{}])[0]
+                                    finish_reason = choice.get("finish_reason") or finish_reason
+                                    delta = choice.get("delta", {})
+                                    token = delta.get("content") or ""
+                                    thought = delta.get("reasoning_content") or ""
+                                    if not token and not thought:
+                                        continue
+                                    if deadline is not None:
+                                        if thinking_deadline is None:
+                                            thinking_deadline = _now() + _FINAL_ANSWER_THINKING_SECONDS
+                                        cut = _forced_answer_cut(
+                                            _now(), thinking_deadline, final_deadline, outer_deadline
+                                        )
+                                        if cut:
+                                            break
+                                        if token and final_deadline is None:
+                                            final_deadline = _now() + _FINAL_ANSWER_GRACE_SECONDS
+                                    if token:
+                                        assistant_content += token
+                                        yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                                        last_sent = _now()
+                                    else:
+                                        reasoning_buffer += thought
+                                        if _now() - last_sent >= _KEEPALIVE_INTERVAL:
+                                            yield ": keepalive\n\n"
+                                            last_sent = _now()
+                            if cut == "grace":
+                                logger.info(
+                                    "Final answer cut after %.0fs of grace (conversation=%s)",
+                                    _FINAL_ANSWER_GRACE_SECONDS,
+                                    conversation_id,
+                                )
+                            elif cut == "thinking":
+                                logger.info(
+                                    "Final answer cut: no content %.0fs after the model's first token, %d chars of "
+                                    "reasoning (conversation=%s)",
+                                    _FINAL_ANSWER_THINKING_SECONDS,
+                                    len(reasoning_buffer),
+                                    conversation_id,
+                                )
+                            elif cut == "outer":
+                                logger.info(
+                                    "Final answer cut at its outer bound, %.0fs after the search stopped (%d "
+                                    "estimated prompt tokens at %.0f tokens/s, the thinking bound and the grace); "
+                                    "%d chars of content, %d of reasoning (conversation=%s)",
+                                    _now() - stopped_at,
+                                    forced_estimate,
+                                    _PREFILL_TOKENS_PER_SECOND,
+                                    len(assistant_content),
+                                    len(reasoning_buffer),
+                                    conversation_id,
+                                )
+                except httpx.TransportError as exc:
+                    # A swap or a crash mid-answer resets the connection (#690): that is a lost server too, not a
+                    # model that wrote nothing.
+                    if isinstance(exc, httpx.TimeoutException):
+                        server_failure = "timed out"
+                    elif isinstance(exc, httpx.ConnectError):
+                        server_failure = "unreachable"
+                    else:
+                        server_failure = "reset the connection"
+                    logger.warning(
+                        "Forced final answer failed: the model server %s (%s) (conversation=%s)",
+                        server_failure,
+                        type(exc).__name__,
+                        conversation_id,
+                    )
+                if not retry_shorter:
+                    break
             if not assistant_content.strip() and reasoning_buffer.strip():
                 # gpt-oss routes its whole answer through the reasoning channel even when asked not to think, and a
                 # model that thinks regardless has only that channel to show for its time (research.py's streaming
