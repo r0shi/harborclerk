@@ -93,6 +93,15 @@ async def chat_session_factory(db_session, _engine, monkeypatch):
     monkeypatch.setattr("harbor_clerk.topics.async_session_factory", _factory)
 
 
+def _pin_no_model(monkeypatch) -> None:
+    """No active model for the run, whatever this machine's native config names: ``chat_stream`` re-reads it
+    (``refresh_llm_settings``), so the ratio table's key is ``_MODEL_KEY`` and the tool schema is the bare one."""
+    from harbor_clerk.llm import chat as chat_module
+
+    monkeypatch.setattr(get_settings(), "llm_model_id", "")
+    monkeypatch.setattr(chat_module, "refresh_llm_settings", lambda: None)
+
+
 async def _conversation(db_session, admin_user):
     from harbor_clerk.models.conversation import Conversation
 
@@ -125,6 +134,7 @@ async def _drive(
     monkeypatch.setattr(get_settings(), "chat_time_budget_seconds", budget)
     monkeypatch.setattr(chat_module, "_now", clock)
     monkeypatch.setattr(chat_module, "_estimate_ratios", {} if ratios is None else ratios)
+    _pin_no_model(monkeypatch)
     if context_tokens is not None:
         monkeypatch.setattr(chat_module, "context_budget", lambda model, yarn: context_tokens)
     tool_calls: list = []
@@ -629,8 +639,9 @@ def _reasoning_chunk(text: str) -> str:
     return _chunk(reasoning_content=text)
 
 
-# The key the chat loop records its measured estimate ratio under: the active model id, "" when none (#805).
-_MODEL_KEY = get_settings().llm_model_id or ""
+# The key the chat loop records its measured estimate ratio under: the active model id, "" when none (#805). The
+# drivers pin the run to no model (``_pin_no_model``), so the key is the empty string whatever this machine's config.
+_MODEL_KEY = ""
 
 
 def _usage_chunk(prompt_tokens: int, completion_tokens: int = 5) -> str:
@@ -1340,6 +1351,7 @@ async def _drive_context_stop(
     monkeypatch.setattr(get_settings(), "chat_time_budget_seconds", budget)
     monkeypatch.setattr(chat_module, "_now", clock)
     monkeypatch.setattr(chat_module, "_estimate_ratios", {})  # no measurement from another test (#805)
+    _pin_no_model(monkeypatch)
 
     async def fake_execute_tool(fn_name, fn_args, user_id, *, user_scope=None):
         return result if result is not None else _big_search_result()
@@ -1871,14 +1883,22 @@ async def test_the_tool_loops_overflow_error_recognises_the_pins_wording(
 # ── #805: the estimate is calibrated against the server's count ──────────────────────────────────────────────────────
 
 
-def _counting_client(ratio: float, answer: list[str] | None = None, rounds: int | None = None):
+def _counting_client(ratio: float, rounds: int | None = None, forced_ratio: float | None = None):
     """A model that calls a tool every round (the first ``rounds`` rounds, when given, then answers), on a server
     that counts each prompt at ``ratio`` times the raw estimate of what was sent and reports the count as usage, in
-    a last chunk with no choices (the pin's shape). The forced final call is served ``answer``. Returns the client
+    a last chunk with no choices (the pin's shape). The forced final call is answered the same way, counted at
+    ``forced_ratio`` (``ratio`` when not given), finish chunk and usage chunk before "[DONE]". Returns the client
     and the payloads the loop sent, in order."""
     from harbor_clerk.llm import chat as chat_module
 
     sent: list[dict] = []
+
+    def forced(*_a, **_k):
+        payload = client.stream.call_args.kwargs["json"]
+        counted = int((forced_ratio or ratio) * chat_module._estimate_messages_tokens(payload["messages"]))
+        return _lines_response(
+            [_chunk(content="From the results."), _finish_chunk("stop"), _usage_chunk(counted), "data: [DONE]"]
+        )
 
     def build(*_a, **_k):
         payload = client.build_request.call_args.kwargs["json"]
@@ -1893,9 +1913,7 @@ def _counting_client(ratio: float, answer: list[str] | None = None, rounds: int 
     client.send = AsyncMock(side_effect=build)
     client.aclose = AsyncMock()
     stream_ctx = MagicMock()
-    stream_ctx.__aenter__ = AsyncMock(
-        side_effect=lambda *a, **k: _lines_response(answer or [_chunk(content="From the results."), "data: [DONE]"])
-    )
+    stream_ctx.__aenter__ = AsyncMock(side_effect=forced)
     stream_ctx.__aexit__ = AsyncMock(return_value=False)
     client.stream = MagicMock(return_value=stream_ctx)
     client.__aenter__ = AsyncMock(return_value=client)
@@ -1927,6 +1945,26 @@ def test_the_ratio_is_measured_clamped_and_smoothed():
         assert chat_module._record_estimate_ratio(None, 1500, 1000) == 1.5 and table[""] == 1.5, (
             "no active model is keyed as the empty string"
         )
+
+
+def test_the_trim_keeps_the_system_prompt_and_the_question_when_nothing_else_fits():
+    """A budget below the system prompt alone (a small context read at the clamp's top): the history goes, the system
+    prompt and the question are what is sent, and the server says whether they fit. Before, this case returned the
+    whole history untrimmed."""
+    from harbor_clerk.llm import chat as chat_module
+
+    messages = [{"role": "system", "content": "s" * 6000}]
+    for i in range(4):
+        messages += [{"role": "user", "content": f"q{i} " * 100}, {"role": "assistant", "content": f"a{i} " * 100}]
+    messages.append({"role": "user", "content": "the question"})
+    ctx = 1024
+    schema = chat_module._get_tool_schema_tokens(None)
+    assert ctx * (1 - chat_module._RESPONSE_RESERVE) / chat_module._ESTIMATE_RATIO_MAX - schema < 6000 / 3.5, (
+        "the scenario: the budget is below the system prompt alone"
+    )
+    trimmed = chat_module._trim_to_budget(messages, ctx, None, chat_module._ESTIMATE_RATIO_MAX)
+    assert trimmed == [messages[0], messages[-1]], "the floor: system prompt and question, nothing else"
+    assert chat_module._trim_to_budget(messages[:1] + messages[-1:], ctx, None, 3.0) == [messages[0], messages[-1]]
 
 
 def test_the_history_trim_reads_the_estimate_at_the_ratio():
@@ -2139,3 +2177,124 @@ async def test_a_refusals_count_is_recorded_too(db_session, admin_user, chat_ses
     assert done["stop_reason"] == "context_budget" and text == "From the results, $4,500."
     assert client.stream.call_count == 2
     assert chat_module._estimate_ratios[_MODEL_KEY] == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_the_forced_calls_count_blends_into_the_table(db_session, admin_user, chat_session_factory, monkeypatch):
+    """The loop's calls measured the server at three times the estimate; the forced call, a different prompt (no
+    tools, the search-over message), is counted at twice. Its usage chunk, choices empty, is read like the loop's:
+    the ratio blends half way, to 2.5."""
+    conv = await _conversation(db_session, admin_user)
+    client, sent = _counting_client(3.0, forced_ratio=2.0)
+    table: dict = {}
+    text, done, tool_calls = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        _Clock(),
+        monkeypatch,
+        budget=0.0,
+        result=_big_search_result(12),
+        context_tokens=32768,
+        ratios=table,
+    )
+    assert done["stop_reason"] == "context_budget" and text == "From the results." and len(tool_calls) >= 2
+    assert table[_MODEL_KEY] == pytest.approx(2.5), "3.0 from the loop, blended half way to the forced call's 2.0"
+
+
+@pytest.mark.asyncio
+async def test_tokens_used_is_the_last_prompt_plus_every_completion(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The stored row's tokens_used: the forced call's prompt (the last one sent, which holds the whole conversation)
+    plus the completion tokens of every call, the loop's rounds and the forced call. Not a running total of prompts,
+    which counted the history once per round."""
+    from sqlalchemy import select
+
+    from harbor_clerk.llm import chat as chat_module
+    from harbor_clerk.models.chat_message import ChatMessage
+
+    conv = await _conversation(db_session, admin_user)
+    client, sent = _counting_client(2.0)
+    text, done, tool_calls = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        _Clock(),
+        monkeypatch,
+        budget=0.0,
+        result=_big_search_result(12),
+        context_tokens=32768,
+    )
+    assert done["stop_reason"] == "context_budget" and len(sent) >= 2
+    forced = client.stream.call_args.kwargs["json"]["messages"]
+    last_prompt = int(2.0 * chat_module._estimate_messages_tokens(forced))
+    rows = await db_session.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id))
+    stored = [r for r in rows.scalars() if r.role == "assistant" and r.content][-1]
+    assert stored.tokens_used == last_prompt + 5 * (len(sent) + 1), (
+        f"{stored.tokens_used} is not the last prompt ({last_prompt}) plus {len(sent) + 1} completions of 5"
+    )
+    assert stored.tokens_used < 2 * 32768, "not several times the context"
+
+
+@pytest.mark.asyncio
+async def test_a_finished_answers_trailing_chunks_past_the_grace_cut_nothing(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The answer's last token came inside the grace; the finish chunk, a blank separator, the usage chunk and
+    "[DONE]" arrive after the grace ran out. None of them carries a token, so nothing is cut: the answer stands as
+    the model's own, with no stop reason and no note."""
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+
+    def move(n, i):
+        if n == 0 and i == 0:
+            clock.now = 301.0  # past the deadline, inside the grace
+        if n == 0 and i == 1:
+            clock.now = 301.0 + 121.0  # the grace is gone before the trailing chunks arrive
+
+    client, _ = _mock_client(
+        [[_chunk(content="The fee was $4,500."), _finish_chunk("stop"), "", _usage_chunk(900), "data: [DONE]"]],
+        on_line=move,
+    )
+    text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
+    assert text == "The fee was $4,500.", text
+    assert "stop_reason" not in done and "I stopped after" not in text
+    assert client.stream.call_count == 0, "nothing was forced"
+
+
+def test_the_lines_that_carry_no_token():
+    from harbor_clerk.llm import chat as chat_module
+
+    assert chat_module._line_carries_no_token("data: [DONE]")
+    assert chat_module._line_carries_no_token("")
+    assert chat_module._line_carries_no_token(": keepalive")
+    assert chat_module._line_carries_no_token("data: not json")
+    assert chat_module._line_carries_no_token(_usage_chunk(900))
+    assert chat_module._line_carries_no_token(_finish_chunk("stop"))
+    assert not chat_module._line_carries_no_token(_chunk(content="x"))
+    assert not chat_module._line_carries_no_token(_chunk(reasoning_content="hmm"))
+    assert not chat_module._line_carries_no_token(_tool_call_chunk())
+
+
+@pytest.mark.asyncio
+async def test_tokens_used_without_a_forced_call_is_the_loops_last_prompt(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The model answers on its own after two tool rounds: the stored tokens_used is the third call's prompt (the
+    last sent, with the tools) plus three completions, not the three prompts summed."""
+    from sqlalchemy import select
+
+    from harbor_clerk.llm import chat as chat_module
+    from harbor_clerk.models.chat_message import ChatMessage
+
+    conv = await _conversation(db_session, admin_user)
+    client, sent = _counting_client(2.0, rounds=2)
+    text, done, tool_calls = await _drive(
+        conv.conversation_id, admin_user, client, _Clock(), monkeypatch, budget=0.0, context_tokens=32768
+    )
+    assert text == "Answered on my own." and "stop_reason" not in done and len(sent) == 3
+    last_prompt = int(2.0 * chat_module._estimate_payload_tokens(sent[-1]["messages"], sent[-1]["tools"]))
+    rows = await db_session.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id))
+    stored = [r for r in rows.scalars() if r.role == "assistant" and r.content][-1]
+    assert stored.tokens_used == last_prompt + 5 * 3, f"{stored.tokens_used} != {last_prompt} + 15"

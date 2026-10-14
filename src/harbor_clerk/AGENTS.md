@@ -117,7 +117,10 @@ completed call. llama-server (pin v0.4.1) sends usage only when the request
 carries `stream_options: {"include_usage": true}`, in a last chunk whose
 `choices` is an **empty array**: `chunk["choices"][0]` raises on it. A new
 estimate-derived figure takes the ratio (`_estimate_ratio(model_id)`); a new
-streamed call asks for usage and records it (`_record_estimate_ratio`).
+streamed call asks for usage, records it (`_record_estimate_ratio`) and
+tolerates the empty-choices chunk (`research.py`'s streaming reader does not
+ask for usage and still indexes `choices[0]`: asking without fixing the reader
+crashes it).
 
 ## Async gotchas
 
