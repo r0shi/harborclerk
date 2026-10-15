@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import create_engine, make_url, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -34,35 +35,47 @@ PHRASE_CHUNK = f"The distributor holds a right{NBSP}of{NBSP}first{NBSP}refusal o
 OTHER_CHUNK = "The distributor holds an option over new territories."
 
 
+def _drop_database(admin, name: str) -> None:
+    """Plain DROP first; FORCE (which terminates sessions) only if something still holds it open."""
+    with admin.connect() as conn:
+        try:
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        except OperationalError:
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+
+
 @pytest.fixture(scope="module")
 def c_locale_url():
     base = make_url(os.environ["DATABASE_URL"])
-    name = f"{base.database}_ctype_c"
-    admin = create_engine(base.set(drivername="postgresql+psycopg2", database="postgres"), isolation_level="AUTOCOMMIT")
-    with admin.connect() as conn:
-        conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
-        conn.execute(
-            text(
-                f"CREATE DATABASE \"{name}\" TEMPLATE template0 ENCODING 'UTF8' "
-                "LOCALE_PROVIDER libc LC_COLLATE 'C' LC_CTYPE 'C'"
-            )
-        )
+    # Ends in _test, as conftest requires of any database the suite writes to.
+    name = f"{base.database}_ctype_c_test"
     url = base.set(database=name)
-    ext_engine = create_engine(url.set(drivername="postgresql+psycopg2"), isolation_level="AUTOCOMMIT")
-    with ext_engine.connect() as conn:
-        for ext in ("vector", "pg_trgm", "citext"):
-            conn.execute(text(f"CREATE EXTENSION IF NOT EXISTS {ext}"))
-    ext_engine.dispose()
-    subprocess.run(
-        ["alembic", "upgrade", "head"],
-        check=True,
-        env={**os.environ, "DATABASE_URL": url.render_as_string(hide_password=False)},
-    )
+    admin = create_engine(base.set(drivername="postgresql+psycopg2", database="postgres"), isolation_level="AUTOCOMMIT")
+    ext_engine = None
     try:
+        _drop_database(admin, name)
+        with admin.connect() as conn:
+            conn.execute(
+                text(
+                    f"CREATE DATABASE \"{name}\" TEMPLATE template0 ENCODING 'UTF8' "
+                    "LOCALE_PROVIDER libc LC_COLLATE 'C' LC_CTYPE 'C'"
+                )
+            )
+        ext_engine = create_engine(url.set(drivername="postgresql+psycopg2"), isolation_level="AUTOCOMMIT")
+        with ext_engine.connect() as conn:
+            for ext in ("vector", "pg_trgm", "citext"):
+                conn.execute(text(f"CREATE EXTENSION IF NOT EXISTS {ext}"))
+        ext_engine.dispose()
+        subprocess.run(
+            ["alembic", "upgrade", "head"],
+            check=True,
+            env={**os.environ, "DATABASE_URL": url.render_as_string(hide_password=False)},
+        )
         yield url
     finally:
-        with admin.connect() as conn:
-            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        if ext_engine is not None:
+            ext_engine.dispose()
+        _drop_database(admin, name)
         admin.dispose()
 
 

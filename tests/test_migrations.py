@@ -1,6 +1,8 @@
 """Tests for Alembic migration round-trips."""
 
 import os
+import threading
+import time
 
 import pytest
 from alembic.config import Config
@@ -198,18 +200,29 @@ def test_0008_refuses_to_drop_the_old_index_when_the_new_one_is_invalid(sync_eng
             conn.execute(text(f"DROP INDEX IF EXISTS public.{name}"))
 
 
-def test_0008_refuses_a_fold_function_with_a_different_body(alembic_cfg, sync_engine):
-    """Never redefine the function under an expression index: an existing, different body raises."""
+def _variant_function_ddl(variant: str) -> str:
+    mig = _load_0008()
+    ddl = mig._FUNCTION_DDL.format(name=mig.FOLD_FUNCTION)
+    if variant == "different body":
+        return ddl.split(" RETURN ")[0] + " RETURN lower($1)"
+    if variant == "set search_path":
+        return ddl.replace(" RETURN ", " SET search_path = public RETURN ", 1)
+    if variant == "security definer":
+        return ddl.replace(" RETURN ", " SECURITY DEFINER RETURN ", 1)
+    if variant == "parallel unsafe":
+        return ddl.replace("PARALLEL SAFE", "PARALLEL UNSAFE", 1)
+    raise AssertionError(variant)
+
+
+@pytest.mark.parametrize("variant", ["different body", "set search_path", "security definer", "parallel unsafe"])
+def test_0008_refuses_a_fold_function_with_a_different_definition(alembic_cfg, sync_engine, variant):
+    """Never redefine the function under an expression index. A same-body function with SET options or
+    SECURITY DEFINER stops inlining (the index no longer matches); PARALLEL UNSAFE forces serial plans."""
     command.upgrade(alembic_cfg, "head")
     try:
         command.downgrade(alembic_cfg, "0007_ingestion_job_pipeline_seq")
         with sync_engine.begin() as conn:
-            conn.execute(
-                text(
-                    "CREATE FUNCTION public.hc_fold_whitespace(text) RETURNS text "
-                    "LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE RETURN lower($1)"
-                )
-            )
+            conn.execute(text(_variant_function_ddl(variant)))
         with pytest.raises(RuntimeError, match="different definition"):
             command.upgrade(alembic_cfg, "head")
     finally:
@@ -220,3 +233,92 @@ def test_0008_refuses_a_fold_function_with_a_different_body(alembic_cfg, sync_en
         command.stamp(alembic_cfg, "0007_ingestion_job_pipeline_seq")
         command.upgrade(alembic_cfg, "head")
     assert _fold_function_exists(sync_engine)
+
+
+def _occupy_name(engine, name: str) -> None:
+    """A non-index relation holding the index's name: CREATE INDEX IF NOT EXISTS skips it, so the
+    build "succeeds" with no index, a real failure path through _require_valid without any patching."""
+    with engine.begin() as conn:
+        conn.execute(text(f"CREATE SEQUENCE public.{name}"))
+
+
+def _free_name(engine, name: str) -> None:
+    with engine.begin() as conn:
+        conn.execute(text(f"DROP SEQUENCE IF EXISTS public.{name}"))
+
+
+def test_0008_upgrade_keeps_the_old_index_when_the_new_build_fails(alembic_cfg, sync_engine):
+    """The plain index is dropped only after the folded one is valid."""
+    mig = _load_0008()
+    command.upgrade(alembic_cfg, "head")
+    try:
+        command.downgrade(alembic_cfg, "0007_ingestion_job_pipeline_seq")
+        _occupy_name(sync_engine, mig.FOLD_INDEX)
+        with pytest.raises(RuntimeError, match="missing or INVALID"):
+            command.upgrade(alembic_cfg, "head")
+        assert _index_state(sync_engine, mig.PLAIN_INDEX)[0] is True, "old index dropped before the new one was valid"
+    finally:
+        _free_name(sync_engine, mig.FOLD_INDEX)
+        _drop_invalid_leftovers(sync_engine, mig.FOLD_INDEX, mig.PLAIN_INDEX)
+        command.upgrade(alembic_cfg, "head")
+
+
+def test_0008_downgrade_keeps_the_folded_index_when_the_plain_build_fails(alembic_cfg, sync_engine):
+    mig = _load_0008()
+    command.upgrade(alembic_cfg, "head")
+    try:
+        _occupy_name(sync_engine, mig.PLAIN_INDEX)
+        with pytest.raises(RuntimeError, match="missing or INVALID"):
+            command.downgrade(alembic_cfg, "0007_ingestion_job_pipeline_seq")
+        assert _index_state(sync_engine, mig.FOLD_INDEX)[0] is True, (
+            "folded index dropped before the plain one was valid"
+        )
+    finally:
+        _free_name(sync_engine, mig.PLAIN_INDEX)
+        _drop_invalid_leftovers(sync_engine, mig.FOLD_INDEX, mig.PLAIN_INDEX)
+        command.upgrade(alembic_cfg, "head")
+
+
+def test_0008_does_not_drop_an_index_whose_build_is_still_running(sync_engine):
+    """An orphaned build (client gone, backend still building) shows as INVALID; a retry must raise
+    and name the pid, not drop the index and start over. A real CREATE INDEX CONCURRENTLY is held in
+    its wait-for-writers phase by an open ROW EXCLUSIVE lock; every wait here is bounded."""
+    mig = _load_0008()
+    name = "ix_test_0008_in_progress"
+    ddl = f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON public.chunks (chunk_num)"
+    errors: list[BaseException] = []
+
+    blocker = sync_engine.connect()
+    blocker_tx = blocker.begin()
+    blocker.execute(text("LOCK TABLE public.chunks IN ROW EXCLUSIVE MODE"))
+
+    def _build():
+        try:
+            with sync_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.execute(text("SET statement_timeout = '30s'"))
+                conn.execute(text(f"CREATE INDEX CONCURRENTLY {name} ON public.chunks (chunk_num)"))
+        except BaseException as exc:  # reported below, never swallowed
+            errors.append(exc)
+
+    builder = threading.Thread(target=_build, daemon=True)
+    builder.start()
+    try:
+        with sync_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            # Bounded: without the guard, DROP INDEX CONCURRENTLY would wait on the builder forever.
+            conn.execute(text("SET lock_timeout = '3s'"))
+            deadline = time.monotonic() + 10
+            while (pid := mig._build_in_progress(conn, name)) is None:
+                assert time.monotonic() < deadline, "the concurrent build never showed in pg_stat_progress_create_index"
+                time.sleep(0.05)
+            assert mig._index_valid(conn, name) is False
+            with pytest.raises(RuntimeError, match=f"index build in progress \\(pid {pid}\\)"):
+                mig._build_index_concurrently(conn, name, ddl)
+            assert mig._index_valid(conn, name) is False, "the in-progress index was dropped"
+    finally:
+        blocker_tx.rollback()
+        blocker.close()
+        builder.join(30)
+        with sync_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text(f"DROP INDEX IF EXISTS public.{name}"))
+    assert not builder.is_alive(), "the concurrent build did not finish after the lock was released"
+    assert errors == []

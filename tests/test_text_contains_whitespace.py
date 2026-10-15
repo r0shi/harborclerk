@@ -16,6 +16,7 @@ from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.search import find_all, hybrid_search
 from harbor_clerk.text_contains import (
     WHITESPACE_RANGES,
+    escape_are,
     fold_whitespace,
     text_contains_clause,
 )
@@ -124,10 +125,12 @@ async def test_sql_function_folds_exactly_the_python_set(db_session):
         assert got == value == fold_whitespace(value), f"U+{cp:04X} folded on one side"
 
 
-async def test_helper_predicate_can_use_the_fold_index(db_session):
+@pytest.mark.parametrize("value", ["first refusal", " first refusal\n"])
+async def test_helper_predicate_can_use_the_fold_index(db_session, value):
     """The planner matches the helper's left side to the expression index, with the pattern bound as a
-    parameter as it is in production (seq scan disabled: the table is tiny)."""
-    stmt = select(Chunk.chunk_id).where(text_contains_clause(Chunk.chunk_text, "first refusal"))
+    parameter as it is in production (seq scan disabled: the table is tiny), with or without the
+    word-boundary recheck that edge whitespace adds."""
+    stmt = select(Chunk.chunk_id).where(text_contains_clause(Chunk.chunk_text, value))
     conn = await db_session.connection()
     compiled = stmt.compile(dialect=conn.dialect)
     params = [compiled.params[name] for name in compiled.positiontup]
@@ -192,13 +195,79 @@ async def test_ilike_metacharacters_still_literal(db_session):
     assert {h.doc_id for h in result.hits} == {ids["percent"]}
 
 
-async def test_argument_is_stripped_after_folding(db_session):
-    """A trailing newline (MCP, CLI) or a leading space must not demand whitespace in the chunk."""
+async def test_edge_whitespace_asks_for_a_word_boundary(db_session):
+    """Stripped for the indexed substring match, but an edge space still means a word edge there:
+    " IP " is the word IP, not "ship"; a trailing newline from the CLI asks only for a word end."""
     ids = await _seed(
         db_session,
-        {"ends": "The covenant grants a first refusal", "other": NOT_MATCHING["other-words"]},
+        {
+            "ip": "The covenant covers the IP clause.",
+            "ip-dot": "The covenant assigns all IP.",
+            "ship": "The covenant covers the ship.",
+            "ipo": "The covenant precedes the IPO.",
+        },
     )
-
-    for phrase in ("first refusal\n", " first refusal", "\tfirst refusal \r\n"):
+    cases = {
+        "IP": {"ip", "ip-dot", "ship", "ipo"},
+        " IP ": {"ip", "ip-dot"},
+        "\tIP\r\n": {"ip", "ip-dot"},
+        " IP": {"ip", "ip-dot", "ipo"},
+        "IP ": {"ip", "ip-dot", "ship"},
+        "IP\n": {"ip", "ip-dot", "ship"},
+    }
+    for phrase, expected in cases.items():
         result = await find_all(db_session, "covenant", max_results=10, text_contains=phrase)
-        assert {h.doc_id for h in result.hits} == {ids["ends"]}, repr(phrase)
+        assert {h.doc_id for h in result.hits} == {ids[label] for label in expected}, repr(phrase)
+
+
+async def test_edge_whitespace_with_inner_whitespace_variants(db_session):
+    """The boundary recheck runs on the folded column, so it holds across NBSPs and line breaks."""
+    ids = await _seed(
+        db_session,
+        {
+            "ends": "The covenant grants a first\nrefusal",
+            "plural": "The covenant grants a first refusals list.",
+            "prefix": "The covenant grants a cofirst refusal.",
+        },
+    )
+    for phrase, expected in {
+        "first refusal\n": {"ends", "prefix"},
+        " first refusal": {"ends", "plural"},
+        "\tfirst refusal \r\n": {"ends"},
+        "first refusal": {"ends", "plural", "prefix"},
+    }.items():
+        result = await find_all(db_session, "covenant", max_results=10, text_contains=phrase)
+        assert {h.doc_id for h in result.hits} == {ids[label] for label in expected}, repr(phrase)
+
+
+async def test_word_boundary_recheck_escapes_regex_metacharacters(db_session):
+    """Each case would match differently (or raise) if the value reached the regex unescaped."""
+    ids = await _seed(
+        db_session,
+        {
+            "dot": "The covenant uses a.b here.",
+            "dot-decoy": "The covenant uses axb and a.bc here.",
+            "paren": "The covenant says f(x) holds.",
+            "plus": "The covenant targets c++ code.",
+            "backslash": "The covenant path is a\\b today.",
+            "dollar": "The covenant fee is $5 flat.",
+            "dollar-decoy": "The covenant fee is $50 flat.",
+        },
+    )
+    for phrase, expected in {
+        " a.b ": {"dot"},
+        " f(x) ": {"paren"},
+        " c++ ": {"plus"},
+        " a\\b ": {"backslash"},
+        " $5 ": {"dollar"},
+    }.items():
+        result = await find_all(db_session, "covenant", max_results=10, text_contains=phrase)
+        assert {h.doc_id for h in result.hits} == {ids[label] for label in expected}, repr(phrase)
+
+
+@pytest.mark.parametrize("value", ["a.b", "f(x)", "c++", "a\\b", "$5", "[z]", "^x|y", "a{2}", "?*", "-_#"])
+async def test_escape_are_matches_literally_in_postgres(db_session, value):
+    matched = (
+        await db_session.execute(text("SELECT :v ~ ('^' || :e || '$')"), {"v": value, "e": escape_are(value)})
+    ).scalar()
+    assert matched is True

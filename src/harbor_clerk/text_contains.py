@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import ColumnElement, func
+from sqlalchemy import ColumnElement, and_, func
 
 from harbor_clerk.sql_escape import escape_ilike
 
@@ -58,13 +58,41 @@ def fold_whitespace(value: str) -> str:
     return _WHITESPACE_RUN_RE.sub(" ", value)
 
 
+# Postgres ARE: a backslash before a non-alphanumeric character means that character, and before
+# an alphanumeric one it is an escape (\m, \d, ...). So only ASCII punctuation is escaped.
+_ARE_PUNCTUATION_RE = re.compile(r"""([!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])""")
+
+# "Not glued to a word character on this side." For a value whose edge character is a word
+# character this is exactly \m / \M; unlike them it also works when the edge is punctuation ("$5").
+_WORD_START = "(?<![[:alnum:]_])"
+_WORD_END = "(?![[:alnum:]_])"
+
+
+def escape_are(value: str) -> str:
+    """``value`` as a Postgres ARE that matches it literally."""
+    return _ARE_PUNCTUATION_RE.sub(r"\\\1", value)
+
+
 def text_contains_clause(column: ColumnElement[str], value: str) -> ColumnElement[bool]:
     """``column`` contains ``value`` as a literal, case-insensitive, whitespace-folded substring.
 
+    Inner whitespace matches any run of whitespace. Leading or trailing whitespace asks for a word
+    boundary on that side: ``" IP "`` matches "the IP clause" and "IP." but not "ship", and a
+    trailing newline from the CLI asks only for a word end. The boundary is a regex recheck ANDed
+    to the substring match, which stays the indexed predicate.
+
     The left side must stay exactly ``hc_fold_whitespace(<column>)`` for the planner to use
-    ``ix_chunks_chunk_text_ws_trgm``; ``%``, ``_`` and ``\\`` in ``value`` match literally.
+    ``ix_chunks_chunk_text_ws_trgm``; ``%``, ``_`` and ``\\`` in ``value`` match literally. An
+    all-whitespace value folds to "" and matches every chunk.
     """
-    # Stripped after folding: a trailing newline from MCP or the CLI must not demand a trailing
-    # space in the chunk. An all-whitespace value becomes "" and matches every chunk.
-    pattern = f"%{escape_ilike(fold_whitespace(value).strip(' '))}%"
-    return func.hc_fold_whitespace(column).ilike(pattern, escape="\\")
+    folded_column = func.hc_fold_whitespace(column)
+    folded = fold_whitespace(value)
+    core = folded.strip(" ")
+    clause = folded_column.ilike(f"%{escape_ilike(core)}%", escape="\\")
+    if not core:
+        return clause
+    start = _WORD_START if folded.startswith(" ") else ""
+    end = _WORD_END if folded.endswith(" ") else ""
+    if start or end:
+        clause = and_(clause, folded_column.op("~*")(f"{start}{escape_are(core)}{end}"))
+    return clause

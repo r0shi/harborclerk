@@ -11,14 +11,20 @@ U+00A0, U+1680, U+2000..U+200A, U+2028, U+2029, U+202F, U+205F, U+3000) into one
 pattern is frozen below. It is IMMUTABLE (regexp_replace with explicit code points and no flags
 does not depend on locale), so it can carry an expression index; it is a plain SQL function with
 no SET clause so the planner inlines it on both the index and the query side. It is created only
-if absent; an existing function with a different body is an error, never replaced (see
+if absent; an existing function with a different definition (body, volatility, strictness,
+parallel safety, SECURITY DEFINER, SET options) is an error, never replaced (see
 alembic/AGENTS.md: an expression index computed with an old body goes stale).
 
 The expression index ``ix_chunks_chunk_text_ws_trgm`` replaces ``ix_chunks_chunk_text_trgm``
 (b56bde44ec8c), whose only reader was the unfolded predicate. Each concurrent build first drops an
 INVALID leftover of the same name (an interrupted CREATE INDEX CONCURRENTLY leaves one, and
 ``IF NOT EXISTS`` would skip it), and the index it replaces is dropped only once the new one is
-valid. Downgrade restores the plain index the same way.
+valid. A leftover whose build is still running (its client was killed, its backend was not) is
+not dropped: the migration raises and names the pid, to be retried when that build finishes.
+Downgrade restores the plain index the same way. An interrupted downgrade followed by
+``upgrade head``, rather than by another downgrade, leaves the fold index INVALID at 0008 (an
+interrupted DROP INDEX CONCURRENTLY marks it INVALID, and the version is still 0008, so the
+upgrade does nothing): re-run the downgrade, then upgrade.
 
 A stored generated column holding the folded text was the alternative; on a 40,000-chunk synthetic
 corpus it took the table from 105 MB to 211 MB for an index of the same size (81 MB) as the
@@ -74,9 +80,13 @@ def _create_fold_function(bind) -> None:
     bind.execute(sa.text(_FUNCTION_DDL.format(name=_EXPECTED_FUNCTION)))
     same = bind.execute(
         sa.text(
+            # A same-body function with SET options or SECURITY DEFINER no longer inlines (the index
+            # stops matching); PARALLEL UNSAFE forces serial plans. The twin's body is never NULL, so
+            # an old-style (AS $$...$$) function, whose sqlbody is NULL, compares unequal.
             "SELECT pg_get_function_sqlbody(a.oid) IS NOT DISTINCT FROM pg_get_function_sqlbody(b.oid) "
-            "AND pg_get_function_sqlbody(a.oid) IS NOT NULL "
             "AND a.provolatile = b.provolatile AND a.proisstrict = b.proisstrict "
+            "AND a.proparallel = b.proparallel AND a.prosecdef = b.prosecdef "
+            "AND a.proconfig IS NOT DISTINCT FROM b.proconfig "
             "AND a.prorettype = b.prorettype "
             f"FROM pg_proc a, pg_proc b WHERE a.oid = '{FOLD_FUNCTION}(text)'::regprocedure "
             f"AND b.oid = '{_EXPECTED_FUNCTION}(text)'::regprocedure"
@@ -109,11 +119,28 @@ def _require_valid(bind, name: str) -> None:
         )
 
 
+def _build_in_progress(bind, name: str) -> int | None:
+    """The pid of a backend still running CREATE INDEX (CONCURRENTLY) on public.<name>, if any."""
+    return bind.execute(
+        sa.text(
+            "SELECT p.pid FROM pg_stat_progress_create_index p JOIN pg_class c ON c.oid = p.index_relid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = :name "
+            "LIMIT 1"
+        ),
+        {"name": name},
+    ).scalar()
+
+
 def _build_index_concurrently(bind, name: str, ddl: str) -> None:
     """CREATE INDEX CONCURRENTLY that survives an interrupted earlier attempt: an INVALID leftover
     of the same name is dropped first (IF NOT EXISTS would otherwise skip it), and the result must
     be valid before the caller drops anything. ``bind`` must be in autocommit (autocommit_block)."""
     if _index_valid(bind, name) is False:
+        # An orphaned build (client killed, backend still running) also shows as INVALID until it
+        # finishes; dropping it would throw that work away and start again.
+        pid = _build_in_progress(bind, name)
+        if pid is not None:
+            raise RuntimeError(f"index build in progress (pid {pid}) on public.{name}; retry when it finishes")
         bind.execute(sa.text(f"DROP INDEX CONCURRENTLY IF EXISTS public.{name}"))
     bind.execute(sa.text(ddl))
     _require_valid(bind, name)

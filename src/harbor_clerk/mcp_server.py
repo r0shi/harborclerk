@@ -921,7 +921,9 @@ async def kb_search(
       on chunk text. Use when the question names a literal phrase that
       must appear ("documents mentioning X"). Differences in whitespace
       are ignored: any run of spaces, tabs, line breaks or non-breaking
-      spaces matches a single space. Special chars (% _) are matched
+      spaces matches a single space. Leading or trailing whitespace asks
+      for a word boundary on that side: " IP " matches "the IP clause"
+      and "IP." but not "ship". Special chars (% _) are matched
       literally. Combine with `query` for relevance ranking among the
       literal-match subset.
     """
@@ -1152,6 +1154,8 @@ async def kb_find_all(
         text. A doc is eligible iff at least one of its chunks contains the
         substring. Differences in whitespace are ignored: any run of spaces,
         tabs, line breaks or non-breaking spaces matches a single space.
+        Leading or trailing whitespace asks for a word boundary on that
+        side: " IP " matches "the IP clause" and "IP." but not "ship".
         Special chars (% _) are matched literally.
       max_results: cap on documents returned (default 100; server clamps
         at settings.find_all_max_results_cap, default 500).
