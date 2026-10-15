@@ -73,14 +73,17 @@ def fts_utf8_url():
 @pytest.fixture(scope="module")
 def fts_en_us_url():
     databases = _private_database("fts_en_us", EN_US_LOCALE_SQL)
+    url = None
     try:
         url = next(databases)
     except DBAPIError as exc:
         if "locale" not in str(exc).lower():
             raise
         pytest.skip(f"the server has no libc en_US.UTF-8 locale: {str(exc).splitlines()[0]}")
-    yield url
-    databases.close()  # drops the database
+    try:
+        yield url
+    finally:
+        databases.close()  # drops the database
 
 
 @pytest.fixture(params=["c", "utf8", "en_us"])
