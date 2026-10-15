@@ -64,5 +64,7 @@ def text_contains_clause(column: ColumnElement[str], value: str) -> ColumnElemen
     The left side must stay exactly ``hc_fold_whitespace(<column>)`` for the planner to use
     ``ix_chunks_chunk_text_ws_trgm``; ``%``, ``_`` and ``\\`` in ``value`` match literally.
     """
-    pattern = f"%{escape_ilike(fold_whitespace(value))}%"
+    # Stripped after folding: a trailing newline from MCP or the CLI must not demand a trailing
+    # space in the chunk. An all-whitespace value becomes "" and matches every chunk.
+    pattern = f"%{escape_ilike(fold_whitespace(value).strip(' '))}%"
     return func.hc_fold_whitespace(column).ilike(pattern, escape="\\")

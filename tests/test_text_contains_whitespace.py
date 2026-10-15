@@ -16,7 +16,6 @@ from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.search import find_all, hybrid_search
 from harbor_clerk.text_contains import (
     WHITESPACE_RANGES,
-    WHITESPACE_RUN_PATTERN,
     fold_whitespace,
     text_contains_clause,
 )
@@ -95,11 +94,18 @@ def test_whitespace_set_is_unicode_white_space():
     assert _whitespace_code_points() == expected
 
 
-def test_migration_freezes_the_same_pattern():
+async def test_live_function_carries_the_migration_pattern(db_session):
+    """The function the database runs is 0008's, pattern and all (Python against SQL is the
+    character-by-character test below)."""
     spec = importlib.util.spec_from_file_location("_mig_0008", _MIGRATION)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.WHITESPACE_RUN_PATTERN == WHITESPACE_RUN_PATTERN
+    body = (
+        await db_session.execute(
+            text("SELECT pg_get_function_sqlbody('public.hc_fold_whitespace(text)'::regprocedure)")
+        )
+    ).scalar()
+    assert f"'{module.WHITESPACE_RUN_PATTERN}'" in body
 
 
 # ---------------------------------------------------------------------------
@@ -184,3 +190,15 @@ async def test_ilike_metacharacters_still_literal(db_session):
 
     result = await hybrid_search(db_session, "covenant", k=10, text_contains="50% up")
     assert {h.doc_id for h in result.hits} == {ids["percent"]}
+
+
+async def test_argument_is_stripped_after_folding(db_session):
+    """A trailing newline (MCP, CLI) or a leading space must not demand whitespace in the chunk."""
+    ids = await _seed(
+        db_session,
+        {"ends": "The covenant grants a first refusal", "other": NOT_MATCHING["other-words"]},
+    )
+
+    for phrase in ("first refusal\n", " first refusal", "\tfirst refusal \r\n"):
+        result = await find_all(db_session, "covenant", max_results=10, text_contains=phrase)
+        assert {h.doc_id for h in result.hits} == {ids["ends"]}, repr(phrase)

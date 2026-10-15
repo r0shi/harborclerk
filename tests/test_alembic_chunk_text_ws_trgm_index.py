@@ -30,3 +30,11 @@ async def test_unfolded_chunk_text_trgm_index_dropped(db_session):
     """0008 replaced ix_chunks_chunk_text_trgm: the unfolded predicate was its only reader."""
     result = await db_session.execute(text("SELECT 1 FROM pg_indexes WHERE indexname='ix_chunks_chunk_text_trgm'"))
     assert result.first() is None
+
+
+async def test_chunks_chunk_text_ws_trgm_index_is_valid(db_session):
+    """indisvalid: an interrupted CREATE INDEX CONCURRENTLY leaves an INVALID index the planner ignores."""
+    result = await db_session.execute(
+        text("SELECT indisvalid FROM pg_index WHERE indexrelid = 'public.ix_chunks_chunk_text_ws_trgm'::regclass")
+    )
+    assert result.scalar() is True

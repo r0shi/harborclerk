@@ -1,4 +1,4 @@
-"""kb_find_all MCP tool \u2014 signature, response shape, server-side clamp."""
+"""kb_find_all MCP tool — signature, response shape, server-side clamp."""
 
 import json
 from contextlib import asynccontextmanager

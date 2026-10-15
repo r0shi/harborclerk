@@ -49,3 +49,22 @@ ones should match so a single admin view can serve them:
 `chunks.fts_en` and `chunks.fts_fr` are **generated stored** tsvector columns
 with GIN indexes — they are computed by PostgreSQL, so never write to them from
 application code.
+
+## Functions under an expression index are never redefined in place
+
+`ix_chunks_chunk_text_ws_trgm` indexes `hc_fold_whitespace(chunk_text)`
+(0008, #819). The index stores values computed with the function body of the
+day it was built; `CREATE OR REPLACE` on that function leaves every stored
+entry stale, and the planner keeps using the index, so `text_contains`
+silently misses rows. A changed fold is a **new function name in a new
+migration** that builds a new index on it and drops the old one. 0008 creates
+the function only if absent and raises if an existing one's body differs.
+
+## Concurrent index builds must survive an interrupted attempt
+
+An interrupted `CREATE INDEX CONCURRENTLY` leaves an INVALID index and the
+revision unstamped; the retry's `IF NOT EXISTS` then skips it. Every startup
+path retries on its own (MigrationRunner, Docker restart), so a migration that
+builds concurrently drops an invalid leftover first and checks `indisvalid`
+before dropping anything the new index replaces (0008's
+`_build_index_concurrently`).
