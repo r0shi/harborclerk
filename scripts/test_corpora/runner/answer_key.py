@@ -19,13 +19,16 @@ Delaware-governed)", "## Mentions / borderline (included for completeness, not o
 lead-in ("**One additional keyword match, not counted above:**"), and an item named there, by id, title or filer,
 is not named (`without_excluded_sections`). A heading (`#` line) or a bold lead-in (`**...**` opening a line)
 marks exclusion when its own text, accents folded, contains "excluded", "exclusion(s)", "excludes", "not counted",
-"not included", "not a match", "non-match", "near-miss", "borderline", "false positive", "not operative", "does
-not" or "no" before a word ("no affirmative covenant"). A heading's section runs to the next heading of its level or
-higher, so its sub-headings and lead-ins go with it; a lead-in's runs to the next lead-in or heading; the answer's
-first section is never dropped. The cost, accepted: a genuinely matching item listed under a hedged heading is
-lost (on bench-20261014-2328-cuad-fable, a labelled contract under "— no affirmative covenant" and another under
-"Mentions / borderline"), and an item rejected in running prose ("X is not one") is still counted. The fact
-matcher accepts negation ("New York law, not Delaware" finds
+"not included", "not a match", "non-match", "near-miss", "borderline", "false positive", "not operative" or "does
+not": the phrasings observed in cloud subjects' answers, in English only (a French answer's "exclus" is not read; no
+keyed list question is asked in French). A bare "no" is not one of them: on the real data it dropped only a
+section holding a labelled contract ("— no affirmative covenant"), and it would drop "## Matches (no duplicates)".
+A heading's section runs to the next heading of its level or higher, so its sub-headings and lead-ins go with it; a
+lead-in's runs to the next lead-in or heading; the answer's first section is never dropped. The costs, accepted: a
+genuinely matching item listed under a hedged heading is lost (on bench-20261014-2328-cuad-fable, a labelled
+contract under "Mentions / borderline"); an item rejected in running prose ("X is not one") is still counted; and a
+lead-in followed by `###` items ("**Not counted:**", then "### 1. Rand") excludes nothing but itself, because a
+heading ends a lead-in's section. The fact matcher accepts negation ("New York law, not Delaware" finds
 "Delaware"); a key is one phrase, so this has not mattered yet, and is stated so that a score of 1.0 is read as
 "the phrase is present", nothing more. The one thing read before the phrase is looked for is the answer's opening
 sentence: one that contains a "found nothing" phrasing ("is not explicitly stated in the retrieved excerpts", then
@@ -209,14 +212,16 @@ def company(title: str) -> str:
     return normalize(title.split("_")[0])
 
 
-# A markdown heading: one to six `#`, then its text. A bold lead-in: `**...**` opening a line (a bulleted or numbered
-# item that starts bold is an item, not a lead-in). What marks a section as the answer's rejects, read in its
-# heading's or lead-in's own text only, lower-cased and accents folded; the module docstring lists them in words.
+# A markdown heading: one to six `#`, then its text. A bold lead-in: `**...**` opening a line. A numbered item written
+# bold ("**1. Staar – Distributor** (doc_id ...)") opens its line bold and so is a lead-in of its own, which is
+# benign: its section is itself, to the next lead-in or heading, and its own text is a name, not a marker. A
+# bulleted one ("- **Staar**") is not a lead-in. What marks a section as the answer's rejects, read in its heading's
+# or lead-in's own text only, lower-cased and accents folded, English only; the module docstring lists them in words.
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t#]*$")
 _BOLD_LEAD = re.compile(r"^[ \t]*\*\*([^*\r\n]+?)\*\*")
 _EXCLUSION = re.compile(
     r"\bexclu(?:ded|sions?|des)\b|\bnot (?:counted|included|a match|operative)\b|\bnon-?match|\bnear-?miss"
-    r"|\bborderline\b|\bfalse positives?\b|\bdoes not\b|\bno [a-z]"
+    r"|\bborderline\b|\bfalse positives?\b|\bdoes not\b"
 )
 _LEAD_IN_LEVEL = 7  # below any heading: a heading's section takes its lead-ins with it, not the other way round
 
@@ -265,8 +270,9 @@ def named_contracts(
 
     `doc_ids` is document id -> title, built by the scoring site from the citations the answer's tools returned
     (`titles_by_doc_id` for a phase-4 response; a baseline's `cited_doc_ids` zipped with its `cited_doc_titles`).
-    An id is read as a title is, squeezed to letters and digits, and must be eight or more of them; an id the map
-    does not hold, or one mapped to a title outside the universe, names nothing. Without the map a cloud model's
+    An id is read as a title is, squeezed to letters and digits, and the whole of it must appear: the eight-character
+    floor is on the map's id, not a licence for partial matching, so a truncated id in the answer ("ebbbd23d-…")
+    never resolves. An id the map does not hold, or one mapped to a title outside the universe, names nothing. Without the map a cloud model's
     list, which writes the parties and the id and never the filename stem, scored 0 named (2026-10-14).
 
     The answer's `citations` are otherwise deliberately not consulted. The app's citations field is every hit any
@@ -312,7 +318,9 @@ def titles_by_doc_id(citations: Iterable | None) -> dict[str, str]:
     for citation in citations or ():
         if not isinstance(citation, dict):
             continue
-        source = citation.get("source") or {}
+        source = citation.get("source")
+        if not isinstance(source, dict):
+            source = {}
         doc_id = citation.get("doc_id") or source.get("doc_id")
         title = citation.get("doc_title") or source.get("doc_title")
         if doc_id and title:

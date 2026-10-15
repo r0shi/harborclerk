@@ -217,6 +217,7 @@ def test_a_contract_is_named_by_its_document_id_when_the_map_resolves_it():
     assert named_contracts(f"see `{ID_ELSEWHERE}`", UNIVERSE, None, DOC_IDS) == set()
     # Read as a title is: hyphens may go, and a short id is too likely to be a page number or a count.
     assert named_contracts(ID_STAAR.replace("-", ""), UNIVERSE, None, DOC_IDS) == {STAAR}
+    assert named_contracts(f"see `{ID_STAAR[:13]}…`", UNIVERSE, None, DOC_IDS) == set(), "a truncated id never resolves"
     assert named_contracts("7 contracts, see p. 7", UNIVERSE, None, DOC_IDS) == set()
     # Titles and filers keep working beside the map, and the map adds to them.
     assert named_contracts(f"Staar Surgical Company; and `{ID_EDIETS}`", UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS}
@@ -685,13 +686,29 @@ def test_an_item_under_a_heading_or_lead_in_that_marks_exclusion_is_not_named():
         "I searched the corpus for the stem **“disparag”**.\n"
     )
     assert named_contracts(not_counted, UNIVERSE, None, DOC_IDS) == {STAAR}
-    assert "disparag" in without_excluded_sections(not_counted), "the next lead-in ends the drop"
+    # Mid-line bold is not a lead-in, so the excluded lead-in's drop runs over the trailing prose to the end...
+    assert "searched the corpus" not in without_excluded_sections(not_counted)
+    # ...and ends at the next heading or lead-in.
+    assert "searched the corpus" in without_excluded_sections(
+        not_counted.replace("I searched", "### Method\nI searched")
+    )
+    assert "searched the corpus" in without_excluded_sections(
+        not_counted.replace("I searched", "**Method:** I searched")
+    )
     # A heading that does not mark exclusion keeps its section, with the words the patterns must not over-read.
     kept = f"## Contracts with the clause\n\n- {STAAR}\n\n## Exclusive license grants (2)\n\n- `{ID_EDIETS}`\n"
     assert named_contracts(kept, UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS}
     assert named_contracts(
         f"## No. 2: {STAAR}\n**Perpetual only (not described as irrevocable)**\n`{ID_EDIETS}`", UNIVERSE, None, DOC_IDS
     ) == {STAAR, EDIETS}
+    # A bare "no" is not a marker: on the real data it dropped only a section holding a labelled contract, and
+    # these headings are not rejects.
+    no_but_kept = (
+        f"Found two.\n\n## Contracts governed by Delaware law — no exceptions\n`{ID_STAAR}`\n\n"
+        f"## Disparagement as a termination trigger only — no affirmative covenant (1)\n`{ID_EDIETS}`\n\n"
+        f"## Matches (no duplicates)\n{ACME_A}\n"
+    )
+    assert named_contracts(no_but_kept, UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS, ACME_A}
 
 
 def test_a_dropped_heading_takes_its_sub_headings_and_lead_ins_and_the_first_section_is_never_dropped():
@@ -714,4 +731,8 @@ def test_a_dropped_heading_takes_its_sub_headings_and_lead_ins_and_the_first_sec
     assert named_contracts(f"Two.\n## Excluded\n**Match:** `{ID_STAAR}`\n", UNIVERSE, None, DOC_IDS) == set()
     # Negation in prose is still not read: the rule reads headings and lead-ins only.
     assert named_contracts(f"Not included: `{ID_EDIETS}` (warranties only)", UNIVERSE, None, DOC_IDS) == {EDIETS}
+    # The shape it cannot read, stated as a cost in the module docstring: an excluded lead-in followed by `###`
+    # items excludes only itself, because a heading ends a lead-in's section.
+    unread = f"Found one: `{ID_STAAR}`.\n\n**Not counted:**\n### 1. Women.com\n**Doc ID:** `{ID_EDIETS}`\n"
+    assert named_contracts(unread, UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS}
     assert without_excluded_sections("") == "" and without_excluded_sections("plain answer") == "plain answer"
