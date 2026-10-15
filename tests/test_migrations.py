@@ -243,8 +243,24 @@ def _occupy_name(engine, name: str) -> None:
 
 
 def _free_name(engine, name: str) -> None:
+    """Drop the occupying sequence, and nothing else: the name may by now be a real index."""
     with engine.begin() as conn:
-        conn.execute(text(f"DROP SEQUENCE IF EXISTS public.{name}"))
+        kind = conn.execute(text("SELECT relkind FROM pg_class WHERE oid = to_regclass(:n)"), {"n": f"public.{name}"})
+        if kind.scalar() == "S":
+            conn.execute(text(f"DROP SEQUENCE public.{name}"))
+
+
+def _restore_head(alembic_cfg, engine) -> None:
+    """Back to a healthy head even if the migration under test regressed: free occupied names, drop
+    INVALID leftovers, and if the folded index is still missing at head, restamp 0007 and rebuild."""
+    mig = _load_0008()
+    _free_name(engine, mig.FOLD_INDEX)
+    _free_name(engine, mig.PLAIN_INDEX)
+    _drop_invalid_leftovers(engine, mig.FOLD_INDEX, mig.PLAIN_INDEX)
+    command.upgrade(alembic_cfg, "head")
+    if _index_state(engine, mig.FOLD_INDEX) is None:
+        command.stamp(alembic_cfg, "0007_ingestion_job_pipeline_seq")
+        command.upgrade(alembic_cfg, "head")
 
 
 def test_0008_upgrade_keeps_the_old_index_when_the_new_build_fails(alembic_cfg, sync_engine):
@@ -258,9 +274,7 @@ def test_0008_upgrade_keeps_the_old_index_when_the_new_build_fails(alembic_cfg, 
             command.upgrade(alembic_cfg, "head")
         assert _index_state(sync_engine, mig.PLAIN_INDEX)[0] is True, "old index dropped before the new one was valid"
     finally:
-        _free_name(sync_engine, mig.FOLD_INDEX)
-        _drop_invalid_leftovers(sync_engine, mig.FOLD_INDEX, mig.PLAIN_INDEX)
-        command.upgrade(alembic_cfg, "head")
+        _restore_head(alembic_cfg, sync_engine)
 
 
 def test_0008_downgrade_keeps_the_folded_index_when_the_plain_build_fails(alembic_cfg, sync_engine):
@@ -274,9 +288,7 @@ def test_0008_downgrade_keeps_the_folded_index_when_the_plain_build_fails(alembi
             "folded index dropped before the plain one was valid"
         )
     finally:
-        _free_name(sync_engine, mig.PLAIN_INDEX)
-        _drop_invalid_leftovers(sync_engine, mig.FOLD_INDEX, mig.PLAIN_INDEX)
-        command.upgrade(alembic_cfg, "head")
+        _restore_head(alembic_cfg, sync_engine)
 
 
 def test_0008_does_not_drop_an_index_whose_build_is_still_running(sync_engine):
