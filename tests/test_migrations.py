@@ -230,8 +230,17 @@ def test_0008_refuses_a_fold_function_with_a_different_definition(alembic_cfg, s
             command.upgrade(alembic_cfg, "head")
     finally:
         # Robust even if the check regressed and an index was built on the wrong body: drop both,
-        # restamp, rebuild from the real definition.
+        # restamp, rebuild from the real definition. If the regression let the run reach 0009, the
+        # FTS columns depend on the function too, and CASCADE would drop them: reset them to
+        # 0001's expressions first (a no-op rewrite at 0007).
         with sync_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE public.chunks "
+                    "ALTER COLUMN fts_en SET EXPRESSION AS (to_tsvector('english', coalesce(chunk_text, ''))), "
+                    "ALTER COLUMN fts_fr SET EXPRESSION AS (to_tsvector('french', coalesce(chunk_text, '')))"
+                )
+            )
             conn.execute(text("DROP FUNCTION IF EXISTS public.hc_fold_whitespace(text) CASCADE"))
         command.stamp(alembic_cfg, "0007_ingestion_job_pipeline_seq")
         command.upgrade(alembic_cfg, "head")
@@ -398,15 +407,18 @@ def test_0009_refuses_a_fold_function_with_a_different_definition(alembic_cfg, s
     assert "hc_fold_whitespace" in _fts_expressions(sync_engine)["fts_en"]
 
 
-def test_0008_guard_passes_twice_on_one_asyncpg_connection():
+def test_0008_guard_passes_twice_on_one_asyncpg_connection(alembic_cfg, sync_engine):
     """The guard resolves both functions when its statement runs: asyncpg caches prepared
     statements per connection, and a '...'::regprocedure literal resolved at prepare time made the
-    second check compare against the dropped first twin and refuse an identical function."""
+    second check compare against the dropped first twin and refuse an identical function. The
+    function must already exist, or the first call creates it and never compares."""
     import asyncio
 
     from sqlalchemy.ext.asyncio import create_async_engine
 
     mig = _load_0008()
+    command.upgrade(alembic_cfg, "head")
+    assert _fold_function_exists(sync_engine)
 
     async def _twice():
         engine = create_async_engine(os.environ["DATABASE_URL"])

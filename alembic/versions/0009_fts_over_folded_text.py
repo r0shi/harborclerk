@@ -39,11 +39,14 @@ which finishes the rewrite and only then rolls back. The Mac app runs migrations
 starts and before the API and workers (``ServiceManager.startAll`` -> ``MigrationRunner``), so
 nothing is waiting: the app is simply slower to come up once. In Compose the API container
 migrates before it serves, and the workers wait on its health check (``start_period`` 600 s, so
-a long migration does not mark it unhealthy). The "Run Migrations" maintenance action runs alembic
+a long migration does not mark it unhealthy; one longer than about 650 s still leaves the
+dependents failed until ``docker compose up`` is run again, and a broken API now takes up to 10
+minutes to be reported unhealthy). The "Run Migrations" maintenance action runs alembic
 beside a live API with a 120 s limit: a search during the rewrite waits for it, and at the limit
 the route cancels the migration's backends by their ``application_name``
-(``harbor_clerk.migration_session``), so the run rolls back at once instead of holding the lock to
-the end. Above roughly 180,000 chunks this migration does not fit in that limit; restart the app
+(``harbor_clerk.migration_session``), so the transaction rolls back at once instead of holding
+the lock to the end, and reports the revision the database is at (a run that started below 0008
+keeps 0008's committed function and index but stays at 0007). Above roughly 180,000 chunks this migration does not fit in that limit; restart the app
 (or the API container) to run it.
 
 The columns now depend on ``hc_fold_whitespace``, exactly as ``ix_chunks_chunk_text_ws_trgm``

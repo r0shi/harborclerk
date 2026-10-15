@@ -11,6 +11,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_admin
@@ -1067,16 +1068,24 @@ async def clear_queue(
 @router.post("/system/run-migrations")
 async def run_migrations(
     admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Run alembic upgrade head. Returns current schema version after completion."""
     import asyncio
     import subprocess
 
+    from harbor_clerk import migration_session
     from harbor_clerk.db import async_session_factory
-    from harbor_clerk.migration_session import APPLICATION_NAME_ENV, cancel_backends, unique_application_name
+    from harbor_clerk.migration_session import APPLICATION_NAME_ENV, cancel_backends, wait_for_exit
+
+    # End this request's transaction first (the session require_admin authenticated with, cached
+    # per request): an idle-in-transaction session holds a snapshot, and CREATE INDEX CONCURRENTLY
+    # (0008) waits for every older snapshot in the database, so alembic would wait on this very
+    # request until the deadline.
+    await session.commit()
 
     settings = get_settings()
-    session_name = unique_application_name()
+    session_name = migration_session.unique_application_name()
 
     def _run():
         result = subprocess.run(
@@ -1098,25 +1107,50 @@ async def run_migrations(
             raise HTTPException(status_code=500, detail=f"Migration failed: {result.stderr[-500:]}")
     except subprocess.TimeoutExpired:
         # subprocess.run killed alembic, but its backend keeps running the statement it was sent
-        # (a table rewrite holds ACCESS EXCLUSIVE to its end); cancel it so the run rolls back now.
+        # (a table rewrite holds ACCESS EXCLUSIVE to its end); cancel it so its transaction rolls
+        # back now. What is left depends on where the deadline fell: revisions committed earlier
+        # in the run (0008's autocommit block commits its own work) stay, and a run past its
+        # COMMIT is complete. So report the version the database is at, not "rolled back".
         async with async_session_factory() as db:
             cancelled = await cancel_backends(db, session_name)
-        logger.warning("Migration timed out after %ss; cancelled %d backend(s)", MIGRATION_TIMEOUT_SECONDS, cancelled)
+            await db.commit()
+            exited = await wait_for_exit(db, session_name)
+            version = await _schema_version(db)
+        logger.warning(
+            "Migration timed out after %ss; cancelled %d session(s) (%d backend(s)); exited=%s; schema at %s",
+            MIGRATION_TIMEOUT_SECONDS,
+            cancelled.sessions,
+            cancelled.backends,
+            exited,
+            version,
+        )
+        still = "" if exited else " (still stopping)"
         raise HTTPException(
             status_code=504,
             detail=(
                 f"Migration timed out after {MIGRATION_TIMEOUT_SECONDS}s and was cancelled "
-                f"({cancelled} database session(s) stopped); it rolled back. Restart the app to run it at startup."
+                f"({cancelled.sessions} database session(s) stopped{still}); the database is at revision "
+                f"{version}. Restart the app to finish the migration at startup."
             ),
         )
 
     # Check resulting version
     async with async_session_factory() as db:
-        ver_result = await db.execute(text("SELECT version_num FROM alembic_version"))
-        row = ver_result.first()
-        version = row[0] if row else "unknown"
+        version = await _schema_version(db)
 
     return {"status": "ok", "schema_version": version}
+
+
+async def _schema_version(db: AsyncSession) -> str:
+    """The committed alembic revision, or "unknown" (no row, or alembic_version locked for 5 s)."""
+    try:
+        await db.execute(text("SET LOCAL lock_timeout = '5s'"))
+        row = (await db.execute(text("SELECT version_num FROM alembic_version"))).first()
+    except DBAPIError:
+        await db.rollback()
+        return "unknown"
+    await db.rollback()
+    return row[0] if row else "unknown"
 
 
 async def _notify_bulk_queue(session: AsyncSession, queue_name: str, count: int) -> None:

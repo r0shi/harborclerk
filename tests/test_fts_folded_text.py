@@ -162,6 +162,29 @@ async def test_migration_recomputes_existing_rows_over_folded_text(locale):
         _alembic(url, "upgrade", "head")
 
 
+async def test_downgrade_recomputes_and_reanalyzes(locale):
+    """Downgrade rewrites the columns back to the unfolded text, and runs ANALYZE too: after it,
+    pg_stats has rows for both columns and the rows match as they did at 0008."""
+    name, url = locale
+    try:
+        async with _session(url) as session:
+            ids = await _seed(session, TEXTS)
+            await session.commit()
+            await session.execute(text("ANALYZE public.chunks"))
+            await session.commit()
+
+            _alembic(url, "downgrade", PRE_REVISION)
+
+            assert await _analyzed_fts_columns(session) == {"fts_en", "fts_fr"}
+            if NBSP_IS_A_LETTER[name]:
+                assert await _fts_matches(session, ids) == ({"en-newline"}, {"fr-newline"})
+            else:
+                assert await _fts_matches(session, ids) == (EN_LABELS, FR_LABELS)
+            await session.commit()
+    finally:
+        _alembic(url, "upgrade", "head")
+
+
 async def test_hybrid_search_finds_whitespace_joined_phrases_through_fts(locale, monkeypatch):
     """New rows at head, and hybrid_search with the embedder down: the FTS leg alone returns them."""
     name, url = locale
