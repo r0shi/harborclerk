@@ -39,8 +39,8 @@ logger = logging.getLogger(__name__)
 # GUC is a hard error rather than a placeholder — hence the savepoint at the use site.
 _HNSW_ITERATIVE_SCAN_SQL = "SET LOCAL hnsw.iterative_scan = relaxed_order"
 
-# Max docs returned when presentation="full" — keeps payload under ~20 KB
-# (top chunk text per doc, ~500 chars).
+# Max docs returned when presentation="full": bounds the payload to up to
+# 30 KB of top chunk text (30 x chunk_target_size, 1,000 chars per chunk).
 _FIND_ALL_FULL_MAX_RESULTS = 30
 
 # presentation="brief" carries one passage per document (#820): the text of the
@@ -745,8 +745,8 @@ async def find_all(
     best chunk, see ``_brief_snippet``) and ``snippet_chunk_id`` (that chunk).
     ``key_max_snippet_chars`` is the calling API key's ``max_snippet_chars``:
     when set, the snippet is the chunk's prefix (``_prefix_snippet``) within
-    min(cap, ``_FIND_ALL_SNIPPET_MAX_CHARS``), and a cap of 0 or less omits
-    both fields; in "full" the top chunk's text is cut to the chunk's first
+    min(cap, ``_FIND_ALL_SNIPPET_MAX_CHARS``), and in brief a cap of 0 or
+    less omits both the snippet and its chunk id; in "full" the top chunk's text is cut to the chunk's first
     max(0, cap) characters (omitted at 0 or less). "full" sets the whole
     best chunk in the ``top_chunk_*`` fields instead and clamps the page to
     ``_FIND_ALL_FULL_MAX_RESULTS`` documents.

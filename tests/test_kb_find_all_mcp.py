@@ -506,6 +506,82 @@ async def test_chat_cut_just_over_takes_snippets_from_the_tail(db_session, admin
     assert flags.count(False) <= 8, flags.count(False)
 
 
+def _assert_snippets_before_rows(result: dict, n_rows: int) -> None:
+    """Snippets go before rows: a cut that lost any row kept no snippet, and the
+    snippets that remain sit on the top-ranked rows."""
+    flags = _snippet_flags(result["results"])
+    if len(result["results"]) < n_rows:
+        assert not any(flags), "a row went while a snippet stayed"
+    assert flags == sorted(flags, reverse=True), "snippets kept only on the top rows"
+
+
+@pytest.mark.parametrize("partly_stripped", [False, True])
+async def test_forced_call_halving_takes_snippets_before_rows(
+    db_session, admin_user, mock_session_factory, partly_stripped
+):
+    """The forced call halves a result at a time through _shrink_result, down to the floor: each
+    halving stays within its limit, and snippets go before rows, starting from a fresh find-all
+    result or from one the loop's cut already partly stripped."""
+    from harbor_clerk.llm.chat import _FORCED_CALL_RESULT_FLOOR_CHARS, _shrink_result, _truncate_for_llm
+
+    await _seed_long_docs(db_session, 40, title_len=80)
+    content = await _find_all_via_chat(admin_user)
+    if partly_stripped:
+        content = _truncate_for_llm(content, len(json.dumps(json.loads(content), ensure_ascii=False)) - 1_000)
+        flags = _snippet_flags(json.loads(content)["results"])
+        assert flags[0] and not flags[-1], "the start must be partly stripped for the test to mean anything"
+
+    limits = []
+    while len(content) > _FORCED_CALL_RESULT_FLOOR_CHARS:
+        limit = max(_FORCED_CALL_RESULT_FLOOR_CHARS, len(content) // 2)  # as _trim_for_forced_call halves
+        content = _shrink_result(content, limit)
+        assert len(content) <= limit, (limit, len(content))
+        limits.append(limit)
+        try:
+            result = json.loads(content)
+        except json.JSONDecodeError:
+            break  # the plain cut with a marker, at the floor
+        _assert_snippets_before_rows(result, 40)
+    assert len(limits) >= 4, limits
+
+
+def test_chat_cut_keeps_every_row_when_only_stripping_every_snippet_fits():
+    """The edge of the tail search: the result fits with no snippet at all and not with one,
+    so every snippet goes and every row stays (searching one short would cost a row)."""
+    from harbor_clerk.llm.chat import _truncate_for_llm
+
+    rows = [
+        {
+            "doc_id": f"{i:036d}",
+            "doc_title": f"Agreement {i:03d}",
+            "score": 0.5,
+            "source": {"doc_id": f"{i:036d}", "chunk_id": f"c{i:035d}", "citation": f"Agreement {i:03d}"},
+            "citation": f"Agreement {i:03d}",
+            "snippet": "the supplier shall deliver the goods " * 6,
+        }
+        for i in range(30)
+    ]
+    data = {"results": rows, "total_matches": 30, "returned": 30, "presentation": "brief"}
+    bare = {
+        **data,
+        "results": [
+            {
+                **{k: v for k, v in r.items() if k != "snippet"},
+                "source": {k: v for k, v in r["source"].items() if k != "chunk_id"},
+            }
+            for r in rows
+        ],
+    }
+    cap = len(json.dumps(bare, ensure_ascii=False))
+
+    out = _truncate_for_llm(json.dumps(data, indent=2), cap)
+
+    assert len(out) <= cap
+    cut = json.loads(out)
+    assert len(cut["results"]) == 30 and "_truncated" not in cut
+    assert not any(_snippet_flags(cut["results"]))
+
+
 def test_chat_cut_leaves_other_results_snippets_alone():
     """Only a find-all result (total_matches and presentation) loses its snippets before rows."""
     from harbor_clerk.llm.chat import _truncate_for_llm
