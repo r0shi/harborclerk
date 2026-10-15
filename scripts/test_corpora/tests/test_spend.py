@@ -66,7 +66,7 @@ def _config(cap: float = 1.00) -> SpendConfig:
 
 def test_the_shipped_policy_is_the_adrs():
     c = spend.load_config()
-    assert c.cap_usd == 25.00
+    assert c.cap_usd == 35.00
     assert c.price("claude-sonnet-4-6") == Price(3.0, 15.0, cache_write_5m=3.75, cache_write_1h=6.0, cache_read=0.30)
     assert c.price("gpt-4o") == Price(input=2.5, output=10.0, cache_read=1.25)
     # The cloud subjects (read 2026-10-14). Claude 4.7 and later count about 30% more tokens than Sonnet 4.6.
@@ -183,7 +183,7 @@ def test_an_unpriced_model_is_refused_with_the_way_to_fix_it():
 def test_a_cap_of_nothing_is_a_configuration_error(tmp_path, body):
     good = (HARNESS / "spend.yaml").read_text()
     bad = tmp_path / "spend.yaml"
-    bad.write_text(good.replace("cap_usd: 25.00", body))
+    bad.write_text(good.replace("cap_usd: 35.00", body))
     with pytest.raises(ValueError):
         spend.load_config(bad)
 
@@ -707,7 +707,7 @@ def test_a_phase_by_phase_resume_is_priced_for_the_phase_it_runs(tmp_path, monke
     assert "with --resume if this run id already has units" in caplog.text
 
 
-@pytest.mark.parametrize("flags", [["--spend-cap-usd", "30"], ["--spend-cap-usd", "0"]])
+@pytest.mark.parametrize("flags", [["--spend-cap-usd", "40"], ["--spend-cap-usd", "0"]])
 def test_a_refused_spend_setting_is_exit_code_3_not_a_traceback(tmp_path, flags, caplog):
     from scripts.test_corpora.runner import sweep
 

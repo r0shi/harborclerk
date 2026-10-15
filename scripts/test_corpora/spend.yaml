@@ -4,7 +4,12 @@
 #
 # The cap can be lowered for one run (--spend-cap-usd, HC_EVAL_SPEND_CAP_USD). Raising it means editing
 # this file, which means a PR.
-cap_usd: 25.00
+#
+# 25.00 until 2026-10-14. Raised to 35.00 by the owner for the frontier cloud-subject runs (#811): with thinking
+# counted, Fable 5.1 on the 20 keyed CUAD questions estimates 24.11 and each call reserves its worst case on top,
+# so a 25.00 cap stops that run around question 17; 35.00 lets the four planned runs (Fable 5.1 and gpt-6-astra
+# on keyed CUAD and keyed synthetic) finish. Lower it per run for anything smaller.
+cap_usd: 35.00
 
 # USD per million tokens, list price, first-party API, global routing, standard context (no long-context premium
 # applies at the sizes the harness sends: Claude 4.6 and later have none, OpenAI's starts at 272K input tokens

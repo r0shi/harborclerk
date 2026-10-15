@@ -1,6 +1,6 @@
 ---
 name: benchmark
-description: Run the local-model evaluation sweep against a disposable Harbor Clerk instance, within the USD 25 cloud cap, and publish the dated report as the machine user. Use only when the owner asks for a benchmark run - it is stage 3 of model-refresh, the re-baseline after a llama.cpp bump, or the evidence for promoting or retiring a model.
+description: Run the local-model evaluation sweep against a disposable Harbor Clerk instance, within the USD 35 cloud cap, and publish the dated report as the machine user. Use only when the owner asks for a benchmark run - it is stage 3 of model-refresh, the re-baseline after a llama.cpp bump, or the evidence for promoting or retiring a model.
 ---
 
 # Benchmark run

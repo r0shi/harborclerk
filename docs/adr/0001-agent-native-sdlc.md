@@ -67,6 +67,9 @@ two Macs. Before this decision:
    with a pre-run estimate that refuses to start over the cap, a hard stop on
    the running total, prices held in configuration, and actual spend recorded
    in the run manifest and the report header. The cap is a starting point.
+   Amended 2026-10-14: raised to USD 35 for the frontier cloud-subject runs
+   (#811), where a thinking model on 20 keyed questions estimates about 24
+   and the per-call worst-case reservation needs headroom above that.
 7. **Signing stays human.** No agent invokes `make sign` or handles the
    app-specific password.
 

@@ -136,8 +136,8 @@ kind, and a Reading left for whoever ran it. The `benchmark` skill (`.claude/ski
 ## Cloud spend is capped
 
 Every cloud call the harness makes (baselines, judges, the cross-judge, synthetic-corpus generation) goes
-through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend.yaml`](spend.yaml): USD 25
-(ADR 0001, decision 6).
+through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend.yaml`](spend.yaml): USD 35
+since 2026-10-14, 25 before (ADR 0001, decision 6, amended).
 
 - **Before the run**, the pending units are priced from the per-kind token estimates in `spend.yaml`. A run
   estimated over the cap does not start (exit code 3); narrow it with `--phases`, `--corpora`, `--models` or

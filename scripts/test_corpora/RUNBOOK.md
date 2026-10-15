@@ -321,7 +321,7 @@ The full per-question detail lives in:
 | Phase 6 | $0 in API; 3-5 GPU-hours |
 | **Total Anthropic spend** | **~$5-10** |
 
-These are estimates from before spend was metered. A run is now capped at USD 25 in code and records what it
+These are estimates from before spend was metered. A run is now capped at USD 35 in code (25 before 2026-10-14) and records what it
 actually spent in `<run_dir>/spend.json`; see "Cloud spend is capped" in the README. Measured since: 20 keyed
 CUAD baselines on Sonnet 4.6 are USD 4.6 at the cache rates the loop asks for (the ledger said 6.6 while it
 priced every write as an hour); the same 20 on Claude Fable 5.1 are estimated at USD 24 and on gpt-6-astra at
