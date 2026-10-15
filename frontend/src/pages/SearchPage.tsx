@@ -40,7 +40,7 @@ interface SearchHit {
   chunk_id: string
   doc_id: string
   chunk_num: number
-  chunk_text: string
+  chunk_text: string | null
   page_start?: number
   page_end?: number
   language: string

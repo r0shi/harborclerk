@@ -5,8 +5,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-# A key's snippet cap: None (no cap) or N >= 0, the first N characters of every passage
-# the key receives on any surface, no text at all at 0 (api/scope.py, #823).
+# A key's snippet cap: None (no cap) or N >= 0, the first N characters of the passage and
+# page text the key receives on any surface, none at 0 (harbor_clerk/passage_cap.py, #823).
 SnippetCap = Annotated[int | None, Field(ge=0)]
 
 

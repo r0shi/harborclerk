@@ -58,7 +58,7 @@ interface DocumentDetail {
 
 interface PageContent {
   page_num: number
-  text: string
+  text: string | null // null only for an API key capped at 0 (#823); the web app never sees it
   ocr_used: boolean
   ocr_confidence?: number
 }
@@ -1066,7 +1066,7 @@ export default function DocumentDetailPage() {
                     )}
                   </div>
                   <pre className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200">
-                    {renderPageWithHighlight(page.text, highlightChunkText)}
+                    {renderPageWithHighlight(page.text ?? '', highlightChunkText)}
                   </pre>
                 </Card>
               ))}

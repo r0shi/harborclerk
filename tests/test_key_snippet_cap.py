@@ -1,6 +1,6 @@
 """An API key's ``max_snippet_chars`` bounds every passage it receives, on every surface (#823).
 
-One rule (``api.scope.cap_passage_text`` / ``cap_text``): under a key with a cap
+One rule (``passage_cap.cap_passage_text`` / ``cap_text``): under a key with a cap
 of N, a passage is the chunk's (or page's) first N characters; a cap of 0 — or a
 negative value stored before create/update validated it — returns no text;
 humans and keys with no cap are unaffected. Each surface below is driven with a
@@ -19,11 +19,12 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal
-from harbor_clerk.api.scope import KeyScope, cap_passage_text, cap_text, snippet_cap
+from harbor_clerk.api.scope import KeyScope
 from harbor_clerk.auth import create_access_token, generate_api_key, hash_api_key
 from harbor_clerk.mcp_server import _mcp_principal, _resolve_principal
 from harbor_clerk.models import ApiKey, Chunk, Document, DocumentPage
 from harbor_clerk.models.enums import PipelineStatus
+from harbor_clerk.passage_cap import cap_passage_text, cap_text, snippet_cap
 from tests.conftest import auth_header
 
 ELLIPSIS = "…"
@@ -135,20 +136,30 @@ def _passages(obj: object, key: str | None = None) -> list[str | None]:
     return found
 
 
-def _assert_capped(payload: dict, cap: int | None, sources: list[str]) -> None:
+def _whole_range(surface: str) -> bool:
+    """A whole-document surface caps the requested range, not each page: N characters in all."""
+    return "kb_read_document" in surface or "/content" in surface
+
+
+def _assert_capped(payload: dict, cap: int | None, sources: list[str], *, whole_range: bool = False) -> None:
     assert '"doc_id"' in json.dumps(payload), f"the surface returned nothing to check: {payload}"
-    texts = [t for t in _passages(payload) if t]
+    values = _passages(payload)
+    texts = [t for t in values if t]
     if cap is None:
         assert any(len(t) > 50 for t in texts), f"an uncapped caller must receive whole passages: {texts}"
         return
     if cap <= 0:
-        assert texts == [], f"a key capped at {cap} received passage text: {texts}"
+        # "No text" is said one way on every surface: the field is null or absent, never "".
+        assert all(v is None for v in values), f"a key capped at {cap} received passage text: {values}"
         return
     assert texts, "a capped key received no passage at all"
     for t in texts:
         body = t.removesuffix(ELLIPSIS)
         assert len(body) <= cap, f"{len(t)} chars under a cap of {cap}: {t!r}"
         assert any(s.startswith(body) for s in sources), f"not a prefix of any chunk or page: {t!r}"
+    if whole_range:
+        total = sum(len(t) for t in texts)
+        assert total <= cap, f"{total} chars across the response under a cap of {cap}: {texts}"
 
 
 # --- surfaces ---------------------------------------------------------------
@@ -210,7 +221,7 @@ async def test_mcp_surface_honours_the_key_snippet_cap(db_session, corpus, mock_
         payload = await MCP_SURFACES[surface](corpus)
     finally:
         _mcp_principal.reset(token)
-    _assert_capped(payload, cap, corpus.sources)
+    _assert_capped(payload, cap, corpus.sources, whole_range=_whole_range(surface))
 
 
 @pytest.mark.parametrize("surface", list(MCP_SURFACES), ids=list(MCP_SURFACES))
@@ -238,7 +249,7 @@ async def _rest(client, corpus: Corpus, surface: str, headers: dict) -> dict:
 async def test_rest_route_honours_the_key_snippet_cap(client, db_session, corpus, surface, cap):
     raw = await _make_key(db_session, cap)
     payload = await _rest(client, corpus, surface, auth_header(raw))
-    _assert_capped(payload, cap, corpus.sources)
+    _assert_capped(payload, cap, corpus.sources, whole_range=_whole_range(surface))
 
 
 @pytest.mark.parametrize("surface", list(REST_SURFACES), ids=list(REST_SURFACES))

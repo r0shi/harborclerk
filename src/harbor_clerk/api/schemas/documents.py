@@ -64,7 +64,7 @@ class DocumentDetail(BaseModel):
 
 class PageContent(BaseModel):
     page_num: int
-    text: str
+    text: str | None  # null only for an API key whose snippet cap is 0 (#823)
     ocr_used: bool
     ocr_confidence: float | None = None
 

@@ -187,37 +187,69 @@ SNIPPET_CAP = 50
 
 def _over_cap(texts: list[str | None]) -> list[str]:
     """Passages longer than the cap; a trailing ellipsis (a brief trim) is not counted."""
-    return [t for t in texts if t and len(t.removesuffix("…")) > SNIPPET_CAP]
+    return [t for t in texts if t and len(t.removesuffix("\u2026")) > SNIPPET_CAP]
+
+
+def _not_prefixes(capped: dict[str, str | None], full: dict[str, str]) -> list[str]:
+    """Chunk ids whose capped text is not the start of the chunk's whole text."""
+    return [cid for cid, t in capped.items() if t and not full[cid].startswith(t.removesuffix("\u2026"))]
 
 
 def test_g10_snippet_capped_key_never_receives_a_longer_passage(
     admin: HarborClerk, keys: KeyFactory, corpus: Corpus, mcp
 ) -> None:
-    """A read-tier key with max_snippet_chars=50 gets no passage over 50 characters from
-    kb_search, kb_read_passages or REST POST /api/search (#823), and still gets passages."""
+    """A read-tier key with max_snippet_chars=50 (plus kb_read_document) gets passages that are each
+    the chunk's first characters, never over 50, from kb_search, kb_read_passages, REST POST
+    /api/search, and at most 50 characters in all from kb_read_document (#823). A smoke test:
+    tests/test_key_snippet_cap.py covers every surface offline."""
     raw = keys.create(
-        "g10-snippet-cap", permission_tier="read", scope_folder_ids=[corpus.folder_id], max_snippet_chars=SNIPPET_CAP
+        "g10-snippet-cap",
+        permission_tier="read",
+        tool_overrides={"kb_read_document": True},
+        scope_folder_ids=[corpus.folder_id],
+        max_snippet_chars=SNIPPET_CAP,
     )["raw_key"]
     session = mcp.bearer(raw)
     hits = tool_json(session.call_tool("kb_search", {"query": "renewal notice", "k": 5}))["hits"]
     assert hits, "the capped key found nothing"
-    hit_texts = [h.get("text") for h in hits]
-    assert any(hit_texts), "kb_search returned no passage text at all under a positive cap"
-    assert not _over_cap(hit_texts), _over_cap(hit_texts)
-    passages = tool_json(
-        session.call_tool("kb_read_passages", {"chunk_ids": [h["chunk_id"] for h in hits], "include_context": True})
-    )["passages"]
+    chunk_ids = [h["chunk_id"] for h in hits]
+    # The whole chunks, as the signed-in admin reads them, to check the prefix property against.
+    full = {p["chunk_id"]: p["chunk_text"] for p in admin.read_passages({"chunk_ids": chunk_ids})["passages"]}
+    hit_texts = {h["chunk_id"]: h.get("text") for h in hits}
+    assert any(hit_texts.values()), "kb_search returned no passage text at all under a positive cap"
+    assert not _over_cap(list(hit_texts.values())), _over_cap(list(hit_texts.values()))
+    assert not _not_prefixes(hit_texts, full), _not_prefixes(hit_texts, full)
+
+    passages = tool_json(session.call_tool("kb_read_passages", {"chunk_ids": chunk_ids, "include_context": True}))[
+        "passages"
+    ]
     assert passages, "kb_read_passages returned nothing for the key's own hits"
     passage_texts = [p.get(f) for p in passages for f in ("text", "context_before", "context_after")]
     assert not _over_cap(passage_texts), _over_cap(passage_texts)
+    read = {p["chunk_id"]: p.get("text") for p in passages}
+    assert not _not_prefixes(read, full), _not_prefixes(read, full)
+
     key = admin.with_key(raw)
     try:
         rest = key.search("renewal notice", k=5)
     finally:
         key.close()
     assert rest["hits"], "REST search returned nothing for the capped key"
-    rest_texts = [h.get("chunk_text") for h in rest["hits"]]
-    assert not _over_cap(rest_texts), _over_cap(rest_texts)
+    rest_texts = {h["chunk_id"]: h.get("chunk_text") for h in rest["hits"]}
+    assert not _over_cap(list(rest_texts.values())), _over_cap(list(rest_texts.values()))
+    full.update(
+        {p["chunk_id"]: p["chunk_text"] for p in admin.read_passages({"chunk_ids": list(rest_texts)})["passages"]}
+    )
+    assert not _not_prefixes(rest_texts, full), _not_prefixes(rest_texts, full)
+
+    doc_id = corpus.doc_id("lease-agreement.pdf")
+    doc = tool_json(session.call_tool("kb_read_document", {"doc_id": doc_id}))
+    doc_text = "".join(p.get("text") or "" for p in doc["pages"])
+    assert 0 < len(doc_text) <= SNIPPET_CAP, f"{len(doc_text)} chars across kb_read_document under a cap of 50"
+    if doc.get("source") == "pages":  # the chunk fallback overlaps chunks; /content has no pages to compare
+        whole = admin.request("GET", f"/api/docs/{doc_id}/content").json()
+        whole_text = "".join(p["text"] or "" for p in whole["pages"])
+        assert whole_text.startswith(doc_text), "kb_read_document is not the start of the document"
 
 
 def test_g3_key_scoped_to_an_empty_folder_sees_nothing_and_says_why(keys: KeyFactory, empty_folder: dict, mcp) -> None:

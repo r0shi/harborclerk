@@ -3,6 +3,7 @@ import { Link } from 'react-router'
 import { del, get, patch, post } from '../api'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
+import { parseSnippetCap, snippetCapInput } from '../utils/snippetCap'
 
 type PermissionTier = 'search' | 'read' | 'full'
 
@@ -137,7 +138,7 @@ function scopeStateFromKey(k: ApiKeyInfo): ScopeFormState {
     toolOverrides: { ...k.tool_overrides },
     topicIds: k.scope_topic_ids,
     folderIds: k.scope_folder_ids,
-    maxSnippetChars: k.max_snippet_chars != null ? String(k.max_snippet_chars) : '',
+    maxSnippetChars: snippetCapInput(k.max_snippet_chars),
     rateLimitRpmUnlimited: k.rate_limit_rpm === 0,
     rateLimitRpm: k.rate_limit_rpm != null && k.rate_limit_rpm > 0 ? String(k.rate_limit_rpm) : '',
     rateLimitRphUnlimited: k.rate_limit_rph === 0,
@@ -156,15 +157,17 @@ interface ScopePayload {
   rate_limit_rph: number | null
 }
 
+// Throws on an invalid snippet cap; callers check snippetCapError first and show it.
 function scopeStateToPayload(s: ScopeFormState): ScopePayload {
-  const maxSnippet = s.maxSnippetChars.trim() ? Number(s.maxSnippetChars) : null
+  const cap = parseSnippetCap(s.maxSnippetChars)
+  if (!cap.ok) throw new Error(cap.error)
   return {
     expires_at: s.expiresAt ? s.expiresAt + 'T23:59:59Z' : null,
     permission_tier: s.tier,
     tool_overrides: s.toolOverrides,
     scope_topic_ids: s.topicIds,
     scope_folder_ids: s.folderIds,
-    max_snippet_chars: maxSnippet != null && Number.isFinite(maxSnippet) && maxSnippet > 0 ? maxSnippet : null,
+    max_snippet_chars: cap.value,
     rate_limit_rpm: s.rateLimitRpmUnlimited ? 0 : s.rateLimitRpm.trim() ? Number(s.rateLimitRpm) : null,
     rate_limit_rph: s.rateLimitRphUnlimited ? 0 : s.rateLimitRph.trim() ? Number(s.rateLimitRph) : null,
   }
@@ -408,6 +411,8 @@ function ScopeFormFields({
   topics: TopicCluster[]
   folders: WatchedFolderInfo[]
 }) {
+  const parsedCap = parseSnippetCap(state.maxSnippetChars)
+  const snippetCapError = parsedCap.ok ? null : parsedCap.error
   return (
     <div className="space-y-4">
       <div>
@@ -557,12 +562,24 @@ function ScopeFormFields({
         </label>
         <input
           type="number"
-          min="1"
+          min="0"
+          step="1"
+          aria-label="Max snippet chars"
           value={state.maxSnippetChars}
           onChange={(e) => setState((s) => ({ ...s, maxSnippetChars: e.target.value }))}
           placeholder="No limit"
           className="w-40 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
         />
+        {snippetCapError ? (
+          <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">
+            {snippetCapError}
+          </p>
+        ) : (
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Passage and page text the key receives is cut to its first N characters; 0 returns citations without passage
+            text. Titles, summaries and metadata are not capped. Empty = no limit.
+          </p>
+        )}
       </div>
 
       <div>
@@ -643,6 +660,11 @@ function CreateKeyForm({
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    const cap = parseSnippetCap(scope.maxSnippetChars)
+    if (!cap.ok) {
+      onError(cap.error)
+      return
+    }
     setSubmitting(true)
     try {
       const payload = { name, ...scopeStateToPayload(scope) }
@@ -705,14 +727,19 @@ function EditKeyModal({
   onSaved: () => void
   onError: (msg: string) => void
 }) {
-  const [scope, setScope] = useState<ScopeFormState>(scopeStateFromKey(apiKey))
+  const [initialScope] = useState<ScopeFormState>(() => scopeStateFromKey(apiKey))
+  const [scope, setScope] = useState<ScopeFormState>(initialScope)
   const [submitting, setSubmitting] = useState(false)
   const [preview, setPreview] = useState<ScopePreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const debounceRef = useRef<number | null>(null)
 
-  // Memo the payload object; use its JSON string as a stable effect dep key
-  const scopePayload = useMemo(() => scopeStateToPayload(scope), [scope])
+  // Memo the preview inputs; use their JSON string as a stable effect dep key. The
+  // preview needs only tier and document scope, never the snippet cap (which may be invalid mid-edit).
+  const scopePayload = useMemo(
+    () => ({ permission_tier: scope.tier, scope_topic_ids: scope.topicIds, scope_folder_ids: scope.folderIds }),
+    [scope.tier, scope.topicIds, scope.folderIds],
+  )
   const payloadKey = useMemo(() => JSON.stringify(scopePayload), [scopePayload])
 
   // Debounced live scope preview: POST unsaved scope params to get real-time
@@ -743,9 +770,21 @@ function EditKeyModal({
   }, [apiKey.key_id, payloadKey, scopePayload])
 
   async function handleSave() {
+    // PATCH applies every field it is sent, so send the snippet cap only when the admin changed it:
+    // re-sending a value the form cannot represent would silently remove the key's cap.
+    const capChanged = scope.maxSnippetChars.trim() !== initialScope.maxSnippetChars.trim()
+    const cap = parseSnippetCap(scope.maxSnippetChars)
+    if (capChanged && !cap.ok) {
+      onError(cap.error)
+      return
+    }
+    const { max_snippet_chars, ...rest } = scopeStateToPayload(
+      capChanged ? scope : { ...scope, maxSnippetChars: initialScope.maxSnippetChars },
+    )
+    const body = capChanged ? { ...rest, max_snippet_chars } : rest
     setSubmitting(true)
     try {
-      await patch(`/api/api-keys/${apiKey.key_id}`, scopeStateToPayload(scope))
+      await patch(`/api/api-keys/${apiKey.key_id}`, body)
       onSaved()
     } catch (e) {
       onError(e instanceof Error ? e.message : 'Save failed')

@@ -24,7 +24,7 @@ from harbor_clerk.api.schemas.documents import (
     PaginatedDocuments,
     RelatedDocumentsResponse,
 )
-from harbor_clerk.api.scope import apply_key_scope, is_human, redact_paths_for_principal, snippet_cap
+from harbor_clerk.api.scope import apply_key_scope, is_human, redact_paths_for_principal
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
@@ -38,6 +38,7 @@ from harbor_clerk.models import (
 )
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.watched import WatchedFile, WatchedFolder
+from harbor_clerk.passage_cap import snippet_cap
 from harbor_clerk.sql_escape import escape_ilike
 from harbor_clerk.storage import get_storage
 
@@ -585,6 +586,7 @@ async def get_document_content(
     cap = snippet_cap(principal)
     if cap is not None:
         max_chars = cap if max_chars is None else min(max_chars, cap)
+    no_text = cap == 0  # at a cap of 0 a page carries no text (null), as on every other surface
 
     page_contents = []
     total_chars = 0
@@ -595,7 +597,7 @@ async def get_document_content(
             page_contents.append(
                 PageContent(
                     page_num=p.page_num,
-                    text=text,
+                    text=None if no_text else text,
                     ocr_used=p.ocr_used,
                     ocr_confidence=p.ocr_confidence,
                 )
@@ -605,7 +607,7 @@ async def get_document_content(
         page_contents.append(
             PageContent(
                 page_num=p.page_num,
-                text=text,
+                text=None if no_text else text,
                 ocr_used=p.ocr_used,
                 ocr_confidence=p.ocr_confidence,
             )

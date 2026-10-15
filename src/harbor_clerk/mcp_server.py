@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from harbor_clerk.api.deps import Principal
-from harbor_clerk.api.scope import cap_passage_text, cap_text, is_human, redact_path_tokens, snippet_cap
+from harbor_clerk.api.scope import is_human, redact_path_tokens
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.config import get_settings, refresh_cli_access_setting
 from harbor_clerk.db import async_session_factory
@@ -34,6 +34,7 @@ from harbor_clerk.models import (
     IngestionJob,
 )
 from harbor_clerk.oauth import validate_access_token as validate_oauth_access_token
+from harbor_clerk.passage_cap import cap_passage_text, cap_text, snippet_cap
 from harbor_clerk.search import (
     FindAllHit,
     FindAllResult,
@@ -652,7 +653,7 @@ def _format_search_response(
     """Build the non-faceted search response dict from a SearchResult.
 
     Shared between kb_search and kb_batch_search. ``passage_cap`` is the calling
-    key's cap (``api.scope.snippet_cap``): each hit's text is the chunk's first
+    key's cap (``passage_cap.snippet_cap``): each hit's text is the chunk's first
     ``passage_cap`` characters before the detail level trims it, and a cap of 0
     omits the text as compact does.
     """
@@ -928,6 +929,8 @@ async def kb_search(
         understand score distribution and document coverage before narrowing down
       Under an API key with a snippet cap of N characters, a hit's text is the
       chunk's first N characters at every detail level (none at a cap of 0).
+      The cap applies to passage text only: titles, metadata and whether a
+      text_contains literal matched are returned as usual.
 
     faceted: if true, groups hits by document with per-document top_score
       and hit_count — useful for understanding which documents are most
@@ -2694,7 +2697,7 @@ async def kb_read_document(
 
     Returns the full text in chunk order, with optional pagination. Under an
     API key with a snippet cap of N characters, the response is the first N
-    characters of the requested range (no text at a cap of 0).
+    characters of the requested range in all (page text null at a cap of 0).
     """
     principal = _get_principal()
     try:
@@ -2708,6 +2711,8 @@ async def kb_read_document(
     cap = snippet_cap(principal)
     if cap is not None:
         max_chars = min(max_chars, cap)
+    # At a cap of 0 a page carries no text (null), as every other surface says "no text".
+    no_text = cap == 0
 
     async with async_session_factory() as session:
         visible_ids = await _visible_doc_ids(session, principal)
@@ -2743,11 +2748,11 @@ async def kb_read_document(
                 text = c.chunk_text
                 if total_chars + len(text) > max_chars:
                     text = text[: max_chars - total_chars]
-                    pages_out.append({"chunk_num": c.chunk_num, "text": text})
+                    pages_out.append({"chunk_num": c.chunk_num, "text": None if no_text else text})
                     total_chars += len(text)
                     truncated = True
                     break
-                pages_out.append({"chunk_num": c.chunk_num, "text": text})
+                pages_out.append({"chunk_num": c.chunk_num, "text": None if no_text else text})
                 total_chars += len(text)
 
             resp: dict = {
@@ -2783,7 +2788,7 @@ async def kb_read_document(
                 pages_out.append(
                     {
                         "page_num": p.page_num,
-                        "text": text,
+                        "text": None if no_text else text,
                         "ocr_used": p.ocr_used,
                         "ocr_confidence": p.ocr_confidence,
                     }
@@ -2794,7 +2799,7 @@ async def kb_read_document(
             pages_out.append(
                 {
                     "page_num": p.page_num,
-                    "text": text,
+                    "text": None if no_text else text,
                     "ocr_used": p.ocr_used,
                     "ocr_confidence": p.ocr_confidence,
                 }

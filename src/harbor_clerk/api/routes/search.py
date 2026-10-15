@@ -23,18 +23,12 @@ from harbor_clerk.api.schemas.search import (
     SearchRequest,
     SearchResponse,
 )
-from harbor_clerk.api.scope import (
-    apply_folder_scope,
-    apply_key_scope,
-    cap_passage_text,
-    cap_text,
-    is_human,
-    snippet_cap,
-)
+from harbor_clerk.api.scope import apply_folder_scope, apply_key_scope, is_human
 from harbor_clerk.api.scope_validation import validate_scope_folders
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.models import Chunk, Document
+from harbor_clerk.passage_cap import cap_passage_text, cap_text, snippet_cap
 from harbor_clerk.search import find_all, hybrid_search
 from harbor_clerk.search_types import FindAllHit
 from harbor_clerk.source_ref import SourceRef, format_document_citation, format_pages, load_source_ref_context

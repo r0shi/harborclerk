@@ -74,17 +74,24 @@ API keys never receive absolute on-disk paths (`source_path`,
 ### Snippet caps
 
 A key's snippet cap (**Max snippet chars** in **Settings -> API Keys**) bounds
-every passage of document text the key receives, on every surface: MCP search
-hits (`kb_search`, `kb_batch_search`, at every `detail` level), `kb_find_all`
-snippets and top chunks, `kb_read_passages` (and its context), `kb_expand_context`,
-`kb_read_document`, the CLI (which speaks MCP), and the REST equivalents
-(`POST /api/search`, `/api/search/find-all`, `/api/passages/read`,
+the passage and page text the key receives, on every surface: MCP search hits
+(`kb_search`, `kb_batch_search`, at every `detail` level), `kb_find_all`
+snippets and top chunks, `kb_read_passages` (and its context),
+`kb_expand_context`, `kb_read_document`, the CLI (which speaks MCP), and the REST
+equivalents (`POST /api/search`, `/api/search/find-all`, `/api/passages/read`,
 `GET /api/docs/{id}/content`). Under a cap of N, a passage is the chunk's (or
 page's) first N characters, never a window the caller can move; a brief trim may
-add a trailing ellipsis. A cap of 0 returns citations and metadata with no
-passage text. `kb_read_document` and `/content` return the first N characters of
-the requested range, and `/download` (the original's bytes) is refused to a key
-with a cap. Leave the cap unset for no limit; negative values are rejected.
+add a trailing ellipsis. `kb_read_document` and `/content` return the first N
+characters of the requested range in all, and `/download` (the original's bytes)
+is refused to a key with a cap. A cap of 0 returns citations and metadata with
+the text fields null or absent. Leave the cap unset for no limit; negative values
+are rejected.
+
+The cap does not cover what is not passage text: document titles, summaries,
+metadata, headings and entity strings are returned as they are. Nor does it hide
+whether a `text_contains` literal occurs: a search with `text_contains` returns a
+chunk only if the chunk contains the literal, so a capped key can confirm that a
+phrase appears in a chunk without receiving the text around it.
 
 If a skill or harness tries a tool outside its key scope, treat that as a
 recoverable scope mismatch. The agent should continue with search and passage

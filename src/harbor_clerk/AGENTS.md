@@ -90,24 +90,24 @@ downloaded.
 
 ## API keys over REST
 
-The tier is enforced on both surfaces from one table. `REST_ROUTE_TOOLS`
-(`api/scope.py`) maps each REST route a key may reach to the MCP tool whose data
-it exposes; `require_read_access` admits a key iff that tool is in the key's
-effective set, and a route that uses the dependency without an entry is closed
-to keys (`tests/test_rest_api_key_tier.py` fails when the two drift, and
-`gen_docs` refuses to run). A new key-reachable route needs an entry and a row
-in that test's `KEY_ROUTES`. Reads with no MCP counterpart (jobs, stats, watched
-folders, chat, research) are `require_human_user`; there is deliberately no
-"any authenticated principal" dependency, and `tests/test_gen_docs.py` refuses
-a route with a blank gate unless it is public. Keys never receive `source_path` /
-`watch_source_path`: wrap a document-shaped response in
-`redact_paths_for_principal`, add any new absolute-path field to
-`ABSOLUTE_PATH_FIELDS`, and any free-text field that may quote one (pipeline
-`error` text does) to `ABSOLUTE_PATH_TEXT_FIELDS`.
-Snippet cap (#823): every chunk or page text in a key-reachable payload goes
-through `cap_passage_text` / `cap_text(..., snippet_cap(...))` (`api/scope.py`):
-the first N characters, never a movable window; none at 0; a negative stored
-cap is 0. A new surface gets a row in `tests/test_key_snippet_cap.py`.
+The tier is enforced on both surfaces from one table, `REST_ROUTE_TOOLS`
+(`api/scope.py`): each key-reachable REST route maps to the MCP tool whose data
+it exposes, and `require_read_access` admits a key iff that tool is in its
+effective set. A route using the dependency without an entry is closed to keys;
+`tests/test_rest_api_key_tier.py` (add a `KEY_ROUTES` row) and `gen_docs` fail
+on drift. Reads with no MCP counterpart (jobs, stats, watched folders, chat,
+research) are `require_human_user`; there is no "any authenticated principal"
+dependency, and `tests/test_gen_docs.py` refuses a blank gate unless public.
+Keys never receive `source_path` / `watch_source_path`: wrap document-shaped
+responses in `redact_paths_for_principal`; register a new path field in
+`ABSOLUTE_PATH_FIELDS`, free text that may quote one (pipeline `error` text
+does) in `ABSOLUTE_PATH_TEXT_FIELDS`. Snippet cap (#823): all chunk or page text
+in a key-reachable payload goes through `passage_cap.py` (`cap_passage_text`,
+`cap_text`, `snippet_cap`): the first N characters, never a movable window; null
+at 0; a stored negative is 0. Titles, summaries, metadata, headings, entity
+strings and `text_contains` matches are not passage text and stay uncapped (a
+match tells a capped key the literal is in the chunk). New surface: a row in
+`tests/test_key_snippet_cap.py`.
 
 ## The chat token estimate is raw; the bounds are predicted
 

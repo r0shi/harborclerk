@@ -261,41 +261,6 @@ def _redact_path_fields(obj: object) -> None:
             _redact_path_fields(item)
 
 
-# ---------------------------------------------------------------------------
-# Per-key snippet cap
-# ---------------------------------------------------------------------------
-#
-# An API key's ``max_snippet_chars`` bounds every passage of corpus text the key
-# receives, on every surface (MCP tools, the CLI that speaks MCP, and the REST
-# routes in REST_ROUTE_TOOLS): a passage is the chunk's (or page's) first
-# ``cap`` characters, never a window the caller can move. A cap of 0 — or a
-# negative value stored before create/update validated it — returns no text at
-# all. Humans, OAuth agents and keys with no cap are unaffected. One rule in one
-# place (#823): every site that puts chunk or page text into a key-facing
-# payload goes through ``cap_passage_text`` / ``cap_text``.
-
-
-def snippet_cap(principal: _ScopedPrincipal) -> int | None:
-    """The calling key's snippet cap, clamped at 0; None when no cap applies."""
-    scope = principal.key_scope
-    if scope is None or scope.max_snippet_chars is None:
-        return None
-    return max(0, scope.max_snippet_chars)
-
-
-def cap_text(text: str, cap: int | None) -> str | None:
-    """``text`` under a snippet cap: unchanged when ``cap`` is None, else its
-    first ``cap`` characters, or None (no text) when ``cap`` is 0 or less."""
-    if cap is None:
-        return text
-    return text[:cap] if cap > 0 else None
-
-
-def cap_passage_text(text: str, principal: _ScopedPrincipal) -> str | None:
-    """A passage of corpus text as ``principal`` may receive it (see ``cap_text``)."""
-    return cap_text(text, snippet_cap(principal))
-
-
 def build_user_scope(scope_dict: dict | None) -> "UserScope | None":
     """Build a UserScope from a Conversation.scope or ResearchState.scope JSONB dict.
 

@@ -11,11 +11,11 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.scope import cap_text
 from harbor_clerk.config import get_settings
 from harbor_clerk.embedder_client import embed_texts_async
 from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
+from harbor_clerk.passage_cap import cap_text
 from harbor_clerk.search_rerank import rerank_hits
 from harbor_clerk.search_types import ConflictSource, FindAllHit, FindAllResult, SearchHit, SearchResult
 from harbor_clerk.text_contains import text_contains_clause
