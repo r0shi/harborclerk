@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from sqlalchemy import select
@@ -1531,24 +1531,52 @@ def _generate_title(user_message: str) -> str:
 _LARGE_ARRAY_KEYS = ("documents", "results", "entities", "related", "passages", "chunks", "headings")
 
 
-def _drop_find_all_snippets(data: dict) -> bool:
-    """Remove kb_find_all's brief snippets (#820) from a parsed result, in place:
-    every row's ``snippet`` and the ``source.chunk_id`` it brings (a full row's
-    top chunk keeps its own). True when anything was removed.
+def _without_snippet(row: Any) -> Any:
+    """A copy of a kb_find_all brief row without its ``snippet`` and the
+    ``source.chunk_id`` it brings (only brief rows carry a snippet; a full row
+    is returned as it is)."""
+    if not isinstance(row, dict) or "snippet" not in row:
+        return row
+    row = {k: v for k, v in row.items() if k != "snippet"}
+    if isinstance(row.get("source"), dict):
+        row["source"] = {k: v for k, v in row["source"].items() if k != "chunk_id"}
+    return row
 
-    A snippet is triage help, a row is a document the enumeration found: when a
-    find-all result exceeds the per-result cap, the snippets go before any row,
-    so a result that would fit without them keeps every row it had before
-    snippets existed."""
-    dropped = False
-    for row in data.get("results") or []:
-        if isinstance(row, dict) and "snippet" in row:
-            del row["snippet"]
-            source = row.get("source")
-            if isinstance(source, dict) and "top_chunk" not in row:
-                source.pop("chunk_id", None)
-            dropped = True
-    return dropped
+
+def _fit_find_all_snippets(data: dict, max_chars: int) -> str | None:
+    """A kb_find_all result (#820) fitted to ``max_chars`` by its snippets alone,
+    or None when it does not fit even without any; ``data["results"]`` is left
+    without snippets in that case, for the row cut that follows.
+
+    A snippet is triage help, a row is a document the enumeration found, so the
+    snippets go before any row. First the compact form (the tool's indented,
+    ASCII-escaped string often fits once compacted, with every snippet); then
+    snippets come off the lowest-ranked rows first, as few as fit. Other
+    results, including any future tool whose rows carry a ``snippet``, are not
+    touched: the result must carry find-all's ``total_matches`` and
+    ``presentation``."""
+    rows = data.get("results")
+    if not ("total_matches" in data and "presentation" in data and isinstance(rows, list)):
+        return None
+    if not any(isinstance(row, dict) and "snippet" in row for row in rows):
+        return None
+    compact = json.dumps(data, ensure_ascii=False)
+    if len(compact) <= max_chars:
+        return compact
+    bare = [_without_snippet(row) for row in rows]
+    # Smallest k (rows stripped from the tail) that fits; the length falls as k grows.
+    lo, hi = 1, len(rows)
+    best: str | None = None
+    while lo <= hi:
+        k = (lo + hi) // 2
+        data["results"] = rows[: len(rows) - k] + bare[len(rows) - k :]
+        candidate = json.dumps(data, ensure_ascii=False)
+        if len(candidate) <= max_chars:
+            best, hi = candidate, k - 1
+        else:
+            lo = k + 1
+    data["results"] = rows if best is not None else bare
+    return best
 
 
 def _truncate_for_llm(result_str: str, max_chars: int = 28_000) -> str:
@@ -1569,10 +1597,9 @@ def _truncate_for_llm(result_str: str, max_chars: int = 28_000) -> str:
         return result_str[:max_chars] + f"\n... [truncated — {len(result_str)} chars total]"
 
     # Find-all snippets go before any row (#820).
-    if _drop_find_all_snippets(data):
-        without_snippets = json.dumps(data, ensure_ascii=False)
-        if len(without_snippets) <= max_chars:
-            return without_snippets
+    fitted = _fit_find_all_snippets(data, max_chars)
+    if fitted is not None:
+        return fitted
 
     # Find the largest array field to truncate
     target_key = None

@@ -383,18 +383,29 @@ def _no_snippet_copy(raw: str) -> str:
     return json.dumps(data, indent=2)
 
 
+def _snippet_flags(rows: list[dict]) -> list[bool]:
+    return [bool(row.get("snippet")) for row in rows]
+
+
+async def _find_all_via_chat(admin_user, max_results: int = 100) -> str:
+    from harbor_clerk.llm.tools import execute_tool
+
+    return await execute_tool(
+        "find_all_documents", {"query": "agreement", "max_results": max_results}, user_id=admin_user.user_id
+    )
+
+
 @pytest.mark.parametrize("context_tokens", [16_384, 32_768, 65_536, 131_072])
 async def test_chat_cut_drops_snippets_before_rows(db_session, admin_user, mock_session_factory, context_tokens):
-    """Chat's per-result cut removes every find-all snippet (and its brief chunk id) before it
-    drops a row: with CUAD-length titles, whenever the cut happens it keeps exactly as many rows
-    as the same result without snippets, and no row keeps a snippet."""
+    """Chat's per-result cut takes snippets (and their brief chunk ids) before any row: with
+    CUAD-length titles it keeps exactly as many rows as the same result without snippets. When
+    rows go, every snippet has gone first; when every row stays, the snippets that remain are
+    on the top-ranked rows."""
     from harbor_clerk.llm.chat import _truncate_for_llm
-    from harbor_clerk.llm.tools import execute_tool, summarize_tool_result
+    from harbor_clerk.llm.tools import summarize_tool_result
 
     await _seed_long_docs(db_session, 100, title_len=80)
-    raw = await execute_tool(
-        "find_all_documents", {"query": "agreement", "max_results": 100}, user_id=admin_user.user_id
-    )
+    raw = await _find_all_via_chat(admin_user)
     payload = json.loads(raw)
     assert payload["returned"] == 100
     assert all(row["snippet"] and row["source"]["chunk_id"] for row in payload["results"])
@@ -402,25 +413,27 @@ async def test_chat_cut_drops_snippets_before_rows(db_session, admin_user, mock_
 
     # chat.py: tool_result_max_chars = min(int(context_tokens * 0.25 * 3.5), 80_000).
     cap = min(int(context_tokens * 0.25 * 3.5), 80_000)
-    assert len(raw) > cap, "100 rows with snippets must exceed the cap for the test to mean anything"
-    cut = json.loads(_truncate_for_llm(raw, cap))
+    assert len(json.dumps(payload, ensure_ascii=False)) > cap, "the cut must happen for the test to mean anything"
+    out = _truncate_for_llm(raw, cap)
+    cut = json.loads(out)
     baseline = json.loads(_truncate_for_llm(_no_snippet_copy(raw), cap))
-    assert len(json.dumps(cut, ensure_ascii=False)) <= cap
+    assert len(out) <= cap
     assert len(cut["results"]) == len(baseline["results"]), (context_tokens, len(cut["results"]))
     assert cut["results"], "some rows must fit"
+    flags = _snippet_flags(cut["results"])
+    if len(cut["results"]) < 100:
+        assert not any(flags)
+    assert flags == sorted(flags, reverse=True), "snippets kept only on the top rows"
     for row in cut["results"]:
-        assert "snippet" not in row and "chunk_id" not in row["source"]
+        assert ("chunk_id" in row["source"]) is bool(row.get("snippet"))
 
 
 async def test_chat_cut_keeps_every_snippet_when_the_result_fits(db_session, admin_user, mock_session_factory):
     """A find-all result within the cap is passed through whole, snippets and all."""
     from harbor_clerk.llm.chat import _truncate_for_llm
-    from harbor_clerk.llm.tools import execute_tool
 
     await _seed_long_docs(db_session, 20, title_len=80)
-    raw = await execute_tool(
-        "find_all_documents", {"query": "agreement", "max_results": 100}, user_id=admin_user.user_id
-    )
+    raw = await _find_all_via_chat(admin_user)
     cap = min(int(131_072 * 0.25 * 3.5), 80_000)
     assert len(raw) <= cap
     kept = json.loads(_truncate_for_llm(raw, cap))["results"]
@@ -428,22 +441,99 @@ async def test_chat_cut_keeps_every_snippet_when_the_result_fits(db_session, adm
     assert all(row["snippet"] and row["source"]["chunk_id"] for row in kept)
 
 
-async def test_chat_cut_keeps_rows_when_only_the_snippets_overflow(db_session, admin_user, mock_session_factory):
-    """Between the two sizes: the result fits without its snippets, so every row stays."""
+async def test_chat_cut_keeps_every_snippet_when_the_compact_form_fits(db_session, admin_user, mock_session_factory):
+    """The tool's string is indented; compacted, a result over the cap may fit with every snippet."""
     from harbor_clerk.llm.chat import _truncate_for_llm
-    from harbor_clerk.llm.tools import execute_tool
 
-    await _seed_long_docs(db_session, 40, title_len=80)
-    raw = await execute_tool(
-        "find_all_documents", {"query": "agreement", "max_results": 100}, user_id=admin_user.user_id
-    )
-    without = json.dumps(json.loads(_no_snippet_copy(raw)), ensure_ascii=False)
-    cap = len(without) + 10
+    await _seed_long_docs(db_session, 25)
+    raw = await _find_all_via_chat(admin_user)
+    compact = json.dumps(json.loads(raw), ensure_ascii=False)
+    cap = len(compact)
     assert len(raw) > cap
     cut = json.loads(_truncate_for_llm(raw, cap))
-    assert len(cut["results"]) == 40
+    assert len(cut["results"]) == 25 and all(_snippet_flags(cut["results"]))
     assert "_truncated" not in cut
-    assert all("snippet" not in row for row in cut["results"])
+
+
+async def test_chat_cut_keeps_french_snippets_the_escaped_form_overstated(db_session, admin_user, mock_session_factory):
+    """Accented text is escaped six characters a letter in the tool's string; compacted without
+    escapes, a French result over the cap fits with every snippet."""
+    from harbor_clerk.llm.chat import _truncate_for_llm
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+
+    phrase = "La société générale s'engage à livrer les marchandises décrites à l'échéance prévue. "
+    for i in range(25):
+        doc = Document(
+            title=f"Accord de distribution exclusive numéro {i:03d} — société générale",
+            status="active",
+            sha256=f"sha_snip_fr_{i:020d}".encode(),
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=f"Accord {i}. " + phrase * 8, language="fr"))
+    await db_session.flush()
+
+    from harbor_clerk.llm.tools import execute_tool
+
+    raw = await execute_tool("find_all_documents", {"query": "accord"}, user_id=admin_user.user_id)
+    payload = json.loads(raw)
+    assert payload["returned"] == 25 and all(_snippet_flags(payload["results"]))
+    compact = json.dumps(payload, ensure_ascii=False)
+    assert len(raw) > 1.2 * len(compact), "the escapes must matter for the test to mean anything"
+    cut = json.loads(_truncate_for_llm(raw, len(compact)))
+    assert len(cut["results"]) == 25 and all(_snippet_flags(cut["results"]))
+    assert "société" in cut["results"][0]["snippet"]
+
+
+async def test_chat_cut_just_over_takes_snippets_from_the_tail(db_session, admin_user, mock_session_factory):
+    """A result a little over the cap, compacted, loses snippets from its lowest-ranked rows only."""
+    from harbor_clerk.llm.chat import _truncate_for_llm
+
+    await _seed_long_docs(db_session, 40, title_len=80)
+    raw = await _find_all_via_chat(admin_user)
+    cap = len(json.dumps(json.loads(raw), ensure_ascii=False)) - 1_000
+    out = _truncate_for_llm(raw, cap)
+    cut = json.loads(out)
+    assert len(out) <= cap
+    assert len(cut["results"]) == 40 and "_truncated" not in cut
+    flags = _snippet_flags(cut["results"])
+    assert flags[0] and not flags[-1], flags
+    assert flags == sorted(flags, reverse=True), "snippets kept only on the top rows"
+    # As few as fit: about 1,000 characters' worth, a handful of rows.
+    assert flags.count(False) <= 8, flags.count(False)
+
+
+def test_chat_cut_leaves_other_results_snippets_alone():
+    """Only a find-all result (total_matches and presentation) loses its snippets before rows."""
+    from harbor_clerk.llm.chat import _truncate_for_llm
+
+    rows = [{"doc_id": str(i), "snippet": "x" * 200} for i in range(50)]
+    out = json.loads(_truncate_for_llm(json.dumps({"results": rows}), 3_000))
+    assert out["_truncated"] is True and out["results"]
+    assert all(row["snippet"] == "x" * 200 for row in out["results"])
+
+
+@pytest.mark.parametrize(("cap", "expected"), [(50, 50), (1000, 1000), (0, None), (-5, None)])
+async def test_kb_find_all_full_under_a_capped_key_cuts_the_top_chunk(db_session, mock_session_factory, cap, expected):
+    """A capped key cannot read a whole chunk by switching to presentation='full': the top chunk's
+    text is its first max(0, cap) characters, omitted at 0 or less."""
+    from harbor_clerk.mcp_server import kb_find_all
+
+    texts = await _seed_long_docs(db_session, 2)
+    token = _mcp_principal.set(_key_principal(cap))
+    try:
+        payload = json.loads(await kb_find_all(query="agreement", presentation="full"))
+    finally:
+        _mcp_principal.reset(token)
+    assert len(payload["results"]) == 2
+    for row in payload["results"]:
+        text = texts[row["doc_id"]]
+        assert len(text) > 1000
+        assert row["top_chunk"]["text"] == (text[:expected] if expected else None)
+        assert "snippet" not in row
 
 
 def _key_principal(cap: int | None) -> Principal:

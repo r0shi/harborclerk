@@ -45,8 +45,9 @@ _FIND_ALL_FULL_MAX_RESULTS = 30
 
 # presentation="brief" carries one passage per document (#820): the text of the
 # chunk that earned the document's score, collapsed to one line and trimmed to
-# about a sentence either side of the text_contains match (or the leading
-# sentence or two without one), ellipses where trimmed. A title list alone is
+# a window of at most _FIND_ALL_SNIPPET_MAX_CHARS characters centred on the
+# text_contains match (or the leading sentence or two without one), ellipses
+# where trimmed. A title list alone is
 # not something a model triages; a passage per row lets it pick which documents
 # to read without a second call each. At the default max_results of 100, a
 # brief page carries 100 x 240 chars = 24 KB of passage text, under the up to
@@ -745,7 +746,8 @@ async def find_all(
     ``key_max_snippet_chars`` is the calling API key's ``max_snippet_chars``:
     when set, the snippet is the chunk's prefix (``_prefix_snippet``) within
     min(cap, ``_FIND_ALL_SNIPPET_MAX_CHARS``), and a cap of 0 or less omits
-    both fields. "full" sets the whole
+    both fields; in "full" the top chunk's text is cut to the chunk's first
+    max(0, cap) characters (omitted at 0 or less). "full" sets the whole
     best chunk in the ``top_chunk_*`` fields instead and clamps the page to
     ``_FIND_ALL_FULL_MAX_RESULTS`` documents.
     """
@@ -848,6 +850,13 @@ async def find_all(
     else:
         snippet_chars = max(0, min(key_max_snippet_chars, _FIND_ALL_SNIPPET_MAX_CHARS))
 
+    def _top_chunk_text(chunk_text: str) -> str | None:
+        # A capped key gets only the chunk's first max(0, cap) characters in
+        # "full" too, or it could read the whole chunk by switching presentation.
+        if key_max_snippet_chars is None:
+            return chunk_text
+        return chunk_text[:key_max_snippet_chars] if key_max_snippet_chars > 0 else None
+
     def _snippet(chunk_text: str) -> str:
         if key_max_snippet_chars is not None:
             return _prefix_snippet(chunk_text, snippet_chars)
@@ -872,7 +881,7 @@ async def find_all(
                     else (str(sh.page_start) if sh.page_start is not None else None)
                 ),
                 top_chunk_id=sh.chunk_id if presentation == "full" else None,
-                top_chunk_text=sh.chunk_text if presentation == "full" else None,
+                top_chunk_text=_top_chunk_text(sh.chunk_text) if presentation == "full" else None,
                 top_chunk_page=sh.page_start if presentation == "full" else None,
                 top_chunk_heading=None,  # SearchHit has no heading field
                 snippet=_snippet(sh.chunk_text) if snippet_chars else None,

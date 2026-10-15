@@ -1180,7 +1180,8 @@ async def kb_find_all(
         cite the row's citation. kb_read_passages needs a read-tier key.
         Under a key with a snippet cap, the snippet is the chunk's first
         characters (not a window on text_contains), and reading the
-        passage returns the same prefix.
+        passage returns the chunk's first characters, up to the key's cap
+        (as does presentation "full").
       sort_by: "relevance" (default, by max chunk score per doc),
         "date_desc" (newest first by ingested_at), or "date_asc".
 

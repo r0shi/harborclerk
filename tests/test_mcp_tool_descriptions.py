@@ -313,4 +313,4 @@ def test_kb_find_all_docstring_says_brief_rows_carry_a_snippet():
     # Triage only: read the passage before quoting it.
     assert "kb_read_passages" in d and "source.chunk_id" in d
     # ...qualified for keys: it needs the read tier, and a capped key reads back the same prefix.
-    assert "read-tier" in d and "prefix" in d
+    assert "read-tier" in d and "up to the key's cap" in " ".join(d.split())
