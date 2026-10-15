@@ -1,7 +1,9 @@
 import asyncio
 import logging
 import os
+import subprocess
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1071,80 +1073,135 @@ async def run_migrations(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Run alembic upgrade head. Returns current schema version after completion."""
-    import asyncio
-    import subprocess
-
     from harbor_clerk import migration_session
-    from harbor_clerk.db import async_session_factory
-    from harbor_clerk.migration_session import APPLICATION_NAME_ENV, cancel_backends, wait_for_exit
 
-    # End this request's transaction first (the session require_admin authenticated with, cached
-    # per request): an idle-in-transaction session holds a snapshot, and CREATE INDEX CONCURRENTLY
-    # (0008) waits for every older snapshot in the database, so alembic would wait on this very
-    # request until the deadline.
+    await log_audit(session, user_id=admin.id, action="run_migrations", detail={})
+    # Commit before alembic starts, which also ends this request's transaction (the session
+    # require_admin authenticated with, cached per request): an idle-in-transaction session holds a
+    # snapshot, and CREATE INDEX CONCURRENTLY (0008) waits for every older snapshot in the
+    # database, so alembic would wait on this very request until the deadline.
     await session.commit()
 
-    settings = get_settings()
     session_name = migration_session.unique_application_name()
-
-    def _run():
-        result = subprocess.run(
-            ["python", "-m", "alembic", "upgrade", "head"],
-            capture_output=True,
-            text=True,
-            timeout=MIGRATION_TIMEOUT_SECONDS,
-            env={
-                **os.environ,
-                "DATABASE_URL": settings.database_url,
-                APPLICATION_NAME_ENV: session_name,
-            },
-        )
-        return result
-
+    proc = _start_alembic(session_name)
+    finished = False
     try:
-        result = await asyncio.to_thread(_run)
-        if result.returncode != 0:
-            raise HTTPException(status_code=500, detail=f"Migration failed: {result.stderr[-500:]}")
-    except subprocess.TimeoutExpired:
-        # subprocess.run killed alembic, but its backend keeps running the statement it was sent
-        # (a table rewrite holds ACCESS EXCLUSIVE to its end); cancel it so its transaction rolls
-        # back now. What is left depends on where the deadline fell: revisions committed earlier
-        # in the run (0008's autocommit block commits its own work) stay, and a run past its
-        # COMMIT is complete. So report the version the database is at, not "rolled back".
-        async with async_session_factory() as db:
-            cancelled = await cancel_backends(db, session_name)
-            await db.commit()
-            exited = await wait_for_exit(db, session_name)
-            version = await _schema_version(db)
-        logger.warning(
-            "Migration timed out after %ss; cancelled %d session(s) (%d backend(s)); exited=%s; schema at %s",
-            MIGRATION_TIMEOUT_SECONDS,
-            cancelled.sessions,
-            cancelled.backends,
-            exited,
-            version,
-        )
-        still = "" if exited else " (still stopping)"
-        raise HTTPException(
-            status_code=504,
-            detail=(
-                f"Migration timed out after {MIGRATION_TIMEOUT_SECONDS}s and was cancelled "
-                f"({cancelled.sessions} database session(s) stopped{still}); the database is at revision "
-                f"{version}. Restart the app to finish the migration at startup."
-            ),
-        )
+        try:
+            _stdout, stderr = await asyncio.to_thread(proc.communicate, timeout=MIGRATION_TIMEOUT_SECONDS)
+            finished = True
+        except subprocess.TimeoutExpired:
+            stop = await asyncio.shield(_stop_alembic(proc, session_name))
+            raise HTTPException(status_code=504, detail=_timeout_detail(stop)) from None
+    finally:
+        if not finished and proc.returncode is None:
+            # Any other way out (the request cancelled on shutdown or disconnect, an error):
+            # alembic must not outlive the request, nor its backend keep a lock. Shielded, so a
+            # second cancellation does not interrupt the cleanup.
+            await asyncio.shield(_stop_alembic(proc, session_name))
+    if proc.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"Migration failed: {(stderr or '')[-500:]}")
 
-    # Check resulting version
+    from harbor_clerk.db import async_session_factory
+
     async with async_session_factory() as db:
         version = await _schema_version(db)
-
     return {"status": "ok", "schema_version": version}
 
 
-async def _schema_version(db: AsyncSession) -> str:
-    """The committed alembic revision, or "unknown" (no row, or alembic_version locked for 5 s)."""
+# How long the timeout path waits for the cancelled backends to exit before reporting.
+MIGRATION_CANCEL_WAIT_SECONDS = 10.0
+# lock_timeout for reading alembic_version after a cancelled run.
+SCHEMA_VERSION_LOCK_TIMEOUT = "5s"
+
+
+def _start_alembic(session_name: str) -> subprocess.Popen:
+    """``alembic upgrade head`` in a child process whose database session carries ``session_name``."""
+    from harbor_clerk.migration_session import APPLICATION_NAME_ENV
+
+    return subprocess.Popen(
+        ["python", "-m", "alembic", "upgrade", "head"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "DATABASE_URL": get_settings().database_url, APPLICATION_NAME_ENV: session_name},
+    )
+
+
+@dataclass(frozen=True)
+class _Stopped:
+    """What stopping a run established; ``error`` is set when the cancel could not be confirmed."""
+
+    sessions: int = 0
+    exited: bool = False
+    version: str = "unknown"
+    error: str | None = None
+
+
+async def _stop_alembic(proc: subprocess.Popen, session_name: str) -> _Stopped:
+    """Kill alembic, cancel every backend carrying its name, wait for them to exit, read the version.
+
+    Killing the client does not stop its backend: a statement already sent (0009's table rewrite)
+    runs to its end under its locks and only then rolls back. Never raises: a failure is reported
+    in the result.
+    """
+    from harbor_clerk.db import async_session_factory
+    from harbor_clerk.migration_session import cancel_backends, wait_for_exit
+
     try:
-        await db.execute(text("SET LOCAL lock_timeout = '5s'"))
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.to_thread(proc.wait)
+        async with async_session_factory() as db:
+            cancelled = await cancel_backends(db, session_name)
+            await db.commit()
+            exited = await wait_for_exit(db, session_name, seconds=MIGRATION_CANCEL_WAIT_SECONDS)
+            version = await _schema_version(db)
+    except Exception as exc:
+        logger.exception("Could not cancel the migration run %s", session_name)
+        return _Stopped(error=describe_error(exc))
+    logger.warning(
+        "Stopped migration run %s: %d session(s) cancelled (%d backend(s)); exited=%s; schema at %s",
+        session_name,
+        cancelled.sessions,
+        cancelled.backends,
+        exited,
+        version,
+    )
+    return _Stopped(sessions=cancelled.sessions, exited=exited, version=version)
+
+
+def _timeout_detail(stop: _Stopped) -> str:
+    prefix = f"Migration timed out after {MIGRATION_TIMEOUT_SECONDS}s"
+    if stop.error is not None:
+        return (
+            f"{prefix}; it was killed, but cancelling its database session could not be confirmed "
+            f"({stop.error}). A search may wait until it ends. Restart the app to finish the migration at startup."
+        )
+    still = "" if stop.exited else " (still stopping)"
+    head = _expected_schema_head()
+    if head is not None and stop.version == head:
+        return (
+            f"{prefix}, but it had already committed: the migration completed, and the database is at "
+            f"revision {stop.version} ({stop.sessions} database session(s) stopped{still})."
+        )
+    return (
+        f"{prefix} and was cancelled ({stop.sessions} database session(s) stopped{still}); the database "
+        f"is at revision {stop.version}. Restart the app to finish the migration at startup."
+    )
+
+
+def _expected_schema_head() -> str | None:
+    from harbor_clerk.api.app import _get_expected_schema_version
+
+    return _get_expected_schema_version()
+
+
+async def _schema_version(db: AsyncSession) -> str:
+    """The committed alembic revision, or "unknown" (no row, or alembic_version locked too long)."""
+    try:
+        await db.execute(text(f"SET LOCAL lock_timeout = '{SCHEMA_VERSION_LOCK_TIMEOUT}'"))
         row = (await db.execute(text("SELECT version_num FROM alembic_version"))).first()
     except DBAPIError:
         await db.rollback()

@@ -73,7 +73,10 @@ _PLAIN_INDEX_DDL = (
 
 def _create_fold_function(bind) -> None:
     """Create the function if absent; if present, require the same definition (a re-run after an
-    interrupted index build finds it), and refuse to touch one that differs."""
+    interrupted index build finds it), and refuse to touch one that differs.
+
+    0009 imports and runs this function (``_require_fold_function``): an edit here changes 0009 too.
+    """
     if bind.execute(sa.text(f"SELECT to_regprocedure('{FOLD_FUNCTION}(text)')")).scalar() is None:
         bind.execute(sa.text(_FUNCTION_DDL.format(name=FOLD_FUNCTION)))
         return

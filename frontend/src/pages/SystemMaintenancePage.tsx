@@ -10,6 +10,7 @@ export default function SystemMaintenancePage() {
   const [confirmingReprocessSkipSummary, setConfirmingReprocessSkipSummary] = useState(false)
   const [confirmingResummarize, setConfirmingResummarize] = useState(false)
   const [topicsRunning, setTopicsRunning] = useState(false)
+  const [migrating, setMigrating] = useState(false)
   const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0)
   const [deleteInput, setDeleteInput] = useState('')
   const [deleting, setDeleting] = useState(false)
@@ -324,6 +325,9 @@ export default function SystemMaintenancePage() {
         </p>
         <button
           onClick={async () => {
+            // One run at a time: a second click would queue a second alembic run behind the first.
+            if (migrating) return
+            setMigrating(true)
             setError('')
             setActionResult('')
             try {
@@ -331,11 +335,14 @@ export default function SystemMaintenancePage() {
               setActionResult(`Migrations complete. Schema version: ${data.schema_version}`)
             } catch (e: unknown) {
               setError(e instanceof Error ? e.message : 'Migration failed')
+            } finally {
+              setMigrating(false)
             }
           }}
-          className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          disabled={migrating}
+          className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Run Migrations
+          {migrating ? 'Running migrations\u2026' : 'Run Migrations'}
         </button>
       </Card>
 

@@ -13,10 +13,14 @@ ASCII space, so the lexemes are the same in every database locale.
 recomputes a stored generated column by rewriting the table under an ACCESS EXCLUSIVE lock, and a
 rewrite rebuilds every index on ``chunks`` (the HNSW embedding index, the trigram index and both
 FTS GIN indexes included). Both columns change in one ALTER TABLE, so it is one rewrite, followed
-by ANALYZE (the rewrite drops the columns' statistics, and autovacuum would re-analyze only after
-about 10% churn). The rewrite needs disk headroom for a second copy of ``chunks`` and its indexes
+by ANALYZE of those two columns: SET EXPRESSION drops their statistics (only theirs), and
+autovacuum would re-analyze only after about 10% churn. The rewrite needs disk headroom for a second copy of ``chunks`` and its indexes
 (416 MB at 40,000 chunks); on a full disk the upgrade fails with ENOSPC, rolls back, and the
 runner retries.
+
+env.py holds a session-level advisory lock for the whole run, so runs are serial: a second runner
+(a double click on Run Migrations, a restart during a run) waits for the first and then finds the
+database at head, rather than rewriting the table a second time.
 
 It runs in the migration's transaction, so an interrupted run rolls back whole, with nothing
 half-built for the retry to trip over. env.py runs every pending revision in one transaction, and
@@ -43,11 +47,13 @@ a long migration does not mark it unhealthy; one longer than about 650 s still l
 dependents failed until ``docker compose up`` is run again, and a broken API now takes up to 10
 minutes to be reported unhealthy). The "Run Migrations" maintenance action runs alembic
 beside a live API with a 120 s limit: a search during the rewrite waits for it, and at the limit
-the route cancels the migration's backends by their ``application_name``
-(``harbor_clerk.migration_session``), so the transaction rolls back at once instead of holding
-the lock to the end, and reports the revision the database is at (a run that started below 0008
-keeps 0008's committed function and index but stays at 0007). Above roughly 180,000 chunks this migration does not fit in that limit; restart the app
-(or the API container) to run it.
+the route kills alembic and cancels its backends by their ``application_name``
+(``harbor_clerk.migration_session``), as it does when the request itself is cancelled, so the
+transaction rolls back at once instead of holding the lock to the end. It reports the revision
+the database is at (a run that started below 0008 keeps 0008's committed function and index but
+stays at 0007), or that the migration completed if the deadline fell after its commit. Above
+roughly 180,000 chunks this migration does not fit in that limit; restart the app (or the API
+container) to run it.
 
 The columns now depend on ``hc_fold_whitespace``, exactly as ``ix_chunks_chunk_text_ws_trgm``
 does: a stored value is computed with the body of the day it was written, so the function is
@@ -105,10 +111,11 @@ def _set_expressions(expressions: dict[str, str]) -> None:
 def upgrade() -> None:
     _require_fold_function()
     _set_expressions(FOLDED_EXPRESSIONS)
-    # The rewrite drops the columns' statistics, and autovacuum re-analyzes only after ~10% churn.
-    op.execute("ANALYZE public.chunks")
+    # SET EXPRESSION drops the altered columns' statistics (only theirs), and autovacuum would
+    # re-analyze only after ~10% churn.
+    op.execute("ANALYZE public.chunks (fts_en, fts_fr)")
 
 
 def downgrade() -> None:
     _set_expressions(PLAIN_EXPRESSIONS)
-    op.execute("ANALYZE public.chunks")
+    op.execute("ANALYZE public.chunks (fts_en, fts_fr)")

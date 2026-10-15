@@ -94,6 +94,7 @@ def _alembic(url, *args: str) -> None:
         ["alembic", *args],
         check=True,
         env={**os.environ, "DATABASE_URL": url.render_as_string(hide_password=False)},
+        timeout=300,
     )
 
 

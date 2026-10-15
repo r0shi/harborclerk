@@ -71,6 +71,7 @@ def _private_database(suffix: str, locale_sql: str):
             ["alembic", "upgrade", "head"],
             check=True,
             env={**os.environ, "DATABASE_URL": url.render_as_string(hide_password=False)},
+            timeout=300,
         )
         yield url
     finally:

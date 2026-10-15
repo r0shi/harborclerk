@@ -4,7 +4,8 @@ Killing an alembic client does not stop its backend: a statement already sent (a
 under ACCESS EXCLUSIVE, say) runs to its end and only then rolls back, holding its locks all the
 while. ``alembic/env.py`` sets ``application_name`` from ``APPLICATION_NAME_ENV``; a caller that
 runs alembic with a deadline sets a unique name and, past the deadline, cancels every backend
-carrying it (``cancel_backends``). Imported by env.py, so it must not read settings at import.
+carrying it (``cancel_backends``). Imported by env.py, so it must not read settings at import. env.py also serialises runs with
+``MIGRATION_LOCK_KEY``.
 """
 
 from __future__ import annotations
@@ -20,6 +21,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 APPLICATION_NAME_ENV = "HC_MIGRATION_APPLICATION_NAME"
 DEFAULT_APPLICATION_NAME = "harbor-clerk-alembic"
+
+# Session-level advisory lock env.py holds for a whole run, so runs are serial: a second runner
+# (the Mac app's MigrationRunner, the Compose entrypoint, the maintenance route, a test) waits for
+# the one in progress and then finds the database at head. Two concurrent runs of 0009 otherwise
+# rewrote chunks twice and the second failed to stamp a version the first had already moved.
+# The bytes of "HC_MIGRT" as a bigint; fixed, never reuse it for anything else.
+MIGRATION_LOCK_KEY = int.from_bytes(b"HC_MIGRT", "big")
 
 
 def application_name() -> str:

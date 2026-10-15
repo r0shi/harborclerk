@@ -62,7 +62,9 @@ concurrent build. Killing the alembic client does not stop its backend: the lock
 lasts for the whole rewrite unless the backend is cancelled. env.py names its
 session from `HC_MIGRATION_APPLICATION_NAME` (`harbor_clerk.migration_session`),
 and anything that runs alembic with a deadline cancels by that name, as the
-`/system/run-migrations` route does.
+`/system/run-migrations` route does. env.py also holds a session-level advisory
+lock (`MIGRATION_LOCK_KEY`) for the whole run, so runs are serial: a second
+runner waits and then finds head, instead of rewriting `chunks` again.
 
 ## Functions under an expression index are never redefined in place
 

@@ -447,3 +447,84 @@ def test_upgrade_from_0007_with_the_fold_function_already_present(alembic_cfg, s
         _restore_head(alembic_cfg, sync_engine)
     assert "hc_fold_whitespace" in _fts_expressions(sync_engine)["fts_en"]
     assert _index_state(sync_engine, mig.FOLD_INDEX)[0] is True
+
+
+def test_concurrent_runs_are_serialised_and_rewrite_once(alembic_cfg, sync_engine):
+    """Two `alembic upgrade head` from 0008 at once (a double click on Run Migrations): env.py's
+    advisory lock makes the second wait for the first and then find head. Without it both queued
+    on 0009's ALTER, rewrote chunks twice, and the second failed to stamp. 0009's ALTER is held on
+    a lock on chunks until both runs are in place; an event trigger counts the rewrites."""
+    import subprocess
+
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, "0008_chunk_text_ws_fold")
+    with sync_engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS hc_test_rewrites (relid oid NOT NULL)"))
+        conn.execute(
+            text(
+                "CREATE OR REPLACE FUNCTION hc_test_log_rewrite() RETURNS event_trigger LANGUAGE plpgsql AS "
+                "$$ BEGIN INSERT INTO hc_test_rewrites VALUES (pg_event_trigger_table_rewrite_oid()); END $$"
+            )
+        )
+        conn.execute(
+            text("CREATE EVENT TRIGGER hc_test_rewrite ON table_rewrite EXECUTE FUNCTION hc_test_log_rewrite()")
+        )
+    names = [f"hc-test-concurrent-{i}" for i in range(2)]
+    procs: list[subprocess.Popen] = []
+    blocker = sync_engine.connect()
+    blocker_tx = blocker.begin()
+    try:
+        blocker.execute(text("LOCK TABLE public.chunks IN ACCESS SHARE MODE"))
+        for name in names:
+            procs.append(
+                subprocess.Popen(
+                    ["alembic", "upgrade", "head"],
+                    env={**os.environ, "HC_MIGRATION_APPLICATION_NAME": name},
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            )
+
+        def _waits() -> list[str]:
+            with sync_engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT wait_event FROM pg_stat_activity WHERE application_name = ANY(:names) "
+                        "AND wait_event_type = 'Lock'"
+                    ),
+                    {"names": names},
+                )
+                return sorted(r[0] for r in rows)
+
+        # Both runs in place: one on 0009's ALTER (relation), the other on the advisory lock (or,
+        # without it, on the same ALTER).
+        deadline = time.monotonic() + 30
+        while len(_waits()) != 2:
+            assert time.monotonic() < deadline, f"runs never lined up: {_waits()}"
+            time.sleep(0.1)
+        lined_up = _waits()
+        blocker_tx.rollback()
+        outputs = [p.communicate(timeout=120)[0] for p in procs]
+        assert [p.returncode for p in procs] == [0, 0], outputs
+        with sync_engine.connect() as conn:
+            rewrites = conn.execute(
+                text("SELECT count(*) FROM hc_test_rewrites WHERE relid = 'public.chunks'::regclass")
+            ).scalar()
+            version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+        assert rewrites == 1
+        assert version == "0009_fts_over_folded_text"
+        assert lined_up == ["advisory", "relation"]
+    finally:
+        if blocker_tx.is_active:
+            blocker_tx.rollback()
+        blocker.close()
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+                p.wait(10)
+        with sync_engine.begin() as conn:
+            conn.execute(text("DROP EVENT TRIGGER IF EXISTS hc_test_rewrite"))
+            conn.execute(text("DROP FUNCTION IF EXISTS hc_test_log_rewrite()"))
+            conn.execute(text("DROP TABLE IF EXISTS hc_test_rewrites"))
+        command.upgrade(alembic_cfg, "head")

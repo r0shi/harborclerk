@@ -1,13 +1,14 @@
 import asyncio
+import logging
 import os
 from logging.config import fileConfig
 
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from harbor_clerk.migration_session import application_name
+from harbor_clerk.migration_session import MIGRATION_LOCK_KEY, application_name
 
 # Import all models so they register on Base.metadata
 from harbor_clerk.models import Base
@@ -43,9 +44,22 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
-    with context.begin_transaction():
-        context.run_migrations()
+    # One run at a time (harbor_clerk.migration_session.MIGRATION_LOCK_KEY): a session-level
+    # advisory lock, so it spans the commits of an autocommit block (0008) and is released when
+    # this connection closes even if the unlock below never runs. Committed at once: alembic
+    # would otherwise find a transaction already open and never commit its own.
+    connection.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK_KEY})
+    connection.commit()
+    try:
+        context.configure(connection=connection, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+    finally:
+        try:
+            connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK_KEY})
+            connection.commit()
+        except Exception:  # never mask the migration's own error; closing the connection unlocks
+            logging.getLogger("alembic.env").warning("advisory unlock failed; released on disconnect")
 
 
 async def run_async_migrations() -> None:
