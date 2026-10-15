@@ -104,6 +104,10 @@ a route with a blank gate unless it is public. Keys never receive `source_path` 
 `redact_paths_for_principal`, add any new absolute-path field to
 `ABSOLUTE_PATH_FIELDS`, and any free-text field that may quote one (pipeline
 `error` text does) to `ABSOLUTE_PATH_TEXT_FIELDS`.
+Snippet cap (#823): every chunk or page text in a key-reachable payload goes
+through `cap_passage_text` / `cap_text(..., snippet_cap(...))` (`api/scope.py`):
+the first N characters, never a movable window; none at 0; a negative stored
+cap is 0. A new surface gets a row in `tests/test_key_snippet_cap.py`.
 
 ## The chat token estimate is raw; the bounds are predicted
 

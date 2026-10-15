@@ -1,9 +1,13 @@
 """API key schemas."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+# A key's snippet cap: None (no cap) or N >= 0, the first N characters of every passage
+# the key receives on any surface, no text at all at 0 (api/scope.py, #823).
+SnippetCap = Annotated[int | None, Field(ge=0)]
 
 
 class CreateApiKeyRequest(BaseModel):
@@ -13,7 +17,7 @@ class CreateApiKeyRequest(BaseModel):
     tool_overrides: dict[str, bool] | None = None
     scope_topic_ids: list[int] | None = None
     scope_folder_ids: list[str] | None = None
-    max_snippet_chars: int | None = None
+    max_snippet_chars: SnippetCap = None
     rate_limit_rpm: int | None = None
     rate_limit_rph: int | None = None
 
@@ -25,7 +29,7 @@ class PatchApiKeyRequest(BaseModel):
     tool_overrides: dict[str, bool] | None = None
     scope_topic_ids: list[int] | None = None
     scope_folder_ids: list[str] | None = None
-    max_snippet_chars: int | None = None
+    max_snippet_chars: SnippetCap = None
     rate_limit_rpm: int | None = None
     rate_limit_rph: int | None = None
 

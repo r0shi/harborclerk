@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from harbor_clerk.api.deps import Principal
-from harbor_clerk.api.scope import is_human, redact_path_tokens
+from harbor_clerk.api.scope import cap_passage_text, cap_text, is_human, redact_path_tokens, snippet_cap
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.config import get_settings, refresh_cli_access_setting
 from harbor_clerk.db import async_session_factory
@@ -647,10 +647,14 @@ def _format_search_response(
     offset: int,
     heading_map: dict[tuple[str, int], str] | None = None,
     source_context: SourceRefContext | None = None,
+    passage_cap: int | None = None,
 ) -> dict:
     """Build the non-faceted search response dict from a SearchResult.
 
-    Shared between kb_search and kb_batch_search.
+    Shared between kb_search and kb_batch_search. ``passage_cap`` is the calling
+    key's cap (``api.scope.snippet_cap``): each hit's text is the chunk's first
+    ``passage_cap`` characters before the detail level trims it, and a cap of 0
+    omits the text as compact does.
     """
     hits = []
     for h in result.hits:
@@ -671,16 +675,17 @@ def _format_search_response(
                 heading = heading_map.get((h.doc_id, h.page_start))
                 if heading:
                     hit["section"] = heading
-        # Detail mode formatting
-        if detail == "full":
-            hit["text"] = h.chunk_text
+        # Detail mode formatting, on the text the key may receive (#823)
+        text = cap_text(h.chunk_text, passage_cap)
+        if text is None or detail == "compact":
+            pass  # no text field
+        elif detail == "full":
+            hit["text"] = text
         elif detail == "brief":
-            text = h.chunk_text
             if len(text) > effective_brief_chars:
                 hit["text"] = text[:effective_brief_chars] + "\u2026"
             else:
                 hit["text"] = text
-        # compact: no text field
         hits.append(hit)
 
     has_more = offset + k < result.total_candidates
@@ -921,6 +926,8 @@ async def kb_search(
       "compact": metadata only (chunk_id, doc_id, doc_title, score, pages,
         language — no text) — use when surveying a broad result set (50+) to
         understand score distribution and document coverage before narrowing down
+      Under an API key with a snippet cap of N characters, a hit's text is the
+      chunk's first N characters at every detail level (none at a cap of 0).
 
     faceted: if true, groups hits by document with per-document top_score
       and hit_count — useful for understanding which documents are most
@@ -1034,6 +1041,7 @@ async def kb_search(
         offset,
         heading_map,
         source_context,
+        snippet_cap(principal),
     )
 
     if faceted:
@@ -1316,7 +1324,7 @@ async def kb_find_all(
             metadata_filter=metadata_filter,
             presentation=presentation,
             # A capped key's snippet is the chunk's prefix within its max_snippet_chars.
-            key_max_snippet_chars=principal.key_scope.max_snippet_chars if principal.key_scope else None,
+            key_max_snippet_chars=snippet_cap(principal),
         )
         source_context = await _source_context(session, [h.doc_id for h in result.hits])
 
@@ -1409,6 +1417,8 @@ async def kb_batch_search(
 
     All filters (doc_id, doc_ids, after, before, language, mime_type,
     metadata_filter) are shared across queries — see kb_search for documentation.
+    Under an API key with a snippet cap, each hit's text is the chunk's first N
+    characters, as in kb_search.
     """
     principal = _get_principal()
     settings = get_settings()
@@ -1502,6 +1512,7 @@ async def kb_batch_search(
                 0,
                 heading_map,
                 source_context,
+                snippet_cap(principal),
             )
             resp["query"] = query
             hint = await _compute_discriminator_hint(result.hits, session)
@@ -1556,7 +1567,9 @@ async def kb_read_passages(
     Output: list of passages with full chunk_text, doc_id, doc_title, pages,
     and section heading. Set include_context=True to also get the chunks
     immediately before and after each requested chunk (useful when the
-    target chunk references "as discussed above" or similar).
+    target chunk references "as discussed above" or similar). Under an API key
+    with a snippet cap of N characters, every passage (and its context) is the
+    chunk's first N characters (text is null at a cap of 0).
 
     Take this seriously: before reporting a specific number, date, name, or
     clause as an answer, READ THE CHUNK that supposedly contains it. If the
@@ -1581,25 +1594,17 @@ async def kb_read_passages(
         docs = {d.doc_id: d for d in docs_result.scalars().all()}
         source_context = await _source_context(session, doc_ids)
 
-        # Snippet truncation limit from key scope, if any
-        snippet_limit: int | None = None
-        if principal.key_scope and principal.key_scope.max_snippet_chars is not None:
-            snippet_limit = principal.key_scope.max_snippet_chars
-
         passages = []
         for cid in uuids:
             chunk = chunks.get(cid)
             if chunk is None:
                 continue
             doc = docs.get(chunk.doc_id)
-            text = chunk.chunk_text
-            if snippet_limit is not None:
-                text = text[:snippet_limit]
             p: dict = {
                 "chunk_id": str(cid),
                 "doc_id": str(chunk.doc_id),
                 "doc_title": doc.title if doc else None,
-                "text": text,
+                "text": cap_passage_text(chunk.chunk_text, principal),
                 "language": chunk.language,
             }
             if chunk.page_start is not None:
@@ -1625,9 +1630,9 @@ async def kb_read_passages(
                 )
                 prev_text = prev.scalar_one_or_none()
                 if prev_text:
-                    if snippet_limit is not None:
-                        prev_text = prev_text[:snippet_limit]
-                    p["context_before"] = prev_text
+                    prev_text = cap_passage_text(prev_text, principal)
+                    if prev_text:
+                        p["context_before"] = prev_text
 
                 nxt = await session.execute(
                     select(Chunk.chunk_text).where(
@@ -1637,9 +1642,9 @@ async def kb_read_passages(
                 )
                 nxt_text = nxt.scalar_one_or_none()
                 if nxt_text:
-                    if snippet_limit is not None:
-                        nxt_text = nxt_text[:snippet_limit]
-                    p["context_after"] = nxt_text
+                    nxt_text = cap_passage_text(nxt_text, principal)
+                    if nxt_text:
+                        p["context_after"] = nxt_text
 
             passages.append(p)
 
@@ -1661,6 +1666,8 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
 
     n controls the window size (default 2 chunks each direction = 5 total).
     Returns the chunks in order with the target chunk marked is_target=True.
+    Under an API key with a snippet cap of N characters, each chunk's text is
+    its first N characters (null at a cap of 0).
     """
     principal = _get_principal()
     n = max(1, min(n, 10))
@@ -1689,20 +1696,12 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
         doc = (await session.execute(select(Document).where(Document.doc_id == target.doc_id))).scalar_one_or_none()
         source_context = await _source_context(session, [target.doc_id])
 
-        # Snippet truncation limit from key scope, if any
-        snippet_limit: int | None = None
-        if principal.key_scope and principal.key_scope.max_snippet_chars is not None:
-            snippet_limit = principal.key_scope.max_snippet_chars
-
         chunks = []
         for c in neighbours:
-            text = c.chunk_text
-            if snippet_limit is not None:
-                text = text[:snippet_limit]
             entry: dict = {
                 "chunk_id": str(c.chunk_id),
                 "chunk_num": c.chunk_num,
-                "text": text,
+                "text": cap_passage_text(c.chunk_text, principal),
                 "language": c.language,
             }
             if c.page_start is not None:
@@ -2693,7 +2692,9 @@ async def kb_read_document(
       - kb_search couldn't pin a specific chunk and you need to scan more
         broadly
 
-    Returns the full text in chunk order, with optional pagination.
+    Returns the full text in chunk order, with optional pagination. Under an
+    API key with a snippet cap of N characters, the response is the first N
+    characters of the requested range (no text at a cap of 0).
     """
     principal = _get_principal()
     try:
@@ -2702,9 +2703,11 @@ async def kb_read_document(
         return json.dumps({"error": f"Invalid doc_id: {doc_id}"})
     max_chars = max(1, min(max_chars, 100_000))
 
-    # Per-key snippet cap (applied on top of max_chars)
-    if principal.key_scope and principal.key_scope.max_snippet_chars is not None:
-        max_chars = min(max_chars, principal.key_scope.max_snippet_chars)
+    # Per-key snippet cap (applied on top of max_chars): the first `cap` characters of the
+    # requested range; a cap of 0 returns no text.
+    cap = snippet_cap(principal)
+    if cap is not None:
+        max_chars = min(max_chars, cap)
 
     async with async_session_factory() as session:
         visible_ids = await _visible_doc_ids(session, principal)

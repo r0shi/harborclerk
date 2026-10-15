@@ -182,6 +182,44 @@ def test_g2_read_tier_reads_passages_and_documents_over_mcp_search_tier_cannot(
     assert "Unknown tool" in (tool_error(search.call_tool("kb_get_document", {"doc_id": doc_id})) or "")
 
 
+SNIPPET_CAP = 50
+
+
+def _over_cap(texts: list[str | None]) -> list[str]:
+    """Passages longer than the cap; a trailing ellipsis (a brief trim) is not counted."""
+    return [t for t in texts if t and len(t.removesuffix("…")) > SNIPPET_CAP]
+
+
+def test_g10_snippet_capped_key_never_receives_a_longer_passage(
+    admin: HarborClerk, keys: KeyFactory, corpus: Corpus, mcp
+) -> None:
+    """A read-tier key with max_snippet_chars=50 gets no passage over 50 characters from
+    kb_search, kb_read_passages or REST POST /api/search (#823), and still gets passages."""
+    raw = keys.create(
+        "g10-snippet-cap", permission_tier="read", scope_folder_ids=[corpus.folder_id], max_snippet_chars=SNIPPET_CAP
+    )["raw_key"]
+    session = mcp.bearer(raw)
+    hits = tool_json(session.call_tool("kb_search", {"query": "renewal notice", "k": 5}))["hits"]
+    assert hits, "the capped key found nothing"
+    hit_texts = [h.get("text") for h in hits]
+    assert any(hit_texts), "kb_search returned no passage text at all under a positive cap"
+    assert not _over_cap(hit_texts), _over_cap(hit_texts)
+    passages = tool_json(
+        session.call_tool("kb_read_passages", {"chunk_ids": [h["chunk_id"] for h in hits], "include_context": True})
+    )["passages"]
+    assert passages, "kb_read_passages returned nothing for the key's own hits"
+    passage_texts = [p.get(f) for p in passages for f in ("text", "context_before", "context_after")]
+    assert not _over_cap(passage_texts), _over_cap(passage_texts)
+    key = admin.with_key(raw)
+    try:
+        rest = key.search("renewal notice", k=5)
+    finally:
+        key.close()
+    assert rest["hits"], "REST search returned nothing for the capped key"
+    rest_texts = [h.get("chunk_text") for h in rest["hits"]]
+    assert not _over_cap(rest_texts), _over_cap(rest_texts)
+
+
 def test_g3_key_scoped_to_an_empty_folder_sees_nothing_and_says_why(keys: KeyFactory, empty_folder: dict, mcp) -> None:
     raw = keys.create("g3-empty-scope", scope_folder_ids=[empty_folder["folder_id"]])["raw_key"]
     session = mcp.bearer(raw)

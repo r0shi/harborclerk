@@ -24,7 +24,7 @@ from harbor_clerk.api.schemas.documents import (
     PaginatedDocuments,
     RelatedDocumentsResponse,
 )
-from harbor_clerk.api.scope import apply_key_scope, is_human, redact_paths_for_principal
+from harbor_clerk.api.scope import apply_key_scope, is_human, redact_paths_for_principal, snippet_cap
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
@@ -577,6 +577,15 @@ async def get_document_content(
     page_result = await session.execute(query)
     page_rows = page_result.scalars().all()
 
+    # An API key's snippet cap bounds the whole response, as on kb_read_document: the first
+    # `cap` characters of the requested range, no text at a cap of 0 (#823).
+    # A negative max_chars is 0: as a slice bound it would return all but the last N characters.
+    if max_chars is not None:
+        max_chars = max(0, max_chars)
+    cap = snippet_cap(principal)
+    if cap is not None:
+        max_chars = cap if max_chars is None else min(max_chars, cap)
+
     page_contents = []
     total_chars = 0
     for p in page_rows:
@@ -799,6 +808,12 @@ async def download_document(
     app intentionally does NOT expose a way to enable this; use Reveal in
     Finder instead. On Docker, an admin can opt in by setting the env var.
     """
+    if snippet_cap(principal) is not None:
+        # The original's bytes are the whole text: a key with a snippet cap never receives them (#823).
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Source-file download is not available to an API key with a snippet cap.",
+        )
     if not get_settings().allow_source_download:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

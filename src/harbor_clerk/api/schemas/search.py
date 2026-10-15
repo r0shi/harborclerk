@@ -65,7 +65,8 @@ class SearchHitOut(BaseModel):
     chunk_id: str
     doc_id: str
     chunk_num: int
-    chunk_text: str
+    # The chunk's first N characters under an API key's snippet cap; null at a cap of 0 (#823).
+    chunk_text: str | None
     page_start: int | None = None
     page_end: int | None = None
     language: str
@@ -182,7 +183,8 @@ class PassageDetail(BaseModel):
     chunk_id: str
     doc_id: str
     chunk_num: int
-    chunk_text: str
+    # The chunk's first N characters under an API key's snippet cap (context_before/after too); null at 0.
+    chunk_text: str | None
     page_start: int | None = None
     page_end: int | None = None
     language: str

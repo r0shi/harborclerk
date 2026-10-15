@@ -11,6 +11,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harbor_clerk.api.scope import cap_text
 from harbor_clerk.config import get_settings
 from harbor_clerk.embedder_client import embed_texts_async
 from harbor_clerk.models import Chunk, Document, IngestionJob
@@ -853,9 +854,7 @@ async def find_all(
     def _top_chunk_text(chunk_text: str) -> str | None:
         # A capped key gets only the chunk's first max(0, cap) characters in
         # "full" too, or it could read the whole chunk by switching presentation.
-        if key_max_snippet_chars is None:
-            return chunk_text
-        return chunk_text[:key_max_snippet_chars] if key_max_snippet_chars > 0 else None
+        return cap_text(chunk_text, key_max_snippet_chars)
 
     def _snippet(chunk_text: str) -> str:
         if key_max_snippet_chars is not None:

@@ -140,6 +140,7 @@ release template can be filled from the run.
 | G7 | A deleted key is refused with 401 on both `/mcp/` and `/t/` |
 | G8 | A key scoped to the fixture folder cannot read a document from a second, populated folder: `kb_get_document` says not found, REST detail is 404, `kb_search` never returns it |
 | G9 | A key scoped to that second folder gets an empty result for a query with a literal filter its document cannot satisfy, and the result is annotated with `would_match_unscoped` (the populated-scope branch G3 cannot reach; the count is the unscoped candidate count for the query alone) |
+| G10 | A read-tier key with `max_snippet_chars=50` gets no passage longer than 50 characters (a trailing ellipsis aside) from `kb_search`, `kb_read_passages` (with context) or REST `POST /api/search`, and still gets passage text (#823) |
 
 ### H. Deletion
 

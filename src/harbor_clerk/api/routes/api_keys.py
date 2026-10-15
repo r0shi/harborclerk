@@ -45,8 +45,8 @@ def _scope_summary(api_key: ApiKey) -> str:
     if api_key.scope_folder_ids:
         n = len(api_key.scope_folder_ids)
         parts.append(f"{n} folder{'s' if n != 1 else ''}")
-    if api_key.max_snippet_chars:
-        parts.append(f"max {api_key.max_snippet_chars} chars")
+    if api_key.max_snippet_chars is not None:  # 0 is a cap (no passage text), not "unset"
+        parts.append(f"max {max(0, api_key.max_snippet_chars)} chars")
     if api_key.rate_limit_rpm is not None:
         parts.append(f"{api_key.rate_limit_rpm} rpm" if api_key.rate_limit_rpm > 0 else "unlimited rpm")
     if api_key.rate_limit_rph is not None:

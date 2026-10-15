@@ -71,6 +71,21 @@ stats, watched folders, chat — has no MCP counterpart and refuses API keys.
 API keys never receive absolute on-disk paths (`source_path`,
 `watch_source_path`) from REST, at any tier. Only the web app's own sessions do.
 
+### Snippet caps
+
+A key's snippet cap (**Max snippet chars** in **Settings -> API Keys**) bounds
+every passage of document text the key receives, on every surface: MCP search
+hits (`kb_search`, `kb_batch_search`, at every `detail` level), `kb_find_all`
+snippets and top chunks, `kb_read_passages` (and its context), `kb_expand_context`,
+`kb_read_document`, the CLI (which speaks MCP), and the REST equivalents
+(`POST /api/search`, `/api/search/find-all`, `/api/passages/read`,
+`GET /api/docs/{id}/content`). Under a cap of N, a passage is the chunk's (or
+page's) first N characters, never a window the caller can move; a brief trim may
+add a trailing ellipsis. A cap of 0 returns citations and metadata with no
+passage text. `kb_read_document` and `/content` return the first N characters of
+the requested range, and `/download` (the original's bytes) is refused to a key
+with a cap. Leave the cap unset for no limit; negative values are rejected.
+
 If a skill or harness tries a tool outside its key scope, treat that as a
 recoverable scope mismatch. The agent should continue with search and passage
 reads, then tell the operator which broader capability was denied.
