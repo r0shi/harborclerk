@@ -648,3 +648,70 @@ def test_a_list_item_is_also_named_by_an_alias_between_word_boundaries(_no_corpu
     entry = {"kind": "list", "positives": ["0001_invoice", "0012_invoice"], "universe": universe, "aliases": aliases}
     assert score(entry, table)["score"] == pytest.approx(0.8), "two right of three named, of two labelled"
     assert score({**entry, "aliases": None}, table)["score"] == 0.0, "without aliases, only a stem names an invoice"
+
+
+def test_an_item_under_a_heading_or_lead_in_that_marks_exclusion_is_not_named():
+    """The four shapes the cloud subjects wrote (bench-20261014-2328-cuad-fable keys 16, 18 and 20;
+    bench-20261015-0011-cuad-astra key 16), with the test universe's contracts in place of theirs."""
+    from scripts.test_corpora.runner.answer_key import without_excluded_sections
+
+    # Fable key-16: a `##` heading whose section is one bold item.
+    false_positive = (
+        f"## Explicit, mutual non-disparagement clauses (1)\n\n**1. Staar – Distributor** (doc_id `{ID_STAAR}`, p. 3)\n\n"
+        f"## False positive (excluded)\n\n**eDiets / Women.com – Co-Branding Agreement** (doc_id `{ID_EDIETS}`, "
+        "pp. 13–14) — the word appears only in content warranties.\n"
+    )
+    assert named_contracts(false_positive, UNIVERSE, None, DOC_IDS) == {STAAR}
+    # Fable key-18: bulleted items under a hedged heading, then a second excluded section.
+    borderline = (
+        f"## Contracts with an operative right of first refusal\n\n- **Staar** (`{ID_STAAR}`), §4\n\n"
+        "## Mentions / borderline (included for completeness, not operative ROFRs in the document itself)\n\n"
+        f"- **Women.com** (`{ID_EDIETS}`), §9.1(d) — a cross-reference to the separate Franchise Agreement.\n\n"
+        f'## Reviewed and excluded\n"First right" hits that are enforcement priorities: {EDIETS}.\n'
+    )
+    assert named_contracts(borderline, UNIVERSE, None, DOC_IDS) == {STAAR}
+    # Fable key-20: a near-miss heading, and a heading after it that is kept (the drop ends there).
+    near_miss = (
+        f"## Contracts governed by Delaware law — 1 found\n\n- **Staar** (`{ID_STAAR}`)\n\n"
+        f"## Near-miss worth flagging (not Delaware-governed)\n\n- **Women.com** (`{ID_EDIETS}`): New York law.\n\n"
+        f"## Method / caveats\n\nThe {EDIETS} hit above was read in full.\n"
+    )
+    assert named_contracts(near_miss, UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS}, "the caveats section is kept"
+    # astra key-16: a bold lead-in with the item on its own line, after a table that is kept.
+    not_counted = (
+        "### Contracts containing non-disparagement restrictions\n\n| Contract | Provision |\n|---|---|\n"
+        f"| **[STAAR Surgical Company — Distributor Agreement](doc_id:{ID_STAAR})** | §6.7 |\n\n"
+        f"**One additional keyword match, not counted above:** [eDiets.com](doc_id:{ID_EDIETS}), content warranties.\n\n"
+        "I searched the corpus for the stem **“disparag”**.\n"
+    )
+    assert named_contracts(not_counted, UNIVERSE, None, DOC_IDS) == {STAAR}
+    assert "disparag" in without_excluded_sections(not_counted), "the next lead-in ends the drop"
+    # A heading that does not mark exclusion keeps its section, with the words the patterns must not over-read.
+    kept = f"## Contracts with the clause\n\n- {STAAR}\n\n## Exclusive license grants (2)\n\n- `{ID_EDIETS}`\n"
+    assert named_contracts(kept, UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS}
+    assert named_contracts(
+        f"## No. 2: {STAAR}\n**Perpetual only (not described as irrevocable)**\n`{ID_EDIETS}`", UNIVERSE, None, DOC_IDS
+    ) == {STAAR, EDIETS}
+
+
+def test_a_dropped_heading_takes_its_sub_headings_and_lead_ins_and_the_first_section_is_never_dropped():
+    from scripts.test_corpora.runner.answer_key import without_excluded_sections
+
+    text = (
+        f"Found one.\n\n## Matches\n\n### 1. Staar\n`{ID_STAAR}`\n\n## Reviewed and excluded\n\n### 1. Women.com\n"
+        f"`{ID_EDIETS}`\n\n**Also:** {ACME_A}\n\n## Summary\n\nOne contract: Staar Surgical Company.\n"
+    )
+    assert named_contracts(text, UNIVERSE, None, DOC_IDS) == {STAAR}
+    assert without_excluded_sections(text).endswith("## Summary\n\nOne contract: Staar Surgical Company.")
+    # A lead-in's section ends at the next lead-in or heading; a heading's does not end at a lead-in.
+    assert named_contracts(f"**Not a match:** `{ID_EDIETS}`\n**Match:** `{ID_STAAR}`\n", UNIVERSE, None, DOC_IDS) == {
+        EDIETS,
+        STAAR,
+    }, "the first section is never dropped, even when it opens with a marked lead-in"
+    assert named_contracts(
+        f"Two.\n**Not a match:** `{ID_EDIETS}`\n**Match:** `{ID_STAAR}`\n", UNIVERSE, None, DOC_IDS
+    ) == {STAAR}
+    assert named_contracts(f"Two.\n## Excluded\n**Match:** `{ID_STAAR}`\n", UNIVERSE, None, DOC_IDS) == set()
+    # Negation in prose is still not read: the rule reads headings and lead-ins only.
+    assert named_contracts(f"Not included: `{ID_EDIETS}` (warranties only)", UNIVERSE, None, DOC_IDS) == {EDIETS}
+    assert without_excluded_sections("") == "" and without_excluded_sections("plain answer") == "plain answer"

@@ -13,7 +13,19 @@ passes `doc_ids`, the id -> title map built from the citations the answer's tool
 the text that maps to a universe title names that item (a cloud model writes "SteelVault - Equidata Affiliate
 Agreement (doc_id `ebbbd23d-...`)" and never the filename stem the key holds; bench-20261014-2328-cuad-fable scored
 four such lists at 0 named). The citations themselves are still not counted: the map is a dictionary for the ids
-the answer wrote out, nothing more. The fact matcher accepts negation ("New York law, not Delaware" finds
+the answer wrote out, nothing more. A list answer's sections are read before its items are: a cloud subject puts
+what it rejected under its own heading ("## False positive (excluded)", "## Near-miss worth flagging (not
+Delaware-governed)", "## Mentions / borderline (included for completeness, not operative ROFRs ...)") or bold
+lead-in ("**One additional keyword match, not counted above:**"), and an item named there, by id, title or filer,
+is not named (`without_excluded_sections`). A heading (`#` line) or a bold lead-in (`**...**` opening a line)
+marks exclusion when its own text, accents folded, contains "excluded", "exclusion(s)", "excludes", "not counted",
+"not included", "not a match", "non-match", "near-miss", "borderline", "false positive", "not operative", "does
+not" or "no" before a word ("no affirmative covenant"). A heading's section runs to the next heading of its level or
+higher, so its sub-headings and lead-ins go with it; a lead-in's runs to the next lead-in or heading; the answer's
+first section is never dropped. The cost, accepted: a genuinely matching item listed under a hedged heading is
+lost (on bench-20261014-2328-cuad-fable, a labelled contract under "— no affirmative covenant" and another under
+"Mentions / borderline"), and an item rejected in running prose ("X is not one") is still counted. The fact
+matcher accepts negation ("New York law, not Delaware" finds
 "Delaware"); a key is one phrase, so this has not mattered yet, and is stated so that a score of 1.0 is read as
 "the phrase is present", nothing more. The one thing read before the phrase is looked for is the answer's opening
 sentence: one that contains a "found nothing" phrasing ("is not explicitly stated in the retrieved excerpts", then
@@ -197,6 +209,42 @@ def company(title: str) -> str:
     return normalize(title.split("_")[0])
 
 
+# A markdown heading: one to six `#`, then its text. A bold lead-in: `**...**` opening a line (a bulleted or numbered
+# item that starts bold is an item, not a lead-in). What marks a section as the answer's rejects, read in its
+# heading's or lead-in's own text only, lower-cased and accents folded; the module docstring lists them in words.
+_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t#]*$")
+_BOLD_LEAD = re.compile(r"^[ \t]*\*\*([^*\r\n]+?)\*\*")
+_EXCLUSION = re.compile(
+    r"\bexclu(?:ded|sions?|des)\b|\bnot (?:counted|included|a match|operative)\b|\bnon-?match|\bnear-?miss"
+    r"|\bborderline\b|\bfalse positives?\b|\bdoes not\b|\bno [a-z]"
+)
+_LEAD_IN_LEVEL = 7  # below any heading: a heading's section takes its lead-ins with it, not the other way round
+
+
+def without_excluded_sections(text: str) -> str:
+    """`text` without the sections its headings or bold lead-ins mark as rejected (`_EXCLUSION`): the marked line
+    and everything to the next heading of the same or a higher level (for a heading) or to the next lead-in or
+    heading (for a lead-in). The first section, with or without a heading, is never dropped: an answer that opens
+    with its rejects is not an answer this rule can read, and it is left whole rather than emptied."""
+    kept: list[str] = []
+    dropping: int | None = None  # the level of the section being dropped
+    first = True  # nothing kept yet: the section about to open is the answer's first
+    for line in text.splitlines():
+        heading, lead = _HEADING.match(line), _BOLD_LEAD.match(line)
+        if heading or lead:
+            level = len(heading.group(1)) if heading else _LEAD_IN_LEVEL
+            label = heading.group(2) if heading else lead.group(1)
+            if dropping is not None and level <= dropping:
+                dropping = None
+            if dropping is None and not first and _EXCLUSION.search(fold(label).lower()):
+                dropping = level
+        if line.strip():
+            first = False
+        if dropping is None:
+            kept.append(line)
+    return "\n".join(kept)
+
+
 def named_contracts(
     text: str,
     universe: list[str],
@@ -209,9 +257,11 @@ def named_contracts(
     as a number the answer states, to the value ("$1,200.80" does not state 20080; review of #812), or if its
     document id appears and `doc_ids` maps that id to its title. The synthetic key names an invoice by its file
     stem and aliases it by its invoice number and its total, where unique in the corpus; `corpora/synthetic_key.py`
-    says which. It misses an item referred to only by paraphrase ("the Papa John's deal") and cannot tell an item
-    listed as a match from one listed as a non-match, however the item is named: an id in "not included: `ebbb...`"
-    names that item as a title there would.
+    says which. The text is read without the sections the answer itself marks as rejected (a heading or bold
+    lead-in saying "excluded", "not counted", "near-miss" and the like; `without_excluded_sections` has the whole
+    list), so an item under "## False positive (excluded)" is not named, however it is named there. It misses an
+    item referred to only by paraphrase ("the Papa John's deal"), and in running prose it still cannot tell a
+    match from a non-match: "not included: `ebbb...`" in a sentence names that item as a title there would.
 
     `doc_ids` is document id -> title, built by the scoring site from the citations the answer's tools returned
     (`titles_by_doc_id` for a phase-4 response; a baseline's `cited_doc_ids` zipped with its `cited_doc_titles`).
@@ -224,6 +274,7 @@ def named_contracts(
     list answer here), not what the answer refers to. Counting them would score search volume, and an answer
     saying "none" after one search would score like one that listed the hits (review of #697). The map only
     resolves ids the answer itself wrote out."""
+    text = without_excluded_sections(text)
     squeezed, words = normalize(text), _words(text)
     amounts = amounts_in(text) if aliases else set()
     filers: dict[str, list[str]] = {}
