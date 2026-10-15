@@ -144,9 +144,7 @@ async def patch_api_key(
                 status_code=422,
                 detail=f"Field '{field}' cannot be null",
             )
-    for field in ("rate_limit_rpm", "rate_limit_rph"):
-        if field in patch and patch[field] is not None and patch[field] < 0:
-            raise HTTPException(status_code=422, detail=f"'{field}' must be 0 (unlimited) or >= 1")
+    # max_snippet_chars and the rate limits are range-checked by the schema, on create too.
     for field, value in patch.items():
         setattr(api_key, field, value)
     await log_audit(

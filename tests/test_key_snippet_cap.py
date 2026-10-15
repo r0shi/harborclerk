@@ -25,6 +25,7 @@ from harbor_clerk.mcp_server import _mcp_principal, _resolve_principal
 from harbor_clerk.models import ApiKey, Chunk, Document, DocumentPage
 from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.passage_cap import cap_passage_text, cap_text, snippet_cap
+from harbor_clerk.search import _brief_snippet
 from tests.conftest import auth_header
 
 ELLIPSIS = "…"
@@ -141,12 +142,29 @@ def _whole_range(surface: str) -> bool:
     return "kb_read_document" in surface or "/content" in surface
 
 
-def _assert_capped(payload: dict, cap: int | None, sources: list[str], *, whole_range: bool = False) -> None:
+def _uncapped_form(surface: str) -> Callable[[str], str]:
+    """What an uncapped caller receives of a source text on ``surface``: the whole text, except where
+    the surface trims by design for everyone (kb_search brief at brief_chars=400, a find-all brief row)."""
+    if surface == "kb_search brief":
+        return lambda s: s[:400] + ELLIPSIS if len(s) > 400 else s
+    if "find_all brief" in surface or "find-all brief" in surface:
+        return lambda s: _brief_snippet(s, None)
+    return lambda s: s
+
+
+def _assert_capped(
+    payload: dict, cap: int | None, sources: list[str], *, surface: str, whole_range: bool = False
+) -> None:
     assert '"doc_id"' in json.dumps(payload), f"the surface returned nothing to check: {payload}"
     values = _passages(payload)
     texts = [t for t in values if t]
     if cap is None:
-        assert any(len(t) > 50 for t in texts), f"an uncapped caller must receive whole passages: {texts}"
+        # Uncapped (a human, or a key without a cap): every passage is its source text in full,
+        # or exactly the surface's own trim of it.
+        expected = {_uncapped_form(surface)(src) for src in sources}
+        assert texts, "an uncapped caller received no passage at all"
+        for t in texts:
+            assert t in expected, f"an uncapped caller received a cut passage ({len(t)} chars): {t!r}"
         return
     if cap <= 0:
         # "No text" is said one way on every surface: the field is null or absent, never "".
@@ -221,7 +239,7 @@ async def test_mcp_surface_honours_the_key_snippet_cap(db_session, corpus, mock_
         payload = await MCP_SURFACES[surface](corpus)
     finally:
         _mcp_principal.reset(token)
-    _assert_capped(payload, cap, corpus.sources, whole_range=_whole_range(surface))
+    _assert_capped(payload, cap, corpus.sources, surface=surface, whole_range=_whole_range(surface))
 
 
 @pytest.mark.parametrize("surface", list(MCP_SURFACES), ids=list(MCP_SURFACES))
@@ -231,7 +249,7 @@ async def test_mcp_surface_is_uncapped_for_the_human(db_session, corpus, mock_se
         payload = await MCP_SURFACES[surface](corpus)
     finally:
         _mcp_principal.reset(token)
-    _assert_capped(payload, None, corpus.sources)
+    _assert_capped(payload, None, corpus.sources, surface=surface)
 
 
 async def _rest(client, corpus: Corpus, surface: str, headers: dict) -> dict:
@@ -249,14 +267,14 @@ async def _rest(client, corpus: Corpus, surface: str, headers: dict) -> dict:
 async def test_rest_route_honours_the_key_snippet_cap(client, db_session, corpus, surface, cap):
     raw = await _make_key(db_session, cap)
     payload = await _rest(client, corpus, surface, auth_header(raw))
-    _assert_capped(payload, cap, corpus.sources, whole_range=_whole_range(surface))
+    _assert_capped(payload, cap, corpus.sources, surface=surface, whole_range=_whole_range(surface))
 
 
 @pytest.mark.parametrize("surface", list(REST_SURFACES), ids=list(REST_SURFACES))
 async def test_rest_route_is_uncapped_for_the_human(client, corpus, admin_user, surface):
     token = create_access_token(admin_user.user_id, admin_user.role.value)
     payload = await _rest(client, corpus, surface, auth_header(token))
-    _assert_capped(payload, None, corpus.sources)
+    _assert_capped(payload, None, corpus.sources, surface=surface)
 
 
 @pytest.mark.parametrize("cap", [50, None], ids=lambda c: f"cap={c}")
@@ -332,15 +350,37 @@ def test_cap_passage_text_leaves_humans_and_oauth_unchanged():
 # --- key create / update validation ------------------------------------------
 
 
-@pytest.mark.parametrize("value", [-1, -500])
-async def test_create_key_rejects_a_negative_snippet_cap(client, admin_token, value):
+INT32_MAX = 2**31 - 1
+
+
+@pytest.mark.parametrize("value", [-1, -500, INT32_MAX + 1])
+async def test_create_key_rejects_a_snippet_cap_out_of_range(client, admin_token, value):
+    """Negative, or past the 32-bit column (which would pass validation and then 500 on INSERT)."""
     resp = await client.post(
         "/api/api-keys", json={"name": "neg", "max_snippet_chars": value}, headers=auth_header(admin_token)
     )
     assert resp.status_code == 422, resp.text[:300]
 
 
-@pytest.mark.parametrize("value", [None, 0, 50])
+@pytest.mark.parametrize("field", ["rate_limit_rpm", "rate_limit_rph"])
+@pytest.mark.parametrize("value", [-1, INT32_MAX + 1])
+async def test_create_and_patch_reject_a_rate_limit_out_of_range(client, admin_token, field, value):
+    resp = await client.post("/api/api-keys", json={"name": "rl", field: value}, headers=auth_header(admin_token))
+    assert resp.status_code == 422, resp.text[:300]
+    created = await client.post("/api/api-keys", json={"name": "rl-ok"}, headers=auth_header(admin_token))
+    key_id = created.json()["key_id"]
+    resp = await client.patch(f"/api/api-keys/{key_id}", json={field: value}, headers=auth_header(admin_token))
+    assert resp.status_code == 422, resp.text[:300]
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, INT32_MAX])
+async def test_create_key_accepts_a_rate_limit_in_range(client, admin_token, value):
+    body = {"name": "rl", "rate_limit_rpm": value, "rate_limit_rph": value}
+    resp = await client.post("/api/api-keys", json=body, headers=auth_header(admin_token))
+    assert resp.status_code == 201, resp.text[:300]
+
+
+@pytest.mark.parametrize("value", [None, 0, 50, INT32_MAX])
 async def test_create_key_accepts_none_zero_and_positive(client, admin_token, value):
     resp = await client.post(
         "/api/api-keys", json={"name": "ok", "max_snippet_chars": value}, headers=auth_header(admin_token)
@@ -351,10 +391,11 @@ async def test_create_key_accepts_none_zero_and_positive(client, admin_token, va
 async def test_patch_key_rejects_a_negative_snippet_cap_and_accepts_zero(client, admin_token):
     created = await client.post("/api/api-keys", json={"name": "patchable"}, headers=auth_header(admin_token))
     key_id = created.json()["key_id"]
-    resp = await client.patch(
-        f"/api/api-keys/{key_id}", json={"max_snippet_chars": -3}, headers=auth_header(admin_token)
-    )
-    assert resp.status_code == 422, resp.text[:300]
+    for bad in (-3, INT32_MAX + 1):
+        resp = await client.patch(
+            f"/api/api-keys/{key_id}", json={"max_snippet_chars": bad}, headers=auth_header(admin_token)
+        )
+        assert resp.status_code == 422, resp.text[:300]
     resp = await client.patch(
         f"/api/api-keys/{key_id}", json={"max_snippet_chars": 0}, headers=auth_header(admin_token)
     )

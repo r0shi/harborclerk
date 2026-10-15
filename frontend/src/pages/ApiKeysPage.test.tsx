@@ -15,7 +15,7 @@ const getMock = vi.mocked(get)
 const patchMock = vi.mocked(patch)
 const postMock = vi.mocked(post)
 
-function key(maxSnippetChars: number | null) {
+function key(fields: Record<string, unknown> = {}) {
   return {
     key_id: 'k1',
     name: 'Cloud connector',
@@ -26,10 +26,11 @@ function key(maxSnippetChars: number | null) {
     tool_overrides: {},
     scope_topic_ids: null,
     scope_folder_ids: null,
-    max_snippet_chars: maxSnippetChars,
+    max_snippet_chars: null,
     scope_summary: 'Read only',
     rate_limit_rpm: null,
     rate_limit_rph: null,
+    ...fields,
   }
 }
 
@@ -42,12 +43,16 @@ function stubKeys(keys: ReturnType<typeof key>[]) {
   })
 }
 
-async function openEdit() {
+function renderPage() {
   render(
     <MemoryRouter>
       <ApiKeysPage />
     </MemoryRouter>,
   )
+}
+
+async function openEdit() {
+  renderPage()
   fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
 }
 
@@ -55,11 +60,16 @@ function capInput() {
   return screen.getByLabelText('Max snippet chars') as HTMLInputElement
 }
 
-function rpmInput() {
-  return screen.getAllByPlaceholderText('System default')[0] as HTMLInputElement
+async function save() {
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 }
 
-describe('ApiKeysPage snippet cap', () => {
+async function savedBody(call = 0): Promise<Record<string, unknown>> {
+  await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(call + 1))
+  return patchMock.mock.calls[call][1] as Record<string, unknown>
+}
+
+describe('ApiKeysPage edit and create', () => {
   beforeEach(() => {
     getMock.mockReset()
     patchMock.mockReset()
@@ -72,61 +82,77 @@ describe('ApiKeysPage snippet cap', () => {
     )
   })
 
-  it('does not send an unchanged cap on edit, so editing a key capped at 0 keeps its cap', async () => {
-    stubKeys([key(0)])
+  it('sends only the changed field: a key with an API-set expiry time and a negative rpm keeps both', async () => {
+    stubKeys([key({ expires_at: '2026-12-01T10:30:00Z', rate_limit_rpm: -5, max_snippet_chars: 0 })])
+    await openEdit()
+    fireEvent.change(screen.getByLabelText('Key name'), { target: { value: 'Renamed connector' } })
+    await save()
+    expect(await savedBody()).toEqual({ name: 'Renamed connector' })
+  })
+
+  it('does not send an unchanged cap, so editing a key capped at 0 keeps its cap', async () => {
+    stubKeys([key({ max_snippet_chars: 0 })])
     await openEdit()
     expect(capInput().value).toBe('0')
-    fireEvent.change(rpmInput(), { target: { value: '30' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1))
-    const body = patchMock.mock.calls[0][1] as Record<string, unknown>
-    expect(body).not.toHaveProperty('max_snippet_chars')
-    expect(body.rate_limit_rpm).toBe(30)
+    fireEvent.change(screen.getByLabelText('Requests per minute'), { target: { value: '30' } })
+    await save()
+    expect(await savedBody()).toEqual({ rate_limit_rpm: 30 })
   })
 
-  it('does not send a legacy negative cap, shown as 0, when it is left unchanged', async () => {
-    stubKeys([key(-5)])
+  it('sends nothing when nothing changed, a legacy negative cap (shown as 0) included', async () => {
+    stubKeys([key({ max_snippet_chars: -5 })])
     await openEdit()
     expect(capInput().value).toBe('0')
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1))
-    expect(patchMock.mock.calls[0][1]).not.toHaveProperty('max_snippet_chars')
-  })
-
-  it('sends 0 for "0" and null for an emptied field on edit', async () => {
-    stubKeys([key(200)])
-    await openEdit()
-    fireEvent.change(capInput(), { target: { value: '0' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1))
-    expect(patchMock.mock.calls[0][1]).toMatchObject({ max_snippet_chars: 0 })
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
-    fireEvent.change(capInput(), { target: { value: '' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(2))
-    expect(patchMock.mock.calls[1][1]).toMatchObject({ max_snippet_chars: null })
-  })
-
-  it('rejects a negative cap with a visible message and sends nothing', async () => {
-    stubKeys([key(200)])
-    await openEdit()
-    fireEvent.change(capInput(), { target: { value: '-3' } })
-    expect(screen.getByRole('alert')).toHaveTextContent('0 or more')
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect(await screen.findByText(/must be a whole number of 0 or more/, { selector: 'div' })).toBeInTheDocument()
+    await save()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument())
     expect(patchMock).not.toHaveBeenCalled()
   })
 
-  it('creates a key with a cap of 0 when "0" is entered', async () => {
+  it('sends 0 for "0" and null for an emptied field', async () => {
+    stubKeys([key({ max_snippet_chars: 200 })])
+    await openEdit()
+    fireEvent.change(capInput(), { target: { value: '0' } })
+    await save()
+    expect(await savedBody()).toEqual({ max_snippet_chars: 0 })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    fireEvent.change(capInput(), { target: { value: '' } })
+    await save()
+    expect(await savedBody(1)).toEqual({ max_snippet_chars: null })
+  })
+
+  it.each(['-3', '5e', '5OO', '50-'])('rejects a cap of %j with a visible message and sends nothing', async (raw) => {
+    stubKeys([key({ max_snippet_chars: 50 })])
+    await openEdit()
+    fireEvent.change(capInput(), { target: { value: raw } })
+    expect(capInput().value).toBe(raw) // a text input keeps what was typed; a number input would report ""
+    expect(screen.getByRole('alert')).toHaveTextContent('whole number')
+    await save()
+    expect(await screen.findByText(/Max snippet chars must be a whole number/, { selector: 'div' })).toBeInTheDocument()
+    expect(patchMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a mistyped rate limit instead of resetting it to the default', async () => {
+    stubKeys([key({ rate_limit_rpm: 30 })])
+    await openEdit()
+    fireEvent.change(screen.getByLabelText('Requests per minute'), { target: { value: '3O' } })
+    await save()
+    expect(await screen.findByText(/Requests\/min must be a whole number/, { selector: 'div' })).toBeInTheDocument()
+    expect(patchMock).not.toHaveBeenCalled()
+  })
+
+  it('creates a key with a cap of 0 when "0" is entered, and refuses a mistyped cap', async () => {
     stubKeys([])
-    render(
-      <MemoryRouter>
-        <ApiKeysPage />
-      </MemoryRouter>,
-    )
+    renderPage()
     fireEvent.click(await screen.findByRole('button', { name: 'Create Key' }))
     fireEvent.change(screen.getByPlaceholderText('e.g. Claude Desktop'), { target: { value: 'Capped' } })
+    fireEvent.change(capInput(), { target: { value: '5OO' } })
+    expect(screen.getByRole('alert')).toHaveTextContent('whole number')
+    // Inside a <form> the input's pattern blocks the submit natively; handleSubmit re-checks regardless.
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(postMock).not.toHaveBeenCalledWith('/api/api-keys', expect.anything())
+
     fireEvent.change(capInput(), { target: { value: '0' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     await waitFor(() => expect(postMock).toHaveBeenCalledWith('/api/api-keys', expect.anything()))
