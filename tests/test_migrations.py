@@ -133,6 +133,15 @@ def _seed_invalid_index(engine, name: str) -> None:
         conn.execute(text(f"UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'public.{name}'::regclass"))
 
 
+def _drop_invalid_leftovers(engine, *names: str) -> None:
+    """Cleanup that holds even when the migration under test regressed and left an INVALID index."""
+    for name in names:
+        state = _index_state(engine, name)
+        if state is not None and state[0] is False:
+            with engine.begin() as conn:
+                conn.execute(text(f"DROP INDEX IF EXISTS public.{name}"))
+
+
 def test_0008_upgrade_rebuilds_an_invalid_leftover_index(alembic_cfg, sync_engine):
     """A retry after an interrupted build finds the function committed and an INVALID
     ix_chunks_chunk_text_ws_trgm; it must rebuild it, not skip it and drop the valid plain index."""
@@ -152,6 +161,7 @@ def test_0008_upgrade_rebuilds_an_invalid_leftover_index(alembic_cfg, sync_engin
         assert "hc_fold_whitespace(chunk_text)" in indexdef and "gin_trgm_ops" in indexdef
         assert _index_state(sync_engine, mig.PLAIN_INDEX) is None
     finally:
+        _drop_invalid_leftovers(sync_engine, mig.FOLD_INDEX, mig.PLAIN_INDEX)
         command.upgrade(alembic_cfg, "head")
 
 
@@ -168,6 +178,7 @@ def test_0008_downgrade_rebuilds_an_invalid_leftover_index(alembic_cfg, sync_eng
         assert "gin_trgm_ops" in indexdef and "(chunk_text gin_trgm_ops)" in indexdef
         assert _index_state(sync_engine, mig.FOLD_INDEX) is None
     finally:
+        _drop_invalid_leftovers(sync_engine, mig.FOLD_INDEX, mig.PLAIN_INDEX)
         command.upgrade(alembic_cfg, "head")
 
 
@@ -202,7 +213,10 @@ def test_0008_refuses_a_fold_function_with_a_different_body(alembic_cfg, sync_en
         with pytest.raises(RuntimeError, match="different definition"):
             command.upgrade(alembic_cfg, "head")
     finally:
+        # Robust even if the check regressed and an index was built on the wrong body: drop both,
+        # restamp, rebuild from the real definition.
         with sync_engine.begin() as conn:
-            conn.execute(text("DROP FUNCTION IF EXISTS public.hc_fold_whitespace(text)"))
+            conn.execute(text("DROP FUNCTION IF EXISTS public.hc_fold_whitespace(text) CASCADE"))
+        command.stamp(alembic_cfg, "0007_ingestion_job_pipeline_seq")
         command.upgrade(alembic_cfg, "head")
     assert _fold_function_exists(sync_engine)
