@@ -41,7 +41,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      # The entrypoint migrates before the API serves, and a migration that rewrites
+      # chunks (0009) can take minutes on a large corpus; failures inside start_period
+      # do not count, and the first healthy check ends it early.
+      start_period: 600s
     networks:
       - harbor-clerk
 

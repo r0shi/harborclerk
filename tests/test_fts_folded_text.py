@@ -6,10 +6,13 @@ NBSPs was one lexeme, ``websearch_to_tsquery('first refusal')`` never matched it
 reached hybrid search only through the vector leg. ``fts_en`` / ``fts_fr`` now index
 ``hc_fold_whitespace(chunk_text)``, and every tsquery against them is built over the folded query.
 
-The locale tests run on #824's private databases (``tests/test_text_contains_locales.py``): one with
-libc LC_CTYPE C, one with the builtin C.UTF-8 provider; both parse an NBSP as a letter, which each
-test asserts as its premise. The embedder is down in every search here, so the FTS leg is the only
-source of a hit.
+The locale tests run on private databases built with #824's helper
+(``tests/test_text_contains_locales.py``): libc LC_CTYPE C, the builtin C.UTF-8 provider (which
+still parses under C ctype), and libc en_US.UTF-8 (Docker's and CI's locale; skipped where the
+server lacks it). The first two parse an NBSP as a letter; en_US.UTF-8 parses it as a space in
+``to_tsvector`` but keeps an NBSP-joined query together as a phrase (``'first' <-> 'refus'``).
+Each test asserts its locale's premise. The embedder is down in every search here, so the FTS leg
+is the only source of a hit.
 """
 
 import os
@@ -17,6 +20,7 @@ import subprocess
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 import harbor_clerk.search as search_mod
 from harbor_clerk.mcp_lookup_tools import _query_documents_by_date
@@ -33,6 +37,8 @@ from tests.test_text_contains_locales import (
 NBSP = chr(0xA0)
 NARROW_NBSP = chr(0x202F)
 
+EN_US_LOCALE_SQL = "LOCALE_PROVIDER libc LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8'"
+
 EN_TEXT = "The distributor holds a right{s}of{s}first{s}refusal over new territories."
 FR_TEXT = "Le distributeur obtient un droit{s}de{s}premier{s}refus sur les nouveaux territoires."
 EN_QUERY = "first refusal"
@@ -46,9 +52,10 @@ TEXTS = {
 }
 EN_LABELS = {f"en-{name}" for name in SEPARATORS}
 FR_LABELS = {f"fr-{name}" for name in SEPARATORS}
-# Before 0009 only the ASCII separator splits words.
-UNFOLDED_EN_LABELS = {"en-newline"}
-UNFOLDED_FR_LABELS = {"fr-newline"}
+
+# Whether the locale's to_tsvector reads an NBSP as a letter (so before 0009 only the ASCII
+# separator split the words).
+NBSP_IS_A_LETTER = {"c": True, "utf8": True, "en_us": False}
 
 PRE_REVISION = "0008_chunk_text_ws_fold"
 
@@ -63,9 +70,23 @@ def fts_utf8_url():
     yield from _private_database("fts_utf8", UTF8_LOCALE_SQL)
 
 
-@pytest.fixture(params=["c", "utf8"])
-def locale_url(request):
-    return request.getfixturevalue("fts_c_url" if request.param == "c" else "fts_utf8_url")
+@pytest.fixture(scope="module")
+def fts_en_us_url():
+    databases = _private_database("fts_en_us", EN_US_LOCALE_SQL)
+    try:
+        url = next(databases)
+    except DBAPIError as exc:
+        if "locale" not in str(exc).lower():
+            raise
+        pytest.skip(f"the server has no libc en_US.UTF-8 locale: {str(exc).splitlines()[0]}")
+    yield url
+    databases.close()  # drops the database
+
+
+@pytest.fixture(params=["c", "utf8", "en_us"])
+def locale(request):
+    """(name, url) of a private database in that locale."""
+    return request.param, request.getfixturevalue(f"fts_{request.param}_url")
 
 
 def _alembic(url, *args: str) -> None:
@@ -76,9 +97,16 @@ def _alembic(url, *args: str) -> None:
     )
 
 
-async def _assert_nbsp_is_a_letter(session) -> None:
+async def _assert_locale_premise(session, name: str) -> None:
+    ctype = (
+        await session.execute(text("SELECT datctype FROM pg_database WHERE datname = current_database()"))
+    ).scalar()
+    assert ctype == ("en_US.UTF-8" if name == "en_us" else "C")
     tsv = (await session.execute(text("SELECT to_tsvector('english', :t)::text"), {"t": TEXTS["en-nbsp"]})).scalar()
-    assert "'refus'" not in tsv, f"premise: this database parses an NBSP as a letter; got {tsv}"
+    if NBSP_IS_A_LETTER[name]:
+        assert "'refus'" not in tsv, f"premise: this database parses an NBSP as a letter; got {tsv}"
+    else:
+        assert "'refus'" in tsv, f"premise: this database parses an NBSP as a space; got {tsv}"
 
 
 async def _fts_matches(session, ids: dict[str, str]) -> tuple[set[str], set[str]]:
@@ -94,31 +122,52 @@ async def _fts_matches(session, ids: dict[str, str]) -> tuple[set[str], set[str]
     return found[0], found[1]
 
 
-async def test_migration_recomputes_existing_rows_over_folded_text(locale_url):
-    """At 0008 the NBSP- and U+202F-joined phrases are invisible to FTS (only the newline one
-    matches); upgrading to 0009 recomputes the stored columns of the rows already there."""
-    _alembic(locale_url, "downgrade", PRE_REVISION)
+async def _analyzed_fts_columns(session) -> set[str]:
+    rows = await session.execute(
+        text(
+            "SELECT attname FROM pg_stats WHERE schemaname = 'public' AND tablename = 'chunks' "
+            "AND attname IN ('fts_en', 'fts_fr')"
+        )
+    )
+    return {r[0] for r in rows}
+
+
+async def test_migration_recomputes_existing_rows_over_folded_text(locale):
+    """Rows seeded at 0008: where the parser reads an NBSP as a letter, the NBSP- and U+202F-joined
+    phrases are invisible to FTS (only the newline one matches). Upgrading to 0009 recomputes the
+    stored columns of the rows already there, in every locale, and re-analyzes them (the rewrite
+    drops the columns' statistics)."""
+    name, url = locale
+    _alembic(url, "downgrade", PRE_REVISION)
     try:
-        async with _session(locale_url) as session:
-            await _assert_nbsp_is_a_letter(session)
+        async with _session(url) as session:
+            await _assert_locale_premise(session, name)
             ids = await _seed(session, TEXTS)
             await session.commit()
-            assert await _fts_matches(session, ids) == (UNFOLDED_EN_LABELS, UNFOLDED_FR_LABELS)
+            if NBSP_IS_A_LETTER[name]:
+                before = ({"en-newline"}, {"fr-newline"})
+            else:
+                before = (EN_LABELS, FR_LABELS)
+            assert await _fts_matches(session, ids) == before
+            await session.execute(text("ANALYZE public.chunks"))
+            assert await _analyzed_fts_columns(session) == {"fts_en", "fts_fr"}
             await session.commit()  # no open transaction: the upgrade takes ACCESS EXCLUSIVE on chunks
 
-            _alembic(locale_url, "upgrade", "head")
+            _alembic(url, "upgrade", "head")
 
             assert await _fts_matches(session, ids) == (EN_LABELS, FR_LABELS)
+            assert await _analyzed_fts_columns(session) == {"fts_en", "fts_fr"}
             await session.commit()
     finally:
-        _alembic(locale_url, "upgrade", "head")
+        _alembic(url, "upgrade", "head")
 
 
-async def test_hybrid_search_finds_whitespace_joined_phrases_through_fts(locale_url, monkeypatch):
+async def test_hybrid_search_finds_whitespace_joined_phrases_through_fts(locale, monkeypatch):
     """New rows at head, and hybrid_search with the embedder down: the FTS leg alone returns them."""
+    name, url = locale
     monkeypatch.setattr(search_mod, "_embed_query", _embedder_down)
-    async with _session(locale_url) as session:
-        await _assert_nbsp_is_a_letter(session)
+    async with _session(url) as session:
+        await _assert_locale_premise(session, name)
         ids = await _seed(session, TEXTS)
         assert await _fts_matches(session, ids) == (EN_LABELS, FR_LABELS)
 
@@ -129,25 +178,33 @@ async def test_hybrid_search_finds_whitespace_joined_phrases_through_fts(locale_
 
 
 @pytest.mark.parametrize("sep", [NBSP, NARROW_NBSP], ids=["nbsp", "narrow-nbsp"])
-async def test_a_query_pasted_with_nbsps_is_folded(locale_url, monkeypatch, sep):
-    """The query side: "first<NBSP>refusal" would parse to one lexeme and match nothing the folded
-    columns hold. hybrid_search and kb_documents_by_date's FTS filter both fold it."""
+async def test_a_query_pasted_with_nbsps_is_folded(locale, monkeypatch, sep):
+    """The query side: unfolded, "first<NBSP>refusal" parses to one lexeme (C ctype) or to the
+    phrase 'first' <-> 'refus' (en_US.UTF-8), never to the 'first' & 'refus' the same words typed
+    give. hybrid_search and kb_documents_by_date's FTS filter both fold it, so it also matches the
+    chunk where the words are apart."""
+    name, url = locale
     monkeypatch.setattr(search_mod, "_embed_query", _embedder_down)
-    async with _session(locale_url) as session:
+    async with _session(url) as session:
         ids = await _seed(
-            session, {"plain": "The distributor holds a right of first refusal.", "other": TEXTS["other"]}
+            session,
+            {
+                "plain": "The distributor holds a right of first refusal.",
+                "apart": "Refusal of the offer came first.",
+                "other": TEXTS["other"],
+            },
         )
         query = f"first{sep}refusal"
         unfolded = (
             await session.execute(text("SELECT websearch_to_tsquery('english', :q)::text"), {"q": query})
         ).scalar()
-        assert "&" not in unfolded, f"premise: the unfolded query is one lexeme; got {unfolded}"
+        assert "&" not in unfolded, f"premise: the unfolded query is not 'first' & 'refus'; got {unfolded}"
 
         result = await search_mod.hybrid_search(session, query, k=10, bypass_reranker=True)
-        assert [h.doc_id for h in result.hits] == [ids["plain"]]
+        assert {h.doc_id for h in result.hits} == {ids["plain"], ids["apart"]}
 
         rows = await _query_documents_by_date(session, query=query, limit=10)
-        assert [str(doc.doc_id) for doc, _, _ in rows] == [ids["plain"]]
+        assert {str(doc.doc_id) for doc, _, _ in rows} == {ids["plain"], ids["apart"]}
 
 
 # ---------------------------------------------------------------------------

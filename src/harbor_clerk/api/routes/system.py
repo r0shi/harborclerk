@@ -37,6 +37,9 @@ from harbor_clerk.storage import get_storage
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
 
+# The maintenance action's deadline for `alembic upgrade head`; past it the run is cancelled.
+MIGRATION_TIMEOUT_SECONDS = 120
+
 # Marker baked into every shim by CliShimInstaller.swift
 _SHIM_MARKER = "# harbor-clerk — installed by Harbor Clerk Server"
 
@@ -1069,17 +1072,22 @@ async def run_migrations(
     import asyncio
     import subprocess
 
+    from harbor_clerk.db import async_session_factory
+    from harbor_clerk.migration_session import APPLICATION_NAME_ENV, cancel_backends, unique_application_name
+
     settings = get_settings()
+    session_name = unique_application_name()
 
     def _run():
         result = subprocess.run(
             ["python", "-m", "alembic", "upgrade", "head"],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=MIGRATION_TIMEOUT_SECONDS,
             env={
                 **os.environ,
                 "DATABASE_URL": settings.database_url,
+                APPLICATION_NAME_ENV: session_name,
             },
         )
         return result
@@ -1089,11 +1097,20 @@ async def run_migrations(
         if result.returncode != 0:
             raise HTTPException(status_code=500, detail=f"Migration failed: {result.stderr[-500:]}")
     except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=504, detail="Migration timed out after 120s")
+        # subprocess.run killed alembic, but its backend keeps running the statement it was sent
+        # (a table rewrite holds ACCESS EXCLUSIVE to its end); cancel it so the run rolls back now.
+        async with async_session_factory() as db:
+            cancelled = await cancel_backends(db, session_name)
+        logger.warning("Migration timed out after %ss; cancelled %d backend(s)", MIGRATION_TIMEOUT_SECONDS, cancelled)
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Migration timed out after {MIGRATION_TIMEOUT_SECONDS}s and was cancelled "
+                f"({cancelled} database session(s) stopped); it rolled back. Restart the app to run it at startup."
+            ),
+        )
 
     # Check resulting version
-    from harbor_clerk.db import async_session_factory
-
     async with async_session_factory() as db:
         ver_result = await db.execute(text("SELECT version_num FROM alembic_version"))
         row = ver_result.first()

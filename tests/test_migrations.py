@@ -396,3 +396,42 @@ def test_0009_refuses_a_fold_function_with_a_different_definition(alembic_cfg, s
             conn.execute(text(f"REINDEX INDEX public.{mig.FOLD_INDEX}"))
         command.upgrade(alembic_cfg, "head")
     assert "hc_fold_whitespace" in _fts_expressions(sync_engine)["fts_en"]
+
+
+def test_0008_guard_passes_twice_on_one_asyncpg_connection():
+    """The guard resolves both functions when its statement runs: asyncpg caches prepared
+    statements per connection, and a '...'::regprocedure literal resolved at prepare time made the
+    second check compare against the dropped first twin and refuse an identical function."""
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    mig = _load_0008()
+
+    async def _twice():
+        engine = create_async_engine(os.environ["DATABASE_URL"])
+        try:
+            async with engine.connect() as conn:
+                for _ in range(2):
+                    await conn.run_sync(mig._create_fold_function)
+                await conn.rollback()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_twice())
+
+
+def test_upgrade_from_0007_with_the_fold_function_already_present(alembic_cfg, sync_engine):
+    """0007 -> head in one run, with the function left behind by an interrupted earlier attempt
+    (0008's autocommit block commits it): 0008 and then 0009 both check it on the same connection."""
+    mig = _load_0008()
+    command.upgrade(alembic_cfg, "head")
+    try:
+        command.downgrade(alembic_cfg, "0007_ingestion_job_pipeline_seq")
+        with sync_engine.begin() as conn:
+            conn.execute(text(mig._FUNCTION_DDL.format(name=mig.FOLD_FUNCTION)))
+        command.upgrade(alembic_cfg, "head")
+    finally:
+        _restore_head(alembic_cfg, sync_engine)
+    assert "hc_fold_whitespace" in _fts_expressions(sync_engine)["fts_en"]
+    assert _index_state(sync_engine, mig.FOLD_INDEX)[0] is True

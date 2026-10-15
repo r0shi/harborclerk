@@ -88,9 +88,13 @@ def _create_fold_function(bind) -> None:
             "AND a.proparallel = b.proparallel AND a.prosecdef = b.prosecdef "
             "AND a.proconfig IS NOT DISTINCT FROM b.proconfig "
             "AND a.prorettype = b.prorettype "
-            f"FROM pg_proc a, pg_proc b WHERE a.oid = '{FOLD_FUNCTION}(text)'::regprocedure "
-            f"AND b.oid = '{_EXPECTED_FUNCTION}(text)'::regprocedure"
-        )
+            # to_regprocedure with bind parameters, resolved when the statement runs: a
+            # '...'::regprocedure literal is resolved when it is prepared, and asyncpg caches
+            # prepared statements per connection, so a second check on one connection compared
+            # against the OID of a twin dropped since, found no row, and refused an identical function.
+            "FROM pg_proc a, pg_proc b WHERE a.oid = to_regprocedure(:actual) AND b.oid = to_regprocedure(:expected)"
+        ),
+        {"actual": f"{FOLD_FUNCTION}(text)", "expected": f"{_EXPECTED_FUNCTION}(text)"},
     ).scalar()
     bind.execute(sa.text(f"DROP FUNCTION {_EXPECTED_FUNCTION}(text)"))
     if not same:

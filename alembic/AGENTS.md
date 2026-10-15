@@ -58,7 +58,11 @@ Changing a stored generated expression (`ALTER COLUMN ... SET EXPRESSION`)
 rewrites `chunks` under ACCESS EXCLUSIVE and rebuilds **every** index on it,
 the HNSW index included (40,000 chunks: about 26 s, 16 s of it HNSW). A rewrite
 also rebuilds, and so validates, an INVALID index left by an interrupted
-concurrent build.
+concurrent build. Killing the alembic client does not stop its backend: the lock
+lasts for the whole rewrite unless the backend is cancelled. env.py names its
+session from `HC_MIGRATION_APPLICATION_NAME` (`harbor_clerk.migration_session`),
+and anything that runs alembic with a deadline cancels by that name, as the
+`/system/run-migrations` route does.
 
 ## Functions under an expression index are never redefined in place
 

@@ -7,6 +7,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
+from harbor_clerk.migration_session import application_name
 
 # Import all models so they register on Base.metadata
 from harbor_clerk.models import Base
@@ -54,6 +55,9 @@ async def run_async_migrations() -> None:
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        # Named so a caller that gives up on this run can cancel its backend
+        # (harbor_clerk.migration_session): killing alembic does not stop it.
+        connect_args={"server_settings": {"application_name": application_name()}},
     )
 
     async with connectable.connect() as connection:

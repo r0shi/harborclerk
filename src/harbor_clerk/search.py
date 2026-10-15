@@ -366,7 +366,9 @@ def websearch_tsquery(config: str, query: str):
     ``fts_en`` / ``fts_fr`` index ``hc_fold_whitespace(chunk_text)`` (migration 0009, #825): under
     LC_CTYPE C the parser reads an NBSP as a letter, so a query pasted from a PDF with
     "first<NBSP>refusal" would be one lexeme and match nothing the folded columns hold. Every
-    tsquery against those columns is built here.
+    tsquery against those columns is built here. A pasted query now parses like the same query
+    typed: in "Article 4<NBSP>- Durée" the hyphen after the folded space is negation, as it is in
+    "Article 4 - Durée".
     """
     return func.websearch_to_tsquery(config, fold_whitespace(query))
 

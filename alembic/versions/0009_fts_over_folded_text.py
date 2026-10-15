@@ -12,25 +12,39 @@ ASCII space, so the lexemes are the same in every database locale.
 ``ALTER TABLE ... ALTER COLUMN ... SET EXPRESSION`` (PostgreSQL 17+; every deployment runs 18)
 recomputes a stored generated column by rewriting the table under an ACCESS EXCLUSIVE lock, and a
 rewrite rebuilds every index on ``chunks`` (the HNSW embedding index, the trigram index and both
-FTS GIN indexes included). Both columns change in one ALTER TABLE, so it is one rewrite. It runs
-in the migration's transaction: an interrupted upgrade rolls back whole and leaves 0008 stamped,
-with nothing half-built for the retry to trip over. Measured on a private PostgreSQL 18.3
-database (LC_CTYPE C, M-series Mac) with 40,000 synthetic chunks (840 characters on average,
-mixed ASCII spaces, NBSP, U+202F and line breaks, 70% English and 30% French, every chunk
-embedded): the upgrade took 26-27 s and held ACCESS EXCLUSIVE on ``chunks`` for 25-26 s of it;
-the downgrade 25 s, lock 24 s. About 16 s of that is rebuilding the HNSW index (REINDEX of it
-alone: 16 s; without it the upgrade took 11 s). The time grows with the chunk count: the CUAD
-sample's 6,408 chunks are a few seconds. The rewrite also rebuilds an INVALID index left by an
-interrupted concurrent build (making it valid); 0008's leftovers are built from their real
-definitions, so that is harmless.
+FTS GIN indexes included). Both columns change in one ALTER TABLE, so it is one rewrite, followed
+by ANALYZE (the rewrite drops the columns' statistics, and autovacuum would re-analyze only after
+about 10% churn). The rewrite needs disk headroom for a second copy of ``chunks`` and its indexes
+(416 MB at 40,000 chunks); on a full disk the upgrade fails with ENOSPC, rolls back, and the
+runner retries.
 
-While it runs, nothing else can read or write ``chunks``. The Mac app runs migrations after
-PostgreSQL starts and before the API and workers (``ServiceManager.startAll`` ->
-``MigrationRunner``), so nothing is waiting: the app is simply slower to come up once. In Compose
-the API container migrates before it serves, and the workers wait on its health check. The
-"Run Migrations" maintenance action runs alembic beside a live API with a 120 s limit; a search
-during the rewrite waits for it, and a run killed at the limit rolls back to 0008 (run it again,
-or restart).
+It runs in the migration's transaction, so an interrupted run rolls back whole, with nothing
+half-built for the retry to trip over. env.py runs every pending revision in one transaction, and
+0008's autocommit block commits only its own work: a run interrupted in 0009 that started at 0008
+stays at 0008, and one that started below 0008 stays at 0007 (with 0008's function and index
+committed, which 0008 accepts on the retry). Either way the retry is harmless.
+
+Measured on a private PostgreSQL 18.3 database (LC_CTYPE C, M-series Mac) with 40,000 synthetic
+chunks (840 characters on average, mixed ASCII spaces, NBSP, U+202F and line breaks, 70% English
+and 30% French, every chunk embedded): the upgrade took 26-28 s and held ACCESS EXCLUSIVE on
+``chunks`` for 25-27 s of it; the downgrade 25 s, lock 24 s. About 16 s of that is rebuilding the
+HNSW index (REINDEX of it alone: 16 s; without it the upgrade took 11-12 s). The time grows with
+the chunk count: the CUAD sample's 6,408 chunks are a few seconds. The rewrite also rebuilds an
+INVALID index left by an interrupted concurrent build (making it valid); 0008's leftovers are built
+from their real definitions, so that is harmless.
+
+While it runs, nothing else can read or write ``chunks``, and the lock lasts for the whole rewrite
+unless the backend running it is cancelled: killing the alembic client does not stop its backend,
+which finishes the rewrite and only then rolls back. The Mac app runs migrations after PostgreSQL
+starts and before the API and workers (``ServiceManager.startAll`` -> ``MigrationRunner``), so
+nothing is waiting: the app is simply slower to come up once. In Compose the API container
+migrates before it serves, and the workers wait on its health check (``start_period`` 600 s, so
+a long migration does not mark it unhealthy). The "Run Migrations" maintenance action runs alembic
+beside a live API with a 120 s limit: a search during the rewrite waits for it, and at the limit
+the route cancels the migration's backends by their ``application_name``
+(``harbor_clerk.migration_session``), so the run rolls back at once instead of holding the lock to
+the end. Above roughly 180,000 chunks this migration does not fit in that limit; restart the app
+(or the API container) to run it.
 
 The columns now depend on ``hc_fold_whitespace``, exactly as ``ix_chunks_chunk_text_ws_trgm``
 does: a stored value is computed with the body of the day it was written, so the function is
@@ -72,20 +86,11 @@ PLAIN_EXPRESSIONS = {
 
 
 def _require_fold_function() -> None:
-    """0008's guard, not a copy of it: the function exists with 0008's exact definition.
-
-    Its comparison twin gets a name of its own here. The guard casts the twin's name with
-    ``'...'::regprocedure``, which is resolved to an OID when the statement is prepared, and asyncpg
-    caches prepared statements per connection: when 0008 has just run the same check in the same
-    session (it does when it found the function already there), its cached statement still
-    carries the OID of 0008's twin, dropped since, the comparison finds no row, and the guard
-    refuses a function that is in fact identical.
-    """
+    """0008's guard, not a copy of it: the function exists with 0008's exact definition."""
     path = Path(__file__).with_name("0008_chunk_text_ws_fold.py")
     spec = importlib.util.spec_from_file_location("_hc_migration_0008", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module._EXPECTED_FUNCTION = "pg_temp.hc_fold_whitespace_expected_0009"
     module._create_fold_function(op.get_bind())
 
 
@@ -97,7 +102,10 @@ def _set_expressions(expressions: dict[str, str]) -> None:
 def upgrade() -> None:
     _require_fold_function()
     _set_expressions(FOLDED_EXPRESSIONS)
+    # The rewrite drops the columns' statistics, and autovacuum re-analyzes only after ~10% churn.
+    op.execute("ANALYZE public.chunks")
 
 
 def downgrade() -> None:
     _set_expressions(PLAIN_EXPRESSIONS)
+    op.execute("ANALYZE public.chunks")
