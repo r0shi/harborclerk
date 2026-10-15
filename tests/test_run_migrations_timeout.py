@@ -164,7 +164,12 @@ async def test_timeout_reports_the_revision_a_real_run_leaves(
         with blocker.cursor() as cur:
             cur.execute("SET lock_timeout = '60s'")
             cur.execute("LOCK TABLE public.chunks IN ACCESS SHARE MODE")
-        resp = await client.post("/api/system/run-migrations", headers=auth_header(admin_token))
+        try:
+            resp = await client.post("/api/system/run-migrations", headers=auth_header(admin_token))
+        finally:
+            # The request authenticated on this session; if the route regressed and left its
+            # transaction open, the upgrade in the finally below would wait on it forever.
+            await db_session.rollback()
         assert resp.status_code == 504, resp.text
         detail = resp.json()["detail"]
         assert "(1 database session(s) stopped)" in detail, detail
