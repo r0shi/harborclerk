@@ -206,7 +206,8 @@ since 2026-10-14, 25 before (ADR 0001, decision 6, amended).
 - A model with no price in `spend.yaml` cannot be called. Add the list price and the date you read it.
 - `--questions-dir DIR` asks the questions in `DIR/<corpus>.yaml` instead of `questions/`; `questions/keyed/`
   has CUAD and synthetic questions with an answer key (`<corpus>.key.json`), and every answer to a keyed question
-  is also scored against it in `metrics.csv` (`answer_key_score`, 0 to 1, from the answer's text alone) and the
+  is also scored against it in `metrics.csv` (`answer_key_score`, 0 to 1, from the answer's text; a document id
+  written in the text names that document, resolved through the citations the answer's tools returned) and the
   report ("answer key (0-1)"). The synthetic key is tied to the corpus generation it was counted over (its
   `_generation` header; `corpora/synthetic_key.py` regenerates it): a run that would score it against another
   generation, or against no corpus, refuses to start, so acquire the synthetic corpus with a run on the standard

@@ -28,6 +28,7 @@ from pathlib import Path
 
 from scripts.test_corpora.judge_bakeoff import SCORE_FIELD, load_items
 from scripts.test_corpora.runner.answer_key import score as key_score
+from scripts.test_corpora.runner.answer_key import titles_by_doc_id
 
 RIGHT, WRONG = 0.8, 0.2
 VERDICTS = ("pass", "marginal", "fail")
@@ -66,7 +67,9 @@ def truth_scores(run_dir: Path, key: dict) -> dict[str, dict]:
         entry = key.get(item["question_id"])
         if entry is None:
             continue
-        detail = key_score(entry, item["answer"])  # the text alone: an answer's citations are its retrieval hits
+        # The text, with the citations as the dictionary for a document id it wrote out; a citation the answer does
+        # not mention is a retrieval hit, not a name (sweep.key_score_cell scores the same way).
+        detail = key_score(entry, item["answer"], titles_by_doc_id(item.get("citations")))
         out[item["key"]] = {
             "truth": detail["score"],
             "model": item["model"],

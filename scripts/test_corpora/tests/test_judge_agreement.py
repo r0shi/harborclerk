@@ -186,3 +186,32 @@ def test_end_to_end_from_a_run_directory(tmp_path, capsys):
     assert row["spearman"] == pytest.approx(1.0) and (row["correct_calls"], row["decided"]) == (6, 6)
     assert "| reference | `judge-x` | 0 | 1.00 |" in capsys.readouterr().out
     assert Path(out).exists()
+
+
+def test_the_truth_score_resolves_a_document_id_through_the_responses_citations(tmp_path):
+    """The agreement tool's truth is the key's score, computed as the sweep computes it: an answer that names a
+    contract by its doc_id is credited when the response's citations carry the title; without them it is not."""
+    run = tmp_path / "run"
+    (run / "baselines" / "cuad").mkdir(parents=True)
+    doc_id = "ebbbd23d-3b0c-4c0d-a8c8-ac81198f6105"
+    key = {"cuad-key-1": {"kind": "list", "positives": ["A_x"], "universe": ["A_x", "B_y"]}}
+    (run / "baselines" / "cuad" / "cuad-key-1.json").write_text(json.dumps({"question": "which?", "answer": "A_x."}))
+    for model, citations in (("m1", [{"doc_id": doc_id, "doc_title": "A_x"}]), ("m2", [])):
+        folder = run / "responses" / "cuad" / model
+        folder.mkdir(parents=True)
+        (folder / "cuad-key-1__standard.json").write_text(
+            json.dumps(
+                {
+                    "corpus": "cuad",
+                    "model": model,
+                    "question_id": "cuad-key-1",
+                    "depth": "standard",
+                    "result": {"answer": f"One contract: `{doc_id}`.", "citations": citations},
+                }
+            )
+        )
+    truth = ja.truth_scores(run, key)
+    assert {k: v["truth"] for k, v in truth.items()} == {
+        "cuad__m1__cuad-key-1__standard": 1.0,
+        "cuad__m2__cuad-key-1__standard": 0.0,
+    }

@@ -497,6 +497,30 @@ def test_the_cloud_subject_is_scored_against_the_answer_key_in_its_own_table(tmp
     assert "baseline claude-fable-5-1; prices as of" in text, "the header names the subject"
 
 
+def test_a_cloud_subject_baseline_that_names_a_contract_by_its_doc_id_is_scored_through_its_cited_titles(tmp_path):
+    """bench-20261014-2328-cuad-fable: Fable wrote the parties and the doc_id, never the filename stem the key
+    holds, and four of six lists scored 0 named. The baseline's cited_doc_ids/cited_doc_titles are the map."""
+    run = _subject_run(tmp_path)
+    doc_id = "ebbbd23d-3b0c-4c0d-a8c8-ac81198f6105"
+    record = {
+        "question_id": "cuad-key-4",
+        "answer": f"One contract: SteelVault – Equidata (doc_id `{doc_id}`).",
+        "model": "claude-fable-5-1",
+        "stopped_by": "end_turn",
+        "model_call_count": 2,
+        "cited_doc_ids": [doc_id, "9311d183-07d1-41f4-8cd9-3cbfc712769c"],
+        "cited_doc_titles": ["A_x", "B_y"],
+    }
+    path = run / "baselines" / "cuad" / "cuad-key-4.json"
+    path.write_text(json.dumps(record))
+    assert "| cuad | `claude-fable-5-1` | 4 | 9 | 1 | 0.75 | 0.50 | 1.00 | 1.00 | 1.8500 |" in _render(run), (
+        "the id names A_x; B_y, cited but not written, is not named"
+    )
+    # Without the titles the id resolves to nothing, and the list scores as before: 0 named.
+    path.write_text(json.dumps({**record, "cited_doc_titles": []}))
+    assert "| cuad | `claude-fable-5-1` | 4 | 9 | 1 | 0.50 | 0.50 | 1.00 | 0.00 | 1.8500 |" in _render(run)
+
+
 def test_a_cloud_subject_run_from_before_the_call_count_takes_its_calls_from_the_ledger(tmp_path):
     """The ledger counts the whole run's baseline calls; they are this row's only when every baseline is keyed."""
     run = _subject_run(tmp_path, model="claude-sonnet-4-6", calls=False)
@@ -536,8 +560,8 @@ def test_a_kind_the_key_declares_beyond_the_three_gets_a_column_and_one_the_scor
         )
     original = answer_key.score
 
-    def score(entry, answer):
-        return {"score": 1.0} if entry["kind"] == "number" else original(entry, answer)
+    def score(entry, answer, doc_ids=None):
+        return {"score": 1.0} if entry["kind"] == "number" else original(entry, answer, doc_ids)
 
     monkeypatch.setattr(report.answer_key, "score", score)
     text = _render(run)

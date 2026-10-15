@@ -199,6 +199,60 @@ def test_a_list_is_scored_by_f1_so_that_recall_shows():
         score({"kind": "essay"}, "x")
 
 
+ID_STAAR = "ebbbd23d-3b0c-4c0d-a8c8-ac81198f6105"
+ID_EDIETS = "9311d183-07d1-41f4-8cd9-3cbfc712769c"
+ID_ELSEWHERE = "d60be7c8-b461-466c-beb3-b6f39fb77778"
+DOC_IDS = {ID_STAAR: STAAR, ID_EDIETS: EDIETS, ID_ELSEWHERE: "Other_20000101_10-K_EX-10.1_9_EX-10.1_Lease", "7": ACME_A}
+
+
+def test_a_contract_is_named_by_its_document_id_when_the_map_resolves_it():
+    """bench-20261014-2328-cuad-fable: "SteelVault Corp – Equidata Marketing Affiliate Agreement (doc_id
+    `ebbbd23d-…`)", never the filename stem; four of six lists scored 0 named. The map is the citations the
+    answer's tools returned, read only for the ids the answer wrote out."""
+    by_id = f"Two contracts: **SteelVault – Equidata** (doc_id `{ID_STAAR}`) and Women.com (`{ID_EDIETS}`, p. 13)."
+    assert named_contracts(by_id, UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS}
+    assert named_contracts(by_id, UNIVERSE) == set(), "without the map the ids are noise, as before"
+    # An id the map does not hold names nothing; one mapped to a title outside the universe names nothing.
+    assert named_contracts("see `c84261cc-ee5f-40e3-aa1f-ff43b0d29574`", UNIVERSE, None, DOC_IDS) == set()
+    assert named_contracts(f"see `{ID_ELSEWHERE}`", UNIVERSE, None, DOC_IDS) == set()
+    # Read as a title is: hyphens may go, and a short id is too likely to be a page number or a count.
+    assert named_contracts(ID_STAAR.replace("-", ""), UNIVERSE, None, DOC_IDS) == {STAAR}
+    assert named_contracts("7 contracts, see p. 7", UNIVERSE, None, DOC_IDS) == set()
+    # Titles and filers keep working beside the map, and the map adds to them.
+    assert named_contracts(f"Staar Surgical Company; and `{ID_EDIETS}`", UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS}
+    assert named_contracts(f"| *{EDIETS}* |", UNIVERSE, None, DOC_IDS) == {EDIETS}
+    assert named_contracts("", UNIVERSE, None, DOC_IDS) == set() and named_contracts(by_id, UNIVERSE, None, {}) == set()
+    # Negation is not read, for an id as for a title: the rule's stated cost.
+    assert named_contracts(
+        f"Not included: `{ID_EDIETS}` (the word appears only in warranties)", UNIVERSE, None, DOC_IDS
+    ) == {EDIETS}
+
+
+def test_a_list_scored_with_the_map_counts_an_item_named_by_id_and_without_it_scores_as_before():
+    entry = {"kind": "list", "positives": [STAAR, EDIETS, ACME_A], "universe": UNIVERSE}
+    text = f"`{ID_STAAR}` and `{ID_EDIETS}` and `{ID_ELSEWHERE}`."
+    with_map = score(entry, text, DOC_IDS)
+    assert (with_map["named"], with_map["right"], with_map["precision"], with_map["recall"]) == (2, 2, 1.0, 0.667)
+    assert with_map["score"] == pytest.approx(0.8)
+    assert score(entry, text) == score(entry, text, None) and score(entry, text)["score"] == 0.0
+    # A fact is not a list: the map is accepted and changes nothing.
+    assert score({"kind": "fact", "all_of": [["Texas"]]}, "Texas law.", DOC_IDS)["score"] == 1.0
+
+
+def test_the_map_is_read_from_a_responses_citations_at_either_level_and_from_nothing_else():
+    from scripts.test_corpora.runner.answer_key import titles_by_doc_id
+
+    citations = [
+        {"doc_id": ID_STAAR, "doc_title": STAAR, "pages": "3-4"},
+        {"source": {"doc_id": ID_EDIETS, "doc_title": EDIETS}, "score": 0.7},
+        {"doc_id": ID_ELSEWHERE},  # no title: nothing to resolve to
+        {"source": {"doc_title": ACME_A}},  # no id: nothing an answer could write
+        "a bare id from an older response",
+    ]
+    assert titles_by_doc_id(citations) == {ID_STAAR: STAAR, ID_EDIETS: EDIETS}
+    assert titles_by_doc_id(None) == {} and titles_by_doc_id([]) == {}
+
+
 def test_names_in_questions_and_years_in_keys():
     assert cuad_key.display_name(STAAR) == "Staar Surgical Company Distributor Agreement"
     assert cuad_key.display_name(EDIETS) == "Ediets Com Inc Co-Branding Agreement"
@@ -321,6 +375,25 @@ def test_the_metrics_cell_is_the_keys_score_or_empty_without_a_key():
     # An outage is not a wrong answer: the judge columns of that row are blank, and so is this one.
     assert key_score_cell(fact, None, Status.ERROR) == "" and key_score_cell(fact, {"answer": "Texas"}, None) == ""
     assert key_score_cell(None, result, Status.DONE) == "" and key_score_cell({}, result, Status.DONE) == ""
+
+
+def test_the_metrics_cell_resolves_a_document_id_the_answer_wrote_through_the_responses_citations():
+    """The phase-4 site of the rule: the response's citations are the map, at either level the app writes them,
+    and a citation the answer does not write out is still a retrieval hit, not a name."""
+    from scripts.test_corpora.runner.state import Status
+    from scripts.test_corpora.runner.sweep import key_score_cell
+
+    entry = {"kind": "list", "positives": [STAAR, EDIETS], "universe": UNIVERSE}
+    citations = [
+        {"doc_id": ID_STAAR, "doc_title": STAAR},
+        {"source": {"doc_id": ID_EDIETS, "doc_title": EDIETS}},
+        {"source": {"doc_id": ID_ELSEWHERE, "doc_title": ACME_A}},
+    ]
+    result = {"answer": f"Two: `{ID_STAAR}` and `{ID_EDIETS}`.", "citations": citations}
+    assert key_score_cell(entry, result, Status.DONE) == "1.000"
+    assert key_score_cell(entry, {**result, "citations": []}, Status.DONE) == "0.000", "no map, no names"
+    three = {**result, "answer": f"`{ID_STAAR}`, `{ID_EDIETS}` and `{ID_ELSEWHERE}`."}
+    assert key_score_cell(entry, three, Status.DONE) == "0.800", "the third id names Acme, which is not labelled"
 
 
 # ── the synthetic key's kinds: counts, amounts, both languages (#779's pairs measured against a key) ──

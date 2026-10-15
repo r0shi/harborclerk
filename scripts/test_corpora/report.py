@@ -162,8 +162,12 @@ def cloud_subject_table(run_dir: Path, ledger: dict | None) -> list[str]:
         scores: list[tuple[str, float]] = []
         rows: list[dict] = []
         for qid, entry, baseline in keyed:
+            # The id -> title map for a list answer that names a contract by its doc_id: the baseline's cited ids
+            # and titles are parallel lists collected from the tool results the model saw (providers/base.py).
+            cited = zip(baseline.get("cited_doc_ids") or [], baseline.get("cited_doc_titles") or [])
+            doc_ids = {doc_id: title for doc_id, title in cited if doc_id and title}
             try:
-                scores.append((entry["kind"], answer_key.score(entry, baseline.get("answer") or "")["score"]))
+                scores.append((entry["kind"], answer_key.score(entry, baseline.get("answer") or "", doc_ids)["score"]))
             except ValueError:
                 unknown.append(f"`{corpus}/{qid}` ({entry['kind']})")
                 continue

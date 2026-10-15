@@ -626,11 +626,15 @@ def load_questions(questions_dir: Path | None) -> tuple[dict[str, dict], dict[st
 def key_score_cell(key_entry: dict | None, result: dict | None, status: Status | None) -> str:
     """The answer_key_score cell for a unit: the key's score of the answer text, to three places. "" when the
     question has no key, and "" when the unit did not finish (an outage is not a wrong answer: the judge columns
-    of that row are blank too, and a reader of the CSV must not count it as 0)."""
+    of that row are blank too, and a reader of the CSV must not count it as 0). The result's `citations` are read
+    only as the dictionary that resolves a document id the answer wrote out to its title (`answer_key.score`);
+    a citation the answer does not mention counts for nothing."""
     if not key_entry or status not in (Status.DONE, Status.DEGRADED):
         return ""
+    result = result or {}
     try:
-        return f"{answer_key.score(key_entry, (result or {}).get('answer') or '')['score']:.3f}"
+        doc_ids = answer_key.titles_by_doc_id(result.get("citations"))
+        return f"{answer_key.score(key_entry, result.get('answer') or '', doc_ids)['score']:.3f}"
     except answer_key.CorpusMismatch as exc:  # refused at the start of a run; here only if the corpus changed since
         log.error("answer key not scored: %s", exc)
         return ""

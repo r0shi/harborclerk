@@ -217,6 +217,9 @@ def load_items(run_dir: Path) -> tuple[list[dict], dict[str, int]]:
                 "question": baseline["question"],
                 "baseline": baseline.get("answer") or "",
                 "answer": answer,
+                # For the answer key (judge_agreement.truth_scores): the dictionary that resolves a document id
+                # the answer wrote out to its title. Not judged, not counted.
+                "citations": result.get("citations") or [],
             }
         )
     return items, left_out
