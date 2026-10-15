@@ -62,9 +62,25 @@ concurrent build. Killing the alembic client does not stop its backend: the lock
 lasts for the whole rewrite unless the backend is cancelled. env.py names its
 session from `HC_MIGRATION_APPLICATION_NAME` (`harbor_clerk.migration_session`),
 and anything that runs alembic with a deadline cancels by that name, as the
-`/system/run-migrations` route does. env.py also holds a session-level advisory
-lock (`MIGRATION_LOCK_KEY`) for the whole run, so runs are serial: a second
-runner waits and then finds head, instead of rewriting `chunks` again.
+`/system/run-migrations` route does.
+
+## Migration runs are serial; wait for the lock by polling
+
+env.py holds a session-level advisory lock (`MIGRATION_LOCK_KEY` in
+`harbor_clerk.migration_session`) for the whole run, so a second runner waits
+for the one in progress and then finds head, instead of rewriting `chunks`
+again. Every online alembic command goes through it: `alembic current` and
+`alembic stamp` now wait behind a running migration. The Run Migrations route
+refuses with 409 while the lock is held rather than queueing.
+
+**Never wait with `pg_advisory_lock`.** A backend blocked in it holds a
+snapshot; `CREATE INDEX CONCURRENTLY` (0008) waits for every older snapshot in
+the database while the waiter waits for the lock the build's session holds: a
+deadlock, and the detector killed one of the two runs (the builder, mid-build,
+leaves an INVALID index). env.py polls `pg_try_advisory_lock` once a second and
+ends the transaction after every try. A transaction left open across tries is
+worse: the deadlock becomes an undetected hang, because the build waits for
+that transaction to end.
 
 ## Functions under an expression index are never redefined in place
 

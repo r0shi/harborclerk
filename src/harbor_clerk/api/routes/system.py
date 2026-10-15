@@ -1072,40 +1072,63 @@ async def run_migrations(
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Run alembic upgrade head. Returns current schema version after completion."""
+    """Run alembic upgrade head. Returns current schema version after completion.
+
+    Refuses (409) while another migration run holds the migration lock, instead of queueing a
+    second run behind it. Audited once per request with its outcome: ok, error, timeout, busy or
+    cancelled.
+    """
     from harbor_clerk import migration_session
 
-    await log_audit(session, user_id=admin.id, action="run_migrations", detail={})
-    # Commit before alembic starts, which also ends this request's transaction (the session
-    # require_admin authenticated with, cached per request): an idle-in-transaction session holds a
-    # snapshot, and CREATE INDEX CONCURRENTLY (0008) waits for every older snapshot in the
-    # database, so alembic would wait on this very request until the deadline.
-    await session.commit()
-
-    session_name = migration_session.unique_application_name()
-    proc = _start_alembic(session_name)
-    finished = False
+    audit: dict[str, Any] = {"outcome": "cancelled", "version": None}
     try:
+        if await migration_session.migration_lock_holder(session) is not None:
+            audit.update(outcome="busy", version=await _schema_version(session))
+            raise HTTPException(
+                status_code=409, detail="Another migration run is in progress; try again when it has finished."
+            )
+        # End this request's transaction before alembic starts (the session require_admin
+        # authenticated with, cached per request): an idle-in-transaction session holds a snapshot,
+        # and CREATE INDEX CONCURRENTLY (0008) waits for every older snapshot in the database, so
+        # alembic would wait on this very request until the deadline.
+        await session.commit()
+
+        session_name = migration_session.unique_application_name()
+        proc = _start_alembic(session_name)
+        finished = False
         try:
-            _stdout, stderr = await asyncio.to_thread(proc.communicate, timeout=MIGRATION_TIMEOUT_SECONDS)
-            finished = True
-        except subprocess.TimeoutExpired:
-            stop = await asyncio.shield(_stop_alembic(proc, session_name))
-            raise HTTPException(status_code=504, detail=_timeout_detail(stop)) from None
+            try:
+                _stdout, stderr = await asyncio.to_thread(proc.communicate, timeout=MIGRATION_TIMEOUT_SECONDS)
+                finished = True
+            except subprocess.TimeoutExpired:
+                stop = await asyncio.shield(_stop_alembic(proc, session_name))
+                audit.update(outcome="busy" if stop.queued else "timeout", version=stop.version)
+                raise HTTPException(status_code=504, detail=_timeout_detail(stop)) from None
+        finally:
+            if not finished and proc.returncode is None:
+                # Any other way out (the request cancelled on shutdown or disconnect, an error):
+                # alembic must not outlive the request, nor its backend keep a lock. Shielded, so
+                # a second cancellation does not interrupt the cleanup.
+                stop = await asyncio.shield(_stop_alembic(proc, session_name))
+                audit["version"] = stop.version
+        if proc.returncode != 0:
+            audit.update(outcome="error", version=await _schema_version(session))
+            raise HTTPException(status_code=500, detail=f"Migration failed: {(stderr or '')[-500:]}")
+
+        version = await _schema_version(session)
+        audit.update(outcome="ok", version=version)
+        return {"status": "ok", "schema_version": version}
     finally:
-        if not finished and proc.returncode is None:
-            # Any other way out (the request cancelled on shutdown or disconnect, an error):
-            # alembic must not outlive the request, nor its backend keep a lock. Shielded, so a
-            # second cancellation does not interrupt the cleanup.
-            await asyncio.shield(_stop_alembic(proc, session_name))
-    if proc.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"Migration failed: {(stderr or '')[-500:]}")
+        await asyncio.shield(_audit_run(session, admin.id, audit))
 
-    from harbor_clerk.db import async_session_factory
 
-    async with async_session_factory() as db:
-        version = await _schema_version(db)
-    return {"status": "ok", "schema_version": version}
+async def _audit_run(session: AsyncSession, user_id, detail: dict[str, Any]) -> None:
+    """The run's audit row, on every path; never raises (an audit failure must not mask the outcome)."""
+    try:
+        await log_audit(session, user_id=user_id, action="run_migrations", detail=detail)
+        await session.commit()
+    except Exception:
+        logger.exception("Could not audit the migration run (%s)", detail)
 
 
 # How long the timeout path waits for the cancelled backends to exit before reporting.
@@ -1129,12 +1152,14 @@ def _start_alembic(session_name: str) -> subprocess.Popen:
 
 @dataclass(frozen=True)
 class _Stopped:
-    """What stopping a run established; ``error`` is set when the cancel could not be confirmed."""
+    """What stopping a run established; ``error`` is set when the cancel could not be confirmed.
+    ``queued``: another run held the migration lock, so this one had only been waiting for it."""
 
     sessions: int = 0
     exited: bool = False
     version: str = "unknown"
     error: str | None = None
+    queued: bool = False
 
 
 async def _stop_alembic(proc: subprocess.Popen, session_name: str) -> _Stopped:
@@ -1145,7 +1170,7 @@ async def _stop_alembic(proc: subprocess.Popen, session_name: str) -> _Stopped:
     in the result.
     """
     from harbor_clerk.db import async_session_factory
-    from harbor_clerk.migration_session import cancel_backends, wait_for_exit
+    from harbor_clerk.migration_session import cancel_backends, migration_lock_holder, wait_for_exit
 
     try:
         proc.kill()
@@ -1154,6 +1179,11 @@ async def _stop_alembic(proc: subprocess.Popen, session_name: str) -> _Stopped:
     try:
         await asyncio.to_thread(proc.wait)
         async with async_session_factory() as db:
+            # Past the route's pre-check, a run can still start just behind another and spend the
+            # whole deadline polling for the lock: then the lock's holder is someone else.
+            holder = await migration_lock_holder(db)
+            queued = holder is not None and holder != session_name
+            await db.rollback()
             cancelled = await cancel_backends(db, session_name)
             await db.commit()
             exited = await wait_for_exit(db, session_name, seconds=MIGRATION_CANCEL_WAIT_SECONDS)
@@ -1169,7 +1199,7 @@ async def _stop_alembic(proc: subprocess.Popen, session_name: str) -> _Stopped:
         exited,
         version,
     )
-    return _Stopped(sessions=cancelled.sessions, exited=exited, version=version)
+    return _Stopped(sessions=cancelled.sessions, exited=exited, version=version, queued=queued)
 
 
 def _timeout_detail(stop: _Stopped) -> str:
@@ -1180,6 +1210,12 @@ def _timeout_detail(stop: _Stopped) -> str:
             f"({stop.error}). A search may wait until it ends. Restart the app to finish the migration at startup."
         )
     still = "" if stop.exited else " (still stopping)"
+    if stop.queued:
+        return (
+            f"{prefix} waiting for another migration run, which is still in progress; this run was "
+            f"stopped before it started and changed nothing ({stop.sessions} database session(s) stopped{still}). "
+            f"The database is at revision {stop.version}. Try again when the other run has finished."
+        )
     head = _expected_schema_head()
     if head is not None and stop.version == head:
         return (

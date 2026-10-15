@@ -449,15 +449,48 @@ def test_upgrade_from_0007_with_the_fold_function_already_present(alembic_cfg, s
     assert _index_state(sync_engine, mig.FOLD_INDEX)[0] is True
 
 
-def test_concurrent_runs_are_serialised_and_rewrite_once(alembic_cfg, sync_engine):
-    """Two `alembic upgrade head` from 0008 at once (a double click on Run Migrations): env.py's
-    advisory lock makes the second wait for the first and then find head. Without it both queued
-    on 0009's ALTER, rewrote chunks twice, and the second failed to stamp. 0009's ALTER is held on
-    a lock on chunks until both runs are in place; an event trigger counts the rewrites."""
+def _activity(engine, name: str) -> tuple | None:
+    """(state, wait_event_type, wait_event, query, backend_xmin) of the backend carrying ``name``."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT state, wait_event_type, wait_event, query, backend_xmin::text FROM pg_stat_activity "
+                "WHERE application_name = :name AND datname = current_database()"
+            ),
+            {"name": name},
+        ).first()
+    return tuple(row) if row else None
+
+
+def _wait_until(predicate, what: str, seconds: float = 30.0) -> None:
+    deadline = time.monotonic() + seconds
+    while not predicate():
+        assert time.monotonic() < deadline, f"timed out waiting for {what}"
+        time.sleep(0.1)
+
+
+@pytest.mark.parametrize(
+    ("start", "blocker_mode"),
+    [
+        # The first run waits on 0009's ALTER TABLE.
+        ("0008_chunk_text_ws_fold", "ACCESS SHARE"),
+        # The first run waits inside 0008's CREATE INDEX CONCURRENTLY, which later waits for every
+        # older snapshot in the database: a second run blocked in pg_advisory_lock holds one, and
+        # waits on the lock the first run holds, so the deadlock detector killed the first run
+        # mid-build. A second run that polls with pg_try_advisory_lock outside a transaction does
+        # not hold a snapshot while it waits.
+        ("0007_ingestion_job_pipeline_seq", "ROW EXCLUSIVE"),
+    ],
+)
+def test_concurrent_runs_are_serialised_and_rewrite_once(alembic_cfg, sync_engine, start, blocker_mode):
+    """Two `alembic upgrade head` (a double click, a restart during a run): the second waits for the
+    first, without holding a snapshot or a transaction, then finds head. Without the lock both
+    queued on 0009's ALTER, rewrote chunks twice, and the second failed to stamp. The first run is
+    held on a lock on chunks until the second is waiting; an event trigger counts the rewrites."""
     import subprocess
 
     command.upgrade(alembic_cfg, "head")
-    command.downgrade(alembic_cfg, "0008_chunk_text_ws_fold")
+    command.downgrade(alembic_cfg, start)
     with sync_engine.begin() as conn:
         conn.execute(text("CREATE TABLE IF NOT EXISTS hc_test_rewrites (relid oid NOT NULL)"))
         conn.execute(
@@ -469,44 +502,39 @@ def test_concurrent_runs_are_serialised_and_rewrite_once(alembic_cfg, sync_engin
         conn.execute(
             text("CREATE EVENT TRIGGER hc_test_rewrite ON table_rewrite EXECUTE FUNCTION hc_test_log_rewrite()")
         )
-    names = [f"hc-test-concurrent-{i}" for i in range(2)]
+    first, second = "hc-test-concurrent-first", "hc-test-concurrent-second"
     procs: list[subprocess.Popen] = []
     blocker = sync_engine.connect()
     blocker_tx = blocker.begin()
-    try:
-        blocker.execute(text("LOCK TABLE public.chunks IN ACCESS SHARE MODE"))
-        for name in names:
-            procs.append(
-                subprocess.Popen(
-                    ["alembic", "upgrade", "head"],
-                    env={**os.environ, "HC_MIGRATION_APPLICATION_NAME": name},
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
+
+    def _start(name: str) -> None:
+        procs.append(
+            subprocess.Popen(
+                ["alembic", "upgrade", "head"],
+                env={**os.environ, "HC_MIGRATION_APPLICATION_NAME": name},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
             )
+        )
 
-        def _waits() -> list[str]:
-            with sync_engine.connect() as conn:
-                rows = conn.execute(
-                    text(
-                        "SELECT wait_event FROM pg_stat_activity WHERE application_name = ANY(:names) "
-                        "AND wait_event_type = 'Lock'"
-                    ),
-                    {"names": names},
-                )
-                return sorted(r[0] for r in rows)
+    try:
+        blocker.execute(text(f"LOCK TABLE public.chunks IN {blocker_mode} MODE"))
+        _start(first)
+        _wait_until(lambda: (_activity(sync_engine, first) or (None, None))[1] == "Lock", "the first run to block")
+        _start(second)
 
-        # Both runs in place: one on 0009's ALTER (relation), the other on the advisory lock (or,
-        # without it, on the same ALTER).
-        deadline = time.monotonic() + 30
-        while len(_waits()) != 2:
-            assert time.monotonic() < deadline, f"runs never lined up: {_waits()}"
-            time.sleep(0.1)
-        lined_up = _waits()
+        def _second_waiting() -> bool:
+            # Blocked in a lock (pg_advisory_lock, or the same ALTER without any lock), or polling:
+            # idle between tries, its last statement the COMMIT that ends each try.
+            act = _activity(sync_engine, second)
+            return act is not None and (act[1] == "Lock" or (act[0] == "idle" and (act[3] or "").startswith("COMMIT")))
+
+        _wait_until(_second_waiting, "the second run to wait")
+        second_while_waiting = _activity(sync_engine, second)
         blocker_tx.rollback()
         outputs = [p.communicate(timeout=120)[0] for p in procs]
-        assert [p.returncode for p in procs] == [0, 0], outputs
+        assert [p.returncode for p in procs] == [0, 0], [out[-800:] for out in outputs]
         with sync_engine.connect() as conn:
             rewrites = conn.execute(
                 text("SELECT count(*) FROM hc_test_rewrites WHERE relid = 'public.chunks'::regclass")
@@ -514,7 +542,10 @@ def test_concurrent_runs_are_serialised_and_rewrite_once(alembic_cfg, sync_engin
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
         assert rewrites == 1
         assert version == "0009_fts_over_folded_text"
-        assert lined_up == ["advisory", "relation"]
+        assert _index_state(sync_engine, "ix_chunks_chunk_text_ws_trgm")[0] is True
+        # The second run polled: idle between tries (no open transaction), no lock wait, no snapshot.
+        state, wait_type, _, _, xmin = second_while_waiting
+        assert state == "idle" and wait_type != "Lock" and xmin is None, second_while_waiting
     finally:
         if blocker_tx.is_active:
             blocker_tx.rollback()
@@ -527,4 +558,5 @@ def test_concurrent_runs_are_serialised_and_rewrite_once(alembic_cfg, sync_engin
             conn.execute(text("DROP EVENT TRIGGER IF EXISTS hc_test_rewrite"))
             conn.execute(text("DROP FUNCTION IF EXISTS hc_test_log_rewrite()"))
             conn.execute(text("DROP TABLE IF EXISTS hc_test_rewrites"))
+        _drop_invalid_leftovers(sync_engine, "ix_chunks_chunk_text_ws_trgm", "ix_chunks_chunk_text_trgm")
         command.upgrade(alembic_cfg, "head")

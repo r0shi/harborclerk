@@ -175,27 +175,64 @@ def _times_out(proc, timeout):
     raise subprocess.TimeoutExpired(["alembic"], timeout)
 
 
+async def _audits(db_session) -> list[dict]:
+    """The run_migrations audit details, oldest first."""
+    rows = await db_session.execute(
+        select(AuditLog.detail).where(AuditLog.action == "run_migrations").order_by(AuditLog.created_at)
+    )
+    return [r[0] for r in rows]
+
+
+def _hold_migration_lock(application_name: str):
+    """A session holding the migration lock, as a run in progress does."""
+    conn = psycopg2.connect(_SYNC_DSN, application_name=application_name)
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_advisory_lock(%s)", (migration_session.MIGRATION_LOCK_KEY,))
+    return conn
+
+
 # ---------------------------------------------------------------------------
 # Normal exits
 # ---------------------------------------------------------------------------
 
 
 async def test_success_returns_the_schema_version_and_audits(client, admin_token, admin_user, db_session, monkeypatch):
+    admin_id = admin_user.user_id  # the route's version read rolls the session back, expiring the object
     started = _fake(monkeypatch, returncode=0)
     resp = await client.post("/api/system/run-migrations", headers=auth_header(admin_token))
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"status": "ok", "schema_version": _version()}
     assert started[0].name.startswith("harbor-clerk-alembic-") and not started[0].killed
-    actions = (await db_session.execute(select(AuditLog.action, AuditLog.user_id))).all()
-    assert ("run_migrations", admin_user.user_id) in actions
+    rows = (
+        await db_session.execute(select(AuditLog.user_id, AuditLog.detail).where(AuditLog.action == "run_migrations"))
+    ).all()
+    assert rows == [(admin_id, {"outcome": "ok", "version": _version()})]
 
 
-async def test_alembic_failure_is_a_500_with_its_stderr(client, admin_token, monkeypatch):
+async def test_alembic_failure_is_a_500_with_its_stderr(client, admin_token, db_session, monkeypatch):
     started = _fake(monkeypatch, returncode=1, stderr="Traceback ... boom")
     resp = await client.post("/api/system/run-migrations", headers=auth_header(admin_token))
     assert resp.status_code == 500
     assert "boom" in resp.json()["detail"]
     assert not started[0].killed
+    assert await _audits(db_session) == [{"outcome": "error", "version": _version()}]
+
+
+async def test_a_run_in_progress_is_a_409_not_a_second_run(client, admin_token, db_session, monkeypatch):
+    """Another run holds the migration lock (a second tab, a remounted page, the Mac app's runner):
+    refused before alembic starts, rather than queued behind it."""
+    await db_session.commit()  # the 409 path reads the version, which rolls the request session back
+    started = _fake(monkeypatch)
+    holder = _hold_migration_lock("hc-test-other-run")
+    try:
+        resp = await client.post("/api/system/run-migrations", headers=auth_header(admin_token))
+    finally:
+        holder.close()
+    assert resp.status_code == 409
+    assert "another migration run is in progress" in resp.json()["detail"].lower()
+    assert started == []
+    assert await _audits(db_session) == [{"outcome": "busy", "version": _version()}]
 
 
 async def test_non_admin_is_refused(client, user_token, monkeypatch):
@@ -239,6 +276,31 @@ async def test_timeout_cancels_every_backend_and_waits_for_them(client, admin_to
     assert sleepers[0].outcome == "cancelled" and sleepers[0].after < 15
 
 
+async def test_a_run_that_only_waited_for_another_says_so(client, admin_token, db_session, monkeypatch):
+    """The narrow race past the pre-check: another run takes the lock just after it, and this run
+    spends the deadline polling (an idle session carrying its name). The 504 says another run is in
+    progress and this one changed nothing."""
+    conns: list = []
+
+    def _queued_then_time_out(proc, timeout):
+        conns.append(_hold_migration_lock("hc-test-other-run"))
+        waiter = psycopg2.connect(_SYNC_DSN, application_name=proc.name)
+        waiter.autocommit = True
+        conns.append(waiter)
+        _times_out(proc, timeout)
+
+    _fake(monkeypatch, on_communicate=_queued_then_time_out)
+    try:
+        resp = await client.post("/api/system/run-migrations", headers=auth_header(admin_token))
+    finally:
+        for conn in conns:
+            conn.close()
+    assert resp.status_code == 504
+    detail = resp.json()["detail"]
+    assert "waiting for another migration run" in detail and "changed nothing" in detail, detail
+    assert await _audits(db_session) == [{"outcome": "busy", "version": _version()}]
+
+
 async def test_timeout_reports_a_backend_that_does_not_stop(client, admin_token, monkeypatch):
     """An idle session carrying the name: a cancel has nothing to interrupt, so it stays, and the
     message says the run is still stopping instead of claiming it stopped."""
@@ -261,7 +323,7 @@ async def test_timeout_reports_a_backend_that_does_not_stop(client, admin_token,
     assert "(1 database session(s) stopped (still stopping))" in resp.json()["detail"]
 
 
-async def test_timeout_after_commit_says_the_migration_completed(client, admin_token, monkeypatch):
+async def test_timeout_after_commit_says_the_migration_completed(client, admin_token, db_session, monkeypatch):
     """The deadline fell after the run committed: the database is at the script head."""
     _fake(monkeypatch, on_communicate=_times_out)
     assert _version() == HEAD
@@ -270,9 +332,10 @@ async def test_timeout_after_commit_says_the_migration_completed(client, admin_t
     detail = resp.json()["detail"]
     assert "the migration completed" in detail and f"revision {HEAD}" in detail, detail
     assert "Restart the app" not in detail
+    assert await _audits(db_session) == [{"outcome": "timeout", "version": HEAD}]
 
 
-async def test_timeout_still_answers_when_the_cancel_fails(client, admin_token, monkeypatch):
+async def test_timeout_still_answers_when_the_cancel_fails(client, admin_token, db_session, monkeypatch):
     async def _broken(*args, **kwargs):
         raise RuntimeError("database unreachable")
 
@@ -283,6 +346,7 @@ async def test_timeout_still_answers_when_the_cancel_fails(client, admin_token, 
     detail = resp.json()["detail"]
     assert "could not be confirmed" in detail and "database unreachable" in detail, detail
     assert started[0].killed
+    assert await _audits(db_session) == [{"outcome": "timeout", "version": "unknown"}]
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +375,7 @@ async def test_a_cancelled_request_kills_alembic_and_cancels_its_backend(db_sess
         if sleeper is not None:
             await asyncio.to_thread(sleeper.join)
     assert sleeper.outcome == "cancelled"
+    assert await _audits(db_session) == [{"outcome": "cancelled", "version": _version()}]
 
 
 # ---------------------------------------------------------------------------

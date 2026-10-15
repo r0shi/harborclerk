@@ -325,8 +325,6 @@ export default function SystemMaintenancePage() {
         </p>
         <button
           onClick={async () => {
-            // One run at a time: a second click would queue a second alembic run behind the first.
-            if (migrating) return
             setMigrating(true)
             setError('')
             setActionResult('')

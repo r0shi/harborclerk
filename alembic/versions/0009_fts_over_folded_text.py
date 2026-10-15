@@ -19,8 +19,12 @@ autovacuum would re-analyze only after about 10% churn. The rewrite needs disk h
 runner retries.
 
 env.py holds a session-level advisory lock for the whole run, so runs are serial: a second runner
-(a double click on Run Migrations, a restart during a run) waits for the first and then finds the
-database at head, rather than rewriting the table a second time.
+(a restart during a run, ``alembic current``) waits for the first and then finds the database at
+head, rather than rewriting the table a second time; the Run Migrations route refuses with 409
+instead of starting one. A waiter polls ``pg_try_advisory_lock`` once a second outside any
+transaction: blocked in ``pg_advisory_lock`` it would hold a snapshot, which 0008's CREATE INDEX
+CONCURRENTLY waits for while the waiter waits for the build's lock, a deadlock in which the
+detector killed one of the two runs.
 
 It runs in the migration's transaction, so an interrupted run rolls back whole, with nothing
 half-built for the retry to trip over. env.py runs every pending revision in one transaction, and

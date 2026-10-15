@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from logging.config import fileConfig
 
 from sqlalchemy import pool, text
@@ -8,7 +9,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from harbor_clerk.migration_session import MIGRATION_LOCK_KEY, application_name
+from harbor_clerk.migration_session import MIGRATION_LOCK_KEY, MIGRATION_LOCK_POLL_SECONDS, application_name
 
 # Import all models so they register on Base.metadata
 from harbor_clerk.models import Base
@@ -43,13 +44,37 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _acquire_migration_lock(connection: Connection) -> None:
+    """Wait for the migration lock (harbor_clerk.migration_session.MIGRATION_LOCK_KEY) by polling.
+
+    Never pg_advisory_lock: a backend blocked in it holds a snapshot, and CREATE INDEX CONCURRENTLY
+    (0008) waits for every older snapshot in the database, while this waiter waits on the lock
+    that build's session holds: a deadlock, and the detector killed one of the two runs (the one
+    building, mid-build, left an INVALID index). Each try is its own transaction, ended at once,
+    so nothing is held between tries; a transaction left open across tries would turn the detected
+    deadlock into an undetected hang (the build waits for that transaction to end).
+    """
+    log = logging.getLogger("alembic.env")
+    waiting = False
+    while True:
+        acquired = connection.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": MIGRATION_LOCK_KEY}).scalar()
+        connection.commit()
+        if acquired:
+            if waiting:
+                log.info("Another migration run finished; continuing")
+            return
+        if not waiting:
+            log.info("Waiting for another migration run to finish")
+            waiting = True
+        time.sleep(MIGRATION_LOCK_POLL_SECONDS)
+
+
 def do_run_migrations(connection: Connection) -> None:
-    # One run at a time (harbor_clerk.migration_session.MIGRATION_LOCK_KEY): a session-level
-    # advisory lock, so it spans the commits of an autocommit block (0008) and is released when
-    # this connection closes even if the unlock below never runs. Committed at once: alembic
-    # would otherwise find a transaction already open and never commit its own.
-    connection.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK_KEY})
-    connection.commit()
+    # One run at a time: a session-level advisory lock, so it spans the commits of an autocommit
+    # block (0008) and is released when this connection closes even if the unlock below never
+    # runs. Acquired by polling (see _acquire_migration_lock) and committed: alembic would
+    # otherwise find a transaction already open and never commit its own.
+    _acquire_migration_lock(connection)
     try:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
