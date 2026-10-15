@@ -147,22 +147,20 @@ since 2026-10-14, 25 before (ADR 0001, decision 6, amended).
   one question that took 24 calls cost USD 5.98 (#682). The loop is bounded at `MAX_MODEL_CALLS` (16; the last
   call is made with tools off and told to answer, the baseline records `stopped_by: model_call_limit`, and the
   report names it),
-  and every call carries prompt-cache breakpoints. The estimate is the split measured on the 20 keyed CUAD
-  questions (per question 44 K tokens written to the cache, 147 K read, 1.4 K out), priced at each model's own
-  cache rates and scaled by its tokenizer (`spend.yaml`), plus, on a model whose thinking is always on (Claude 4.7
-  and later, GPT-6), a **provisional** 1,500 tokens of thinking a call billed as output and carried in the cache:
-  Sonnet 4.6 USD 4.6, Opus 5.5 USD 10, Fable 5.1 USD 24, gpt-6-astra USD 22 for the 20. The thinking figure is a
-  guess until the first metered run (`spend.json` records `thinking_tokens`; the report shows them) and the other
-  corpora cost 40 to 60% more a question, so **one corpus per run**, and a frontier model's second corpus is
-  refused before it starts. Correct the estimate from a run as `spend.yaml` says: not from `input_tokens`, which
-  caching empties. answer-eval and `rerun_pr_j` pay for a `candidate_answer`, priced apart and still provisional.
-  A GPT-6 figure is a floor until the first metered run: it transfers Sonnet 4.6's measured cache split to a vendor
-  whose caching is automatic and best-effort, and a read that misses bills at input (astra: 10 instead of 1,
-  up to about USD 26 more over 20 questions).
-- **An estimate near the cap does not finish.** Before each call the meter reserves that call's worst case (the
+  and every call carries prompt-cache breakpoints. The estimate is the split measured on the dearest cloud-subject
+  run so far, Claude Fable 5.1 on the 20 keyed CUAD questions on 2026-10-15 (per question 52 K tokens written to
+  the cache, 219 K read, 1.6 K out, 4.3 calls, in Sonnet-4.6 tokens), priced at each model's own cache rates and
+  scaled by its tokenizer (`spend.yaml`), plus, on a model whose thinking is always on (Claude 4.7 and later,
+  GPT-6), the thinking a call measured on the same runs (250 for the Claude rows, 25 for GPT-6) billed as output
+  and carried in the cache: Sonnet 4.6 USD 5.7, Opus 5.5 USD 9, Fable 5.1 USD 22, gpt-6-astra USD 19 for the 20
+  (Fable cost 21.46 and astra 20.66). Enron costs more a question than CUAD; the synthetic corpus cost the same
+  or less on the frontier runs. **One corpus per run**; the per-call reservation (next bullet) is what needs the
+  headroom. Correct the row from a run's `spend.json` as the comment in `spend.yaml` says.
+- **A reservation is refused before a call, not after.** Before every call the meter reserves its worst case (the
   whole transcript at the hour-write rate plus `max_tokens` at the output price: about USD 5.6 for a late Fable
-  5.1 call with a 150K-token transcript), and a reservation that would cross the cap is refused. So a run admitted
-  at USD 24 of 25 is expected to stop with exit 3 around its 17th or 18th question, finished units saved. Rule of
+  5.1 call with a 150K-token transcript), and a reservation that would cross the cap is refused. So a run whose
+  estimate sits within one such reservation of the cap is expected to stop with exit 3 before its last question,
+  finished units saved (at the old 25.00 cap, Fable's 24.11 estimate would have ended around question 17). Rule of
   thumb: the estimate plus the largest single-call reservation must fit under the cap for the run to finish.
 - **The meter prices what the vendor bills.** An Anthropic cache write by its lifetime (the five-minute rate the
   loop asks for, from `usage.cache_creation`; the hour rate when a response does not say), a cache read at the

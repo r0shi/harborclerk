@@ -324,8 +324,8 @@ The full per-question detail lives in:
 These are estimates from before spend was metered. A run is now capped at USD 35 in code (25 before 2026-10-14) and records what it
 actually spent in `<run_dir>/spend.json`; see "Cloud spend is capped" in the README. Measured since: 20 keyed
 CUAD baselines on Sonnet 4.6 are USD 4.6 at the cache rates the loop asks for (the ledger said 6.6 while it
-priced every write as an hour); the same 20 on Claude Fable 5.1 are estimated at USD 24 and on gpt-6-astra at
-USD 22, a provisional 1,500 tokens of thinking a call included (`--baseline-model`; one model, one corpus per
+priced every write as an hour); the same 20 on Claude Fable 5.1 are estimated at USD 22 and on gpt-6-astra at
+USD 19, with the thinking a call measured on 2026-10-15 (Fable cost 21.46, astra 20.66) (`--baseline-model`; one model, one corpus per
 run). A run that close to the cap is expected to be cut short by the per-call reservation, not to finish: see
 "Cloud spend is capped" in the README. The judge is cents.
 

@@ -70,19 +70,20 @@ def test_the_shipped_policy_is_the_adrs():
     assert c.price("claude-sonnet-4-6") == Price(3.0, 15.0, cache_write_5m=3.75, cache_write_1h=6.0, cache_read=0.30)
     assert c.price("gpt-4o") == Price(input=2.5, output=10.0, cache_read=1.25)
     # The cloud subjects (read 2026-10-14). Claude 4.7 and later count about 30% more tokens than Sonnet 4.6.
-    # Their thinking is always on and billed as output: a provisional 1,500 a call until a run meters it.
-    assert c.price("claude-fable-5-1") == Price(
-        10.0, 50.0, 12.5, 20.0, 0.25, tokenizer=1.3, thinking_output_tokens=1500
-    )
-    assert c.price("claude-opus-5-5") == Price(4.0, 20.0, 5.0, 8.0, 0.20, tokenizer=1.3, thinking_output_tokens=1500)
-    assert c.price("gpt-6-astra") == Price(10.0, 50.0, 12.5, 12.5, 1.0, thinking_output_tokens=1500)
-    assert c.price("gpt-6.1-sol") == Price(2.0, 10.0, 2.5, 2.5, 0.10, thinking_output_tokens=1500)
+    # Their thinking is always on and billed as output: 250 a call for the Claude rows and 25 for GPT-6, from the
+    # 2026-10-15 ledgers (Fable 241 and 148 a call, astra 18 and 11); the unmeasured rows take their family's figure.
+    assert c.price("claude-fable-5-1") == Price(10.0, 50.0, 12.5, 20.0, 0.25, tokenizer=1.3, thinking_output_tokens=250)
+    assert c.price("claude-opus-5-5") == Price(4.0, 20.0, 5.0, 8.0, 0.20, tokenizer=1.3, thinking_output_tokens=250)
+    assert c.price("gpt-6-astra") == Price(10.0, 50.0, 12.5, 12.5, 1.0, thinking_output_tokens=25)
+    assert c.price("gpt-6.1-sol") == Price(2.0, 10.0, 2.5, 2.5, 0.10, thinking_output_tokens=25)
     assert c.price("gpt-5.6-luna").read == 0.02 and c.price("claude-sonnet-4-6").tokenizer == 1.0
     assert c.price("gpt-5.6-luna").thinking_output_tokens == 0, (
         "the judge estimate was measured with its reasoning in it"
     )
     assert c.price("claude-sonnet-4-6").thinking_output_tokens == 0, "thinks only when asked, and is not"
-    assert c.calls_per_unit == {"baseline_question": 3.9, "candidate_answer": 6.0}, "3.9: 78 calls / 20 questions"
+    assert c.calls_per_unit == {"baseline_question": 4.3, "candidate_answer": 6.0}, (
+        "4.3: 86 calls / 20 questions, Fable 5.1 on keyed CUAD, 2026-10-15"
+    )
     assert c.prices_verified == "2026-10-14"
 
 
@@ -481,11 +482,12 @@ def test_the_estimate_prices_each_kind_of_token_at_the_models_rate_and_scales_by
     )
     shipped = spend.load_config()
     keyed = {m: SpendMeter(shipped).estimate([("baseline_question", m, 20)]) for m in shipped.prices}
-    assert keyed["claude-sonnet-4-6"] == pytest.approx(4.62, abs=0.01), "the measured run, at the rate it asked for"
-    # With the provisional 1,500 tokens of thinking a call on the models that always think (17.15 without).
-    assert keyed["claude-fable-5-1"] == pytest.approx(24.11, abs=0.01)
-    assert keyed["gpt-6-astra"] == pytest.approx(22.42, abs=0.01)
-    assert keyed["claude-opus-5-5"] == pytest.approx(10.03, abs=0.01)
+    # The row is Fable 5.1's measured CUAD run (2026-10-15) in Sonnet-4.6 tokens, so Sonnet is estimated above
+    # its own 4.62 (the dearest run is the ceiling); Fable's figure is within a dollar of what it cost (21.46).
+    assert keyed["claude-sonnet-4-6"] == pytest.approx(5.70, abs=0.01)
+    assert keyed["claude-fable-5-1"] == pytest.approx(21.71, abs=0.01)
+    assert keyed["gpt-6-astra"] == pytest.approx(19.13, abs=0.01)
+    assert keyed["claude-opus-5-5"] == pytest.approx(9.26, abs=0.01)
     assert keyed["claude-opus-5-5"] < keyed["gpt-6-astra"] < keyed["claude-fable-5-1"] < shipped.cap_usd
     old_shape = shipped.cost("claude-fable-5-1", Usage(152_000, 3100).scaled(1.3)) * 20
     assert old_shape > shipped.cap_usd, "the estimate this replaced refused the run"
