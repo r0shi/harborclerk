@@ -195,7 +195,7 @@ def test_a_foreign_key_refuses_the_run_before_any_unit_starts(tmp_path, monkeypa
     common += ["--no-hc-logs", "--skip-canary", "--no-judge"]
     with (
         patch("scripts.test_corpora.runner.sweep.HarborClerkClient", return_value=fake_hc),
-        patch("scripts.test_corpora.runner.sweep.anthropic.Anthropic"),
+        patch("scripts.test_corpora.runner.sweep._baseline_client"),
         patch("scripts.test_corpora.runner.sweep.JudgeClient"),
         patch("scripts.test_corpora.runner.sweep.SyncMcpSession", return_value=MagicMock()),
         patch("scripts.test_corpora.runner.sweep._phase1_baseline") as baseline,
@@ -240,7 +240,7 @@ def _sweep_patches():
     fake_hc.get_bearer_token.return_value = "fake-token"
     return (
         patch("scripts.test_corpora.runner.sweep.HarborClerkClient", return_value=fake_hc),
-        patch("scripts.test_corpora.runner.sweep.anthropic.Anthropic"),
+        patch("scripts.test_corpora.runner.sweep._baseline_client"),
         patch("scripts.test_corpora.runner.sweep.JudgeClient"),
         patch("scripts.test_corpora.runner.sweep.SyncMcpSession", return_value=MagicMock()),
         patch("scripts.test_corpora.runner.sweep._ingest_corpus"),

@@ -173,7 +173,7 @@ def test_a_judge_nobody_priced_is_refused_before_anything_is_bought(tmp_path, mo
     # Exit code 3, as the sweep gives. A traceback is not one of the documented ways to stop (review of #694).
     assert judge_bakeoff.main([*base, "claude-haiku-4-5,gpt-99"]) == 3
     assert calls == [], "the priced judge was not called either"
-    assert judge_bakeoff.main([*base, "claude-haiku-4-5", "--spend-cap-usd", "30"]) == 3, "a cap over the limit"
+    assert judge_bakeoff.main([*base, "claude-haiku-4-5", "--spend-cap-usd", "40"]) == 3, "a cap over the limit"
     assert calls == []
 
 
