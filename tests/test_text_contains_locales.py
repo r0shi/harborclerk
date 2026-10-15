@@ -96,12 +96,15 @@ async def _session(url):
     try:
         async with async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)() as session:
             yield session
-        async with engine.begin() as conn:
-            for table in reversed(Base.metadata.sorted_tables):
-                if table.name != "schema_metadata":
-                    await conn.execute(table.delete())
     finally:
-        await engine.dispose()
+        # Also after a failure: rows a failed test committed would otherwise reach the next test.
+        try:
+            async with engine.begin() as conn:
+                for table in reversed(Base.metadata.sorted_tables):
+                    if table.name != "schema_metadata":
+                        await conn.execute(table.delete())
+        finally:
+            await engine.dispose()
 
 
 @pytest.fixture
