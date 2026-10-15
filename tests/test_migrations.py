@@ -298,7 +298,7 @@ def test_0008_does_not_drop_an_index_whose_build_is_still_running(sync_engine):
     mig = _load_0008()
     name = "ix_test_0008_in_progress"
     ddl = f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON public.chunks (chunk_num)"
-    errors: list[BaseException] = []
+    errors: list[Exception] = []
 
     blocker = sync_engine.connect()
     blocker_tx = blocker.begin()
@@ -309,7 +309,7 @@ def test_0008_does_not_drop_an_index_whose_build_is_still_running(sync_engine):
             with sync_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
                 conn.execute(text("SET statement_timeout = '30s'"))
                 conn.execute(text(f"CREATE INDEX CONCURRENTLY {name} ON public.chunks (chunk_num)"))
-        except BaseException as exc:  # reported below, never swallowed
+        except Exception as exc:  # reported below, never swallowed
             errors.append(exc)
 
     builder = threading.Thread(target=_build, daemon=True)

@@ -140,6 +140,9 @@ async def test_helper_predicate_can_use_the_fold_index(db_session, value):
     raw = (await conn.get_raw_connection()).driver_connection
     plan = "\n".join(r[0] for r in await raw.fetch("EXPLAIN " + str(compiled), *params))
     assert "ix_chunks_chunk_text_ws_trgm" in plan, plan
+    # The index must serve the folded ILIKE itself, not some other conjunct.
+    index_conds = [line for line in plan.splitlines() if "Index Cond" in line]
+    assert any("~~*" in line and "regexp_replace" in line for line in index_conds), plan
 
 
 # ---------------------------------------------------------------------------
@@ -205,15 +208,18 @@ async def test_edge_whitespace_asks_for_a_word_boundary(db_session):
             "ip-dot": "The covenant assigns all IP.",
             "ship": "The covenant covers the ship.",
             "ipo": "The covenant precedes the IPO.",
+            # "_" is a word character: these fail if it drops out of the boundary class.
+            "under-ip": "The covenant covers _IP terms.",
+            "ip-under": "The covenant covers IP_x terms.",
         },
     )
     cases = {
-        "IP": {"ip", "ip-dot", "ship", "ipo"},
+        "IP": {"ip", "ip-dot", "ship", "ipo", "under-ip", "ip-under"},
         " IP ": {"ip", "ip-dot"},
         "\tIP\r\n": {"ip", "ip-dot"},
-        " IP": {"ip", "ip-dot", "ipo"},
-        "IP ": {"ip", "ip-dot", "ship"},
-        "IP\n": {"ip", "ip-dot", "ship"},
+        " IP": {"ip", "ip-dot", "ipo", "ip-under"},
+        "IP ": {"ip", "ip-dot", "ship", "under-ip"},
+        "IP\n": {"ip", "ip-dot", "ship", "under-ip"},
     }
     for phrase, expected in cases.items():
         result = await find_all(db_session, "covenant", max_results=10, text_contains=phrase)

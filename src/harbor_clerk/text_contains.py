@@ -62,10 +62,29 @@ def fold_whitespace(value: str) -> str:
 # an alphanumeric one it is an escape (\m, \d, ...). So only ASCII punctuation is escaped.
 _ARE_PUNCTUATION_RE = re.compile(r"""([!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])""")
 
+# Word characters for the boundary check, the same in every database locale: [[:alnum:]] is ASCII
+# only under LC_CTYPE C, so the Latin letters (Latin-1 letters, Latin Extended, IPA, spacing
+# modifiers) and the combining marks are listed explicitly. The marks matter in every locale: in
+# NFD text "cafe" + U+0301 must not end a word after "cafe".
+_EXTRA_WORD_RANGES: tuple[tuple[int, int], ...] = (
+    (0x00AA, 0x00AA),  # feminine ordinal
+    (0x00B5, 0x00B5),  # micro sign
+    (0x00BA, 0x00BA),  # masculine ordinal
+    (0x00C0, 0x00D6),  # Latin-1 letters, before the multiplication sign
+    (0x00D8, 0x00F6),  # ... between it and the division sign
+    (0x00F8, 0x036F),  # the rest of Latin-1, Latin Extended-A/B, IPA, modifiers, combining marks
+)
+_WORD_CLASS = (
+    "[[:alnum:]_"
+    + "".join(f"\\u{lo:04x}" if lo == hi else f"\\u{lo:04x}-\\u{hi:04x}" for lo, hi in _EXTRA_WORD_RANGES)
+    + "]"
+)
+
 # "Not glued to a word character on this side." For a value whose edge character is a word
-# character this is exactly \m / \M; unlike them it also works when the edge is punctuation ("$5").
-_WORD_START = "(?<![[:alnum:]_])"
-_WORD_END = "(?![[:alnum:]_])"
+# character this is \m / \M with a locale-independent notion of word; unlike them it also works
+# when the edge is punctuation ("$5").
+_WORD_START = f"(?<!{_WORD_CLASS})"
+_WORD_END = f"(?!{_WORD_CLASS})"
 
 
 def escape_are(value: str) -> str:
@@ -94,5 +113,10 @@ def text_contains_clause(column: ColumnElement[str], value: str) -> ColumnElemen
     start = _WORD_START if folded.startswith(" ") else ""
     end = _WORD_END if folded.endswith(" ") else ""
     if start or end:
-        clause = and_(clause, folded_column.op("~*")(f"{start}{escape_are(core)}{end}"))
+        # lower() on both sides, as ILIKE compares in a UTF-8 database: ~* matches only the pattern
+        # character's own case variants, so the Kelvin sign, dotted I, capital sharp s and the Ohm
+        # sign would pass the ILIKE and fail the recheck. The core is lowered, not the boundary
+        # class (which already lists both cases).
+        pattern = func.concat(start, func.lower(escape_are(core)), end)
+        clause = and_(clause, func.lower(folded_column).op("~")(pattern))
     return clause
