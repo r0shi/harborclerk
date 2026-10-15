@@ -310,3 +310,5 @@ def test_kb_find_all_docstring_says_brief_rows_carry_a_snippet():
     assert f"at most {_FIND_ALL_SNIPPET_MAX_CHARS} characters" in " ".join(d.split())
     # The Response section names the field.
     assert "snippet (brief)" in d
+    # Triage only: read the passage before quoting it.
+    assert "kb_read_passages" in d and "source.chunk_id" in d

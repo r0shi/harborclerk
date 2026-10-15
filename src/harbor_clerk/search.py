@@ -30,6 +30,7 @@ __all__ = [
     "_apply_email_metadata_filter",
     "_apply_jsonb_metadata_filter",
     "find_all",
+    "find_all_snippet_chars",
     "hybrid_search",
 ]
 
@@ -48,10 +49,14 @@ _FIND_ALL_FULL_MAX_RESULTS = 30
 # about a sentence either side of the text_contains match (or the leading
 # sentence or two without one), ellipses where trimmed. A title list alone is
 # not something a model triages; a passage per row lets it pick which documents
-# to read without a second call each. Bounded so a brief page carries no more
-# passage text than a "full" page already does: 100 documents (the default
-# max_results) x 240 chars is 24 KB, under the up to 30 KB (30 x
-# chunk_target_size, 1,000 chars) that "full" returns at its clamp above.
+# to read without a second call each. At the default max_results of 100, a
+# brief page carries 100 x 240 chars = 24 KB of passage text, under the up to
+# 30 KB (30 x chunk_target_size, 1,000 chars) that "full" returns at its clamp
+# above. That holds only at the default: at find_all_max_results_cap (500) a
+# brief page carries up to 120 KB, four times full's clamp, on top of the
+# metadata a 500-row page already carries. An API key's max_snippet_chars
+# lowers the bound (find_all_snippet_chars), and the chat tools drop the
+# snippet on small contexts (llm/tools.py).
 _FIND_ALL_SNIPPET_MAX_CHARS = 240
 _ELLIPSIS = "\u2026"
 # A sentence end: terminal punctuation, an optional closing quote or bracket,
@@ -626,6 +631,14 @@ async def hybrid_search(
     )
 
 
+def find_all_snippet_chars(key_max_snippet_chars: int | None) -> int:
+    """The brief snippet bound for a caller: the default, lowered to an API
+    key's ``max_snippet_chars`` when it has one (0 omits the snippet)."""
+    if key_max_snippet_chars is None:
+        return _FIND_ALL_SNIPPET_MAX_CHARS
+    return max(0, min(_FIND_ALL_SNIPPET_MAX_CHARS, key_max_snippet_chars))
+
+
 def _brief_snippet(chunk_text: str, text_contains: str | None, max_chars: int = _FIND_ALL_SNIPPET_MAX_CHARS) -> str:
     """Trim a chunk to a one-line excerpt of at most ``max_chars`` characters.
 
@@ -638,6 +651,8 @@ def _brief_snippet(chunk_text: str, text_contains: str | None, max_chars: int = 
     text = " ".join(chunk_text.split())
     if len(text) <= max_chars:
         return text
+    if max_chars < 3:  # no room for an ellipsis and a character of text
+        return text[: max(0, max_chars)]
 
     match = None
     if text_contains:
@@ -702,6 +717,7 @@ async def find_all(
     job_status: str | None = None,
     job_issue: str | None = None,
     presentation: str = "brief",
+    snippet_max_chars: int = _FIND_ALL_SNIPPET_MAX_CHARS,
 ) -> FindAllResult:
     """Doc-level enumeration. Aggregates chunks → docs, sorts, paginates.
 
@@ -710,8 +726,10 @@ async def find_all(
     docs/superpowers/specs/2026-05-26-find-iteration-enumeration-design.md.
 
     presentation="brief" sets each hit's ``snippet`` (a bounded excerpt of the
-    best chunk, see ``_brief_snippet``); "full" sets the whole best chunk in
-    the ``top_chunk_*`` fields instead and clamps the page to
+    best chunk, see ``_brief_snippet``) and ``snippet_chunk_id`` (that chunk);
+    ``snippet_max_chars`` lowers the bound (it never raises it past
+    ``_FIND_ALL_SNIPPET_MAX_CHARS``) and 0 omits both. "full" sets the whole
+    best chunk in the ``top_chunk_*`` fields instead and clamps the page to
     ``_FIND_ALL_FULL_MAX_RESULTS`` documents.
     """
     _VALID_SORTS = {"relevance", "date_desc", "date_asc"}
@@ -806,6 +824,7 @@ async def find_all(
     else:
         doc_meta = {}
 
+    snippet_chars = max(0, min(snippet_max_chars, _FIND_ALL_SNIPPET_MAX_CHARS)) if presentation == "brief" else 0
     hits: list[FindAllHit] = []
     for sh in window:
         meta = doc_meta.get(sh.doc_id)
@@ -828,7 +847,8 @@ async def find_all(
                 top_chunk_text=sh.chunk_text if presentation == "full" else None,
                 top_chunk_page=sh.page_start if presentation == "full" else None,
                 top_chunk_heading=None,  # SearchHit has no heading field
-                snippet=_brief_snippet(sh.chunk_text, text_contains) if presentation == "brief" else None,
+                snippet=_brief_snippet(sh.chunk_text, text_contains, snippet_chars) if snippet_chars else None,
+                snippet_chunk_id=sh.chunk_id if snippet_chars else None,
             )
         )
 

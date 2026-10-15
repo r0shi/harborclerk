@@ -361,6 +361,7 @@ async def test_kb_find_all_brief_payload_carries_bounded_snippet(db_session, mcp
         assert "governed by the laws of Delaware" in snippet
         assert snippet.strip("…") in " ".join(texts[row["doc_id"]].split())
         assert row["citation"] and row["source"]["doc_id"] == row["doc_id"]  # the passage carries its citation
+        assert row["source"]["chunk_id"]  # the snippet's chunk, to read before quoting
 
     full = json.loads(await kb_find_all(query="agreement", text_contains="governed by", presentation="full"))
     for row in full["results"]:
@@ -368,15 +369,36 @@ async def test_kb_find_all_brief_payload_carries_bounded_snippet(db_session, mcp
         assert row["top_chunk"]["text"] == texts[row["doc_id"]]
 
 
-async def test_chat_find_all_result_carries_snippets_within_the_tool_result_budget(
-    db_session, admin_user, mock_session_factory
-):
-    """The chat tool returns brief snippets; at a small model's per-result cap the result
-    is cut by whole rows (valid JSON, every kept row still has its snippet), and the
-    chip summary stays a one-line count."""
-    from harbor_clerk.llm.chat import _truncate_for_llm
-    from harbor_clerk.llm.tools import execute_tool, summarize_tool_result
+# The row shape kb_find_all returned before #820, which small-context chat keeps.
+_PRE_SNIPPET_ROW_KEYS = {
+    "doc_id",
+    "doc_title",
+    "mime_type",
+    "language",
+    "score",
+    "ingested_at",
+    "page_range",
+    "source",
+    "citation",
+}
 
+
+@pytest.mark.parametrize(
+    ("context_tokens", "snippets"),
+    [(16_384, False), (32_768, False), (65_535, False), (65_536, True), (131_072, True)],
+)
+async def test_chat_find_all_snippets_follow_the_context_threshold(
+    db_session, admin_user, mock_session_factory, monkeypatch, context_tokens, snippets
+):
+    """Chat's find_all_documents carries brief snippets only from a 64K context: below it the
+    rows keep their pre-snippet shape (so the per-result cap keeps as many of them as before),
+    at and above it every row has its snippet. Either way the result is cut by whole rows to
+    the chat per-result cap, and the chip summary stays a one-line count."""
+    from harbor_clerk.llm.chat import _truncate_for_llm
+    from harbor_clerk.llm.tools import FIND_ALL_SNIPPET_MIN_CONTEXT_TOKENS, execute_tool, summarize_tool_result
+
+    assert FIND_ALL_SNIPPET_MIN_CONTEXT_TOKENS == 65_536
+    monkeypatch.setattr("harbor_clerk.llm.models.context_budget", lambda model, yarn_enabled: context_tokens)
     await _seed_long_docs(db_session, 100)
 
     raw = await execute_tool(
@@ -384,17 +406,82 @@ async def test_chat_find_all_result_carries_snippets_within_the_tool_result_budg
     )
     payload = json.loads(raw)
     assert payload["returned"] == 100
-    assert all(row.get("snippet") for row in payload["results"])
     assert summarize_tool_result(raw) == "Found 100 results"
+    for row in payload["results"]:
+        if snippets:
+            assert row["snippet"] and row["source"]["chunk_id"]
+        else:
+            assert set(row) == _PRE_SNIPPET_ROW_KEYS
+            assert "chunk_id" not in row["source"]
 
-    # chat.py: tool_result_max_chars = min(int(context_tokens * 0.25 * 3.5), 80_000); 16K is the smallest slot.
-    cap = min(int(16_384 * 0.25 * 3.5), 80_000)
-    assert len(raw) > cap, "100 brief rows must exceed the cap for the test to mean anything"
+    # chat.py: tool_result_max_chars = min(int(context_tokens * 0.25 * 3.5), 80_000).
+    cap = min(int(context_tokens * 0.25 * 3.5), 80_000)
     cut = _truncate_for_llm(raw, cap)
     assert len(cut) <= cap
-    kept = json.loads(cut)
-    assert kept["_truncated"] is True and kept["_original_count"] == 100
-    assert kept["results"] and all(row.get("snippet") for row in kept["results"])
+    kept = json.loads(cut)["results"]
+    assert kept
+    assert all(bool(row.get("snippet")) is snippets for row in kept)
+
+
+async def test_kb_find_all_snippets_do_not_follow_the_chat_threshold(
+    db_session, mcp_principal, mock_session_factory, monkeypatch
+):
+    """The small-context omission is chat's: a direct kb_find_all call still carries snippets."""
+    from harbor_clerk.mcp_server import kb_find_all
+
+    monkeypatch.setattr("harbor_clerk.llm.models.context_budget", lambda model, yarn_enabled: 16_384)
+    await _seed_long_docs(db_session, 2)
+    payload = json.loads(await kb_find_all(query="agreement", max_results=10))
+    assert all(row["snippet"] for row in payload["results"])
+
+
+@pytest.mark.parametrize("cap", [50, 0])
+async def test_kb_find_all_snippet_honours_the_keys_max_snippet_chars(db_session, mock_session_factory, cap):
+    """An API key's max_snippet_chars lowers the brief snippet bound; 0 omits the snippet and its chunk."""
+    import uuid
+
+    from harbor_clerk.api.scope import KeyScope
+    from harbor_clerk.mcp_server import kb_find_all
+
+    texts = await _seed_long_docs(db_session, 3)
+    scope = KeyScope(
+        scope_topic_ids=None,
+        scope_folder_ids=None,
+        permission_tier="search",
+        tool_overrides={},
+        max_snippet_chars=cap,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
+    )
+    token = _mcp_principal.set(Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope))
+    try:
+        payload = json.loads(await kb_find_all(query="agreement", text_contains="governed by", max_results=10))
+    finally:
+        _mcp_principal.reset(token)
+
+    assert {r["doc_id"] for r in payload["results"]} == set(texts)
+    for row in payload["results"]:
+        if cap:
+            assert 0 < len(row["snippet"]) <= cap
+            assert "governed by" in row["snippet"]
+        else:
+            assert "snippet" not in row and "chunk_id" not in row["source"]
+
+
+async def test_brief_row_source_chunk_id_reads_back_the_snippets_passage(
+    db_session, mcp_principal, mock_session_factory
+):
+    """The docstring tells the model to read a brief row's passage with kb_read_passages before
+    quoting it: source.chunk_id must name the chunk the snippet was cut from."""
+    from harbor_clerk.mcp_server import kb_find_all, kb_read_passages
+
+    texts = await _seed_long_docs(db_session, 2)
+    payload = json.loads(await kb_find_all(query="agreement", text_contains="governed by", max_results=10))
+    for row in payload["results"]:
+        passages = json.loads(await kb_read_passages(chunk_ids=[row["source"]["chunk_id"]]))["passages"]
+        (passage,) = passages
+        assert passage["text"] == texts[row["doc_id"]]
+        assert row["snippet"].strip("\u2026") in " ".join(passage["text"].split())
 
 
 async def test_cli_renders_the_brief_snippet_of_a_real_payload(db_session, mcp_principal, mock_session_factory):

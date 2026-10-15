@@ -244,3 +244,37 @@ async def test_find_all_route_returns_brief_snippets_from_postgres(client, admin
     (row,) = resp.json()["results"]
     assert row["snippet"] is None
     assert row["top_chunk"]["text"] == text
+
+
+async def test_find_all_route_snippet_honours_the_keys_max_snippet_chars(client, db_session) -> None:
+    """Over REST, an API key's max_snippet_chars lowers the brief snippet bound, as on kb_find_all."""
+    from harbor_clerk.auth import generate_api_key, hash_api_key
+    from harbor_clerk.models import ApiKey, Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from tests.conftest import auth_header
+
+    filler = "The supplier shall deliver the goods described in the schedule on the agreed dates. "
+    doc = Document(
+        title="Capped Agreement",
+        status="active",
+        sha256=b"sha_rest_snippet_cap_000000000000",
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/plain",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    text = filler * 6 + "Either party may terminate for convenience on thirty days notice. " + filler * 6
+    db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=text, language="en"))
+    raw_key = generate_api_key()
+    db_session.add(
+        ApiKey(name="capped", key_hash=hash_api_key(raw_key), permission_tier="search", max_snippet_chars=50)
+    )
+    await db_session.flush()
+
+    body = {"query": "terminate", "text_contains": "terminate for convenience"}
+    resp = await client.post("/api/search/find-all", json=body, headers=auth_header(raw_key))
+    assert resp.status_code == 200, resp.text[:300]
+    (row,) = resp.json()["results"]
+    assert 0 < len(row["snippet"]) <= 50
+    assert "terminate for convenience" in row["snippet"]
+    assert row["source"]["chunk_id"]

@@ -346,3 +346,21 @@ def test_find_all_documents_presentation_says_brief_carries_a_snippet():
     fa = next(t for t in _BASE_CHAT_TOOLS if t["function"]["name"] == "find_all_documents")
     desc = fa["function"]["parameters"]["properties"]["presentation"]["description"]
     assert "snippet" in desc and "'full'" in desc
+
+
+def test_find_all_documents_describes_snippets_only_when_the_context_carries_them(monkeypatch):
+    """Below FIND_ALL_SNIPPET_MIN_CONTEXT_TOKENS execute_tool omits snippets, so the schema
+    must not promise them; from it the schema says brief carries one, for triage."""
+    from harbor_clerk.llm.tools import FIND_ALL_SNIPPET_MIN_CONTEXT_TOKENS, get_chat_tools, get_research_tools
+
+    for builder in (get_chat_tools, get_research_tools):
+        for context_tokens, snippets in (
+            (FIND_ALL_SNIPPET_MIN_CONTEXT_TOKENS - 1, False),
+            (FIND_ALL_SNIPPET_MIN_CONTEXT_TOKENS, True),
+        ):
+            monkeypatch.setattr("harbor_clerk.llm.models.context_budget", lambda model, yarn, n=context_tokens: n)
+            fa = next(t for t in builder(model=None) if t["function"]["name"] == "find_all_documents")
+            desc = fa["function"]["parameters"]["properties"]["presentation"]["description"]
+            assert ("snippet" in desc) is snippets, (builder.__name__, context_tokens, desc)
+            if snippets:
+                assert "triage" in desc and "read_passages" in desc

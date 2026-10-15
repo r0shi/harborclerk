@@ -283,11 +283,21 @@ async def test_find_all_brief_snippet_centred_on_text_contains(db_session):
     assert hit.snippet.startswith("…") and hit.snippet.endswith("…")
     body = _unwrap(hit.snippet)
     assert literal in body
-    assert body in " ".join(text.split())
+    collapsed = " ".join(text.split())
+    assert body in collapsed
     at = body.index("governed by the laws")
     left, right = at, len(body) - (at + len("governed by the laws"))
     # Centred: the context either side differs by no more than a word or two of snapping.
     assert abs(left - right) <= 30, (left, right, hit.snippet)
+    _assert_on_word_boundaries(collapsed, body)
+
+
+def _assert_on_word_boundaries(collapsed: str, body: str) -> None:
+    """The snippet body starts and ends on whole words of the collapsed chunk."""
+    i = collapsed.index(body)
+    j = i + len(body)
+    assert i == 0 or collapsed[i - 1] == " ", f"starts mid-word: {collapsed[max(0, i - 10) : i + 10]!r}"
+    assert j == len(collapsed) or collapsed[j] == " ", f"ends mid-word: {collapsed[j - 10 : j + 10]!r}"
 
 
 async def test_find_all_brief_snippet_comes_from_best_chunk(db_session):
@@ -358,8 +368,56 @@ def test_brief_snippet_whitespace_in_the_literal_matches_any_run():
     from harbor_clerk.search import _brief_snippet
 
     text = "alpha beta gamma delta " * 30 + "the needle\n\n  phrase " + "omega " * 40
-    s = _brief_snippet(text, "NEEDLE phrase", max_chars=80)
+    # Whitespace runs on both sides: in the chunk and in the literal.
+    s = _brief_snippet(text, "NEEDLE\n\n  phrase", max_chars=80)
     assert "needle phrase" in s
+    assert s.startswith("\u2026")  # centred on the match, not the leading-text fallback
+
+
+def test_brief_snippet_lead_without_a_space_is_cut_at_the_bound():
+    """No word boundary in the window (a long token, a URL, CJK): a hard cut, ellipsis included in the bound."""
+    from harbor_clerk.search import _brief_snippet
+
+    s = _brief_snippet("x" * 300, None, max_chars=60)
+    assert len(s) == 60
+    assert s == "x" * 59 + "\u2026"
+
+
+def test_brief_snippet_lead_sentence_end_at_the_edge_of_the_window():
+    from harbor_clerk.search import _brief_snippet
+
+    lead = "abc defg " * 6 + "abcd"
+    assert len(lead) == 58
+    # A sentence ending at index max_chars - 2 is kept whole: it and the ellipsis fill the bound.
+    s = _brief_snippet(lead + ". " + "more words here " * 20, None, max_chars=60)
+    assert s == lead + ".\u2026"
+    assert len(s) == 60
+    # One character later (punctuation at max_chars - 1) it no longer fits: cut earlier, never past the bound.
+    s = _brief_snippet(lead + "r. " + "more words here " * 20, None, max_chars=60)
+    assert len(s) <= 60
+    assert s.endswith("\u2026")
+
+
+def test_brief_snippet_snaps_to_word_boundaries_wherever_the_match_falls():
+    from harbor_clerk.search import _brief_snippet
+
+    words = [f"w{i:03d}{'x' * (i % 7)}" for i in range(120)]
+    text = " ".join(words)
+    for k in range(10, 110, 3):
+        s = _brief_snippet(text, words[k], max_chars=80)
+        body = s.removeprefix("\u2026").removesuffix("\u2026")
+        assert words[k] in body.split(), (k, s)
+        _assert_on_word_boundaries(text, body)
+
+
+def test_brief_snippet_never_exceeds_the_bound_even_when_tiny():
+    from harbor_clerk.search import _brief_snippet
+
+    texts = ["x" * 300, "alpha beta. gamma delta! " * 20, "the needle phrase " * 30]
+    for max_chars in range(1, 90):
+        for text in texts:
+            for literal in (None, "needle", "x" * 120):
+                assert len(_brief_snippet(text, literal, max_chars=max_chars)) <= max_chars, (max_chars, literal)
 
 
 def test_brief_snippet_literal_longer_than_the_bound_is_cut_at_the_bound():

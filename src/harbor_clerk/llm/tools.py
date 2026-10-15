@@ -357,9 +357,12 @@ _BASE_CHAT_TOOLS = [
                         "enum": ["brief", "full"],
                         "description": (
                             "'brief' (default) returns title + score + a short "
-                            "snippet of the best-matching passage per doc, "
-                            "enough to pick which documents to read. 'full' "
-                            "includes the whole top chunk text (max 30 docs)."
+                            "snippet of the best-matching passage per doc, for "
+                            "triage: enough to pick which documents to read. "
+                            "Before quoting a snippet, read its passage with "
+                            "read_passages (the row's source.chunk_id) and cite "
+                            "the row's citation. 'full' includes the whole top "
+                            "chunk text (max 30 docs)."
                         ),
                     },
                 },
@@ -510,8 +513,41 @@ def _apply_search_settings(tools: list[dict], *, paginated: bool, max_k: int, de
     return tools
 
 
+# find_all_documents carries kb_find_all's brief snippets (#820) only when the
+# model's per-request context is at least this. Chat cuts each tool result to
+# tool_result_max_chars by whole rows (llm/chat.py), and a snippet adds about a
+# third to a row: on 100 seeded documents a 16K context kept 22 rows with
+# snippets against 31 without, a 32K context 45 against 63, while from 64K the
+# whole page or nearly (90 of 100) fits. Below the threshold, local
+# enumeration keeps the row counts it had before snippets.
+FIND_ALL_SNIPPET_MIN_CONTEXT_TOKENS = 65_536
+
+_FIND_ALL_PRESENTATION_NO_SNIPPET = (
+    "'brief' (default) returns title + score per doc. 'full' includes top chunk text (max 30 docs)."
+)
+
+
+def find_all_snippets_enabled(model: "ModelInfo | None") -> bool:
+    """Whether find_all_documents returns brief snippets for this model: its
+    per-request context (context_budget, as chat budgets) is large enough."""
+    from harbor_clerk.config import get_settings
+    from harbor_clerk.llm.models import context_budget
+
+    return context_budget(model, get_settings().llm_yarn_enabled) >= FIND_ALL_SNIPPET_MIN_CONTEXT_TOKENS
+
+
+def _active_model() -> "ModelInfo | None":
+    from harbor_clerk.config import get_settings
+    from harbor_clerk.llm.models import get_model
+
+    model_id = get_settings().llm_model_id
+    return get_model(model_id) if model_id else None
+
+
 def _apply_find_all_settings(tools: list[dict], *, model: "ModelInfo | None") -> None:
-    """Set the find_all_documents.max_results default per active model.
+    """Set the find_all_documents.max_results default per active model, and
+    describe brief as title + score only when the model's context is too small
+    for snippets (``find_all_snippets_enabled``; execute_tool omits them).
 
     Mutates *tools* in place. If the model has no per-model override
     (find_all_default_max_results is None) or model is None, falls back to
@@ -520,11 +556,15 @@ def _apply_find_all_settings(tools: list[dict], *, model: "ModelInfo | None") ->
     default_max = 100
     if model is not None and model.find_all_default_max_results is not None:
         default_max = model.find_all_default_max_results
+    snippets = find_all_snippets_enabled(model)
 
     for tool in tools:
         if tool["function"]["name"] != "find_all_documents":
             continue
-        tool["function"]["parameters"]["properties"]["max_results"]["default"] = default_max
+        props = tool["function"]["parameters"]["properties"]
+        props["max_results"]["default"] = default_max
+        if not snippets:
+            props["presentation"]["description"] = _FIND_ALL_PRESENTATION_NO_SNIPPET
 
 
 def get_chat_tools(*, model: "ModelInfo | None" = None) -> list[dict]:
@@ -854,7 +894,7 @@ async def execute_tool(
         this tool call. Mirrors KeyScope.scope_folder_ids semantics.
     """
     from harbor_clerk.api.deps import Principal
-    from harbor_clerk.mcp_server import _mcp_principal
+    from harbor_clerk.mcp_server import _find_all_snippet_chars, _mcp_principal
 
     if name == "corpus_topics":
         from harbor_clerk.topics import get_topics_for_tool
@@ -874,6 +914,11 @@ async def execute_tool(
     if user_id is not None:
         principal = Principal(type="user", id=user_id, role="user", user_scope=user_scope)
         token = _mcp_principal.set(principal)
+    # A small context keeps find_all_documents to titles: snippets would cost a
+    # third of the rows that fit the per-result cap (FIND_ALL_SNIPPET_MIN_CONTEXT_TOKENS).
+    snippet_token = None
+    if name == "find_all_documents" and not find_all_snippets_enabled(_active_model()):
+        snippet_token = _find_all_snippet_chars.set(0)
 
     try:
         # Import the MCP function by name
@@ -895,6 +940,8 @@ async def execute_tool(
     finally:
         if token is not None:
             _mcp_principal.reset(token)
+        if snippet_token is not None:
+            _find_all_snippet_chars.reset(snippet_token)
 
 
 def summarize_tool_result(result_str: str) -> str:

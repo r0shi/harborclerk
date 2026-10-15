@@ -34,7 +34,15 @@ from harbor_clerk.models import (
     IngestionJob,
 )
 from harbor_clerk.oauth import validate_access_token as validate_oauth_access_token
-from harbor_clerk.search import FindAllHit, FindAllResult, SearchHit, SearchResult, find_all, hybrid_search
+from harbor_clerk.search import (
+    FindAllHit,
+    FindAllResult,
+    SearchHit,
+    SearchResult,
+    find_all,
+    find_all_snippet_chars,
+    hybrid_search,
+)
 from harbor_clerk.source_ref import (
     SourceRef,
     SourceRefContext,
@@ -70,6 +78,14 @@ _STATS_LOG_INTERVAL = 50
 # Context variable set by auth middleware before tool execution
 _mcp_principal: contextvars.ContextVar[Principal | None] = contextvars.ContextVar(
     "_mcp_principal",
+    default=None,
+)
+
+# Set by an in-process caller (the chat tools, llm/tools.py::execute_tool) to
+# lower kb_find_all's brief snippet bound; 0 omits the snippet. Not reachable
+# over the MCP port, where only an API key's max_snippet_chars lowers it.
+_find_all_snippet_chars: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "_find_all_snippet_chars",
     default=None,
 )
 
@@ -758,10 +774,12 @@ def _source_ref_for_search_hit(
 
 
 def _source_ref_for_find_all_hit(hit: FindAllHit, source_context: SourceRefContext | None) -> SourceRef:
+    # full: the top chunk; brief: the chunk the snippet was cut from (none when the snippet is omitted).
+    chunk_id = hit.top_chunk_id or hit.snippet_chunk_id
     if source_context is not None:
         source_ref = source_context.ref_for_doc(
             hit.doc_id,
-            chunk_id=hit.top_chunk_id,
+            chunk_id=chunk_id,
             pages=hit.page_range,
             section=hit.top_chunk_heading,
         )
@@ -770,7 +788,7 @@ def _source_ref_for_find_all_hit(hit: FindAllHit, source_context: SourceRefConte
     return _fallback_source_ref(
         doc_id=hit.doc_id,
         doc_title=hit.doc_title,
-        chunk_id=hit.top_chunk_id,
+        chunk_id=chunk_id,
         pages=hit.page_range,
         section=hit.top_chunk_heading,
     )
@@ -1164,9 +1182,11 @@ async def kb_find_all(
         snippet: the passage that earned the doc its score, at most 240
         characters, centred on text_contains when given) or "full" (the
         whole top chunk per doc instead; clamps max_results to 30 to keep
-        the payload bounded). Brief snippets let you triage a long list
-        without reading each document: read the ones whose snippet bears
-        on the question.
+        the payload bounded). A brief snippet is for triage: it lets you
+        pick which documents in a long list bear on the question without
+        reading each one. Before quoting it in an answer, read the passage
+        with kb_read_passages(chunk_ids=[the row's source.chunk_id]) and
+        cite the row's citation.
       sort_by: "relevance" (default, by max chunk score per doc),
         "date_desc" (newest first by ingested_at), or "date_asc".
 
@@ -1186,7 +1206,8 @@ async def kb_find_all(
     Response:
       results: list of {doc_id, doc_title, mime_type, language, score,
         ingested_at, page_range, source, citation, and snippet (brief) or
-        top_chunk {chunk_id, text, page, heading} (full)}
+        top_chunk {chunk_id, text, page, heading} (full)}; source.chunk_id
+        is the snippet's chunk (brief) or the top chunk (full)
       total_matches: total docs matching (post-dedupe, scope-aware)
       returned: len(results)
       offset: echoed back
@@ -1235,6 +1256,12 @@ async def kb_find_all(
     # Server-side clamp
     max_results = max(1, min(max_results, settings.find_all_max_results_cap))
     offset = max(0, offset)
+    # Brief snippet bound: an API key's max_snippet_chars lowers it, and so
+    # may an in-process caller (the chat tools on a small context).
+    snippet_chars = find_all_snippet_chars(principal.key_scope.max_snippet_chars if principal.key_scope else None)
+    snippet_override = _find_all_snippet_chars.get()
+    if snippet_override is not None:
+        snippet_chars = min(snippet_chars, snippet_override)
 
     async with async_session_factory() as session:
         # Per-API-key scope: intersect with visible doc_ids for scoped keys.
@@ -1299,6 +1326,7 @@ async def kb_find_all(
             mime_type=mime_type,
             metadata_filter=metadata_filter,
             presentation=presentation,
+            snippet_max_chars=snippet_chars,
         )
         source_context = await _source_context(session, [h.doc_id for h in result.hits])
 

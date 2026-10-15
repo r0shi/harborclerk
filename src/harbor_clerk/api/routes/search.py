@@ -28,7 +28,7 @@ from harbor_clerk.api.scope_validation import validate_scope_folders
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.models import Chunk, Document
-from harbor_clerk.search import find_all, hybrid_search
+from harbor_clerk.search import find_all, find_all_snippet_chars, hybrid_search
 from harbor_clerk.search_types import FindAllHit
 from harbor_clerk.source_ref import SourceRef, format_document_citation, format_pages, load_source_ref_context
 
@@ -81,7 +81,7 @@ def _source_ref_for_find_all_hit(hit: FindAllHit, source_ref: SourceRef | None =
     return _fallback_source_ref(
         doc_id=hit.doc_id,
         doc_title=hit.doc_title,
-        chunk_id=hit.top_chunk_id,
+        chunk_id=hit.top_chunk_id or hit.snippet_chunk_id,
         pages=hit.page_range,
         section=hit.top_chunk_heading,
     )
@@ -381,6 +381,10 @@ async def search_find_all(
             job_status=body.job_status,
             job_issue=body.job_issue,
             presentation=body.presentation,
+            # An API key's max_snippet_chars lowers the brief snippet bound, as on kb_find_all.
+            snippet_max_chars=find_all_snippet_chars(
+                principal.key_scope.max_snippet_chars if principal.key_scope else None
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
@@ -397,7 +401,7 @@ async def search_find_all(
         source_ref = (
             source_context.ref_for_doc(
                 hit.doc_id,
-                chunk_id=hit.top_chunk_id,
+                chunk_id=hit.top_chunk_id or hit.snippet_chunk_id,
                 pages=hit.page_range,
                 section=hit.top_chunk_heading,
             )
