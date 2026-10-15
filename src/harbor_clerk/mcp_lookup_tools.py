@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.error_text import message_or_type
 from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields
 from harbor_clerk.models import Chunk, Document
-from harbor_clerk.search import _apply_email_metadata_filter, _apply_jsonb_metadata_filter
+from harbor_clerk.search import _apply_email_metadata_filter, _apply_jsonb_metadata_filter, websearch_tsquery
 from harbor_clerk.sql_escape import escape_ilike
 
 _VERIFY_CANDIDATE_CAP = 100
@@ -496,8 +496,8 @@ async def _query_documents_by_date(
         fts_subq = (
             select(Chunk.doc_id.distinct())
             .where(
-                Chunk.fts_en.op("@@")(func.websearch_to_tsquery("english", query))
-                | Chunk.fts_fr.op("@@")(func.websearch_to_tsquery("french", query))
+                Chunk.fts_en.op("@@")(websearch_tsquery("english", query))
+                | Chunk.fts_fr.op("@@")(websearch_tsquery("french", query))
             )
             .scalar_subquery()
         )

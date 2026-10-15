@@ -48,17 +48,30 @@ ones should match so a single admin view can serve them:
 
 `chunks.fts_en` and `chunks.fts_fr` are **generated stored** tsvector columns
 with GIN indexes — they are computed by PostgreSQL, so never write to them from
-application code.
+application code. Since 0009 (#825) they are computed over
+`hc_fold_whitespace(chunk_text)`: under LC_CTYPE C (the Mac app) the parser
+reads an NBSP as a letter. Build every tsquery against them through
+`search.websearch_tsquery`, which folds the query the same way. The model's
+`Computed(...)` text is the migration's, verbatim (a test compares them).
+
+Changing a stored generated expression (`ALTER COLUMN ... SET EXPRESSION`)
+rewrites `chunks` under ACCESS EXCLUSIVE and rebuilds **every** index on it,
+the HNSW index included (40,000 chunks: about 26 s, 16 s of it HNSW). A rewrite
+also rebuilds, and so validates, an INVALID index left by an interrupted
+concurrent build.
 
 ## Functions under an expression index are never redefined in place
 
 `ix_chunks_chunk_text_ws_trgm` indexes `hc_fold_whitespace(chunk_text)`
-(0008, #819). The index stores values computed with the function body of the
-day it was built; `CREATE OR REPLACE` on that function leaves every stored
-entry stale, and the planner keeps using the index, so `text_contains`
-silently misses rows. A changed fold is a **new function name in a new
-migration** that builds a new index on it and drops the old one. 0008 creates
-the function only if absent and raises if an existing one's body differs.
+(0008, #819), and `fts_en` / `fts_fr` store values computed with it (0009,
+#825). Both hold values computed with the function body of the day they were
+written; `CREATE OR REPLACE` on that function leaves every stored entry stale,
+and the planner keeps using the index, so `text_contains` and keyword search
+silently miss rows. A changed fold is a **new function name in a new
+migration** that builds a new index on it, resets the column expressions, and
+drops the old one. 0008 creates the function only if absent and raises if an
+existing one's body differs; 0009 runs the same check. `DROP FUNCTION ...
+CASCADE` on it drops both FTS columns.
 
 ## Concurrent index builds must survive an interrupted attempt
 

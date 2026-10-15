@@ -1,9 +1,9 @@
 """text_contains end to end on databases with the locales that change its behaviour (#819).
 
 LC_CTYPE C, like the Mac app's cluster (``initdb --locale=C``): ``to_tsvector`` reads a non-breaking
-space as a letter, so "right of first refusal" joined by NBSPs is one lexeme and the FTS leg never
-proposes the chunk for a query about "first refusal". The whitespace fold in ``text_contains``
-reaches such a chunk only through the vector leg, which applies the same filter. Under C,
+space as a letter, so "right of first refusal" joined by NBSPs is one lexeme. Since 0009 (#825) the
+FTS columns index the whitespace-folded text, so the FTS leg proposes such a chunk too
+(``tests/test_fts_folded_text.py``); the filter must keep it on either leg. Under C,
 ``[[:alnum:]]`` is also ASCII only, which the word-boundary recheck must not depend on.
 
 UTF-8 (the builtin ``C.UTF-8`` locale, identical on macOS and Linux): ``lower()``, and so ILIKE,
@@ -14,10 +14,6 @@ Each runs on its own private database (created from template0, migrated to head,
 afterwards) because the suite's database may be either (CI's pgvector image is en_US.utf8). The
 vector-leg tests stub the query embedding the way the suite's other vector-leg tests do: the
 embedder is not running under test.
-
-What the fold does not fix: with the embedder down, or with the chunk outside the vector leg's
-candidate pool, an NBSP-joined phrase on a C database is still unreachable, because the FTS side
-indexes the unfolded text.
 """
 
 import json
@@ -168,12 +164,12 @@ async def _assert_cases(session, ids, cases):
 
 
 # ---------------------------------------------------------------------------
-# C: the NBSP phrase is reachable only through the vector leg
+# C: the NBSP phrase passes the filter on both legs
 # ---------------------------------------------------------------------------
 
 
-async def test_database_is_c_and_fts_cannot_see_the_phrase(c_session):
-    """The premise: on LC_CTYPE C the NBSP-joined phrase is one lexeme, so FTS cannot match its words."""
+async def test_database_is_c_and_the_parser_joins_the_phrase(c_session):
+    """The premise: on LC_CTYPE C the unfolded NBSP-joined phrase is one lexeme."""
     ctype = (
         await c_session.execute(text("SELECT datctype FROM pg_database WHERE datname = current_database()"))
     ).scalar()
@@ -182,13 +178,13 @@ async def test_database_is_c_and_fts_cannot_see_the_phrase(c_session):
     assert "'refus'" not in tsv and "'first'" not in tsv, tsv
 
 
-async def test_find_all_reaches_the_nbsp_phrase_through_the_vector_leg(c_session, monkeypatch):
+async def test_find_all_reaches_the_nbsp_phrase_through_either_leg(c_session, monkeypatch):
     ids = await _seed(c_session, {"phrase": PHRASE_CHUNK, "other": OTHER_CHUNK}, embedded=True)
 
-    # FTS alone (embedder down): the chunk is never a candidate, filter or not.
+    # FTS alone (embedder down): the folded FTS columns (0009) propose the chunk, and the filter keeps it.
     monkeypatch.setattr(search_mod, "_embed_query", _embedder_down)
     lexical = await search_mod.find_all(c_session, "first refusal", max_results=10, text_contains="first refusal")
-    assert lexical.hits == []
+    assert [h.doc_id for h in lexical.hits] == [ids["phrase"]]
 
     # With the vector leg: both chunks are candidates, and the folded filter keeps the phrase.
     monkeypatch.setattr(search_mod, "_embed_query", _embed_stub)

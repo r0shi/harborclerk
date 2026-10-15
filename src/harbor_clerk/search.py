@@ -16,7 +16,7 @@ from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.search_rerank import rerank_hits
 from harbor_clerk.search_types import ConflictSource, FindAllHit, FindAllResult, SearchHit, SearchResult
-from harbor_clerk.text_contains import text_contains_clause
+from harbor_clerk.text_contains import fold_whitespace, text_contains_clause
 
 # Re-export for backward compatibility — callers that do
 # `from harbor_clerk.search import SearchHit` continue to work.
@@ -360,6 +360,17 @@ def _apply_document_state_filters(
         doc_conditions.append(_job_issue_condition(job_issue))
 
 
+def websearch_tsquery(config: str, query: str):
+    """``websearch_to_tsquery(config, query)`` over the whitespace-folded query.
+
+    ``fts_en`` / ``fts_fr`` index ``hc_fold_whitespace(chunk_text)`` (migration 0009, #825): under
+    LC_CTYPE C the parser reads an NBSP as a letter, so a query pasted from a PDF with
+    "first<NBSP>refusal" would be one lexeme and match nothing the folded columns hold. Every
+    tsquery against those columns is built here.
+    """
+    return func.websearch_to_tsquery(config, fold_whitespace(query))
+
+
 async def hybrid_search(
     session: AsyncSession,
     query: str,
@@ -454,7 +465,7 @@ async def hybrid_search(
     fts_scores: dict[uuid.UUID, float] = {}
 
     for lang, col in [("english", Chunk.fts_en), ("french", Chunk.fts_fr)]:
-        tsquery = func.websearch_to_tsquery(lang, query)
+        tsquery = websearch_tsquery(lang, query)
         rank = func.ts_rank_cd(col, tsquery)
         stmt = (
             select(Chunk.chunk_id, rank.label("rank"))

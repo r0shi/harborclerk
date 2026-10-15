@@ -171,6 +171,9 @@ def test_0008_downgrade_rebuilds_an_invalid_leftover_index(alembic_cfg, sync_eng
     mig = _load_0008()
     command.upgrade(alembic_cfg, "head")
     try:
+        # Seeded at 0008, where an interrupted 0008 downgrade leaves it: 0009's downgrade rewrites the
+        # table, and a rewrite rebuilds every index, which would make a leftover seeded at head valid.
+        command.downgrade(alembic_cfg, "0008_chunk_text_ws_fold")
         _seed_invalid_index(sync_engine, mig.PLAIN_INDEX)
 
         command.downgrade(alembic_cfg, "0007_ingestion_job_pipeline_seq")
@@ -334,3 +337,62 @@ def test_0008_does_not_drop_an_index_whose_build_is_still_running(sync_engine):
             conn.execute(text(f"DROP INDEX IF EXISTS public.{name}"))
     assert not builder.is_alive(), "the concurrent build did not finish after the lock was released"
     assert errors == []
+
+
+def _fts_expressions(engine) -> dict[str, str]:
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT a.attname, pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a "
+                "JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum "
+                "WHERE a.attrelid = 'public.chunks'::regclass AND a.attname IN ('fts_en', 'fts_fr')"
+            )
+        )
+        return dict(rows.all())
+
+
+def test_fts_over_folded_text_migration_round_trips(alembic_cfg, sync_engine):
+    """0009 (#825) goes down to the unfolded expressions of 0001 and back up to the folded ones."""
+    command.upgrade(alembic_cfg, "head")
+    try:
+        command.downgrade(alembic_cfg, "0008_chunk_text_ws_fold")
+        assert _fts_expressions(sync_engine) == {
+            "fts_en": "to_tsvector('english'::regconfig, COALESCE(chunk_text, ''::text))",
+            "fts_fr": "to_tsvector('french'::regconfig, COALESCE(chunk_text, ''::text))",
+        }
+    finally:
+        command.upgrade(alembic_cfg, "head")
+    assert _fts_expressions(sync_engine) == {
+        "fts_en": "to_tsvector('english'::regconfig, hc_fold_whitespace(COALESCE(chunk_text, ''::text)))",
+        "fts_fr": "to_tsvector('french'::regconfig, hc_fold_whitespace(COALESCE(chunk_text, ''::text)))",
+    }
+    names = _chunk_index_names(sync_engine)
+    assert {"chunks_fts_en_idx", "chunks_fts_fr_idx"} <= names
+
+
+def test_0009_refuses_a_fold_function_with_a_different_definition(alembic_cfg, sync_engine):
+    """The stored columns are computed with the function's body of the day, like 0008's index:
+    0009 builds only on 0008's exact definition."""
+    mig = _load_0008()
+    command.upgrade(alembic_cfg, "head")
+    try:
+        command.downgrade(alembic_cfg, "0008_chunk_text_ws_fold")
+        with sync_engine.begin() as conn:
+            conn.execute(
+                text(_variant_function_ddl("different body").replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION"))
+            )
+        with pytest.raises(RuntimeError, match="different definition"):
+            command.upgrade(alembic_cfg, "head")
+        assert "hc_fold_whitespace" not in _fts_expressions(sync_engine)["fts_en"]
+    finally:
+        with sync_engine.begin() as conn:
+            conn.execute(
+                text(
+                    mig._FUNCTION_DDL.format(name=mig.FOLD_FUNCTION).replace(
+                        "CREATE FUNCTION", "CREATE OR REPLACE FUNCTION"
+                    )
+                )
+            )
+            conn.execute(text(f"REINDEX INDEX public.{mig.FOLD_INDEX}"))
+        command.upgrade(alembic_cfg, "head")
+    assert "hc_fold_whitespace" in _fts_expressions(sync_engine)["fts_en"]
