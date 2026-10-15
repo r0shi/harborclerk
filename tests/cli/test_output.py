@@ -100,6 +100,37 @@ def test_render_text_find_all_uses_citations_and_top_chunk():
     assert "shall terminate" in out
 
 
+def test_render_text_find_all_brief_prints_the_whole_snippet():
+    """#820: a brief row's snippet is bounded server-side, so the text renderer prints it whole
+    (the 200-char clip applies to a full row's top chunk), on one indented line."""
+    snippet = "\u2026" + ("party may terminate for convenience " * 6).strip() + "\u2026"
+    assert 200 < len(snippet) <= 240
+    payload = {
+        "results": [
+            {
+                "doc_id": "d1",
+                "doc_title": "Contract A",
+                "citation": "Contract A, p. 4",
+                "score": 0.5,
+                "snippet": snippet,
+            }
+        ],
+        "total_matches": 1,
+        "returned": 1,
+        "offset": 0,
+        "truncated": False,
+    }
+    buf = io.StringIO()
+    render(payload, mode=OutputMode.TEXT, command="find-all", stream=buf)
+    assert f"   {snippet}\n" in buf.getvalue()
+
+    long_chunk = "word " * 100
+    payload["results"][0] = {"doc_id": "d1", "citation": "Contract A", "top_chunk": {"text": long_chunk}}
+    buf = io.StringIO()
+    render(payload, mode=OutputMode.TEXT, command="find-all", stream=buf)
+    assert f"   {long_chunk[:200]}...\n" in buf.getvalue()
+
+
 def test_render_text_batch_search_uses_citations():
     buf = io.StringIO()
     payload = {

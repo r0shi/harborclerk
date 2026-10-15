@@ -313,3 +313,106 @@ async def test_kb_find_all_text_contains_ignores_whitespace(db_session, mcp_prin
     for phrase, label in (("first refusal", "nbsp"), ("first opportunity", "newline")):
         payload = json.loads(await kb_find_all(query="distributor", max_results=10, text_contains=phrase))
         assert [r["doc_id"] for r in payload["results"]] == [ids[label]], phrase
+
+
+# ---------------------------------------------------------------------------
+# presentation="brief" snippets (#820), on every surface that reads kb_find_all
+# ---------------------------------------------------------------------------
+
+_FILLER = "The supplier shall deliver the goods described in the schedule on the agreed dates. "
+
+
+async def _seed_long_docs(db_session, n: int, *, literal: str = "governed by the laws of Delaware"):
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+
+    texts = {}
+    for i in range(n):
+        doc = Document(
+            title=f"Long Agreement {i:03d}",
+            status="active",
+            sha256=f"sha_snip_mcp_{i:019d}".encode(),
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        text = _FILLER * 6 + f"This Agreement {i} shall be {literal}. " + _FILLER * 6
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=text, language="en"))
+        texts[str(doc.doc_id)] = text
+    await db_session.flush()
+    return texts
+
+
+async def test_kb_find_all_brief_payload_carries_bounded_snippet(db_session, mcp_principal, mock_session_factory):
+    """Brief rows carry `snippet` (bounded, centred on text_contains) and no top_chunk; full rows the reverse."""
+    from harbor_clerk.mcp_server import kb_find_all
+    from harbor_clerk.search import _FIND_ALL_SNIPPET_MAX_CHARS
+
+    texts = await _seed_long_docs(db_session, 4)
+
+    payload = json.loads(await kb_find_all(query="agreement", text_contains="Governed By The Laws", max_results=10))
+    assert payload["presentation"] == "brief"
+    assert {r["doc_id"] for r in payload["results"]} == set(texts)
+    for row in payload["results"]:
+        assert "top_chunk" not in row
+        snippet = row["snippet"]
+        assert len(snippet) <= _FIND_ALL_SNIPPET_MAX_CHARS
+        assert "governed by the laws of Delaware" in snippet
+        assert snippet.strip("…") in " ".join(texts[row["doc_id"]].split())
+        assert row["citation"] and row["source"]["doc_id"] == row["doc_id"]  # the passage carries its citation
+
+    full = json.loads(await kb_find_all(query="agreement", text_contains="governed by", presentation="full"))
+    for row in full["results"]:
+        assert "snippet" not in row
+        assert row["top_chunk"]["text"] == texts[row["doc_id"]]
+
+
+async def test_chat_find_all_result_carries_snippets_within_the_tool_result_budget(
+    db_session, admin_user, mock_session_factory
+):
+    """The chat tool returns brief snippets; at a small model's per-result cap the result
+    is cut by whole rows (valid JSON, every kept row still has its snippet), and the
+    chip summary stays a one-line count."""
+    from harbor_clerk.llm.chat import _truncate_for_llm
+    from harbor_clerk.llm.tools import execute_tool, summarize_tool_result
+
+    await _seed_long_docs(db_session, 100)
+
+    raw = await execute_tool(
+        "find_all_documents", {"query": "agreement", "max_results": 100}, user_id=admin_user.user_id
+    )
+    payload = json.loads(raw)
+    assert payload["returned"] == 100
+    assert all(row.get("snippet") for row in payload["results"])
+    assert summarize_tool_result(raw) == "Found 100 results"
+
+    # chat.py: tool_result_max_chars = min(int(context_tokens * 0.25 * 3.5), 80_000); 16K is the smallest slot.
+    cap = min(int(16_384 * 0.25 * 3.5), 80_000)
+    assert len(raw) > cap, "100 brief rows must exceed the cap for the test to mean anything"
+    cut = _truncate_for_llm(raw, cap)
+    assert len(cut) <= cap
+    kept = json.loads(cut)
+    assert kept["_truncated"] is True and kept["_original_count"] == 100
+    assert kept["results"] and all(row.get("snippet") for row in kept["results"])
+
+
+async def test_cli_renders_the_brief_snippet_of_a_real_payload(db_session, mcp_principal, mock_session_factory):
+    """`harbor-clerk find-all` text output prints each brief snippet whole, one indented line per document."""
+    import io
+
+    from harbor_clerk.cli.output import OutputMode, render
+    from harbor_clerk.mcp_server import kb_find_all
+
+    await _seed_long_docs(db_session, 3)
+    payload = json.loads(await kb_find_all(query="agreement", text_contains="governed by", max_results=10))
+
+    buf = io.StringIO()
+    render(payload, mode=OutputMode.TEXT, command="find-all", stream=buf)
+    lines = buf.getvalue().splitlines()
+    for row in payload["results"]:
+        assert f"   {row['snippet']}" in lines, row["snippet"]
+
+    buf = io.StringIO()
+    render(payload, mode=OutputMode.JSON, command="find-all", stream=buf)
+    assert [r["snippet"] for r in json.loads(buf.getvalue())["results"]] == [r["snippet"] for r in payload["results"]]

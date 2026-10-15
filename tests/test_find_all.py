@@ -205,3 +205,168 @@ async def test_find_all_total_matches_exceeds_reranker_pool_size(db_session):
     )
     assert len(result.hits) == 60  # all returned since max_results=100
     assert result.truncated is False
+
+
+# ---------------------------------------------------------------------------
+# presentation="brief" snippets (#820)
+# ---------------------------------------------------------------------------
+
+_FILLER = "The supplier shall deliver the goods described in the schedule on the agreed dates. "
+
+
+def _unwrap(snippet: str) -> str:
+    """The snippet's text without its trim ellipses."""
+    return snippet.removeprefix("…").removesuffix("…")
+
+
+async def _seed_doc(db_session, title: str, chunk_texts: list[str]):
+    doc = Document(
+        title=title,
+        status="active",
+        sha256=f"sha_snip_{title}".ljust(32, "0").encode(),
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/plain",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    for j, chunk_text in enumerate(chunk_texts):
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=j, chunk_text=chunk_text, language="en"))
+    await db_session.flush()
+    return doc
+
+
+async def test_find_all_brief_snippet_for_every_document_bounded(db_session):
+    """Every brief hit carries a snippet of its own chunk, within the bound, ellipsis-trimmed."""
+    from harbor_clerk.search import _FIND_ALL_SNIPPET_MAX_CHARS
+
+    chunks = {}
+    for i in range(6):
+        text = f"Document {i} opens with the off-balance-sheet entity disclosure.\n\n" + _FILLER * 12
+        chunks[str((await _seed_doc(db_session, f"long{i}", [text])).doc_id)] = text
+    assert all(len(t) > 4 * _FIND_ALL_SNIPPET_MAX_CHARS for t in chunks.values())
+
+    result = await find_all(db_session, "off-balance-sheet", max_results=10)
+
+    assert {h.doc_id for h in result.hits} == set(chunks)
+    for h in result.hits:
+        assert h.snippet, f"brief hit for {h.doc_title} has no snippet"
+        assert len(h.snippet) <= _FIND_ALL_SNIPPET_MAX_CHARS, len(h.snippet)
+        assert h.snippet.endswith("…")  # trimmed
+        assert "\n" not in h.snippet
+        collapsed = " ".join(chunks[h.doc_id].split())
+        assert collapsed.startswith(_unwrap(h.snippet)), "no text_contains: the snippet leads the chunk"
+        # brief still carries no whole chunk
+        assert h.top_chunk_text is None and h.top_chunk_id is None
+
+
+async def test_find_all_brief_snippet_short_chunk_is_whole(db_session):
+    """A chunk within the bound comes back whole, with no ellipsis."""
+    await _seed_doc(db_session, "short", ["The off-balance-sheet entity\nwas disclosed."])
+
+    result = await find_all(db_session, "off-balance-sheet", max_results=10)
+
+    assert [h.snippet for h in result.hits] == ["The off-balance-sheet entity was disclosed."]
+
+
+async def test_find_all_brief_snippet_centred_on_text_contains(db_session):
+    """With text_contains, the snippet is centred on its first occurrence, matched case-insensitively."""
+    from harbor_clerk.search import _FIND_ALL_SNIPPET_MAX_CHARS
+
+    literal = "governed by the laws of Delaware"
+    text = _FILLER * 8 + f"This Agreement shall be {literal} in all respects. " + _FILLER * 8
+    await _seed_doc(db_session, "centred", [text])
+
+    result = await find_all(db_session, "agreement supplier", max_results=10, text_contains="GOVERNED BY THE LAWS")
+
+    (hit,) = result.hits
+    assert len(hit.snippet) <= _FIND_ALL_SNIPPET_MAX_CHARS
+    assert hit.snippet.startswith("…") and hit.snippet.endswith("…")
+    body = _unwrap(hit.snippet)
+    assert literal in body
+    assert body in " ".join(text.split())
+    at = body.index("governed by the laws")
+    left, right = at, len(body) - (at + len("governed by the laws"))
+    # Centred: the context either side differs by no more than a word or two of snapping.
+    assert abs(left - right) <= 30, (left, right, hit.snippet)
+
+
+async def test_find_all_brief_snippet_comes_from_best_chunk(db_session):
+    """The snippet is cut from the chunk that earned the document's score, not another chunk."""
+    from harbor_clerk.search import hybrid_search
+
+    dense = "DENSE " + "indemnification indemnification indemnification clause. " * 3
+    sparse = "SPARSE the indemnification clause appears once among many other unrelated words " + _FILLER * 3
+    # The sparse chunk comes first, so a snippet cut from the document's first chunk fails.
+    doc = await _seed_doc(db_session, "twochunks", [sparse, dense])
+
+    inner = await hybrid_search(db_session, "indemnification", k=10, bypass_reranker=True)
+    scored = {h.chunk_text: h.score for h in inner.hits if h.doc_id == str(doc.doc_id)}
+    assert set(scored) == {dense, sparse}, "both chunks must be candidates for the test to mean anything"
+    top_text = max(scored, key=scored.get)
+    assert top_text == dense, "the dense chunk must outscore the first one for the test to mean anything"
+
+    result = await find_all(db_session, "indemnification", max_results=10)
+
+    (hit,) = result.hits
+    assert " ".join(top_text.split()).startswith(_unwrap(hit.snippet))
+    assert hit.score == max(scored.values())
+
+
+async def test_find_all_full_keeps_whole_chunk_and_no_snippet(db_session):
+    """presentation='full' is unchanged: the whole best chunk, no snippet, 30-document clamp."""
+    text = "The off-balance-sheet entity disclosure.\n\n" + _FILLER * 12
+    await _seed_doc(db_session, "fullwhole", [text])
+
+    result = await find_all(db_session, "off-balance-sheet", max_results=10, presentation="full")
+
+    (hit,) = result.hits
+    assert hit.top_chunk_text == text
+    assert hit.snippet is None
+
+
+# --- _brief_snippet unit cases ---
+
+
+def test_brief_snippet_leading_text_ends_on_a_sentence():
+    from harbor_clerk.search import _brief_snippet
+
+    text = "First sentence is here. " + "Second sentence is longer than the first one by a fair margin. " * 6
+    s = _brief_snippet(text, None, max_chars=120)
+    assert len(s) <= 120
+    assert s.endswith(".…")
+    assert text.startswith(s.removesuffix("…"))
+
+
+def test_brief_snippet_falls_back_to_the_start_when_the_literal_is_absent():
+    from harbor_clerk.search import _brief_snippet
+
+    text = "alpha beta gamma delta " * 30
+    assert _brief_snippet(text, "zeta", max_chars=80) == _brief_snippet(text, None, max_chars=80)
+
+
+def test_brief_snippet_match_near_the_end_keeps_the_end():
+    from harbor_clerk.search import _brief_snippet
+
+    text = "alpha beta gamma delta " * 30 + "the needle phrase"
+    s = _brief_snippet(text, "needle phrase", max_chars=80)
+    assert len(s) <= 80
+    assert s.startswith("…") and not s.endswith("…")
+    assert s.endswith("the needle phrase")
+
+
+def test_brief_snippet_whitespace_in_the_literal_matches_any_run():
+    from harbor_clerk.search import _brief_snippet
+
+    text = "alpha beta gamma delta " * 30 + "the needle\n\n  phrase " + "omega " * 40
+    s = _brief_snippet(text, "NEEDLE phrase", max_chars=80)
+    assert "needle phrase" in s
+
+
+def test_brief_snippet_literal_longer_than_the_bound_is_cut_at_the_bound():
+    from harbor_clerk.search import _brief_snippet
+
+    literal = "word " * 40
+    text = "lead in text " * 10 + literal + "tail " * 10
+    s = _brief_snippet(text, literal, max_chars=60)
+    assert len(s) <= 60
+    assert s.startswith("…word word")

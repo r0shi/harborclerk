@@ -72,12 +72,12 @@ def _citation(record: dict) -> str:
     return str(title)
 
 
-def _render_hit_line(index: int, record: dict, stream: TextIO) -> None:
+def _render_hit_line(index: int, record: dict, stream: TextIO, *, max_text: int | None = 200) -> None:
     label = _citation(record)
     score = record.get("score")
     text = (record.get("text") or record.get("snippet") or "").strip().replace("\n", " ")
-    if len(text) > 200:
-        text = text[:200] + "..."
+    if max_text is not None and len(text) > max_text:
+        text = text[:max_text] + "..."
     score_str = f"{score:.2f}" if isinstance(score, (int, float)) else "?"
     chunk_id = record.get("chunk_id") or _source_obj(record).get("chunk_id")
     chunk_suffix = f"  chunk={chunk_id}" if chunk_id else ""
@@ -136,7 +136,9 @@ def _render_find_all(payload: Any, stream: TextIO) -> None:
             record.setdefault("page", top_chunk.get("page"))
         if record.get("page_range") and not record.get("pages"):
             record["pages"] = record["page_range"]
-        _render_hit_line(i, record, stream)
+        # A brief row's snippet is already bounded server-side and centred on
+        # the match: print it whole. A full row's top chunk is clipped as usual.
+        _render_hit_line(i, record, stream, max_text=None if record.get("snippet") and not record.get("text") else 200)
 
 
 # --- Batch search pretty-printer ---

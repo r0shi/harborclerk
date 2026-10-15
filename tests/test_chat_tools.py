@@ -337,3 +337,12 @@ def test_the_system_prompt_sends_chronological_questions_to_documents_by_date():
         "The one exception" in SYSTEM_PROMPT[rule : rule + 500]
         and "documents_by_date" in SYSTEM_PROMPT[rule : rule + 500]
     )
+
+
+def test_find_all_documents_presentation_says_brief_carries_a_snippet():
+    """#820: the chat model is told brief rows carry a passage to triage from."""
+    from harbor_clerk.llm.tools import _BASE_CHAT_TOOLS
+
+    fa = next(t for t in _BASE_CHAT_TOOLS if t["function"]["name"] == "find_all_documents")
+    desc = fa["function"]["parameters"]["properties"]["presentation"]["description"]
+    assert "snippet" in desc and "'full'" in desc

@@ -142,6 +142,8 @@ class FindAllHitOut(BaseModel):
     score: float
     ingested_at: datetime | None = None
     page_range: str | None = None
+    # presentation="brief": a bounded excerpt of the best chunk; "full" sets top_chunk instead.
+    snippet: str | None = None
     top_chunk: FindAllTopChunkOut | None = None
     source: SourceRefOut | None = None
     citation: str | None = None

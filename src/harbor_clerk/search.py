@@ -2,6 +2,7 @@
 
 import datetime as dt
 import logging
+import re
 import uuid
 from datetime import datetime
 from typing import Any
@@ -41,6 +42,21 @@ _HNSW_ITERATIVE_SCAN_SQL = "SET LOCAL hnsw.iterative_scan = relaxed_order"
 # Max docs returned when presentation="full" — keeps payload under ~20 KB
 # (top chunk text per doc, ~500 chars).
 _FIND_ALL_FULL_MAX_RESULTS = 30
+
+# presentation="brief" carries one passage per document (#820): the text of the
+# chunk that earned the document's score, collapsed to one line and trimmed to
+# about a sentence either side of the text_contains match (or the leading
+# sentence or two without one), ellipses where trimmed. A title list alone is
+# not something a model triages; a passage per row lets it pick which documents
+# to read without a second call each. Bounded so a brief page carries no more
+# passage text than a "full" page already does: 100 documents (the default
+# max_results) x 240 chars is 24 KB, under the up to 30 KB (30 x
+# chunk_target_size, 1,000 chars) that "full" returns at its clamp above.
+_FIND_ALL_SNIPPET_MAX_CHARS = 240
+_ELLIPSIS = "\u2026"
+# A sentence end: terminal punctuation, an optional closing quote or bracket,
+# then whitespace.
+_SENTENCE_END_RE = re.compile(r"[.!?][\"')\]]?\s")
 
 _PROCESSING_PIPELINE_STATUSES: tuple[PipelineStatus, ...] = (
     PipelineStatus.queued,
@@ -610,6 +626,61 @@ async def hybrid_search(
     )
 
 
+def _brief_snippet(chunk_text: str, text_contains: str | None, max_chars: int = _FIND_ALL_SNIPPET_MAX_CHARS) -> str:
+    """Trim a chunk to a one-line excerpt of at most ``max_chars`` characters.
+
+    Centred on the first case-insensitive occurrence of ``text_contains`` when
+    the chunk has one (whitespace runs count as one space on both sides);
+    otherwise the leading sentence or two. Cuts fall on word boundaries where
+    that does not cut into the match, and each trimmed end carries an ellipsis
+    (counted in ``max_chars``).
+    """
+    text = " ".join(chunk_text.split())
+    if len(text) <= max_chars:
+        return text
+
+    match = None
+    if text_contains:
+        words = text_contains.split()
+        if words:
+            match = re.search(" ".join(re.escape(w) for w in words), text, re.IGNORECASE)
+
+    if match is None:
+        # Leading sentence or two: the last sentence end in the window's second
+        # half, else the last word boundary there, else a hard cut.
+        budget = max_chars - 1  # one trailing ellipsis
+        window = text[: budget + 1]
+        ends = [m.end() - 1 for m in _SENTENCE_END_RE.finditer(window) if m.end() - 1 >= budget // 2]
+        if ends:
+            cut = ends[-1]
+        else:
+            space = window.rfind(" ", budget // 2, budget + 1)
+            cut = space if space != -1 else budget
+        return text[:cut].rstrip() + _ELLIPSIS
+
+    budget = max_chars - 2  # an ellipsis at each end
+    m_start, m_end = match.span()
+    if m_end - m_start >= budget:
+        start, end = m_start, m_start + budget
+    else:
+        slack = budget - (m_end - m_start)
+        start = max(0, m_start - slack // 2)
+        end = min(len(text), start + budget)
+        start = max(0, end - budget)
+        # Snap inward to word boundaries, never into the match.
+        if start > 0 and text[start - 1] != " ":
+            space = text.find(" ", start, m_start)
+            if space != -1:
+                start = space + 1
+        if end < len(text) and text[end] != " ":
+            space = text.rfind(" ", m_end, end)
+            if space != -1:
+                end = space
+    prefix = _ELLIPSIS if start > 0 else ""
+    suffix = _ELLIPSIS if end < len(text) else ""
+    return prefix + text[start:end].strip() + suffix
+
+
 async def find_all(
     session: AsyncSession,
     query: str,
@@ -637,6 +708,11 @@ async def find_all(
     Reuses hybrid_search for candidate generation, then projects chunk-level
     hits to doc-level with score = max(chunk_score per doc). See
     docs/superpowers/specs/2026-05-26-find-iteration-enumeration-design.md.
+
+    presentation="brief" sets each hit's ``snippet`` (a bounded excerpt of the
+    best chunk, see ``_brief_snippet``); "full" sets the whole best chunk in
+    the ``top_chunk_*`` fields instead and clamps the page to
+    ``_FIND_ALL_FULL_MAX_RESULTS`` documents.
     """
     _VALID_SORTS = {"relevance", "date_desc", "date_asc"}
     if sort_by not in _VALID_SORTS:
@@ -752,6 +828,7 @@ async def find_all(
                 top_chunk_text=sh.chunk_text if presentation == "full" else None,
                 top_chunk_page=sh.page_start if presentation == "full" else None,
                 top_chunk_heading=None,  # SearchHit has no heading field
+                snippet=_brief_snippet(sh.chunk_text, text_contains) if presentation == "brief" else None,
             )
         )
 

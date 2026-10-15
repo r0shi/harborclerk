@@ -105,6 +105,7 @@ def _find_all_hit_to_out(hit: FindAllHit, source_ref: SourceRef | None = None) -
         score=hit.score,
         ingested_at=hit.ingested_at,
         page_range=hit.page_range,
+        snippet=hit.snippet,
         top_chunk=top_chunk,
         source=resolved_source.to_dict(),
         citation=resolved_source.citation,

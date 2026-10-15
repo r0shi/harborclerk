@@ -356,8 +356,10 @@ _BASE_CHAT_TOOLS = [
                         "type": "string",
                         "enum": ["brief", "full"],
                         "description": (
-                            "'brief' (default) returns title + score per doc. "
-                            "'full' includes top chunk text (max 30 docs)."
+                            "'brief' (default) returns title + score + a short "
+                            "snippet of the best-matching passage per doc, "
+                            "enough to pick which documents to read. 'full' "
+                            "includes the whole top chunk text (max 30 docs)."
                         ),
                     },
                 },

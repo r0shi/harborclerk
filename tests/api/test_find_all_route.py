@@ -196,3 +196,51 @@ def test_find_all_request_rejects_doc_id_and_doc_ids() -> None:
                 "doc_ids": [str(doc_id)],
             }
         )
+
+
+def test_find_all_response_schema_includes_snippet() -> None:
+    """#820: the REST schema (and so the OpenAPI document) carries the brief snippet."""
+    from harbor_clerk.api.schemas.search import FindAllHitOut
+
+    assert "snippet" in FindAllHitOut.model_fields
+    assert "snippet" in FindAllResponse.model_json_schema()["$defs"]["FindAllHitOut"]["properties"]
+
+
+async def test_find_all_route_returns_brief_snippets_from_postgres(client, admin_token, db_session) -> None:
+    """POST /api/search/find-all over a real database: brief rows carry a bounded snippet
+    centred on text_contains; full rows carry the whole top chunk and no snippet."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import _FIND_ALL_SNIPPET_MAX_CHARS
+    from tests.conftest import auth_header
+
+    filler = "The supplier shall deliver the goods described in the schedule on the agreed dates. "
+    text = filler * 6 + "Either party may terminate for convenience on thirty days notice. " + filler * 6
+    doc = Document(
+        title="Supply Agreement",
+        status="active",
+        sha256=b"sha_rest_snippet_0000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/plain",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=text, language="en"))
+    await db_session.flush()
+
+    body = {"query": "terminate", "text_contains": "terminate for convenience"}
+    resp = await client.post("/api/search/find-all", json=body, headers=auth_header(admin_token))
+    assert resp.status_code == 200, resp.text[:300]
+    (row,) = resp.json()["results"]
+    assert row["top_chunk"] is None
+    assert len(row["snippet"]) <= _FIND_ALL_SNIPPET_MAX_CHARS
+    assert "terminate for convenience" in row["snippet"]
+    assert row["citation"]
+
+    resp = await client.post(
+        "/api/search/find-all", json={**body, "presentation": "full"}, headers=auth_header(admin_token)
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    (row,) = resp.json()["results"]
+    assert row["snippet"] is None
+    assert row["top_chunk"]["text"] == text

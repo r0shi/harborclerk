@@ -1160,9 +1160,13 @@ async def kb_find_all(
       max_results: cap on documents returned (default 100; server clamps
         at settings.find_all_max_results_cap, default 500).
       offset: pagination offset over the sorted result set. Default 0.
-      presentation: "brief" (default; title + score + page range, no chunk
-        text) or "full" (adds the top chunk text per doc; clamps
-        max_results to 30 to keep the payload bounded).
+      presentation: "brief" (default; title + score + page range + a
+        snippet: the passage that earned the doc its score, at most 240
+        characters, centred on text_contains when given) or "full" (the
+        whole top chunk per doc instead; clamps max_results to 30 to keep
+        the payload bounded). Brief snippets let you triage a long list
+        without reading each document: read the ones whose snippet bears
+        on the question.
       sort_by: "relevance" (default, by max chunk score per doc),
         "date_desc" (newest first by ingested_at), or "date_asc".
 
@@ -1181,7 +1185,8 @@ async def kb_find_all(
 
     Response:
       results: list of {doc_id, doc_title, mime_type, language, score,
-        ingested_at, page_range, top_chunk (if presentation=full)}
+        ingested_at, page_range, source, citation, and snippet (brief) or
+        top_chunk {chunk_id, text, page, heading} (full)}
       total_matches: total docs matching (post-dedupe, scope-aware)
       returned: len(results)
       offset: echoed back
@@ -1319,6 +1324,8 @@ async def kb_find_all(
                 "page": h.top_chunk_page,
                 "heading": h.top_chunk_heading,
             }
+        elif h.snippet is not None:
+            hit["snippet"] = h.snippet
         results.append(hit)
 
     resp: dict = {

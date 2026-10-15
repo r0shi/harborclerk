@@ -6,8 +6,11 @@ DESCRIPTION
   best passage. This mirrors the MCP `kb_find_all` tool for shell-based agents.
 
   Results preserve the MCP response shape in JSON, including `citation` and
-  structured `source` fields when available. Text output renders citations and,
-  with --presentation=full, the best matching chunk for each document.
+  structured `source` fields when available. Text output renders citations and
+  one passage line per document: with the default --presentation=brief, the
+  `snippet` (at most 240 characters of the best matching chunk, centred on
+  --text-contains when given); with --presentation=full, the start of the best
+  matching chunk.
 
 USAGE
   harbor-clerk find-all <query> [options]
@@ -19,7 +22,7 @@ OPTIONS
       --max-results INT        Max documents returned (default: 100)
   -o, --offset INT             Pagination offset (default: 0)
       --presentation brief|full
-                                brief omits chunk text; full includes best chunk
+                                brief adds a snippet; full includes best chunk
       --sort-by relevance|date_desc|date_asc
                                 Sort order (default: relevance)
       --doc-id UUID            Restrict to one document
@@ -33,6 +36,7 @@ OPTIONS
                                 JSON metadata filter; --metadata-filter also works
 
 RETURNS (JSON)
+  A brief row carries "snippet"; a full row carries "top_chunk" instead.
   {
     "results": [
       {
@@ -45,6 +49,7 @@ RETURNS (JSON)
         "page_range": "4-5",
         "citation": "Contract A, pp. 4-5",
         "source": { "...": "SourceRef object" },
+        "snippet": "...the agreement shall renew for successive one-year terms...",
         "top_chunk": {
           "chunk_id": "uuid",
           "text": "matching chunk text",
