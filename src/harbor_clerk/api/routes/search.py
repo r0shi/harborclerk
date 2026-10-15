@@ -28,7 +28,7 @@ from harbor_clerk.api.scope_validation import validate_scope_folders
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.models import Chunk, Document
-from harbor_clerk.search import find_all, find_all_snippet_chars, hybrid_search
+from harbor_clerk.search import find_all, hybrid_search
 from harbor_clerk.search_types import FindAllHit
 from harbor_clerk.source_ref import SourceRef, format_document_citation, format_pages, load_source_ref_context
 
@@ -381,10 +381,8 @@ async def search_find_all(
             job_status=body.job_status,
             job_issue=body.job_issue,
             presentation=body.presentation,
-            # An API key's max_snippet_chars lowers the brief snippet bound, as on kb_find_all.
-            snippet_max_chars=find_all_snippet_chars(
-                principal.key_scope.max_snippet_chars if principal.key_scope else None
-            ),
+            # A capped key's snippet is the chunk's prefix within its max_snippet_chars, as on kb_find_all.
+            key_max_snippet_chars=principal.key_scope.max_snippet_chars if principal.key_scope else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc

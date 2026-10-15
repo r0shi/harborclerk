@@ -40,7 +40,6 @@ from harbor_clerk.search import (
     SearchHit,
     SearchResult,
     find_all,
-    find_all_snippet_chars,
     hybrid_search,
 )
 from harbor_clerk.source_ref import (
@@ -78,14 +77,6 @@ _STATS_LOG_INTERVAL = 50
 # Context variable set by auth middleware before tool execution
 _mcp_principal: contextvars.ContextVar[Principal | None] = contextvars.ContextVar(
     "_mcp_principal",
-    default=None,
-)
-
-# Set by an in-process caller (the chat tools, llm/tools.py::execute_tool) to
-# lower kb_find_all's brief snippet bound; 0 omits the snippet. Not reachable
-# over the MCP port, where only an API key's max_snippet_chars lowers it.
-_find_all_snippet_chars: contextvars.ContextVar[int | None] = contextvars.ContextVar(
-    "_find_all_snippet_chars",
     default=None,
 )
 
@@ -1186,7 +1177,10 @@ async def kb_find_all(
         pick which documents in a long list bear on the question without
         reading each one. Before quoting it in an answer, read the passage
         with kb_read_passages(chunk_ids=[the row's source.chunk_id]) and
-        cite the row's citation.
+        cite the row's citation. kb_read_passages needs a read-tier key.
+        Under a key with a snippet cap, the snippet is the chunk's first
+        characters (not a window on text_contains), and reading the
+        passage returns the same prefix.
       sort_by: "relevance" (default, by max chunk score per doc),
         "date_desc" (newest first by ingested_at), or "date_asc".
 
@@ -1256,12 +1250,6 @@ async def kb_find_all(
     # Server-side clamp
     max_results = max(1, min(max_results, settings.find_all_max_results_cap))
     offset = max(0, offset)
-    # Brief snippet bound: an API key's max_snippet_chars lowers it, and so
-    # may an in-process caller (the chat tools on a small context).
-    snippet_chars = find_all_snippet_chars(principal.key_scope.max_snippet_chars if principal.key_scope else None)
-    snippet_override = _find_all_snippet_chars.get()
-    if snippet_override is not None:
-        snippet_chars = min(snippet_chars, snippet_override)
 
     async with async_session_factory() as session:
         # Per-API-key scope: intersect with visible doc_ids for scoped keys.
@@ -1326,7 +1314,8 @@ async def kb_find_all(
             mime_type=mime_type,
             metadata_filter=metadata_filter,
             presentation=presentation,
-            snippet_max_chars=snippet_chars,
+            # A capped key's snippet is the chunk's prefix within its max_snippet_chars.
+            key_max_snippet_chars=principal.key_scope.max_snippet_chars if principal.key_scope else None,
         )
         source_context = await _source_context(session, [h.doc_id for h in result.hits])
 

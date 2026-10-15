@@ -30,7 +30,6 @@ __all__ = [
     "_apply_email_metadata_filter",
     "_apply_jsonb_metadata_filter",
     "find_all",
-    "find_all_snippet_chars",
     "hybrid_search",
 ]
 
@@ -54,9 +53,10 @@ _FIND_ALL_FULL_MAX_RESULTS = 30
 # 30 KB (30 x chunk_target_size, 1,000 chars) that "full" returns at its clamp
 # above. That holds only at the default: at find_all_max_results_cap (500) a
 # brief page carries up to 120 KB, four times full's clamp, on top of the
-# metadata a 500-row page already carries. An API key's max_snippet_chars
-# lowers the bound (find_all_snippet_chars), and the chat tools drop the
-# snippet on small contexts (llm/tools.py).
+# metadata a 500-row page already carries. Under an API key with
+# max_snippet_chars, the snippet is instead the chunk's first N characters
+# (find_all's key_max_snippet_chars). Chat drops every snippet before it drops
+# a row when a result exceeds its per-result cap (llm/chat.py).
 _FIND_ALL_SNIPPET_MAX_CHARS = 240
 _ELLIPSIS = "\u2026"
 # A sentence end: terminal punctuation, an optional closing quote or bracket,
@@ -631,12 +631,37 @@ async def hybrid_search(
     )
 
 
-def find_all_snippet_chars(key_max_snippet_chars: int | None) -> int:
-    """The brief snippet bound for a caller: the default, lowered to an API
-    key's ``max_snippet_chars`` when it has one (0 omits the snippet)."""
-    if key_max_snippet_chars is None:
-        return _FIND_ALL_SNIPPET_MAX_CHARS
-    return max(0, min(_FIND_ALL_SNIPPET_MAX_CHARS, key_max_snippet_chars))
+def _lead_excerpt(text: str, max_chars: int) -> str:
+    """The leading sentence or two of ``text`` (whitespace already collapsed),
+    marked trimmed: at most ``max_chars`` characters including the trailing
+    ellipsis. The cut is the last sentence end in the window's second half,
+    else the last word boundary there, else a hard cut; text that fits before
+    the ellipsis is kept whole."""
+    budget = max_chars - 1  # one trailing ellipsis
+    if len(text) <= budget:
+        return text.rstrip() + _ELLIPSIS
+    window = text[: budget + 1]
+    ends = [m.end() - 1 for m in _SENTENCE_END_RE.finditer(window) if m.end() - 1 >= budget // 2]
+    if ends:
+        cut = ends[-1]
+    else:
+        space = window.rfind(" ", budget // 2, budget + 1)
+        cut = space if space != -1 else budget
+    return text[:cut].rstrip() + _ELLIPSIS
+
+
+def _prefix_snippet(chunk_text: str, max_chars: int) -> str:
+    """A capped API key's snippet: drawn only from the chunk's first
+    ``max_chars`` characters, as kb_read_passages, kb_expand_context and
+    kb_read_document apply ``max_snippet_chars``. Never a window on
+    text_contains, which would let a capped key read a whole chunk N
+    characters at a time by sliding the literal."""
+    if len(chunk_text) <= max_chars:
+        return " ".join(chunk_text.split())
+    head = " ".join(chunk_text[: max(0, max_chars)].split())
+    if max_chars < 3:  # no room for an ellipsis and a character of text
+        return head
+    return _lead_excerpt(head, max_chars)
 
 
 def _brief_snippet(chunk_text: str, text_contains: str | None, max_chars: int = _FIND_ALL_SNIPPET_MAX_CHARS) -> str:
@@ -661,17 +686,7 @@ def _brief_snippet(chunk_text: str, text_contains: str | None, max_chars: int = 
             match = re.search(" ".join(re.escape(w) for w in words), text, re.IGNORECASE)
 
     if match is None:
-        # Leading sentence or two: the last sentence end in the window's second
-        # half, else the last word boundary there, else a hard cut.
-        budget = max_chars - 1  # one trailing ellipsis
-        window = text[: budget + 1]
-        ends = [m.end() - 1 for m in _SENTENCE_END_RE.finditer(window) if m.end() - 1 >= budget // 2]
-        if ends:
-            cut = ends[-1]
-        else:
-            space = window.rfind(" ", budget // 2, budget + 1)
-            cut = space if space != -1 else budget
-        return text[:cut].rstrip() + _ELLIPSIS
+        return _lead_excerpt(text, max_chars)
 
     budget = max_chars - 2  # an ellipsis at each end
     m_start, m_end = match.span()
@@ -717,7 +732,7 @@ async def find_all(
     job_status: str | None = None,
     job_issue: str | None = None,
     presentation: str = "brief",
-    snippet_max_chars: int = _FIND_ALL_SNIPPET_MAX_CHARS,
+    key_max_snippet_chars: int | None = None,
 ) -> FindAllResult:
     """Doc-level enumeration. Aggregates chunks → docs, sorts, paginates.
 
@@ -726,9 +741,11 @@ async def find_all(
     docs/superpowers/specs/2026-05-26-find-iteration-enumeration-design.md.
 
     presentation="brief" sets each hit's ``snippet`` (a bounded excerpt of the
-    best chunk, see ``_brief_snippet``) and ``snippet_chunk_id`` (that chunk);
-    ``snippet_max_chars`` lowers the bound (it never raises it past
-    ``_FIND_ALL_SNIPPET_MAX_CHARS``) and 0 omits both. "full" sets the whole
+    best chunk, see ``_brief_snippet``) and ``snippet_chunk_id`` (that chunk).
+    ``key_max_snippet_chars`` is the calling API key's ``max_snippet_chars``:
+    when set, the snippet is the chunk's prefix (``_prefix_snippet``) within
+    min(cap, ``_FIND_ALL_SNIPPET_MAX_CHARS``), and a cap of 0 or less omits
+    both fields. "full" sets the whole
     best chunk in the ``top_chunk_*`` fields instead and clamps the page to
     ``_FIND_ALL_FULL_MAX_RESULTS`` documents.
     """
@@ -824,7 +841,18 @@ async def find_all(
     else:
         doc_meta = {}
 
-    snippet_chars = max(0, min(snippet_max_chars, _FIND_ALL_SNIPPET_MAX_CHARS)) if presentation == "brief" else 0
+    if presentation != "brief":
+        snippet_chars = 0
+    elif key_max_snippet_chars is None:
+        snippet_chars = _FIND_ALL_SNIPPET_MAX_CHARS
+    else:
+        snippet_chars = max(0, min(key_max_snippet_chars, _FIND_ALL_SNIPPET_MAX_CHARS))
+
+    def _snippet(chunk_text: str) -> str:
+        if key_max_snippet_chars is not None:
+            return _prefix_snippet(chunk_text, snippet_chars)
+        return _brief_snippet(chunk_text, text_contains, snippet_chars)
+
     hits: list[FindAllHit] = []
     for sh in window:
         meta = doc_meta.get(sh.doc_id)
@@ -847,7 +875,7 @@ async def find_all(
                 top_chunk_text=sh.chunk_text if presentation == "full" else None,
                 top_chunk_page=sh.page_start if presentation == "full" else None,
                 top_chunk_heading=None,  # SearchHit has no heading field
-                snippet=_brief_snippet(sh.chunk_text, text_contains, snippet_chars) if snippet_chars else None,
+                snippet=_snippet(sh.chunk_text) if snippet_chars else None,
                 snippet_chunk_id=sh.chunk_id if snippet_chars else None,
             )
         )

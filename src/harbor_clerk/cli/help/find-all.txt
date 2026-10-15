@@ -9,8 +9,8 @@ DESCRIPTION
   structured `source` fields when available. Text output renders citations and
   one passage line per document: with the default --presentation=brief, the
   `snippet` (at most 240 characters of the best matching chunk, centred on
-  --text-contains when given); with --presentation=full, the start of the best
-  matching chunk.
+  --text-contains when given; under a key with a snippet cap, the chunk's first
+  characters); with --presentation=full, the start of the best matching chunk.
 
 USAGE
   harbor-clerk find-all <query> [options]

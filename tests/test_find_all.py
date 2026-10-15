@@ -428,3 +428,37 @@ def test_brief_snippet_literal_longer_than_the_bound_is_cut_at_the_bound():
     s = _brief_snippet(text, literal, max_chars=60)
     assert len(s) <= 60
     assert s.startswith("…word word")
+
+
+@pytest.mark.parametrize(("cap", "bound"), [(50, 50), (1000, 240), (0, None), (-5, None)])
+async def test_find_all_key_cap_gives_the_chunk_prefix(db_session, cap, bound):
+    """key_max_snippet_chars: the snippet is the chunk's prefix within min(cap, 240), even with
+    text_contains deep in the chunk; a cap of 0 or less omits the snippet and its chunk id."""
+    literal = "governed by the laws of Delaware"
+    text = _FILLER * 8 + f"This Agreement shall be {literal}. " + _FILLER * 8
+    assert text.index(literal) > 240
+    await _seed_doc(db_session, f"capped{cap}", [text])
+
+    result = await find_all(db_session, "agreement", max_results=10, text_contains=literal, key_max_snippet_chars=cap)
+
+    (hit,) = result.hits
+    if bound is None:
+        assert hit.snippet is None and hit.snippet_chunk_id is None
+        return
+    assert hit.snippet_chunk_id is not None
+    assert 0 < len(hit.snippet) <= bound
+    assert literal not in hit.snippet
+    assert " ".join(text[:bound].split()).startswith(hit.snippet.removesuffix("…"))
+
+
+def test_prefix_snippet_draws_only_on_the_first_n_characters():
+    """Whatever the whitespace, a capped snippet never shows text from past the chunk's first N characters."""
+    from harbor_clerk.search import _prefix_snippet
+
+    text = "alpha\n\n\n\n" * 20 + "SECRET tail words " * 20
+    for n in range(1, 200):
+        s = _prefix_snippet(text, n)
+        assert len(s) <= n, n
+        assert "SECRET" not in s or "SECRET" in text[:n], n
+        assert " ".join(text[:n].split()).startswith(s.removesuffix("…")), n
+    assert _prefix_snippet("short\nchunk", 50) == "short chunk"

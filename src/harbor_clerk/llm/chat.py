@@ -1531,6 +1531,26 @@ def _generate_title(user_message: str) -> str:
 _LARGE_ARRAY_KEYS = ("documents", "results", "entities", "related", "passages", "chunks", "headings")
 
 
+def _drop_find_all_snippets(data: dict) -> bool:
+    """Remove kb_find_all's brief snippets (#820) from a parsed result, in place:
+    every row's ``snippet`` and the ``source.chunk_id`` it brings (a full row's
+    top chunk keeps its own). True when anything was removed.
+
+    A snippet is triage help, a row is a document the enumeration found: when a
+    find-all result exceeds the per-result cap, the snippets go before any row,
+    so a result that would fit without them keeps every row it had before
+    snippets existed."""
+    dropped = False
+    for row in data.get("results") or []:
+        if isinstance(row, dict) and "snippet" in row:
+            del row["snippet"]
+            source = row.get("source")
+            if isinstance(source, dict) and "top_chunk" not in row:
+                source.pop("chunk_id", None)
+            dropped = True
+    return dropped
+
+
 def _truncate_for_llm(result_str: str, max_chars: int = 28_000) -> str:
     """Truncate a tool result so it fits within the LLM context window.
 
@@ -1547,6 +1567,12 @@ def _truncate_for_llm(result_str: str, max_chars: int = 28_000) -> str:
 
     if not isinstance(data, dict):
         return result_str[:max_chars] + f"\n... [truncated — {len(result_str)} chars total]"
+
+    # Find-all snippets go before any row (#820).
+    if _drop_find_all_snippets(data):
+        without_snippets = json.dumps(data, ensure_ascii=False)
+        if len(without_snippets) <= max_chars:
+            return without_snippets
 
     # Find the largest array field to truncate
     target_key = None

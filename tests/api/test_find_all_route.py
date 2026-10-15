@@ -246,8 +246,10 @@ async def test_find_all_route_returns_brief_snippets_from_postgres(client, admin
     assert row["top_chunk"]["text"] == text
 
 
-async def test_find_all_route_snippet_honours_the_keys_max_snippet_chars(client, db_session) -> None:
-    """Over REST, an API key's max_snippet_chars lowers the brief snippet bound, as on kb_find_all."""
+@pytest.mark.parametrize("cap", [50, 0])
+async def test_find_all_route_capped_key_gets_the_chunk_prefix(client, db_session, cap) -> None:
+    """Over REST, a key with max_snippet_chars gets the chunk's prefix within its cap, not a window
+    on text_contains; a cap of 0 omits the snippet and its chunk id. As on kb_find_all."""
     from harbor_clerk.auth import generate_api_key, hash_api_key
     from harbor_clerk.models import ApiKey, Chunk, Document
     from harbor_clerk.models.enums import PipelineStatus
@@ -257,7 +259,7 @@ async def test_find_all_route_snippet_honours_the_keys_max_snippet_chars(client,
     doc = Document(
         title="Capped Agreement",
         status="active",
-        sha256=b"sha_rest_snippet_cap_000000000000",
+        sha256=f"sha_rest_snippet_cap_{cap:012d}".encode(),
         pipeline_status=PipelineStatus.ready,
         mime_type="text/plain",
     )
@@ -267,7 +269,7 @@ async def test_find_all_route_snippet_honours_the_keys_max_snippet_chars(client,
     db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=text, language="en"))
     raw_key = generate_api_key()
     db_session.add(
-        ApiKey(name="capped", key_hash=hash_api_key(raw_key), permission_tier="search", max_snippet_chars=50)
+        ApiKey(name="capped", key_hash=hash_api_key(raw_key), permission_tier="search", max_snippet_chars=cap)
     )
     await db_session.flush()
 
@@ -275,6 +277,52 @@ async def test_find_all_route_snippet_honours_the_keys_max_snippet_chars(client,
     resp = await client.post("/api/search/find-all", json=body, headers=auth_header(raw_key))
     assert resp.status_code == 200, resp.text[:300]
     (row,) = resp.json()["results"]
-    assert 0 < len(row["snippet"]) <= 50
-    assert "terminate for convenience" in row["snippet"]
+    if cap == 0:
+        assert row["snippet"] is None
+        assert row["source"].get("chunk_id") is None
+        return
+    assert 0 < len(row["snippet"]) <= cap
+    assert "terminate for convenience" not in row["snippet"]
+    assert " ".join(text[:cap].split()).startswith(row["snippet"].removesuffix("\u2026"))
     assert row["source"]["chunk_id"]
+
+
+@pytest.mark.anyio
+async def test_search_find_all_source_chunk_id_without_source_context(monkeypatch) -> None:
+    """A brief hit with no SourceRef context still names the snippet's chunk (the fallback source ref)."""
+    snippet_chunk_id = str(uuid4())
+
+    async def fake_find_all(session, query, **kwargs):
+        hit = FindAllHit(
+            doc_id=str(uuid4()),
+            doc_title="Orphan",
+            mime_type="text/plain",
+            language="en",
+            score=0.5,
+            ingested_at=datetime(2026, 6, 1, tzinfo=UTC),
+            page_range="3",
+            top_chunk_id=None,
+            top_chunk_text=None,
+            top_chunk_page=None,
+            top_chunk_heading=None,
+            snippet="an orphan passage",
+            snippet_chunk_id=snippet_chunk_id,
+        )
+        return FindAllResult(
+            hits=[hit], total_matches=1, offset=0, truncated=False, sort_by="relevance", presentation="brief"
+        )
+
+    async def no_source_context(session, doc_ids, **kwargs):
+        return None
+
+    monkeypatch.setattr(search_route, "find_all", fake_find_all)
+    monkeypatch.setattr(search_route, "load_source_ref_context", no_source_context)
+
+    response = await search_route.search_find_all(
+        FindAllRequest(query="orphan"),
+        principal=Principal(type="user", id=uuid4(), role="admin"),
+        session=object(),
+    )
+    (row,) = response.results
+    assert row.snippet == "an orphan passage"
+    assert row.source is not None and row.source.chunk_id == snippet_chunk_id
