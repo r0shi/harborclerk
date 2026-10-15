@@ -356,13 +356,10 @@ _BASE_CHAT_TOOLS = [
                         "type": "string",
                         "enum": ["brief", "full"],
                         "description": (
-                            "'brief' (default) returns title + score per doc, "
-                            "and rows may carry a short snippet of the "
-                            "best-matching passage, for triage: enough to pick "
-                            "which documents to read. Before quoting a snippet, "
-                            "read its passage with read_passages (the row's "
-                            "source.chunk_id) and cite the row's citation. "
-                            "'full' includes the whole top chunk text (max 30 docs)."
+                            "'brief' (default): title + score per doc; rows may "
+                            "carry a short snippet, for triage only: read_passages "
+                            "the row's source.chunk_id and cite its citation before "
+                            "quoting. 'full': top chunk text (max 30 docs)."
                         ),
                     },
                 },
