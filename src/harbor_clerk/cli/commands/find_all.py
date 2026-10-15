@@ -31,7 +31,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument("query_arg", nargs="?", help="Relevance query")
     p.add_argument("--query", dest="query", help="Relevance query; alternative to positional query")
-    p.add_argument("--text-contains", help="Require an exact substring in matching chunk text")
+    p.add_argument(
+        "--text-contains", help="Require a substring in matching chunk text (case and whitespace differences ignored)"
+    )
     p.add_argument("--max-results", type=int, default=100, help="Max documents returned (default: 100)")
     p.add_argument("-o", "--offset", type=int, default=0, help="Pagination offset (default: 0)")
     p.add_argument("--presentation", choices=["brief", "full"], default="brief", help="Result detail (default: brief)")

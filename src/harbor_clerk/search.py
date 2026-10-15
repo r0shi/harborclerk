@@ -16,6 +16,7 @@ from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.search_rerank import rerank_hits
 from harbor_clerk.search_types import ConflictSource, FindAllHit, FindAllResult, SearchHit, SearchResult
+from harbor_clerk.text_contains import text_contains_clause
 
 # Re-export for backward compatibility — callers that do
 # `from harbor_clerk.search import SearchHit` continue to work.
@@ -394,10 +395,9 @@ async def hybrid_search(
     if language is not None:
         scope_filters.append(Chunk.language == language)
     if text_contains is not None:
-        from harbor_clerk.sql_escape import escape_ilike
-
-        escaped = escape_ilike(text_contains)
-        scope_filters.append(Chunk.chunk_text.ilike(f"%{escaped}%", escape="\\"))
+        # Whitespace-folded on both sides so a phrase matches across NBSPs and line breaks (#819);
+        # the helper's left side is what ix_chunks_chunk_text_ws_trgm indexes.
+        scope_filters.append(text_contains_clause(Chunk.chunk_text, text_contains))
 
     # Document-level filters — subquery on doc_ids
     # Always present, so the document subquery is always applied to both the

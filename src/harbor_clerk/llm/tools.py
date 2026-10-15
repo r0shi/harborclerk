@@ -331,8 +331,9 @@ _BASE_CHAT_TOOLS = [
                         "description": (
                             "Optional case-insensitive literal substring. "
                             "Document is eligible iff at least one chunk "
-                            "contains this phrase. Special chars (% _) match "
-                            "literally."
+                            "contains this phrase. Differences in whitespace "
+                            "(line breaks, non-breaking spaces) are ignored. "
+                            "Special chars (% _) match literally."
                         ),
                     },
                     "max_results": {

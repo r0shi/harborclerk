@@ -919,9 +919,11 @@ async def kb_search(
 
     text_contains: optional case-insensitive literal-substring filter
       on chunk text. Use when the question names a literal phrase that
-      must appear ("documents mentioning X"). Special chars (% _) are
-      matched literally. Combine with `query` for relevance ranking
-      among the literal-match subset.
+      must appear ("documents mentioning X"). Differences in whitespace
+      are ignored: any run of spaces, tabs, line breaks or non-breaking
+      spaces matches a single space. Special chars (% _) are matched
+      literally. Combine with `query` for relevance ranking among the
+      literal-match subset.
     """
     principal = _get_principal()
     settings = get_settings()
@@ -1148,7 +1150,9 @@ async def kb_find_all(
         text_contains — relevance still orders the result set.
       text_contains: optional case-insensitive literal substring on chunk
         text. A doc is eligible iff at least one of its chunks contains the
-        substring. Special chars (% _) are matched literally.
+        substring. Differences in whitespace are ignored: any run of spaces,
+        tabs, line breaks or non-breaking spaces matches a single space.
+        Special chars (% _) are matched literally.
       max_results: cap on documents returned (default 100; server clamps
         at settings.find_all_max_results_cap, default 500).
       offset: pagination offset over the sorted result set. Default 0.

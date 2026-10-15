@@ -4,7 +4,7 @@ import os
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from alembic import command
 
@@ -74,3 +74,29 @@ def test_migrating_does_not_disable_application_loggers(alembic_cfg, sync_engine
         "running a migration disabled harbor_clerk logging — any later test asserting "
         "on log output will silently capture nothing"
     )
+
+
+def _chunk_index_names(engine) -> set[str]:
+    return {ix["name"] for ix in inspect(engine).get_indexes("chunks")}
+
+
+def _fold_function_exists(engine) -> bool:
+    with engine.connect() as conn:
+        return conn.execute(text("SELECT to_regprocedure('public.hc_fold_whitespace(text)') IS NOT NULL")).scalar()
+
+
+def test_chunk_text_ws_fold_migration_round_trips(alembic_cfg, sync_engine):
+    """0008 (#819) goes down to the plain trigram index and back up to the folded one."""
+    command.upgrade(alembic_cfg, "head")
+    try:
+        command.downgrade(alembic_cfg, "0007_ingestion_job_pipeline_seq")
+        names = _chunk_index_names(sync_engine)
+        assert "ix_chunks_chunk_text_trgm" in names
+        assert "ix_chunks_chunk_text_ws_trgm" not in names
+        assert not _fold_function_exists(sync_engine)
+    finally:
+        command.upgrade(alembic_cfg, "head")
+    names = _chunk_index_names(sync_engine)
+    assert "ix_chunks_chunk_text_ws_trgm" in names
+    assert "ix_chunks_chunk_text_trgm" not in names
+    assert _fold_function_exists(sync_engine)

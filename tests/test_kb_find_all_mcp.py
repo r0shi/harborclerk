@@ -1,4 +1,4 @@
-"""kb_find_all MCP tool — signature, response shape, server-side clamp."""
+"""kb_find_all MCP tool \u2014 signature, response shape, server-side clamp."""
 
 import json
 from contextlib import asynccontextmanager
@@ -282,3 +282,34 @@ async def test_kb_find_all_text_contains_filters_results(db_session, mcp_princip
     payload = json.loads(raw)
     assert payload["total_matches"] == 1
     assert payload["results"][0]["doc_id"] == str(doc_a.doc_id)
+
+
+async def test_kb_find_all_text_contains_ignores_whitespace(db_session, mcp_principal, mock_session_factory):
+    """The MCP surface gets the whitespace fold too (#819): NBSPs and line breaks inside the phrase match."""
+    from harbor_clerk.mcp_server import kb_find_all
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+
+    texts = {
+        "nbsp": "The distributor holds a right\u00a0of\u00a0first\u00a0refusal.",
+        "newline": "The distributor holds a first\nopportunity to bid.",
+        "neither": "The distributor holds an option to bid.",
+    }
+    ids = {}
+    for i, (label, chunk_text) in enumerate(texts.items()):
+        doc = Document(
+            title=label,
+            status="active",
+            sha256=f"sha_mcp_ws_{i:020d}".encode(),
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=chunk_text, language="english"))
+        ids[label] = str(doc.doc_id)
+    await db_session.flush()
+
+    for phrase, label in (("first refusal", "nbsp"), ("first opportunity", "newline")):
+        payload = json.loads(await kb_find_all(query="distributor", max_results=10, text_contains=phrase))
+        assert [r["doc_id"] for r in payload["results"]] == [ids[label]], phrase
