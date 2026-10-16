@@ -203,4 +203,27 @@ describe('DocumentDetailPage', () => {
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
     expect(delMock).not.toHaveBeenCalled()
   })
+
+  it('does not carry an armed Delete to a related document opened from the page', async () => {
+    const OTHER_DOC = { ...READY_DOC, doc_id: 'doc-2', title: 'Related document', canonical_filename: 'related.pdf' }
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') return Promise.resolve(READY_DOC)
+      if (url === '/api/docs/doc-1/related')
+        return Promise.resolve({
+          related: [{ doc_id: 'doc-2', title: 'Related document', summary: null, similarity: 0.9 }],
+        })
+      if (url === '/api/docs/doc-2') return Promise.resolve(OTHER_DOC)
+      if (url === '/api/docs/doc-2/related') return Promise.resolve({ related: [] })
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+    renderDocumentDetail()
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' })) // arm on doc-1
+    expect(screen.getByRole('button', { name: 'Confirm delete' })).toBeInTheDocument()
+
+    fireEvent.click(await screen.findByRole('link', { name: /Related document/ })) // same route, doc-2
+    expect(await screen.findByRole('heading', { name: 'Related document' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm delete' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+    expect(delMock).not.toHaveBeenCalled()
+  })
 })

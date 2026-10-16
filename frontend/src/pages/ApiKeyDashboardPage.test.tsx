@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { del, get } from '../api'
 import ApiKeyDashboardPage from './ApiKeyDashboardPage'
@@ -33,18 +33,33 @@ function stub(expiresAt: string | null) {
           scope_summary: 'Read only, 1 topic',
           expires_at: expiresAt,
         },
+        {
+          key_id: 'k2',
+          name: 'Desktop client',
+          is_active: true,
+          permission_tier: 'full',
+          scope_summary: 'Full access',
+          expires_at: null,
+        },
       ])
-    if (path === '/api/api-keys/k1/usage') return Promise.resolve(EMPTY_USAGE)
-    if (path === '/api/api-keys/k1/usage/timeline') return Promise.resolve([])
-    if (path === '/api/api-keys/k1/usage/requests')
+    if (/^\/api\/api-keys\/k[12]\/usage$/.test(path)) return Promise.resolve(EMPTY_USAGE)
+    if (/^\/api\/api-keys\/k[12]\/usage\/timeline$/.test(path)) return Promise.resolve([])
+    if (/^\/api\/api-keys\/k[12]\/usage\/requests$/.test(path))
       return Promise.resolve({ items: [], total: 0, page: 1, page_size: 25 })
     return Promise.reject(new Error(`Unexpected path ${path}`))
   })
 }
 
+// Stands in for anything that changes the key id on the same route (history, a typed URL).
+function GoToOtherKey() {
+  const navigate = useNavigate()
+  return <button onClick={() => navigate('/settings/api-keys/k2')}>Go to k2</button>
+}
+
 function renderDashboard() {
   render(
     <MemoryRouter initialEntries={['/settings/api-keys/k1']}>
+      <GoToOtherKey />
       <Routes>
         <Route path="/settings/api-keys/:keyId" element={<ApiKeyDashboardPage />} />
       </Routes>
@@ -79,5 +94,24 @@ describe('ApiKeyDashboardPage expiry subtitle', () => {
     renderDashboard()
     expect(await screen.findByText('Read only, 1 topic')).toBeInTheDocument()
     expect(screen.queryByText(/expires/)).not.toBeInTheDocument()
+  })
+})
+
+describe('ApiKeyDashboardPage purge confirmation (#833)', () => {
+  beforeEach(() => {
+    getMock.mockReset()
+    vi.mocked(del).mockReset()
+  })
+
+  it("does not carry an armed Purge Events to another key's dashboard", async () => {
+    stub(null)
+    renderDashboard()
+    fireEvent.click(await screen.findByRole('button', { name: 'Purge Events' }))
+    expect(screen.getByText('Delete all logged events?')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Go to k2' }))
+    expect(await screen.findByText('Desktop client')).toBeInTheDocument()
+    expect(screen.queryByText('Delete all logged events?')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Purge Events' })).toBeInTheDocument()
+    expect(vi.mocked(del)).not.toHaveBeenCalled()
   })
 })

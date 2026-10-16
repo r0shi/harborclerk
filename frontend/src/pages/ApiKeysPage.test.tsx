@@ -499,6 +499,21 @@ describe('ApiKeysPage (#833)', () => {
     expect(await savedBody()).toEqual({ scope_topic_ids: [2] })
   })
 
+  it("closing the modal drops the question; another key's modal opens without it", async () => {
+    stubKeys([key({ scope_topic_ids: [1] }), key({ key_id: 'k2', name: 'Second key', scope_topic_ids: [2] })])
+    renderPage()
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[0])
+    fireEvent.click(await screen.findByLabelText('Leases')) // k1 loses its only restriction
+    await save()
+    expect(await screen.findByText(/removes the key's last document restriction/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[1])
+    expect(await screen.findByText('Edit Key: Second key')).toBeInTheDocument()
+    expect(screen.queryByText(/removes the key's last document restriction/)).not.toBeInTheDocument()
+    expect((screen.getByLabelText('Invoices') as HTMLInputElement).checked).toBe(true) // k2's own scope
+    expect(patchMock).not.toHaveBeenCalled()
+  })
+
   it('does not ask when the key had no restriction to begin with', async () => {
     stubKeys([key()])
     await openEdit()

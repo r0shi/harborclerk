@@ -531,6 +531,7 @@ export default function ApiKeysPage() {
 
       {editingKey && (
         <EditKeyModal
+          key={editingKey.key_id} // a modal for another key never inherits this one's form or confirmation
           apiKey={editingKey}
           options={scopeOptions}
           onClose={() => setEditingKey(null)}

@@ -84,7 +84,16 @@ function statusBadge(status: string) {
 
 /* ---------- component ---------- */
 
+/**
+ * Keyed by the route's keyId, so a different key's dashboard never inherits this one's state,
+ * an armed "Purge Events" confirmation included (#833).
+ */
 export default function ApiKeyDashboardPage() {
+  const { keyId } = useParams<{ keyId: string }>()
+  return <ApiKeyDashboard key={keyId} />
+}
+
+function ApiKeyDashboard() {
   const { keyId } = useParams<{ keyId: string }>()
 
   const [keyInfo, setKeyInfo] = useState<ApiKeyInfo | null>(null)

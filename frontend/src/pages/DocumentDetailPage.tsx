@@ -619,7 +619,17 @@ function DocumentStatsDisclosure({ docId }: { docId: string }) {
   )
 }
 
+/**
+ * Keyed by the route's id. `/docs/A` to `/docs/B` (a Related Documents link) reuses this route,
+ * and without the key every piece of A's state carried over to B: an armed Delete opened B with
+ * "Confirm delete" already showing, one click from deleting it (#833).
+ */
 export default function DocumentDetailPage() {
+  const { id } = useParams<{ id: string }>()
+  return <DocumentDetail key={id} />
+}
+
+function DocumentDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
