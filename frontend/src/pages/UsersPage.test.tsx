@@ -46,6 +46,17 @@ describe('UsersPage delete (#833)', () => {
     expect(nativeConfirm).not.toHaveBeenCalled()
   })
 
+  it('shows a failed delete on the page and clears the armed state', async () => {
+    delMock.mockRejectedValue(new Error('Cannot delete the last admin'))
+    render(<UsersPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }))
+    expect(await screen.findByText('Cannot delete the last admin')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm delete' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+    expect(delMock).toHaveBeenCalledTimes(1)
+  })
+
   it('sends nothing when the delete is cancelled', async () => {
     render(<UsersPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))

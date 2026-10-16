@@ -204,6 +204,40 @@ describe('DocumentDetailPage', () => {
     expect(delMock).not.toHaveBeenCalled()
   })
 
+  it('shows a failed delete on the page, clears the armed state and stays on the document', async () => {
+    delMock.mockRejectedValue(new Error('Document is locked'))
+    renderDocumentDetail()
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }))
+    expect(await screen.findByText('Document is locked')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm delete' })).not.toBeInTheDocument()
+    const deleteButton = screen.getByRole('button', { name: 'Delete' })
+    expect(deleteButton).toBeEnabled() // actionLoading is released on failure
+    expect(screen.getByRole('heading', { name: 'Ready document' })).toBeInTheDocument()
+    expect(delMock).toHaveBeenCalledTimes(1)
+  })
+
+  // Pins current behaviour: Reprocess does not disarm a pending Delete. While it runs, Confirm
+  // delete is disabled (actionLoading); once it finishes, the confirmation is still there.
+  it('keeps an armed Delete through a Reprocess, disabled while the Reprocess runs', async () => {
+    let finishReprocess: () => void = () => {}
+    postMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishReprocess = () => resolve(undefined)
+        }),
+    )
+    renderDocumentDetail()
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reprocess' }))
+    await waitFor(() => expect(postMock).toHaveBeenCalledWith('/api/docs/doc-1/reprocess'))
+    expect(screen.getByRole('button', { name: 'Confirm delete' })).toBeDisabled()
+
+    finishReprocess()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm delete' })).toBeEnabled())
+    expect(delMock).not.toHaveBeenCalled()
+  })
+
   it('does not carry an armed Delete to a related document opened from the page', async () => {
     const OTHER_DOC = { ...READY_DOC, doc_id: 'doc-2', title: 'Related document', canonical_filename: 'related.pdf' }
     getMock.mockImplementation((url) => {

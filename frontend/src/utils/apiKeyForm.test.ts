@@ -110,7 +110,10 @@ describe('document scope helpers', () => {
     expect(unknownScopeIds([1, 7, 2], [1, 2])).toEqual([7])
     expect(unknownScopeIds(['f1', 'gone'], ['f1'])).toEqual(['gone'])
     expect(unknownScopeIds(null, [1])).toEqual([])
-    expect(unknownScopeIds([3], [])).toEqual([3]) // a list that failed to load hides nothing
+    // Given an empty list, every stored id is flagged. So the page must pass [] only for a list
+    // that loaded empty: for one that failed to load it skips this helper (topicsFailed /
+    // foldersFailed), or a failed fetch would offer every stored id for removal.
+    expect(unknownScopeIds([3], [])).toEqual([3])
   })
 
   it('treats null and [] alike as unrestricted, as the server does', () => {
