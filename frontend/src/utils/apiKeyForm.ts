@@ -65,11 +65,29 @@ export function expiryDateInput(stored: string | null): string {
   return Number.isNaN(d.getTime()) ? '' : localDateValue(d)
 }
 
-/** The table's text for a stored expiry: the same local calendar date the input shows. */
+/**
+ * Whether a stored expiry is the last second of a local day, the instant this form writes. Keys
+ * saved by the old UI (`T23:59:59Z`) and times set through the API (`T10:30:00Z`) usually are not.
+ */
+export function isLocalEndOfDay(stored: string): boolean {
+  const d = new Date(stored)
+  return d.getHours() === 23 && d.getMinutes() === 59 && d.getSeconds() === 59
+}
+
+/** The local moment a stored expiry takes effect, e.g. "Jan 15, 2027, 3:59 PM". */
+export function formatExpiryMoment(stored: string): string {
+  return new Date(stored).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+/**
+ * The table's text for a stored expiry, in local time: the date alone when the key stops at the
+ * end of that day (the date the input shows), otherwise the date and the time it actually stops.
+ */
 export function formatExpiry(stored: string | null): string {
   if (!stored) return 'Never'
   const d = new Date(stored)
-  return Number.isNaN(d.getTime()) ? 'Never' : d.toLocaleDateString()
+  if (Number.isNaN(d.getTime())) return 'Never'
+  return isLocalEndOfDay(stored) ? d.toLocaleDateString() : formatExpiryMoment(stored)
 }
 
 /** The date a freshly ticked "Set expiry date" starts at: 90 local days from now. */

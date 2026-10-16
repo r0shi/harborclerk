@@ -8,6 +8,8 @@ import {
   endOfLocalDayIso,
   expiryDateInput,
   formatExpiry,
+  formatExpiryMoment,
+  isLocalEndOfDay,
   isScopeRestricted,
   parseExpiry,
   parseRateLimit,
@@ -53,15 +55,26 @@ describe.each(ZONES)('expiry in %s', (zone) => {
     expect(formatExpiry(stored)).toBe(new Date(2027, 0, 15).toLocaleDateString())
   })
 
-  it('shows an API-set expiry by its local date in both places', () => {
-    const stored = '2026-12-01T10:30:00Z'
+  it('shows an API-set time as the local moment it stops, and its local date in the input', () => {
+    const stored = '2026-12-01T10:30:00Z' // never 23:59:59 local in these zones
     const local = new Date(stored)
-    expect(formatExpiry(stored)).toBe(
-      new Date(local.getFullYear(), local.getMonth(), local.getDate()).toLocaleDateString(),
-    )
+    expect(isLocalEndOfDay(stored)).toBe(false)
+    expect(formatExpiry(stored)).toBe(local.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }))
+    expect(formatExpiry(stored)).toBe(formatExpiryMoment(stored))
     expect(expiryDateInput(stored)).toBe(
       `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, '0')}-${String(local.getDate()).padStart(2, '0')}`,
     )
+  })
+
+  it('shows a legacy T23:59:59Z by its date only where that is the end of the local day', () => {
+    const legacy = '2027-01-15T23:59:59Z'
+    if (zone === 'UTC') {
+      expect(isLocalEndOfDay(legacy)).toBe(true)
+      expect(formatExpiry(legacy)).toBe(new Date(2027, 0, 15).toLocaleDateString())
+    } else {
+      expect(isLocalEndOfDay(legacy)).toBe(false)
+      expect(formatExpiry(legacy)).toBe(formatExpiryMoment(legacy))
+    }
   })
 
   it('defaults a freshly ticked expiry to 90 local days ahead', () => {

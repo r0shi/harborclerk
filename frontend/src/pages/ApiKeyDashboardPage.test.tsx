@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { del, get } from '../api'
+import { endOfLocalDayIso } from '../utils/apiKeyForm'
 import ApiKeyDashboardPage from './ApiKeyDashboardPage'
 
 vi.mock('../api', () => ({
@@ -81,12 +82,19 @@ describe('ApiKeyDashboardPage expiry subtitle', () => {
   })
 
   it('appends the local expiry date to the scope summary', async () => {
-    // 2027-01-15T23:59:59Z is 2027-01-16 in Auckland; the old server summary said 2027-01-15.
-    stub('2027-01-15T23:59:59Z')
+    stub(endOfLocalDayIso('2027-01-16')) // 2027-01-16T10:59:59.000Z: the server's UTC date would say the 16th too
     renderDashboard()
     expect(
       await screen.findByText(`Read only, 1 topic · expires ${new Date(2027, 0, 16).toLocaleDateString()}`),
     ).toBeInTheDocument()
+  })
+
+  it('names the local time for an expiry that is not the end of a local day', async () => {
+    // A key saved by the old UI: 2027-01-15T23:59:59Z is 12:59 PM on the 16th in Auckland.
+    stub('2027-01-15T23:59:59Z')
+    renderDashboard()
+    const moment = new Date(2027, 0, 16, 12, 59).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    expect(await screen.findByText(`Read only, 1 topic · expires ${moment}`)).toBeInTheDocument()
   })
 
   it('shows the scope summary alone for a key that never expires', async () => {

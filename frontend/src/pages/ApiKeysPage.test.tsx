@@ -409,6 +409,18 @@ describe('ApiKeysPage (#833)', () => {
     expect(patchMock).not.toHaveBeenCalled()
   })
 
+  it('ticking and unticking "Set expiry date" on a key with no expiry sends nothing', async () => {
+    stubKeys([key()]) // expires_at: null
+    await openEdit()
+    const box = screen.getByLabelText('Set expiry date')
+    fireEvent.click(box) // tick: a default date appears
+    expect(dateInput().value).not.toBe('')
+    fireEvent.click(box) // untick: the date is kept in state, but the key still never expires
+    await save()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument())
+    expect(patchMock).not.toHaveBeenCalled()
+  })
+
   it('removes an expiry only when the box is unticked', async () => {
     stubKeys([key({ expires_at: '2027-03-01T10:00:00Z' })])
     await openEdit()
@@ -427,14 +439,29 @@ describe('ApiKeysPage (#833)', () => {
       vi.unstubAllEnvs()
     })
 
-    it('shows a stored expiry as the same local date in the table and the modal', async () => {
-      // 2027-01-15T23:59:59Z is already 2027-01-16 in Auckland: the old modal showed the 15th,
-      // the table the 16th.
-      stubKeys([key({ expires_at: '2027-01-15T23:59:59Z' })])
+    it('shows a local end-of-day expiry as its date in the table and the modal, with the end-of-day hint', async () => {
+      stubKeys([key({ expires_at: endOfLocalDayIso('2027-01-16') })])
       renderPage()
       expect(await screen.findByText(new Date(2027, 0, 16).toLocaleDateString())).toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
       expect(dateInput().value).toBe('2027-01-16')
+      expect(screen.getByText(/stops working at the end of this day/)).toBeInTheDocument()
+    })
+
+    it('shows a legacy T23:59:59Z by the local moment it stops: 12:59 PM on the 16th', async () => {
+      // The old modal showed the 15th and the old table the 16th, neither with the time.
+      stubKeys([key({ expires_at: '2027-01-15T23:59:59Z' })])
+      renderPage()
+      const moment = new Date(2027, 0, 16, 12, 59).toLocaleString(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      })
+      expect(await screen.findByText(moment)).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      expect(dateInput().value).toBe('2027-01-16')
+      expect(screen.getByText(/The key stops working at/)).toHaveTextContent(
+        `The key stops working at ${moment}, the time it was saved with.`,
+      )
     })
 
     it('saves a chosen date as the end of that local day, in UTC', async () => {
@@ -445,6 +472,59 @@ describe('ApiKeysPage (#833)', () => {
       await save()
       expect(await savedBody()).toEqual({ expires_at: '2027-01-15T10:59:59.000Z' })
     })
+  })
+
+  describe('west of UTC', () => {
+    beforeEach(() => {
+      vi.stubEnv('TZ', 'America/Los_Angeles') // UTC-8 in January
+    })
+    afterEach(() => {
+      vi.unstubAllEnvs()
+    })
+
+    it('never claims end of day for a legacy T23:59:59Z, which stops at 3:59 PM local', async () => {
+      stubKeys([key({ expires_at: '2027-01-15T23:59:59Z' })])
+      renderPage()
+      const moment = new Date(2027, 0, 15, 15, 59).toLocaleString(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      })
+      expect(await screen.findByText(moment)).toBeInTheDocument() // the table
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      expect(dateInput().value).toBe('2027-01-15')
+      const hint = screen.getByText(/The key stops working at/)
+      expect(hint).toHaveTextContent(`The key stops working at ${moment}, the time it was saved with.`)
+      expect(screen.queryByText(/stops working at the end of this day/)).not.toBeInTheDocument()
+
+      // Choosing another date does set the end of that local day, and the hint says so.
+      fireEvent.change(dateInput(), { target: { value: '2027-01-20' } })
+      expect(screen.getByText(/stops working at the end of this day/)).toBeInTheDocument()
+      await save()
+      expect(await savedBody()).toEqual({ expires_at: '2027-01-21T07:59:59.000Z' })
+    })
+  })
+
+  // The key table does not wait for the topic and folder lists ----------------------------------
+
+  it('renders the table and Revoke while the scope lists are still loading; the forms say they wait', async () => {
+    getMock.mockImplementation((path: string) => {
+      if (path === '/api/api-keys') return Promise.resolve([key({ scope_topic_ids: [1] })])
+      return new Promise(() => {}) // /api/stats/topics and /api/watch/folders never answer
+    })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm revoke' }))
+    await waitFor(() => expect(delMock).toHaveBeenCalledWith('/api/api-keys/k1'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Loading topics and folders…')
+    expect(screen.getByText(/Document scope:/)).toHaveTextContent('limited to 1 topic') // from the stored ids
+    expect(screen.queryByRole('list', { name: 'Unlisted topics' })).not.toBeInTheDocument() // not "stale" yet
+    expect(screen.queryByRole('checkbox', { name: 'Leases' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Key' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Loading topics and folders…')
   })
 
   // 4. Stored scope ids that are no longer listed ---------------------------------------------
@@ -499,7 +579,7 @@ describe('ApiKeysPage (#833)', () => {
     expect(await savedBody()).toEqual({ scope_topic_ids: [2] })
   })
 
-  it("closing the modal drops the question; another key's modal opens without it", async () => {
+  it('closing the modal drops the unrestrict question', async () => {
     stubKeys([key({ scope_topic_ids: [1] }), key({ key_id: 'k2', name: 'Second key', scope_topic_ids: [2] })])
     renderPage()
     fireEvent.click((await screen.findAllByRole('button', { name: 'Edit' }))[0])

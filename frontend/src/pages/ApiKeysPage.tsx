@@ -8,6 +8,8 @@ import {
   documentScopeSummary,
   expiryDateInput,
   formatExpiry,
+  formatExpiryMoment,
+  isLocalEndOfDay,
   isScopeRestricted,
   parseExpiry,
   parseRateLimit,
@@ -60,6 +62,7 @@ interface ScopeOptions {
   folders: WatchedFolderInfo[]
   topicsFailed: boolean // the list failed to load: its stored ids are unknown, not stale
   foldersFailed: boolean
+  loading: boolean // the lists are still on their way: scope fields wait, the key table does not
 }
 
 interface ScopePreview {
@@ -128,6 +131,7 @@ interface ScopeFormState {
   // read as "incomplete", not as "never expires".
   expiryEnabled: boolean
   expiresAt: string // yyyy-mm-dd in local time, or '' (incomplete or unset)
+  storedExpiresAt: string | null // the key's saved instant, for an honest hint; never sent
   tier: PermissionTier
   toolOverrides: Record<string, boolean>
   topicIds: number[] | null
@@ -143,6 +147,7 @@ function emptyScopeState(): ScopeFormState {
   return {
     expiryEnabled: false,
     expiresAt: '',
+    storedExpiresAt: null,
     tier: 'full',
     toolOverrides: {},
     topicIds: null,
@@ -159,6 +164,7 @@ function scopeStateFromKey(k: ApiKeyInfo): ScopeFormState {
   return {
     expiryEnabled: k.expires_at != null,
     expiresAt: expiryDateInput(k.expires_at),
+    storedExpiresAt: k.expires_at,
     tier: k.permission_tier,
     toolOverrides: { ...k.tool_overrides },
     topicIds: k.scope_topic_ids,
@@ -309,6 +315,7 @@ export default function ApiKeysPage() {
     folders: [],
     topicsFailed: false,
     foldersFailed: false,
+    loading: true,
   })
 
   async function loadKeys() {
@@ -333,14 +340,22 @@ export default function ApiKeysPage() {
         () => null,
       ),
     ])
-    setScopeOptions({ topics: t ?? [], folders: f ?? [], topicsFailed: t === null, foldersFailed: f === null })
+    setScopeOptions({
+      topics: t ?? [],
+      folders: f ?? [],
+      topicsFailed: t === null,
+      foldersFailed: f === null,
+      loading: false,
+    })
   }
 
   useEffect(() => {
-    // The forms open only once the topic and folder lists are in: before that, every stored
-    // scope id would show as no longer listed.
+    // The key table (and Revoke) wait only for the keys. The topic and folder lists load
+    // alongside; the forms' scope fields wait for them (ScopeOptions.loading), since before they
+    // arrive every stored id would look as if it were no longer listed.
     async function run() {
-      await Promise.all([loadKeys(), loadScopeOptions()])
+      void loadScopeOptions() // not awaited: the table must not wait for it
+      await loadKeys()
       setLoading(false)
     }
     run()
@@ -531,7 +546,6 @@ export default function ApiKeysPage() {
 
       {editingKey && (
         <EditKeyModal
-          key={editingKey.key_id} // a modal for another key never inherits this one's form or confirmation
           apiKey={editingKey}
           options={scopeOptions}
           onClose={() => setEditingKey(null)}
@@ -613,22 +627,32 @@ function ScopeFormFields({
 }) {
   const parsedCap = snippetCapField(state)
   const parsedExpiry = expiryField(state)
-  const { topics, folders, topicsFailed, foldersFailed } = options
+  // The saved instant is kept on save while its date is left as it is (changedFields sends no
+  // expiry then), so the hint must name that instant when it is not the end of a local day: a
+  // key saved by the old UI, or a time set through the API.
+  const keepsStoredTime =
+    state.expiryEnabled &&
+    state.storedExpiresAt != null &&
+    state.expiresAt === expiryDateInput(state.storedExpiresAt) &&
+    !isLocalEndOfDay(state.storedExpiresAt)
+  const { topics, folders, topicsFailed, foldersFailed, loading: optionsLoading } = options
   // Stored ids a loaded list no longer shows (a topic re-clustered away, a folder removed). The
   // key is still limited to them, so they stay visible and removable. A list that failed to load
   // says nothing about its ids: they are shown as kept, with nothing offered for removal.
-  const unknownTopicIds = topicsFailed
-    ? []
-    : unknownScopeIds(
-        state.topicIds,
-        topics.map((t) => t.cluster_id),
-      )
-  const unknownFolderIds = foldersFailed
-    ? []
-    : unknownScopeIds(
-        state.folderIds,
-        folders.map((f) => f.folder_id),
-      )
+  const unknownTopicIds =
+    topicsFailed || optionsLoading
+      ? []
+      : unknownScopeIds(
+          state.topicIds,
+          topics.map((t) => t.cluster_id),
+        )
+  const unknownFolderIds =
+    foldersFailed || optionsLoading
+      ? []
+      : unknownScopeIds(
+          state.folderIds,
+          folders.map((f) => f.folder_id),
+        )
   return (
     <div className="space-y-4">
       <div>
@@ -658,6 +682,11 @@ function ScopeFormFields({
             />
             {!parsedExpiry.ok ? (
               <FieldError result={parsedExpiry} />
+            ) : keepsStoredTime ? (
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                The key stops working at {formatExpiryMoment(state.storedExpiresAt!)}, the time it was saved with.
+                Choosing another date sets the end of that day, in this computer&apos;s time zone.
+              </p>
             ) : (
               <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                 The key stops working at the end of this day, in this computer&apos;s time zone.
@@ -731,92 +760,100 @@ function ScopeFormFields({
           )}
         </summary>
         <div className="mt-3 space-y-3">
-          <p className="text-xs text-gray-500 dark:text-gray-400">Tick nothing for no restriction.</p>
-          <div>
-            <p className="mb-1 text-xs font-medium text-gray-600 dark:text-gray-400">Topics</p>
-            <UnknownScopeChips
-              kind="topic"
-              ids={unknownTopicIds}
-              onRemove={(id) =>
-                setState((s) => {
-                  const next = (s.topicIds ?? []).filter((t) => t !== id)
-                  return { ...s, topicIds: next.length > 0 ? next : null }
-                })
-              }
-            />
-            {topicsFailed ? (
-              <ScopeListFailed kind="topic" storedCount={state.topicIds?.length ?? 0} />
-            ) : topics.length === 0 ? (
-              <p className="text-xs text-gray-500 dark:text-gray-400">No topics available.</p>
-            ) : (
-              <div className="max-h-40 overflow-y-auto rounded-sm bg-white dark:bg-[#1e1e1f] p-2 ring-1 ring-(--color-border)">
-                {topics.map((t) => {
-                  const selected = state.topicIds?.includes(t.cluster_id) ?? false
-                  return (
-                    <label key={t.cluster_id} className="flex items-center gap-1.5 text-xs py-0.5">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={(e) =>
-                          setState((s) => {
-                            const current = s.topicIds ?? []
-                            const next = e.target.checked
-                              ? [...current, t.cluster_id]
-                              : current.filter((id) => id !== t.cluster_id)
-                            return { ...s, topicIds: next.length > 0 ? next : null }
-                          })
-                        }
-                      />
-                      <span>{t.name}</span>
-                    </label>
-                  )
-                })}
+          {optionsLoading ? (
+            <p role="status" className="text-xs text-gray-500 dark:text-gray-400">
+              Loading topics and folders…
+            </p>
+          ) : (
+            <>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Tick nothing for no restriction.</p>
+              <div>
+                <p className="mb-1 text-xs font-medium text-gray-600 dark:text-gray-400">Topics</p>
+                <UnknownScopeChips
+                  kind="topic"
+                  ids={unknownTopicIds}
+                  onRemove={(id) =>
+                    setState((s) => {
+                      const next = (s.topicIds ?? []).filter((t) => t !== id)
+                      return { ...s, topicIds: next.length > 0 ? next : null }
+                    })
+                  }
+                />
+                {topicsFailed ? (
+                  <ScopeListFailed kind="topic" storedCount={state.topicIds?.length ?? 0} />
+                ) : topics.length === 0 ? (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">No topics available.</p>
+                ) : (
+                  <div className="max-h-40 overflow-y-auto rounded-sm bg-white dark:bg-[#1e1e1f] p-2 ring-1 ring-(--color-border)">
+                    {topics.map((t) => {
+                      const selected = state.topicIds?.includes(t.cluster_id) ?? false
+                      return (
+                        <label key={t.cluster_id} className="flex items-center gap-1.5 text-xs py-0.5">
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={(e) =>
+                              setState((s) => {
+                                const current = s.topicIds ?? []
+                                const next = e.target.checked
+                                  ? [...current, t.cluster_id]
+                                  : current.filter((id) => id !== t.cluster_id)
+                                return { ...s, topicIds: next.length > 0 ? next : null }
+                              })
+                            }
+                          />
+                          <span>{t.name}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          <div>
-            <p className="mb-1 text-xs font-medium text-gray-600 dark:text-gray-400">Watched folders</p>
-            <UnknownScopeChips
-              kind="folder"
-              ids={unknownFolderIds}
-              onRemove={(id) =>
-                setState((s) => {
-                  const next = (s.folderIds ?? []).filter((f) => f !== id)
-                  return { ...s, folderIds: next.length > 0 ? next : null }
-                })
-              }
-            />
-            {foldersFailed ? (
-              <ScopeListFailed kind="folder" storedCount={state.folderIds?.length ?? 0} />
-            ) : folders.length === 0 ? (
-              <p className="text-xs text-gray-500 dark:text-gray-400">No watched folders configured.</p>
-            ) : (
-              <div className="max-h-40 overflow-y-auto rounded-sm bg-white dark:bg-[#1e1e1f] p-2 ring-1 ring-(--color-border)">
-                {folders.map((f) => {
-                  const selected = state.folderIds?.includes(f.folder_id) ?? false
-                  return (
-                    <label key={f.folder_id} className="flex items-center gap-1.5 text-xs py-0.5">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={(e) =>
-                          setState((s) => {
-                            const current = s.folderIds ?? []
-                            const next = e.target.checked
-                              ? [...current, f.folder_id]
-                              : current.filter((id) => id !== f.folder_id)
-                            return { ...s, folderIds: next.length > 0 ? next : null }
-                          })
-                        }
-                      />
-                      <span className="font-mono">{f.path}</span>
-                    </label>
-                  )
-                })}
+              <div>
+                <p className="mb-1 text-xs font-medium text-gray-600 dark:text-gray-400">Watched folders</p>
+                <UnknownScopeChips
+                  kind="folder"
+                  ids={unknownFolderIds}
+                  onRemove={(id) =>
+                    setState((s) => {
+                      const next = (s.folderIds ?? []).filter((f) => f !== id)
+                      return { ...s, folderIds: next.length > 0 ? next : null }
+                    })
+                  }
+                />
+                {foldersFailed ? (
+                  <ScopeListFailed kind="folder" storedCount={state.folderIds?.length ?? 0} />
+                ) : folders.length === 0 ? (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">No watched folders configured.</p>
+                ) : (
+                  <div className="max-h-40 overflow-y-auto rounded-sm bg-white dark:bg-[#1e1e1f] p-2 ring-1 ring-(--color-border)">
+                    {folders.map((f) => {
+                      const selected = state.folderIds?.includes(f.folder_id) ?? false
+                      return (
+                        <label key={f.folder_id} className="flex items-center gap-1.5 text-xs py-0.5">
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={(e) =>
+                              setState((s) => {
+                                const current = s.folderIds ?? []
+                                const next = e.target.checked
+                                  ? [...current, f.folder_id]
+                                  : current.filter((id) => id !== f.folder_id)
+                                return { ...s, folderIds: next.length > 0 ? next : null }
+                              })
+                            }
+                          />
+                          <span className="font-mono">{f.path}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
       </details>
 
