@@ -15,7 +15,7 @@ from harbor_clerk.config import get_settings
 from harbor_clerk.embedder_client import embed_texts_async
 from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
-from harbor_clerk.passage_cap import cap_text, refuse_filter_past_cap
+from harbor_clerk.passage_cap import cap_text, refuse_filter_past_cap, refuse_summary_state_at_cap_zero
 from harbor_clerk.search_rerank import rerank_hits
 from harbor_clerk.search_types import ConflictSource, FindAllHit, FindAllResult, SearchHit, SearchResult
 from harbor_clerk.text_contains import fold_whitespace, text_contains_clause
@@ -429,6 +429,7 @@ async def hybrid_search(
     if doc_id is not None and doc_ids is not None:
         raise ValueError("Cannot specify both doc_id and doc_ids")
     refuse_filter_past_cap(metadata_filter, key_snippet_cap)
+    refuse_summary_state_at_cap_zero(summary_state, key_snippet_cap)
 
     # --- Scope filters ---
     scope_filters = []

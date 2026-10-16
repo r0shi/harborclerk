@@ -38,7 +38,7 @@ from harbor_clerk.models import (
 )
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.watched import WatchedFile, WatchedFolder
-from harbor_clerk.passage_cap import snippet_cap
+from harbor_clerk.passage_cap import SnippetCapRefusal, refuse_summary_state_at_cap_zero, snippet_cap
 from harbor_clerk.payload_bounds import bound_summary
 from harbor_clerk.sql_escape import escape_ilike
 from harbor_clerk.storage import get_storage
@@ -110,6 +110,10 @@ async def list_documents(
         if statuses:
             base = base.where(Document.pipeline_status.in_(statuses))
 
+    try:
+        refuse_summary_state_at_cap_zero(summary_state, snippet_cap(principal))
+    except SnippetCapRefusal as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     if summary_state:
         if summary_state == "has":
             base = base.where(func.length(func.trim(func.coalesce(Document.summary, ""))) > 0)

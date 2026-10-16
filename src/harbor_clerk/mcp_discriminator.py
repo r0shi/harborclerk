@@ -139,6 +139,7 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
         bounded=True,
         value_max=HINT_VALUE_MAX_CHARS,
         total_max=METADATA_MAX_CHARS,
+        depth=4,  # indent=2, inside kb_batch_search's results[i].discriminator_hint (kb_search nests it at 2)
         describe=_describe,
         more=lambda n: {"more": n},
     )

@@ -21,16 +21,19 @@ from harbor_clerk.payload_bounds import (
 
 
 def _json_len(value) -> int:
-    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+    """As a tool sends it without indentation: json.dumps' default escaping and separators."""
+    return len(json.dumps(value))
 
 
-def test_the_limits_are_sized_against_the_chat_per_result_budget():
-    """A summary and a whole metadata payload, together, stay under half of one chat tool result at
-    the tight-fit context; a hint stays well under that."""
+def _escaped(text: str) -> int:
+    return len(json.dumps(text)) - 2
+
+
+def test_the_budget_floor_is_the_chat_formula_at_the_tight_fit_context():
+    """The end-to-end check that kb_get_document fits it is in tests/test_key_snippet_cap.py."""
     assert _tool_result_max_chars(TIGHT_FIT_CONTEXT) == CHAT_RESULT_BUDGET_FLOOR_CHARS
-    assert SUMMARY_MAX_CHARS + METADATA_MAX_CHARS <= CHAT_RESULT_BUDGET_FLOOR_CHARS // 2
-    assert METADATA_VALUE_MAX_CHARS < METADATA_MAX_CHARS
     assert HINT_VALUE_MAX_CHARS < HINT_MAX_CHARS < METADATA_MAX_CHARS
+    assert METADATA_VALUE_MAX_CHARS < METADATA_MAX_CHARS
 
 
 # --- summaries --------------------------------------------------------------
@@ -55,7 +58,7 @@ def test_bound_summary_takes_the_passage_rule(cap, bounded, expected):
 def test_bound_summary_cuts_a_long_summary_with_an_ellipsis_only_when_bounded():
     long = "s" * (SUMMARY_MAX_CHARS * 3)
     cut = bound_summary(long, None, bounded=True)
-    assert len(cut) == SUMMARY_MAX_CHARS and cut.endswith(ELLIPSIS) and long.startswith(cut[:-1])
+    assert _escaped(cut) == SUMMARY_MAX_CHARS and cut.endswith(ELLIPSIS) and long.startswith(cut[:-1])
     assert bound_summary(long, None, bounded=False) == long
     # A capped key's prefix carries no ellipsis, as a capped passage carries none.
     assert bound_summary(long, 50, bounded=True) == "s" * 50
@@ -76,7 +79,7 @@ def test_a_64kb_sidecar_value_is_cut_and_listed():
     meta = {"tika": {"title": "Q3"}, "sidecar": {"notes": "n" * 64_000, "vendor": "Acme"}}
     out = bound_metadata(meta, None, bounded=True)
     assert _json_len(out) <= METADATA_MAX_CHARS
-    assert out["sidecar"]["notes"] == "n" * (METADATA_VALUE_MAX_CHARS - 1) + ELLIPSIS
+    assert out["sidecar"]["notes"] == "n" * (METADATA_VALUE_MAX_CHARS - _escaped(ELLIPSIS)) + ELLIPSIS
     assert out["sidecar"]["vendor"] == "Acme" and out["tika"] == {"title": "Q3"}
     assert out[TRUNCATED_KEY] == ["sidecar.notes"]
 
@@ -131,4 +134,29 @@ def test_hint_bounds_are_tighter():
     assert _json_len(out) <= HINT_MAX_CHARS
     for k, v in out.items():
         if k != TRUNCATED_KEY:
-            assert len(v) == HINT_VALUE_MAX_CHARS and v.endswith(ELLIPSIS)
+            assert _escaped(v) == HINT_VALUE_MAX_CHARS and v.endswith(ELLIPSIS)
+
+
+@pytest.mark.parametrize("char", ["é", "東", "😀"])
+def test_bounds_count_escaped_characters(char):
+    """A non-ASCII character is 6 escaped characters in a tool response (12 outside the BMP): the
+    bound counts what is sent, not the code points."""
+    out = bound_metadata({"sidecar": {"notes": char * 1_000}}, None, bounded=True)
+    note = out["sidecar"]["notes"]
+    assert note.endswith(ELLIPSIS) and _escaped(note) <= METADATA_VALUE_MAX_CHARS
+    assert _escaped(note) > METADATA_VALUE_MAX_CHARS - _escaped(char) - _escaped(ELLIPSIS)
+    summary = bound_summary(char * 2_000, None, bounded=True)
+    assert _escaped(summary) <= SUMMARY_MAX_CHARS
+
+
+def test_indented_depth_is_counted():
+    """kb_get_document sends metadata indented, one level deep: the bound holds for that string."""
+    meta = {"sidecar": {f"k{i:03d}": i for i in range(800)}}
+    out = bound_metadata(meta, None, bounded=True, depth=1)
+    sent = json.dumps({"metadata": out}, indent=2)
+    assert len(sent) - len('{\n  "metadata": \n}') <= METADATA_MAX_CHARS
+
+
+def test_a_stored_truncated_namespace_does_not_collide_with_the_marker():
+    out = bound_metadata({"_truncated": {"x": 1}, "sidecar": {"n": "n" * 2_000}}, None, bounded=True)
+    assert out["_truncated (stored)"] == {"x": 1} and out[TRUNCATED_KEY] == ["sidecar.n"]

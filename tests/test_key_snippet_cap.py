@@ -1530,3 +1530,73 @@ async def test_the_capped_date_tool_uses_only_strict_dates(db_session, mock_sess
     assert row["date_source"] == source, row
     if source == "tika.created_at":
         assert row["date"].startswith("2024-01-15T16:00:00"), row
+
+
+# --- sixth review: the bound in the chat's own unit; summary_state at cap 0 (#831) ---------------
+
+_WORST_TEXT = {
+    "cjk": "港の灯台守は嵐の夜に灯を守り、潮の満ち引きを日誌に記した。",
+    "french": "Le gardien du phare a consigné la tempête, l'été où la marée dépassa les écueils. ",
+}
+
+
+@pytest.mark.parametrize("script", list(_WORST_TEXT))
+async def test_kb_get_document_fits_the_tight_fit_chat_budget_end_to_end(
+    db_session, mock_session_factory, admin_user, script
+):
+    """A worst-case document (a summary and metadata far past every bound, all non-ASCII) through the
+    in-process chat tool: the string it returns fits one tool result at the tight-fit context, so
+    _truncate_for_llm leaves it unchanged and it is still valid JSON. Each non-ASCII character is a
+    6-character escape on the wire; a bound counted in code points let this reach 28,000 characters."""
+    from harbor_clerk.llm.chat import _tool_result_max_chars, _truncate_for_llm
+    from harbor_clerk.llm.models import TIGHT_FIT_CONTEXT
+    from harbor_clerk.llm.tools import execute_tool
+    from harbor_clerk.payload_bounds import CHAT_RESULT_BUDGET_FLOOR_CHARS
+
+    budget = _tool_result_max_chars(TIGHT_FIT_CONTEXT)
+    assert budget == CHAT_RESULT_BUDGET_FLOOR_CHARS
+    text = _WORST_TEXT[script]
+    long = text * 200
+    metadata = {
+        "tika": {"title": text * 3, "description": long, "subject": long},
+        "frontmatter": {f"champ_{i:02d}": long for i in range(15)},
+        "sidecar": {"notes": long * 10, "tags": [text * 4 for _ in range(30)], "count": 7},
+    }
+    doc = Document(
+        title=text[:40],
+        status="active",
+        sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+        pipeline_status=PipelineStatus.ready,
+        mime_type="application/pdf",
+        summary=long,
+        doc_metadata=metadata,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    out = await execute_tool("get_document", {"doc_id": str(doc.doc_id)}, user_id=admin_user.user_id)
+    assert len(out) <= budget, f"{len(out)} characters returned against a budget of {budget}"
+    assert _truncate_for_llm(out, budget) == out
+    payload = json.loads(out)
+    assert payload["summary"].endswith(ELLIPSIS) and payload["metadata"][TRUNCATED_KEY]
+
+
+# summary_state tests whether a summary exists; at cap 0 every summary shows as null, so it would tell
+# a key which nulls hide a real summary.
+SUMMARY_STATE_SURFACES = {
+    "GET /api/docs": ("GET", "/api/docs?summary_state=has", None),
+    "POST /api/search": ("POST", "/api/search", {"query": "lighthouse keeper", "summary_state": "missing"}),
+    "POST /api/search/find-all": ("POST", "/api/search/find-all", {"query": "lighthouse", "summary_state": "has"}),
+}
+
+
+@pytest.mark.parametrize("who", REST_PRINCIPALS)
+@pytest.mark.parametrize("surface", list(SUMMARY_STATE_SURFACES))
+async def test_rest_summary_state_is_refused_at_cap_zero(client, db_session, corpus, admin_user, surface, who):
+    method, path, body = SUMMARY_STATE_SURFACES[surface]
+    resp = await client.request(method, path, json=body, headers=await _rest_headers(db_session, admin_user, who))
+    cap = _cap_of(who)
+    if cap is not None and cap <= 0:
+        assert resp.status_code == 422, resp.text[:300]
+        assert "snippet cap" in resp.json()["detail"]
+    else:
+        assert resp.status_code == 200, resp.text[:300]

@@ -129,6 +129,19 @@ def _filter_leaves(value: object, position: tuple[str | int, ...] = ()) -> list[
     return [(position, value)]
 
 
+def refuse_summary_state_at_cap_zero(summary_state: str | None, cap: int | None) -> None:
+    """Raise ``SnippetCapRefusal`` for any ``summary_state`` filter from a key capped at 0.
+
+    At a cap of 0 every summary shows as null, so filtering on whether one exists (or on its job's
+    state) would tell the key which nulls hide a real summary. Above 0 the summary's prefix is shown,
+    so the filter tells it nothing new."""
+    if summary_state and cap is not None and cap <= 0:
+        raise SnippetCapRefusal(
+            "summary_state is refused: this API key's snippet cap is 0, so every summary shows as null to it, "
+            "and filtering on whether one exists would tell a real summary from a hidden one."
+        )
+
+
 def refuse_filter_past_cap(metadata_filter: dict | None, cap: int | None) -> None:
     """Raise ``SnippetCapRefusal`` for a capped key's ``metadata_filter`` string longer than its cap.
 

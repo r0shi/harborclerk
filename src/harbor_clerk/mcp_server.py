@@ -380,7 +380,8 @@ def _text_contains_scope(text_contains: str | None, principal: Principal) -> dic
     else:
         note = (
             f"text_contains is matched only within the first {cap} characters of each passage "
-            "(this API key's snippet cap); a literal further in is not found."
+            "(this API key's snippet cap); a literal further in is not found, and a word ending exactly at "
+            "the cap counts as whole for a word-boundary match."
         )
     return {"text_contains_scope": note}
 
@@ -1000,8 +1001,9 @@ async def kb_search(
       and "IP." but not "ship". Special chars (% _) are matched
       literally. Combine with `query` for relevance ranking among the
       literal-match subset. Under a key with a snippet cap of N, the
-      literal must occur within a chunk's first N characters, and the
-      response's text_contains_scope says so.
+      literal must occur within a chunk's first N characters (a word
+      ending exactly at N counts as whole), and the response's
+      text_contains_scope says so.
     """
     principal = _get_principal()
     if (refusal := _filter_refusal(metadata_filter, principal)) is not None:
@@ -1241,7 +1243,8 @@ async def kb_find_all(
         side: " IP " matches "the IP clause" and "IP." but not "ship".
         Special chars (% _) are matched literally. Under a key with a
         snippet cap of N, the literal must occur within a chunk's first N
-        characters (the response's text_contains_scope says so).
+        characters, a word ending exactly at N counting as whole (the
+        response's text_contains_scope says so).
       max_results: cap on documents returned (default 100; server clamps
         at settings.find_all_max_results_cap, default 500).
       offset: pagination offset over the sorted result set. Default 0.
@@ -1883,7 +1886,7 @@ async def kb_get_document(doc_id: str) -> str:
         "extracted_chars": doc.extracted_chars,
         "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
         # The key's snippet cap on every string value, then the size bound for every caller (#831).
-        "metadata": bound_metadata(doc.doc_metadata, snippet_cap(principal), bounded=True),
+        "metadata": bound_metadata(doc.doc_metadata, snippet_cap(principal), bounded=True, depth=1),
         "jobs": jobs,
     }
     if doc.error:

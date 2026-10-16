@@ -111,7 +111,9 @@ def text_contains_clause(
     already read, so the filter answers nothing about text past the cap. The indexed substring match
     over the whole column stays as the prefilter, and the prefix recheck (``hc_fold_whitespace`` over
     ``left(column, n)``, the raw prefix folded) is ANDed to it; the word-boundary recheck runs on the
-    prefix too, so a boundary at the cap is end of text and the character after it is never consulted.
+    prefix too, so a boundary at the cap is end of text and the character after it is never consulted:
+    a word ending exactly at the cap counts as whole (``" foo "`` matches a chunk whose ``foobar`` is cut
+    to ``foo`` by the cap). Deliberate: the answer depends on nothing the key cannot read.
     A cap of 0 (or less) matches nothing but an all-whitespace value.
     """
     folded_column = func.hc_fold_whitespace(column)
