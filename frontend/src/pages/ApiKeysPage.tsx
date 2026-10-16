@@ -139,9 +139,11 @@ function scopeStateFromKey(k: ApiKeyInfo): ScopeFormState {
     topicIds: k.scope_topic_ids,
     folderIds: k.scope_folder_ids,
     maxSnippetChars: snippetCapInput(k.max_snippet_chars),
-    rateLimitRpmUnlimited: k.rate_limit_rpm === 0,
+    // The rate limiter treats any value <= 0 as unlimited (a legacy negative included), as does
+    // the scope summary, so the form shows it that way.
+    rateLimitRpmUnlimited: k.rate_limit_rpm != null && k.rate_limit_rpm <= 0,
     rateLimitRpm: k.rate_limit_rpm != null && k.rate_limit_rpm > 0 ? String(k.rate_limit_rpm) : '',
-    rateLimitRphUnlimited: k.rate_limit_rph === 0,
+    rateLimitRphUnlimited: k.rate_limit_rph != null && k.rate_limit_rph <= 0,
     rateLimitRph: k.rate_limit_rph != null && k.rate_limit_rph > 0 ? String(k.rate_limit_rph) : '',
   }
 }
@@ -209,8 +211,8 @@ function sameSet(a: Record<string, boolean> | (number | string)[] | null, b: typ
 /**
  * The PATCH body for an edit: only the fields the operator changed, compared with the form as it
  * was loaded. PATCH applies every field it is sent, and the form cannot represent every stored
- * value (an expiry time is shown as its date, a negative rate limit as the default, a legacy
- * negative cap as 0), so re-sending an untouched field would silently change the key.
+ * value (an expiry time is shown as its date, a negative rate limit as unlimited, a legacy
+ * negative cap as 0, a name with surrounding spaces trimmed), so re-sending an untouched field would silently change the key.
  */
 function changedFields(
   name: string,
@@ -219,8 +221,8 @@ function changedFields(
   initial: ScopeFormState,
 ): FieldResult<Partial<ScopePayload> & { name?: string }> {
   const body: Partial<ScopePayload> & { name?: string } = {}
-  if (name.trim() !== initialName) {
-    if (!name.trim()) return { ok: false, error: 'Key name cannot be empty.' }
+  if (name.trim() !== initialName.trim()) {
+    if (!name.trim()) return { ok: false, error: KEY_NAME_ERROR }
     body.name = name.trim()
   }
   if (s.expiresAt !== initial.expiresAt) body.expires_at = expiresAtPayload(s.expiresAt)
@@ -251,6 +253,8 @@ function changedFields(
   }
   return { ok: true, value: body }
 }
+
+const KEY_NAME_ERROR = 'Key name cannot be empty.'
 
 function FieldError({ result }: { result: NumberFieldParse }) {
   if (result.ok) return null
@@ -477,7 +481,6 @@ export default function ApiKeysPage() {
             setEditingKey(null)
             loadKeys()
           }}
-          onError={setError}
         />
       )}
     </div>
@@ -650,7 +653,6 @@ function ScopeFormFields({
         <input
           type="text"
           inputMode="numeric"
-          pattern="[0-9]*"
           aria-label="Max snippet chars"
           value={state.maxSnippetChars}
           onChange={(e) => setState((s) => ({ ...s, maxSnippetChars: e.target.value }))}
@@ -686,7 +688,6 @@ function ScopeFormFields({
           <input
             type="text"
             inputMode="numeric"
-            pattern="[0-9]*"
             aria-label="Requests per minute"
             value={state.rateLimitRpm}
             onChange={(e) => setState((s) => ({ ...s, rateLimitRpm: e.target.value }))}
@@ -716,7 +717,6 @@ function ScopeFormFields({
           <input
             type="text"
             inputMode="numeric"
-            pattern="[0-9]*"
             aria-label="Requests per hour"
             value={state.rateLimitRph}
             onChange={(e) => setState((s) => ({ ...s, rateLimitRph: e.target.value }))}
@@ -751,6 +751,10 @@ function CreateKeyForm({
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    if (!name.trim()) {
+      onError(KEY_NAME_ERROR)
+      return
+    }
     const scopePayload = scopeStateToPayload(scope)
     if (!scopePayload.ok) {
       onError(scopePayload.error)
@@ -758,7 +762,7 @@ function CreateKeyForm({
     }
     setSubmitting(true)
     try {
-      const payload = { name, ...scopePayload.value }
+      const payload = { name: name.trim(), ...scopePayload.value }
       const key = await post<ApiKeyCreated>('/api/api-keys', payload)
       onCreated(key)
     } catch (e) {
@@ -809,18 +813,18 @@ function EditKeyModal({
   folders,
   onClose,
   onSaved,
-  onError,
 }: {
   apiKey: ApiKeyInfo
   topics: TopicCluster[]
   folders: WatchedFolderInfo[]
   onClose: () => void
   onSaved: () => void
-  onError: (msg: string) => void
 }) {
   const [initialScope] = useState<ScopeFormState>(() => scopeStateFromKey(apiKey))
   const [scope, setScope] = useState<ScopeFormState>(initialScope)
   const [name, setName] = useState(apiKey.name)
+  // Shown inside the modal: the page's error banner sits behind the overlay.
+  const [saveError, setSaveError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [preview, setPreview] = useState<ScopePreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -862,9 +866,10 @@ function EditKeyModal({
   }, [apiKey.key_id, payloadKey, scopePayload])
 
   async function handleSave() {
+    setSaveError('')
     const changed = changedFields(name, apiKey.name, scope, initialScope)
     if (!changed.ok) {
-      onError(changed.error)
+      setSaveError(changed.error)
       return
     }
     if (Object.keys(changed.value).length === 0) {
@@ -876,7 +881,7 @@ function EditKeyModal({
       await patch(`/api/api-keys/${apiKey.key_id}`, changed.value)
       onSaved()
     } catch (e) {
-      onError(e instanceof Error ? e.message : 'Save failed')
+      setSaveError(e instanceof Error ? e.message : 'Save failed')
     } finally {
       setSubmitting(false)
     }
@@ -926,6 +931,15 @@ function EditKeyModal({
             <span className="text-gray-500 dark:text-gray-400">Scope preview unavailable.</span>
           )}
         </div>
+
+        {saveError && (
+          <div
+            role="alert"
+            className="mt-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400"
+          >
+            {saveError}
+          </div>
+        )}
 
         <div className="mt-5 flex justify-end gap-3">
           <button

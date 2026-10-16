@@ -38,12 +38,13 @@ RETURNS (JSON)
         "doc_title": "string",     // title of the containing document
         "citation":  "Contract A, pp. 12-13",
         "source":    { "...": "SourceRef object with doc/chunk/page identity" },
-        "text":      "string",     // full chunk text (≈1000 chars)
+        "text":      "string" | null, // full chunk text (≈1000 chars); under a key's snippet
+                                      //   cap of N, the first N chars; null at a cap of 0
         "language":  "en" | "fr",
         "pages":     "12-13"       // page range (omitted for non-paginated docs)
         // with --include-context:
-        "context_before": "string" | null,   // chunk immediately before (if any)
-        "context_after":  "string" | null    // chunk immediately after (if any)
+        "context_before": "string" | null,   // chunk immediately before (if any); capped like text,
+        "context_after":  "string" | null    // chunk immediately after (if any); omitted at a cap of 0
       }
     ]
   }

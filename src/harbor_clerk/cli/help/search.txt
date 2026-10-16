@@ -53,7 +53,8 @@ RETURNS (JSON)
           "source_label": "string",
           "citation": "Contract A, p. 42"
         },
-        "text":       "string",      // matched chunk text; omitted with --detail=compact
+        "text":       "string",      // matched chunk text; omitted with --detail=compact; under a
+                                     //   key's snippet cap of N, the first N chars; omitted at 0
         "score":      0.87,          // hybrid score, higher = better
         "language":   "english" | "french"
       }

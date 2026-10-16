@@ -43,7 +43,9 @@ RETURNS (JSON)
     "pages": [
       {
         "page_num":       3,        // 1-based page number (chunk fallback uses chunk_num)
-        "text":           "...",    // page text (may be partial on the last page if truncated)
+        "text":           "...",    // page text (may be partial on the last page if truncated);
+                                    //   under a key's snippet cap of N the whole response holds
+                                    //   the first N chars of the range; null at a cap of 0
         "ocr_used":       false,    // true if OCR was applied to this page
         "ocr_confidence": null      // float 0–1 when ocr_used, else null
       }

@@ -35,7 +35,8 @@ RETURNS (JSON)
       {
         "chunk_id":   "uuid",             // chunk identifier
         "chunk_num":  35,                 // sequential position (ascending order)
-        "text":       "string",           // full chunk text
+        "text":       "string" | null,    // full chunk text; under a key's snippet cap of N, the
+                                          //   first N chars; null at a cap of 0
         "language":   "en" | "fr",
         "pages":      "18-19"             // present for paginated docs only
         // target chunk only:

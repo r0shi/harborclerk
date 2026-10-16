@@ -52,7 +52,8 @@ RETURNS (JSON)
             "pages":      "42",        // page or page range (omitted when unavailable)
             "citation":   "Contract A, p. 42",
             "source":     { "...": "same SourceRef object as search" },
-            "text":       "string",    // matched chunk text; omitted with --detail=compact
+            "text":       "string",    // matched chunk text; omitted with --detail=compact; under a
+                                       //   key's snippet cap of N, the first N chars; omitted at 0
             "score":      0.87,        // hybrid score, higher = better
             "language":   "english"    // "english" or "french"
           }

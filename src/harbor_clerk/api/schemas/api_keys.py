@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 # The api_keys columns are 32-bit integers: a larger value would pass validation and then
 # fail the INSERT/UPDATE with a 500.
@@ -16,9 +16,12 @@ SnippetCap = Annotated[int | None, Field(ge=0, le=INT32_MAX)]
 # A per-key rate limit: None (the system default), 0 (unlimited) or N >= 1 requests.
 RateLimit = Annotated[int | None, Field(ge=0, le=INT32_MAX)]
 
+# A key's name, stripped; a blank name is refused on create and PATCH alike.
+KeyName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
 
 class CreateApiKeyRequest(BaseModel):
-    name: str
+    name: KeyName
     expires_at: datetime | None = None
     permission_tier: Literal["search", "read", "full"] = "full"
     tool_overrides: dict[str, bool] | None = None
@@ -30,7 +33,7 @@ class CreateApiKeyRequest(BaseModel):
 
 
 class PatchApiKeyRequest(BaseModel):
-    name: str | None = None
+    name: KeyName | None = None
     expires_at: datetime | None = None
     permission_tier: Literal["search", "read", "full"] | None = None
     tool_overrides: dict[str, bool] | None = None

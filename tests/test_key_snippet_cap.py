@@ -406,3 +406,30 @@ async def test_patch_key_rejects_a_negative_snippet_cap_and_accepts_zero(client,
         f"/api/api-keys/{key_id}", json={"max_snippet_chars": None}, headers=auth_header(admin_token)
     )
     assert resp.status_code == 200 and resp.json()["max_snippet_chars"] is None
+
+
+async def test_scope_summary_shows_a_legacy_negative_cap_as_zero(client, db_session, admin_token):
+    """A cap stored negative before validation applies as 0, and the key list says so."""
+    await _make_key(db_session, -5)
+    resp = await client.get("/api/api-keys", headers=auth_header(admin_token))
+    assert resp.status_code == 200, resp.text[:300]
+    (row,) = [k for k in resp.json() if k["name"] == "cap--5"]
+    assert "max 0 chars" in row["scope_summary"], row["scope_summary"]
+
+
+@pytest.mark.parametrize("name", ["", "   "])
+async def test_create_and_patch_reject_a_blank_key_name(client, admin_token, name):
+    resp = await client.post("/api/api-keys", json={"name": name}, headers=auth_header(admin_token))
+    assert resp.status_code == 422, resp.text[:300]
+    created = await client.post("/api/api-keys", json={"name": "named"}, headers=auth_header(admin_token))
+    key_id = created.json()["key_id"]
+    resp = await client.patch(f"/api/api-keys/{key_id}", json={"name": name}, headers=auth_header(admin_token))
+    assert resp.status_code == 422, resp.text[:300]
+
+
+async def test_key_name_is_stored_stripped(client, admin_token):
+    created = await client.post("/api/api-keys", json={"name": "  Claude  "}, headers=auth_header(admin_token))
+    assert created.status_code == 201 and created.json()["name"] == "Claude"
+    key_id = created.json()["key_id"]
+    resp = await client.patch(f"/api/api-keys/{key_id}", json={"name": " Codex "}, headers=auth_header(admin_token))
+    assert resp.status_code == 200 and resp.json()["name"] == "Codex"

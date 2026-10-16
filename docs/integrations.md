@@ -80,9 +80,11 @@ snippets and top chunks, `kb_read_passages` (and its context),
 `kb_expand_context`, `kb_read_document`, the CLI (which speaks MCP), and the REST
 equivalents (`POST /api/search`, `/api/search/find-all`, `/api/passages/read`,
 `GET /api/docs/{id}/content`). Under a cap of N, a passage is the chunk's (or
-page's) first N characters, never a window the caller can move; a brief trim may
-add a trailing ellipsis. `kb_read_document` and `/content` return the first N
-characters of the requested range in all, and `/download` (the original's bytes)
+page's) first N characters, never a window positioned on a search term or an
+offset within it; a brief trim may add a trailing ellipsis. The cap is per
+passage, not per document: a caller chooses which chunks and pages to read, so it
+can receive the first N characters of each. `kb_read_document` and `/content`
+return the first N characters of the requested range in all, and `/download` (the original's bytes)
 is refused to a key with a cap. A cap of 0 returns citations and metadata with
 the text fields null or absent. Leave the cap unset for no limit; negative values
 are rejected.

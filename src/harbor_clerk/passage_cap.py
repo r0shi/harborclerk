@@ -3,8 +3,10 @@
 An API key's ``max_snippet_chars`` bounds passage and page text on every surface
 (MCP tools, the CLI that speaks MCP, and the REST routes in
 ``api.scope.REST_ROUTE_TOOLS``): a passage is the chunk's (or page's) first
-``cap`` characters, never a window the caller can move, and a whole-document
-response is the first ``cap`` characters of the requested range. A cap of 0 —
+``cap`` characters, never a window positioned within it (on a search term or an
+offset), and a whole-document response is the first ``cap`` characters of the
+requested range. The cap is per passage, not per document: a caller chooses the
+chunks and pages it reads, so it can receive the first ``cap`` characters of each. A cap of 0 —
 or a negative value stored before create/update validated it — returns no
 passage text (None). Humans, OAuth agents and keys with no cap are unaffected.
 
