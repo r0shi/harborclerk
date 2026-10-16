@@ -22,8 +22,11 @@ counts in that unit: escaped JSON (``json.dumps`` writes each non-ASCII characte
 ``\\uXXXX``, so a CJK or accented value costs up to six times its length) with the indentation of
 the response (``_json_len``). ``kb_get_document`` carries a summary and a metadata payload in one
 result, so both together stay under half of the budget (1,500 + 4,000), leaving the rest for the
-title, jobs and source; ``tests/test_payload_bounds.py`` checks a worst case end to end, in CJK and
-in accented French, as the chat tool returns it. A discriminator value is a hint for a ``metadata_filter`` (an exact match), and a value
+title, jobs and source; ``tests/test_key_snippet_cap.py`` checks a worst case end to end, in CJK
+and in accented French, as the chat tool returns it. The bounds are per item: a list tool
+(``kb_list_recent``, ``kb_corpus_overview``, ``kb_find_related``, ``kb_verify_identifier``) can exceed
+one result with many rows, and the chat's ``_truncate_for_llm`` then drops whole rows from its array
+(``_LARGE_ARRAY_KEYS``) rather than cutting mid-JSON. A discriminator value is a hint for a ``metadata_filter`` (an exact match), and a value
 longer than ``HINT_VALUE_MAX_CHARS`` is no usable filter value, so hints are bounded tighter.
 """
 
@@ -33,7 +36,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from harbor_clerk.passage_cap import cap_text, date_path_of, is_structured_date
+from harbor_clerk.passage_cap import cap_text, date_path_of, is_mail_header, is_structured_date
 
 ELLIPSIS = "…"
 TRUNCATED_KEY = "_truncated"
@@ -145,7 +148,8 @@ def _cap_tree(value: Any, cap: int | None, value_max: int | None, path: Path, cu
     if isinstance(value, str):
         # The same notion of "directly on a date field" as the filter exemption (scalar or list element,
         # never a dict child): ``passage_cap.date_path_of``.
-        date = cap is not None and is_structured_date(date_path_of(path), value)
+        # Dates and Tika mail headers directly on their field are outside the cap (``passage_cap``).
+        date = cap is not None and (is_structured_date(date_path_of(path), value) or is_mail_header(path))
         text = value if date else cap_text(value, cap)
         if text is not None and value_max is not None and _escaped_len(text) > value_max:
             cut.append(path)

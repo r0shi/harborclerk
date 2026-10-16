@@ -1534,7 +1534,8 @@ def _generate_title(user_message: str) -> str:
     return title
 
 
-_LARGE_ARRAY_KEYS = ("documents", "results", "entities", "related", "passages", "chunks", "headings")
+# Arrays a tool result may be cut by, whole rows at a time; "candidates" is kb_verify_identifier's (#831).
+_LARGE_ARRAY_KEYS = ("documents", "results", "entities", "related", "passages", "chunks", "headings", "candidates")
 
 
 def _without_snippet(row: Any) -> Any:

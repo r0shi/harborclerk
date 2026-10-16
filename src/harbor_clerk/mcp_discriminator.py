@@ -169,7 +169,7 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
             blocked[path] = "dropped by the size bound"
             continue
         kinds = {
-            did: _filter_kind(metadata_by_doc[did], shown, labels[did], path)
+            did: _filter_kind(metadata_by_doc[did], compared[did], shown, labels[did], path)
             for did in candidates
             if did in metadata_by_doc
         }
@@ -206,17 +206,29 @@ def _value_at(metadata: dict, path: str) -> Any:
     return ns_value.get(key) if isinstance(ns_value, dict) else None
 
 
-def _filter_kind(stored: dict, shown: dict, title: str, path: str) -> str:
-    """How a candidate's stored value at ``path`` serves as an exact ``metadata_filter`` value, judged
-    against ``shown``, the field's entry in the bounded ``differing_metadata`` ({title: value}):
-    "null" (null or absent), "not a scalar" (a list or dict), "dropped by the size bound" (no entry
-    for this candidate), "cut" (shown differently from what is stored: the hint bound, in escaped
-    characters, or the key's cap, which shows a string as null at 0), or "whole"."""
+def _filter_kind(stored: dict, capped: dict, shown: dict, title: str, path: str) -> str:
+    """How a candidate's stored value at ``path`` serves as a ``metadata_filter`` value, judged against
+    ``shown``, the field's entry in the bounded ``differing_metadata`` ({title: value}), and ``capped``,
+    the candidate's metadata as the key sees it: "null" (null or absent), "not filterable" (a dict, or a
+    list holding one), "dropped by the size bound" (no entry for this candidate), "cut" (shown or seen
+    differently from what is stored: the hint bound, in escaped characters, or the key's cap, which
+    shows a string as null at 0), or "whole".
+
+    A list of scalars is filterable (``_apply_jsonb_metadata_filter`` matches it with ``@>``). The hint
+    shows it compacted, so it is whole when its entry is present, the key's cap left every element as
+    stored, and no string element is past the hint bound."""
     value = _value_at(stored, path)
     if value is None:
         return "null"
+    if isinstance(value, list):
+        if not all(_is_scalar(v) for v in value):
+            return "not filterable"
+        if title not in shown:
+            return "dropped by the size bound"
+        too_long = any(isinstance(v, str) and escaped_len(v) > HINT_VALUE_MAX_CHARS for v in value)
+        return "cut" if too_long or _value_at(capped, path) != value else "whole"
     if not _is_scalar(value):
-        return "not a scalar"
+        return "not filterable"
     if title not in shown:
         return "dropped by the size bound"
     if shown[title] != value:
@@ -228,7 +240,7 @@ def _no_filter_suggestion(blocked: dict[str, str]) -> str:
     fields = ", ".join(f"{path} ({reason})" for path, reason in blocked.items())
     text = (
         f"Top results are ambiguous; they differ on {fields}, so no value can be used as a metadata_filter, "
-        "which matches a whole scalar value exactly. Pin one document with doc_id instead."
+        "which needs a whole stored value (a scalar, or a list of scalars). Pin one document with doc_id instead."
     )
     # Field names are stored keys of any length; this text quotes no filter value, so a cut is safe.
     return shorten(text, SUGGESTION_MAX_CHARS)

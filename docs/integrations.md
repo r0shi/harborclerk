@@ -134,12 +134,16 @@ What the cap does not bound:
 - **Mail headers.** The sender, recipients, cc, subject, message and thread ids
   and date of a message are envelope fields, like a title, stored in their own
   columns: they are outside the snippet cap, and every `email.*` filter is
-  accepted for every key. The header block at the start of a message's first
-  passage is passage text, and is capped like the rest of it. Any surface that
-  returns these fields to a key bounds them by the RFC limits: an address at
-  most 254 characters (RFC 5321), a message id at most 998 (RFC 5322's line
-  limit), and a To or Cc list at most 10 addresses plus a count. Today only a
-  citation's display sender can be an address, and it is bounded at 254.
+  accepted for every key. The same holds for the headers Tika stored in
+  metadata for older messages (`tika.email_from`, `email_to`, `email_cc`,
+  `email_subject`, `email_date`), which citations fall back to: shown whole in
+  `kb_get_document` and accepted as filters under any cap. The header block at
+  the start of a message's first passage is passage text, and is capped like
+  the rest of it. Any surface that returns these fields to a key bounds them by
+  the RFC limits: an address at most 254 characters (RFC 5321), a message id,
+  subject or display name at most 998 (RFC 5322's line limit), and a To or Cc
+  list at most 10 addresses plus a count. Today a citation carries the display
+  sender (a name, bounded at 998, or an address, at 254) and the subject (998).
 - **Pipeline state.** Under any cap a key may learn that a summary exists (the
   `summary_state` filter, `summary_model` and `summarize_job_status` on
   `/api/docs`, the summarize stage in job lists): that is processing status. It
@@ -150,8 +154,12 @@ What the cap does not bound:
 
 Independently of any cap, every MCP tool result (and every REST response to a
 key) bounds summaries at 1,500 characters, each metadata string at 1,000 and a
-metadata payload at 4,000 characters of JSON, sized against one chat tool
-result at the smallest context a model runs at. Each surface counts in the unit
+metadata payload at 4,000 characters of JSON. Each item is sized against one
+chat tool result at the smallest context a model runs at, and
+`kb_get_document`, which carries a summary and a metadata payload, fits one
+result whole. A list tool (`kb_list_recent`, `kb_corpus_overview`,
+`kb_find_related`, `kb_verify_identifier`) can exceed one result with many
+rows; the chat then drops whole rows from the end rather than cutting mid-JSON. Each surface counts in the unit
 it sends: an MCP tool result (and the chat and research tools in process) is
 escaped JSON, where every non-ASCII character takes six characters (`\uXXXX`),
 so the limits count escaped characters and indentation there; a REST response is

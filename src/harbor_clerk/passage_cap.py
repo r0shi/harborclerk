@@ -85,19 +85,39 @@ ISO_DATE_PATTERN = (
 _ISO_DATE_RE = re.compile(ISO_DATE_PATTERN)
 
 
-def date_path_of(segments: tuple[str | int, ...]) -> str | None:
-    """The date field a value sits directly on, or None.
+# Tika's mail-header metadata (``ingest/metadata_extractors/tika_metadata.py``), which citations fall
+# back to for messages without the ``Document.email_*`` columns (``source_ref._email_fields_for_doc``).
+# Mail headers are envelope fields outside the snippet cap (owner's decision on #837): a value directly
+# on one of these is never cut and never refused as a filter, like the ``email.*`` columns.
+MAIL_HEADER_FIELD_PATHS = frozenset(
+    {"tika.email_from", "tika.email_to", "tika.email_cc", "tika.email_subject", "tika.email_date"}
+)
+
+
+def field_path_of(segments: tuple[str | int, ...]) -> str | None:
+    """The dotted metadata field a value sits directly on (the scalar, or an element of a list there),
+    or None for a dict child or a path through a list.
 
     ``segments`` is the value's path: dict keys and list indices, outermost first, a key possibly a
     dotted ``ns.key`` itself (``("tika", "created_at")``, ``("tika.created_at",)``, or with trailing list
-    indices for a list element). A dict child (``("tika", "created_at", "k")``) is not on the path."""
+    indices for a list element). A dict child (``("tika", "created_at", "k")``) is ``tika.created_at.k``."""
     keys = list(segments)
     while keys and isinstance(keys[-1], int):
         keys.pop()
     if not keys or not all(isinstance(k, str) for k in keys):
         return None
-    path = ".".join(keys)  # type: ignore[arg-type]
+    return ".".join(keys)  # type: ignore[arg-type]
+
+
+def date_path_of(segments: tuple[str | int, ...]) -> str | None:
+    """The date field a value sits directly on (``field_path_of`` in ``DATE_FIELD_PATHS``), or None."""
+    path = field_path_of(segments)
     return path if path in DATE_FIELD_PATHS else None
+
+
+def is_mail_header(segments: tuple[str | int, ...]) -> bool:
+    """True when a value sits directly on one of ``MAIL_HEADER_FIELD_PATHS``."""
+    return field_path_of(segments) in MAIL_HEADER_FIELD_PATHS
 
 
 def is_structured_date(path: str | None, value: object) -> bool:
@@ -147,6 +167,8 @@ def refuse_filter_past_cap(metadata_filter: dict | None, cap: int | None) -> Non
         if path.startswith("email."):
             continue  # a mail header: an envelope field, outside the cap
         for position, leaf in _filter_leaves(value):
+            if is_mail_header((path, *position)):
+                continue  # a Tika mail header: an envelope field, outside the cap
             if leaf is None:
                 if cap <= 0:
                     raise SnippetCapRefusal(

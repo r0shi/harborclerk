@@ -1421,10 +1421,12 @@ async def test_a_null_candidate_does_not_block_the_suggestion(db_session, mock_s
 @pytest.mark.parametrize(
     ("meta", "reason"),
     [
-        (lambda t: {"sidecar": {"tags": [f"tag {t}", "shared"]}}, "sidecar.tags (not a scalar)"),
+        (lambda t: {"sidecar": {"party": {"name": f"Party {t}"}}}, "sidecar.party (not filterable)"),
+        (lambda t: {"sidecar": {"tags": [{"k": t}]}}, "sidecar.tags (not filterable)"),
         (lambda t: {"sidecar": {"vendor": f"{_LONG_VENDOR} {t}"}}, "sidecar.vendor (cut)"),
+        (lambda t: {"sidecar": {"tags": [f"{_LONG_VENDOR} {t}"]}}, "sidecar.tags (cut)"),
     ],
-    ids=["list", "cut"],
+    ids=["dict", "list-of-dicts", "cut", "list-element-cut"],
 )
 async def test_no_filter_suggestion_states_the_reason(db_session, mock_session_factory, admin_user, meta, reason):
     await _seed_hint_pair(db_session, meta)
@@ -1778,3 +1780,133 @@ async def test_rest_refuses_a_capped_filter_before_scope_early_returns(client, d
     resp = await client.post(route, json=body, headers=auth_header(raw))
     assert resp.status_code == 200, resp.text[:300]
     assert str(corpus.paged_doc.doc_id) not in resp.text
+
+
+# --- tenth review: lists as filters, scoped early returns, Tika mail headers, citation bounds -------
+
+
+@pytest.mark.parametrize("who", ["human", "key cap=None", "key cap=50"])
+async def test_a_list_of_scalars_is_offered_as_a_filter(db_session, mock_session_factory, admin_user, who):
+    """metadata_filter matches a list with @>, so a list of scalars shown whole is offerable, as on main."""
+    await _seed_hint_pair(db_session, lambda t: {"frontmatter": {"tags": ["alpha", "beta"] if t == "A" else ["gamma"]}})
+    hint = await _hint_as(db_session, admin_user, who)
+    assert hint is not None
+    suggestion = hint["suggestion"]
+    assert "metadata_filter={'frontmatter.tags': [" in suggestion, suggestion
+    assert "['alpha', 'beta']" in suggestion or "['gamma']" in suggestion, suggestion
+
+
+async def test_a_list_cut_by_the_cap_is_not_offered(db_session, mock_session_factory, admin_user):
+    """At cap 0 every string element shows as null: the list is not whole for that key."""
+    await _seed_hint_pair(
+        db_session,
+        lambda t: {"frontmatter": {"tags": ["alpha", "beta"] if t == "A" else ["gamma"], "n": 1 if t == "A" else 2}},
+    )
+    hint = await _hint_as(db_session, admin_user, "key cap=0")
+    assert hint is not None
+    assert "frontmatter.tags" not in hint["suggestion"].split(" to ")[0], hint["suggestion"]
+    assert "alpha" not in json.dumps(hint)
+
+
+@pytest.mark.parametrize("path", ["empty scope", "doc_id outside", "doc_ids outside"])
+@pytest.mark.parametrize("tool", ["kb_search", "kb_find_all"])
+async def test_text_contains_scope_note_on_scoped_early_returns(
+    db_session, corpus, mock_session_factory, admin_user, tool, path
+):
+    """A scoped capped key that sends text_contains gets the note on every response, including the
+    early returns a scope takes before searching."""
+    import harbor_clerk.mcp_server as m
+    from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+
+    scoped = WatchedFolder(path="/scoped", display_name="Scoped", auto_discovered=False)
+    empty = WatchedFolder(path="/empty", display_name="Empty", auto_discovered=False)
+    db_session.add_all([scoped, empty])
+    await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=scoped.folder_id,
+            doc_id=corpus.chunk_doc.doc_id,
+            relative_path="notes.txt",
+            sha256=b"d" * 32,
+            bookmark_data=b"",
+            status=WatchedFileStatus.active,
+        )
+    )
+    raw = generate_api_key()
+    folder = empty if path == "empty scope" else scoped
+    db_session.add(
+        ApiKey(
+            name="scoped-tc",
+            key_hash=hash_api_key(raw),
+            permission_tier="full",
+            max_snippet_chars=50,
+            scope_folder_ids=[str(folder.folder_id)],
+        )
+    )
+    await db_session.flush()
+    kwargs: dict = {"text_contains": "lighthouse"}
+    if path == "doc_id outside":
+        kwargs["doc_id"] = str(corpus.paged_doc.doc_id)
+    elif path == "doc_ids outside":
+        kwargs["doc_ids"] = [str(corpus.paged_doc.doc_id)]
+    query = "lighthouse keeper" if tool == "kb_search" else "lighthouse"
+    principal = await _resolve_principal(raw)
+    token = _mcp_principal.set(principal)
+    try:
+        payload = json.loads(await getattr(m, tool)(query=query, **kwargs))
+    finally:
+        _mcp_principal.reset(token)
+    assert not payload.get("hits") and not payload.get("results"), payload
+    assert "first 50 characters" in payload.get("text_contains_scope", ""), payload
+
+
+@pytest.mark.parametrize("cap", [10, 0])
+async def test_tika_mail_headers_are_outside_the_cap(db_session, corpus, mock_session_factory, admin_user, cap):
+    """Legacy messages carry their headers in tika.email_*, which citations fall back to: like the
+    email.* columns, those are envelope fields, shown whole and filterable under any cap."""
+    import harbor_clerk.mcp_server as m
+
+    tika = {
+        "email_from": "Harbour Master <harbourmaster@port-authority.example.org>",
+        "email_subject": "Pilotage notice for the North Basin, January sailings and tides",
+        "email_to": ["pilots.on.duty@port-authority.example.org", "ops@port-authority.example.org"],
+        "description": "Body text quoted in the description, which is document text and stays capped.",
+    }
+    doc = Document(
+        title="Legacy message",
+        status="active",
+        sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+        pipeline_status=PipelineStatus.ready,
+        mime_type="message/rfc822",
+        doc_metadata={"tika": tika},
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    who = f"key cap={cap}"
+    payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_get_document(doc_id=str(doc.doc_id)))
+    shown = payload["metadata"]["tika"]
+    for key in ("email_from", "email_subject", "email_to"):
+        assert shown[key] == tika[key], (key, shown[key])
+    assert shown["description"] == (tika["description"][:cap] if cap > 0 else None)
+    for metadata_filter in (
+        {"tika.email_subject": tika["email_subject"]},
+        {"tika.email_from": tika["email_from"]},
+        {"tika.email_to": ["pilots.on.duty@port-authority.example.org"]},
+    ):
+        found = await _mcp_as(db_session, admin_user, who, lambda f=metadata_filter: FILTER_MCP["kb_search"](f))
+        assert "error" not in found, (metadata_filter, found)
+    refused = await _mcp_as(
+        db_session, admin_user, who, lambda: FILTER_MCP["kb_search"]({"tika.description": tika["description"]})
+    )
+    assert "snippet cap" in refused.get("error", ""), refused
+
+
+def test_a_citation_bounds_the_subject_and_display_name_at_the_rfc_line_limit():
+    from harbor_clerk.source_ref import format_email_citation
+
+    citation = format_email_citation(from_name="N" * 2_000, subject="S" * 3_000)
+    sender = citation.removeprefix("Email from ").split(", ")[0]
+    subject = citation.split(", ", 1)[1].strip('"')
+    assert len(sender) == 998 and sender.endswith(ELLIPSIS)
+    assert len(subject) == 998 and subject.endswith(ELLIPSIS)
+    assert format_email_citation(from_name="Harbour Master", subject="Notice") == 'Email from Harbour Master, "Notice"'

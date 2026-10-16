@@ -160,3 +160,15 @@ def test_indented_depth_is_counted():
 def test_a_stored_truncated_namespace_does_not_collide_with_the_marker():
     out = bound_metadata({"_truncated": {"x": 1}, "sidecar": {"n": "n" * 2_000}}, None, bounded=True)
     assert out["_truncated (stored)"] == {"x": 1} and out[TRUNCATED_KEY] == ["sidecar.n"]
+
+
+def test_list_tool_results_degrade_by_dropping_rows():
+    """The bounds are per item; a list tool past one chat result is cut by whole rows from its array,
+    so what the model reads is still valid JSON. kb_verify_identifier's array is "candidates"."""
+    from harbor_clerk.llm.chat import _truncate_for_llm
+
+    for key in ("documents", "related", "candidates"):
+        rows = [{"doc_id": str(i), "summary": "s" * 1_400} for i in range(40)]
+        out = _truncate_for_llm(json.dumps({key: rows}), CHAT_RESULT_BUDGET_FLOOR_CHARS)
+        data = json.loads(out)
+        assert 0 < len(data[key]) < 40 and data["_original_count"] == 40, key

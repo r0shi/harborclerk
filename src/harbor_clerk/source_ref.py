@@ -207,7 +207,7 @@ def format_email_citation(
     """Format an email-native citation from the available metadata."""
     sender = _display_sender(from_name=from_name, from_address=from_address)
     pieces = [f"Email from {sender}" if sender else "Email"]
-    clean_subject = _clean(subject)
+    clean_subject = _bounded(_clean(subject), _HEADER_LINE_MAX_CHARS)
     if clean_subject:
         pieces.append(f'"{clean_subject}"')
     formatted_date = _format_date(date_sent)
@@ -357,18 +357,23 @@ def _page_label(pages: str | None) -> str | None:
     return f"pp. {clean}" if "-" in clean else f"p. {clean}"
 
 
-# RFC 5321's limit on an address path: a citation never carries a longer "address" whole (#831).
+# Mail headers in a citation are bounded by the RFC limits (#831): an address at RFC 5321's 254
+# characters; a display name or a subject, which RFC 5322 does not limit, at its 998-character line limit.
 _ADDRESS_MAX_CHARS = 254
+_HEADER_LINE_MAX_CHARS = 998
+
+
+def _bounded(text: str | None, max_chars: int) -> str | None:
+    if text and len(text) > max_chars:
+        return text[: max_chars - 1] + "…"
+    return text
 
 
 def _display_sender(*, from_name: str | None, from_address: str | None) -> str | None:
     name = _clean(from_name)
     if name:
-        return name
-    address = _clean(from_address)
-    if address and len(address) > _ADDRESS_MAX_CHARS:
-        return address[: _ADDRESS_MAX_CHARS - 1] + "…"
-    return address
+        return _bounded(name, _HEADER_LINE_MAX_CHARS)
+    return _bounded(_clean(from_address), _ADDRESS_MAX_CHARS)
 
 
 def _format_date(value: datetime | date | str | None) -> str | None:
