@@ -99,6 +99,9 @@ about text answer only about what the key can see (#831):
   `discriminating_fields`) are their first N characters, null at 0.
 - A `text_contains` filter (`kb_search`, `kb_find_all`, `POST /api/search`,
   `/api/search/find-all`) matches only within each chunk's first N characters.
+  The MCP tools say so in a `text_contains_scope` note; the REST search routes
+  apply the same restriction without a note, so an empty REST result under a
+  cap may mean the literal lies past the cap.
 - A `metadata_filter` is an exact match on the whole stored value, so a string
   value longer than N is refused (422 over REST, an `error` result over MCP) on
   `kb_search`, `kb_batch_search`, `kb_find_all`, `kb_documents_by_date`,
@@ -124,9 +127,10 @@ What the cap does not bound:
   an element of a list there) is structured data. The strict form is
   `YYYY-MM-DD`, optionally followed by `T` or a space and `HH:MM`, `:SS`, up to
   six fractional digits, and `Z` or `±HH:MM`. Under a cap,
-  `kb_get_document` returns such a date whole, a `metadata_filter` may name it
-  whatever its length, and `kb_documents_by_date` sorts, filters (`after`,
-  `before`, `date_field`) and reports on it and on nothing looser. Anything
+  `kb_get_document` returns such a date whole and a `metadata_filter` may name it
+  whatever its length, list elements included. `kb_documents_by_date` sorts,
+  filters (`after`, `before`, `date_field`) and reports only on a scalar date at
+  that path (never a list) and, under a cap, on nothing looser. Anything
   else stored under those keys, such as `2024-01-15 08:00:00 PST` or a value
   nested in a dict, is text: it is capped, refused as a filter past the cap, and
   ignored by the date tool for a capped key. Uncapped callers keep the date

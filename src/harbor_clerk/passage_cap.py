@@ -68,9 +68,10 @@ def cap_passage_text(text: str, principal: _CappedPrincipal) -> str | None:
 # The metadata date fields kb_documents_by_date sorts, filters and reports on (``metadata_dates``).
 # A value sitting directly on one (the scalar, or an element of a list there; never a dict child) that
 # is a strict ISO 8601 date or datetime is structured data, not document text: the snippet cap leaves
-# it whole in a payload (``payload_bounds``), lets a filter on it through (``refuse_filter_past_cap``),
-# and is the only value the date tool uses under a cap (``mcp_lookup_tools``). Anything else stored
-# under these keys is text and is capped like any other string.
+# it whole in a payload (``payload_bounds``) and lets a filter on it through (``refuse_filter_past_cap``),
+# list elements included. The date tool (``mcp_lookup_tools``) reads only a scalar date at the path,
+# never a list, and under a cap only a strict one. Anything else stored under these keys is text and is
+# capped like any other string.
 DATE_FIELD_PATHS = frozenset({"tika.created_at", "frontmatter.date", "sidecar.date"})
 
 # The strict form, one pattern for Python (``re.fullmatch``) and Postgres (``~ '^(?:...)$'``, with

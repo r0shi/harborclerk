@@ -32,7 +32,7 @@ from harbor_clerk.error_text import message_or_type
 from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields, candidate_labels
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.passage_cap import ISO_DATE_PATTERN, refuse_filter_past_cap
-from harbor_clerk.payload_bounds import cap_values
+from harbor_clerk.payload_bounds import SUGGESTION_MAX_CHARS, cap_values, escaped_len
 from harbor_clerk.search import _apply_email_metadata_filter, _apply_jsonb_metadata_filter, websearch_tsquery
 from harbor_clerk.sql_escape import escape_ilike
 
@@ -373,8 +373,20 @@ async def verify_identifier(
             "specific substring, or use kb_search(metadata_filter=...) to narrow."
         )
     elif differing:
-        field_list = ", ".join(differing.keys())
-        suggestion = f"{len(candidates)} candidates differ on {field_list} — pick the one matching your intent."
+        # Bounded like the discriminator's suggestion (#831): name fields while they fit, then a count.
+        fields = list(differing.keys())
+
+        def _differ_on(named: list[str], more: int) -> str:
+            tail = f"{', ' if named else ''}and {more} more" if more else ""
+            listed = f"{', '.join(named)}{tail}"
+            return f"{len(candidates)} candidates differ on {listed} — pick the one matching your intent."
+
+        named: list[str] = []
+        for i, field in enumerate(fields):
+            if escaped_len(_differ_on([*named, field], len(fields) - i - 1)) > SUGGESTION_MAX_CHARS:
+                break
+            named.append(field)
+        suggestion = _differ_on(named, len(fields) - len(named))
     elif _has_nested_metadata(metadata_by_doc):
         suggestion = (
             "Multiple candidates matched, but their distinguishing metadata is nested — "

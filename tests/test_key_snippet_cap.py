@@ -1910,3 +1910,28 @@ def test_a_citation_bounds_the_subject_and_display_name_at_the_rfc_line_limit():
     assert len(sender) == 998 and sender.endswith(ELLIPSIS)
     assert len(subject) == 998 and subject.endswith(ELLIPSIS)
     assert format_email_citation(from_name="Harbour Master", subject="Notice") == 'Email from Harbour Master, "Notice"'
+
+
+async def test_verify_identifier_suggestion_is_bounded(db_session, mock_session_factory, admin_user):
+    """Two candidates differing on 600 sidecar keys: the suggestion names fields while they fit, then
+    "and M more", so the result the chat receives stays valid JSON at the tight-fit context."""
+    import harbor_clerk.mcp_server as m
+    from harbor_clerk.llm.chat import _tool_result_max_chars, _truncate_for_llm
+    from harbor_clerk.llm.models import TIGHT_FIT_CONTEXT
+    from harbor_clerk.payload_bounds import SUGGESTION_MAX_CHARS, escaped_len
+
+    await _seed_titled(
+        db_session,
+        [("Contract", {"sidecar": {f"clause_field_{i:03d}": f"{t}{i}" for i in range(600)}}) for t in ("A", "B")],
+    )
+    token = _mcp_principal.set(Principal(type="user", id=admin_user.user_id, role="admin"))
+    try:
+        out = await m.kb_verify_identifier("Contract")
+    finally:
+        _mcp_principal.reset(token)
+    payload = json.loads(out)
+    assert payload["status"] == "ambiguous", payload
+    suggestion = payload["suggestion"]
+    assert escaped_len(suggestion) <= SUGGESTION_MAX_CHARS, escaped_len(suggestion)
+    assert "more" in suggestion and "sidecar.clause_field" in suggestion, suggestion
+    json.loads(_truncate_for_llm(out, _tool_result_max_chars(TIGHT_FIT_CONTEXT)))
