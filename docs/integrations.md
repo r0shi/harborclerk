@@ -97,15 +97,25 @@ and every metadata string value (`kb_get_document`'s `metadata`, the search
 first N characters, null at 0. A `text_contains` filter (`kb_search`,
 `kb_find_all`, `POST /api/search`, `/api/search/find-all`) matches only within
 each chunk's first N characters, so it answers nothing about text the key cannot
-read. `kb_entity_search` returns entity strings without their `start_char` /
-`end_char`. Document titles and headings are returned as they are.
+read. A `metadata_filter` is an exact match on the whole stored value, so a
+string value longer than N is refused (422 over REST, an `error` result over
+MCP) on `kb_search`, `kb_batch_search`, `kb_find_all`, `kb_documents_by_date`,
+`POST /api/search` and `/api/search/find-all`, and at a cap of 0 every string
+filter is; a value within N can only match a value the key already sees whole.
+`kb_verify_identifier` matches its identifier against metadata identifier fields
+only under the same rule (titles and filenames still match). The search
+`discriminator_hint` compares values as the key sees them and suggests a filter
+only for values shown whole. `kb_entity_search` returns entity strings without
+their `start_char` / `end_char`. Document titles and headings are returned as
+they are.
 
 Independently of any cap, every MCP tool result (and every REST response to a
 key) bounds summaries at 1,500 characters, each metadata string at 1,000 and a
 metadata payload at 4,000 characters of JSON, sized against one chat tool
 result at the smallest context a model runs at. A cut value ends in `…`, and the
-metadata carries a `_truncated` list of every path it shortened or dropped. The
-web app's own sessions over REST receive summaries whole.
+metadata carries a `_truncated` list of every path it shortened or dropped. A cut
+value is not a `metadata_filter` value: the filter needs the whole stored value.
+The web app's own sessions over REST receive summaries whole.
 
 If a skill or harness tries a tool outside its key scope, treat that as a
 recoverable scope mismatch. The agent should continue with search and passage

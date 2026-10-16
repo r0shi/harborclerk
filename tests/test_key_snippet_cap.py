@@ -577,7 +577,7 @@ async def _matching(db_session, literal: str, cap: int | None, docs: list[Docume
         k=10,
         doc_ids=[d.doc_id for d in docs],
         text_contains=literal,
-        text_contains_prefix_chars=cap,
+        key_snippet_cap=cap,
     )
     return {h.doc_title for h in result.hits}
 
@@ -812,8 +812,23 @@ async def test_mcp_derived_text_is_capped_for_keys_and_bounded_for_everyone(
     db_session, derived, mock_session_factory, admin_user, surface, who
 ):
     payload = await _mcp_as(db_session, admin_user, who, lambda: DERIVED_MCP[surface](derived))
+    cap = _cap_of(who)
     if "discriminator_hint" in surface:
+        if cap is not None and cap <= 0:
+            # At a cap of 0 every string compares as null, and the two documents differ in no
+            # number: there is nothing the key could tell apart, so no hint (#831).
+            assert "discriminator_hint" not in json.dumps(payload), json.dumps(payload)[:300]
+            assert SECRET not in json.dumps(payload)
+            return
         assert "discriminator_hint" in json.dumps(payload), f"the hint did not fire: {json.dumps(payload)[:300]}"
+        if cap is None:  # three fields from two short ones and twenty-one past the hint bound: one is cut
+            assert all(h["differing_metadata"].get(TRUNCATED_KEY) for h in _hints(payload))
+        for hint in _hints(payload):
+            for entry in hint["differing_metadata"].get(TRUNCATED_KEY, []):
+                # Field and document by id: a title may contain dots, or be shared.
+                assert entry.keys() <= {"field", "doc_id", "at"} or entry.keys() == {"more"}, entry
+                if "doc_id" in entry:
+                    assert entry["doc_id"] in (str(derived.a.doc_id), str(derived.b.doc_id)), entry
     if surface == "kb_verify_identifier":
         assert payload.get("status") == "ambiguous", payload
     _assert_derived(payload, derived, _cap_of(who), bounded=True, surface=surface)
@@ -864,3 +879,260 @@ async def test_rest_entity_routes_never_carry_offsets(client, db_session, derive
     assert resp.status_code == 200, resp.text[:300]
     assert "Keeper Ledger Company" in resp.text
     assert "start_char" not in resp.text and "end_char" not in resp.text
+
+
+def _hints(payload: dict) -> list[dict]:
+    """Every discriminator_hint in a kb_search or kb_batch_search payload."""
+    if "discriminator_hint" in payload:
+        return [payload["discriminator_hint"]]
+    return [r["discriminator_hint"] for r in payload.get("results", []) if "discriminator_hint" in r]
+
+
+# --- the discriminator suggestion names only whole values (#831 review) --------------------------
+
+
+async def _seed_hint_pair(db_session: AsyncSession, meta: Callable[[str], dict]) -> tuple[Document, Document]:
+    """Two documents with the same chunk text (a search ties them) and metadata ``meta(tag)``."""
+    text = "The harbour pilot ledger records every tide, buoy and beacon. " * 6
+    docs = []
+    for tag in ("A", "B"):
+        doc = Document(
+            title=f"Pilot Ledger {tag}",
+            status="active",
+            sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+            doc_metadata=meta(tag),
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=text, language="en", ocr_used=False))
+        docs.append(doc)
+    await db_session.flush()
+    return docs[0], docs[1]
+
+
+async def _hint_as(db_session, admin_user, who: str) -> dict | None:
+    import harbor_clerk.mcp_server as m
+
+    payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_search(query="harbour pilot ledger"))
+    assert "error" not in payload, payload
+    return payload.get("discriminator_hint")
+
+
+def _filter_values(suggestion: str) -> list[str]:
+    """The value reprs a suggestion offers as metadata_filter values."""
+    import re
+
+    offered = re.findall(r"metadata_filter=\{'[^']+': (.+?)\}", suggestion)
+    listed = re.findall(
+        r"=('(?:[^'\\]|\\.)*'|-?\d+(?:\.\d+)?|True|False|None)", suggestion.split("Available values:")[-1]
+    )
+    return offered + listed if "metadata_filter=" in suggestion else []
+
+
+_LONG_VENDOR = "Acme Holdings International Shipping and Chandlery Company " + "x" * 300
+
+
+@pytest.mark.parametrize("who", ["human", "oauth", "key cap=None"])
+async def test_suggestion_never_quotes_a_value_cut_by_the_hint_bound(db_session, mock_session_factory, admin_user, who):
+    """A value past HINT_VALUE_MAX_CHARS is shown cut; metadata_filter matches the whole stored value,
+    so quoting the cut one would name a filter that finds nothing."""
+    await _seed_hint_pair(db_session, lambda t: {"sidecar": {"vendor": f"{_LONG_VENDOR} {t}"}})
+    hint = await _hint_as(db_session, admin_user, who)
+    assert hint is not None
+    assert ELLIPSIS in json.dumps(hint["differing_metadata"], ensure_ascii=False)  # shown cut
+    assert "metadata_filter=" not in hint["suggestion"], hint["suggestion"]
+    assert ELLIPSIS not in hint["suggestion"] and "Acme" not in hint["suggestion"]
+    assert "doc_id" in hint["suggestion"]
+
+
+@pytest.mark.parametrize("who", ["human", "key cap=None", "key cap=50"])
+async def test_suggestion_quotes_a_whole_value(db_session, mock_session_factory, admin_user, who):
+    await _seed_hint_pair(db_session, lambda t: {"sidecar": {"region": f"North Basin {t}"}})
+    hint = await _hint_as(db_session, admin_user, who)
+    assert hint is not None
+    values = _filter_values(hint["suggestion"])
+    assert values, hint["suggestion"]
+    assert set(values) <= {"'North Basin A'", "'North Basin B'"}, values
+
+
+async def test_suggestion_under_a_cap_skips_a_value_longer_than_the_cap(db_session, mock_session_factory, admin_user):
+    """At cap=50 a 62-character vendor is shown as its first 50 characters: never offered as a filter;
+    the short region, shown whole, is."""
+    await _seed_hint_pair(
+        db_session, lambda t: {"sidecar": {"vendor": f"{t} " + "v" * 60, "region": f"North Basin {t}"}}
+    )
+    hint = await _hint_as(db_session, admin_user, "key cap=50")
+    assert hint is not None
+    assert "sidecar.vendor" in hint["differing_metadata"]
+    values = _filter_values(hint["suggestion"])
+    assert values and set(values) <= {"'North Basin A'", "'North Basin B'"}, hint["suggestion"]
+    assert "v" * 20 not in hint["suggestion"]
+
+
+@pytest.mark.parametrize("cap", [0, -5])
+async def test_suggestion_at_cap_zero_offers_no_null_string(db_session, mock_session_factory, admin_user, cap):
+    """At a cap of 0 strings compare as null: only the number differs, and it is offered whole."""
+    await _seed_hint_pair(
+        db_session,
+        lambda t: {"sidecar": {"vendor": f"Vendor {t}", "term_months": 12 if t == "A" else 24}},
+    )
+    hint = await _hint_as(db_session, admin_user, f"key cap={cap}")
+    assert hint is not None
+    assert list(k for k in hint["differing_metadata"] if k != TRUNCATED_KEY) == ["sidecar.term_months"]
+    assert "None" not in hint["suggestion"] and "Vendor" not in json.dumps(hint)
+    assert set(_filter_values(hint["suggestion"])) <= {"12", "24"} and _filter_values(hint["suggestion"])
+
+
+async def test_suggestion_at_cap_zero_with_only_strings_has_no_hint(db_session, mock_session_factory, admin_user):
+    await _seed_hint_pair(db_session, lambda t: {"sidecar": {"vendor": f"Vendor {t}"}})
+    assert await _hint_as(db_session, admin_user, "key cap=0") is None
+    assert await _hint_as(db_session, admin_user, "key cap=None") is not None
+
+
+async def test_values_equal_within_the_cap_do_not_differ_for_the_key(db_session, mock_session_factory, admin_user):
+    """Two vendors that share their first 50 characters are one value to a cap=50 key: reporting the
+    field as differing would tell it the values differ past its cap."""
+    shared = "S" * 50
+    await _seed_hint_pair(db_session, lambda t: {"sidecar": {"vendor": shared + ("-alpha" if t == "A" else "-beta")}})
+    assert await _hint_as(db_session, admin_user, "key cap=50") is None
+    uncapped = await _hint_as(db_session, admin_user, "key cap=None")
+    assert uncapped is not None and "sidecar.vendor" in uncapped["differing_metadata"]
+    assert await _hint_as(db_session, admin_user, "key cap=60") is not None  # past the shared prefix: visible
+
+
+# --- metadata_filter and kb_verify_identifier under a cap (#831 review) ----------------------------
+
+_LONG_FILTER = "Acme Holdings International Shipping Company Limited"  # 52 characters
+assert len(_LONG_FILTER) > 50
+
+
+def _f_mcp(name: str, **kwargs):
+    async def call(metadata_filter: dict) -> str:
+        import harbor_clerk.mcp_server as m
+
+        return await getattr(m, name)(metadata_filter=metadata_filter, **kwargs)
+
+    return call
+
+
+FILTER_MCP: dict[str, Callable[[dict], Awaitable[str]]] = {
+    "kb_search": _f_mcp("kb_search", query="lighthouse keeper"),
+    "kb_find_all": _f_mcp("kb_find_all", query="lighthouse"),
+    "kb_batch_search": _f_mcp("kb_batch_search", queries=["lighthouse keeper"]),
+    "kb_documents_by_date": _f_mcp("kb_documents_by_date", direction="earliest"),
+}
+FILTER_REST = {
+    "POST /api/search": ("/api/search", {"query": "lighthouse keeper"}),
+    "POST /api/search/find-all": ("/api/search/find-all", {"query": "lighthouse"}),
+}
+# (filter, refused at cap=50, refused at cap=0)
+FILTER_CASES = {
+    "long string": ({"sidecar.vendor": _LONG_FILTER}, True, True),
+    "short string": ({"sidecar.vendor": "Acme"}, False, True),
+    "list with a long string": ({"email.to_addresses": ["a@b.c", _LONG_FILTER]}, True, True),
+    "number": ({"sidecar.term_months": 24}, False, False),
+}
+
+
+def _refused_for(who: str, case: str) -> bool:
+    cap = _cap_of(who)
+    _, at_50, at_0 = FILTER_CASES[case]
+    if cap is None:
+        return False
+    return at_0 if cap <= 0 else at_50
+
+
+@pytest.mark.parametrize("case", list(FILTER_CASES))
+@pytest.mark.parametrize("who", MCP_PRINCIPALS)
+@pytest.mark.parametrize("surface", list(FILTER_MCP))
+async def test_mcp_metadata_filter_past_the_cap_is_refused(
+    db_session, corpus, mock_session_factory, admin_user, surface, who, case
+):
+    metadata_filter = FILTER_CASES[case][0]
+    payload = await _mcp_as(db_session, admin_user, who, lambda: FILTER_MCP[surface](metadata_filter))
+    if _refused_for(who, case):
+        assert "snippet cap" in payload.get("error", ""), payload
+    else:
+        assert "error" not in payload, payload
+
+
+@pytest.mark.parametrize("case", list(FILTER_CASES))
+@pytest.mark.parametrize("who", REST_PRINCIPALS)
+@pytest.mark.parametrize("surface", list(FILTER_REST))
+async def test_rest_metadata_filter_past_the_cap_is_refused(client, db_session, corpus, admin_user, surface, who, case):
+    path, body = FILTER_REST[surface]
+    resp = await client.post(
+        path,
+        json={**body, "metadata_filter": FILTER_CASES[case][0]},
+        headers=await _rest_headers(db_session, admin_user, who),
+    )
+    if _refused_for(who, case):
+        assert resp.status_code == 422, resp.text[:300]
+        assert "snippet cap" in resp.json()["detail"]
+    else:
+        assert resp.status_code == 200, resp.text[:300]
+
+
+_LONG_ID = "HC-CONTRACT-2024-NORTH-BASIN-PILOTAGE-AGREEMENT-0001"  # 52 characters
+assert len(_LONG_ID) > 50
+
+
+@pytest.mark.parametrize(
+    ("who", "identifier", "found"),
+    [
+        ("key cap=None", _LONG_ID, True),
+        ("human", _LONG_ID, True),
+        ("oauth", _LONG_ID, True),
+        ("key cap=50", _LONG_ID, False),  # longer than the cap: a value the key never sees whole
+        ("key cap=50", "PO-7731", True),  # within the cap, and so is the stored value
+        ("key cap=0", "PO-7731", False),
+        ("key cap=-5", "PO-7731", False),
+        # A short identifier equal (whitespace folded) to a stored value whose first 50 characters
+        # are blanks: the key sees none of it, so the match must not run.
+        ("key cap=None", "PO-9", True),
+        ("key cap=50", "PO-9", False),
+    ],
+)
+async def test_verify_identifier_matches_metadata_leaves_only_within_the_cap(
+    db_session, mock_session_factory, admin_user, who, identifier, found
+):
+    import harbor_clerk.mcp_server as m
+
+    for tag, ident in (("one", _LONG_ID), ("two", "PO-7731"), ("three", " " * 60 + "PO-9")):
+        db_session.add(
+            Document(
+                title=f"Unrelated filing {tag}",
+                status="active",
+                sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+                pipeline_status=PipelineStatus.ready,
+                mime_type="text/plain",
+                doc_metadata={"sidecar": {"contract_id": ident}},
+            )
+        )
+    await db_session.flush()
+    payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_verify_identifier(identifier))
+    assert (payload["status"] == "unique") is found, payload
+    if not found:
+        assert payload["status"] == "not_found", payload
+
+
+async def test_verify_identifier_title_matching_is_unchanged_under_a_cap(db_session, mock_session_factory, admin_user):
+    """Titles are outside the cap: a long title still resolves for a cap=50 key."""
+    import harbor_clerk.mcp_server as m
+
+    title = "Master Pilotage Services Agreement between North Basin and Harbour Board"
+    db_session.add(
+        Document(
+            title=title,
+            status="active",
+            sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+            doc_metadata={},
+        )
+    )
+    await db_session.flush()
+    payload = await _mcp_as(db_session, admin_user, "key cap=50", lambda: m.kb_verify_identifier(title))
+    assert payload["status"] == "unique", payload

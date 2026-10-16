@@ -106,8 +106,8 @@ does) in `ABSOLUTE_PATH_TEXT_FIELDS`. Snippet cap (#823): all chunk or page text
 in a key-reachable payload goes through `passage_cap.py` (`cap_passage_text`,
 `cap_text`, `snippet_cap`): each passage's first N characters (per passage, not
 per document), never a window within it; null at 0; a stored negative is 0. Summaries
-and metadata strings take the prefix too (`payload_bounds.py` also size-bounds them in
-every tool payload and for keys); `text_contains` matches only in the prefix; entity rows
+and metadata strings take the prefix (`payload_bounds.py` size-bounds them for keys and tools);
+`text_contains` matches in the prefix; a longer `metadata_filter` string is refused; entities
 drop offsets; titles, headings stay whole (#831). New surface: a row in `tests/test_key_snippet_cap.py`.
 
 ## The chat token estimate is raw; the bounds are predicted

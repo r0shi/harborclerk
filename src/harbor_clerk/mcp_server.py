@@ -34,7 +34,13 @@ from harbor_clerk.models import (
     IngestionJob,
 )
 from harbor_clerk.oauth import validate_access_token as validate_oauth_access_token
-from harbor_clerk.passage_cap import cap_passage_text, cap_text, snippet_cap
+from harbor_clerk.passage_cap import (
+    SnippetCapRefusal,
+    cap_passage_text,
+    cap_text,
+    refuse_filter_past_cap,
+    snippet_cap,
+)
 from harbor_clerk.payload_bounds import HINT_MAX_CHARS, HINT_VALUE_MAX_CHARS, bound_metadata, bound_summary
 from harbor_clerk.search import (
     FindAllHit,
@@ -345,6 +351,17 @@ def _bounded_summary(summary: str | None, principal: Principal) -> str | None:
     Bounded for every caller, the human's in-process chat and research tools included: the payload
     lands in a model's context either way (``payload_bounds``)."""
     return bound_summary(summary, snippet_cap(principal), bounded=True)
+
+
+def _filter_refusal(metadata_filter: dict | None, principal: Principal) -> str | None:
+    """Why a capped key may not send this ``metadata_filter`` (a string longer than its cap), or None.
+
+    ``hybrid_search`` refuses the same filter (REST answers 422); a tool says so as its result."""
+    try:
+        refuse_filter_past_cap(metadata_filter, snippet_cap(principal))
+    except SnippetCapRefusal as exc:
+        return str(exc)
+    return None
 
 
 def _error_text(text: str | None) -> str | None:
@@ -915,7 +932,10 @@ async def kb_search(
         Document.metadata. Use to disambiguate when multiple candidate docs share
         text but differ on a structured field. Example:
         metadata_filter={"sidecar.vendor": "Acme", "sidecar.term_months": 24}.
-        Inspect a document's available metadata via kb_get_document.
+        Inspect a document's available metadata via kb_get_document. A value
+        must be the whole stored value: one shown cut (ending in "…", or at
+        the key's snippet cap) matches nothing. Under a key with a snippet cap
+        of N, a string value longer than N is refused (all strings at 0).
         Additionally accepts the `email.*` namespace for native Document
         column lookups (faster + typed vs. raw tika.email_* via JSONB):
           email.from_address (exact, case-insensitive)
@@ -958,6 +978,8 @@ async def kb_search(
       literal must occur within a chunk's first N characters.
     """
     principal = _get_principal()
+    if (refusal := _filter_refusal(metadata_filter, principal)) is not None:
+        return json.dumps({"error": refusal})
     settings = get_settings()
 
     # Mutual exclusion check
@@ -1037,7 +1059,7 @@ async def kb_search(
             metadata_filter=metadata_filter,
             text_contains=text_contains,
             # A capped key's literal matches only within the prefix it can read (#831).
-            text_contains_prefix_chars=snippet_cap(principal),
+            key_snippet_cap=snippet_cap(principal),
         )
         heading_map = await _resolve_headings(session, result.hits)
         source_context = await _source_context(session, [h.doc_id for h in result.hits])
@@ -1236,6 +1258,8 @@ async def kb_find_all(
       sort_by, presentation: echoed back
     """
     principal = _get_principal()
+    if (refusal := _filter_refusal(metadata_filter, principal)) is not None:
+        return json.dumps({"error": refusal})
     settings = get_settings()
 
     # Mutual exclusion check
@@ -1439,6 +1463,8 @@ async def kb_batch_search(
     characters, as in kb_search.
     """
     principal = _get_principal()
+    if (refusal := _filter_refusal(metadata_filter, principal)) is not None:
+        return json.dumps({"error": refusal})
     settings = get_settings()
 
     # Validate query count
@@ -1519,6 +1545,7 @@ async def kb_batch_search(
                 language=language,
                 mime_type=mime_type,
                 metadata_filter=metadata_filter,
+                key_snippet_cap=snippet_cap(principal),
             )
             heading_map = await _resolve_headings(session, result.hits)
             source_context = await _source_context(session, [h.doc_id for h in result.hits])
@@ -1757,6 +1784,7 @@ async def kb_get_document(doc_id: str) -> str:
       - `metadata`: the document's structured metadata extracted at ingest
         (sidecar facts, Tika fields, frontmatter, etc.). The keys here are
         EXACTLY the filter keys you can pass to kb_search via metadata_filter
+        (and, where shown whole, the values: see the size bounds below)
         — e.g. `metadata.sidecar.vendor` becomes
         `metadata_filter={"sidecar.vendor": "..."}`
       - Size bounds: a string value over 1,000 characters and a summary over
@@ -1764,6 +1792,9 @@ async def kb_get_document(doc_id: str) -> str:
         entries that fit. `metadata._truncated` lists every path cut or
         dropped. Under a key with a snippet cap of N, the summary and every
         metadata string are their first N characters (none at a cap of 0).
+        A cut value (listed in `_truncated`, or N characters long under a
+        cap) is NOT a metadata_filter value: the filter matches the whole
+        stored value only, so pass only values shown whole.
 
     When to use it:
       - You want to inspect what filter keys exist on a doc before crafting
@@ -2898,7 +2929,9 @@ async def kb_verify_identifier(identifier: str) -> str:
         # chat must not resolve, or learn the title of, a document in a folder outside its scope. The set is
         # applied inside the lookup, before its caps, not to the result.
         visible_ids = await _visible_doc_ids(session, principal)
-        result = await _verify_identifier_impl(session, identifier, doc_ids=visible_ids)
+        result = await _verify_identifier_impl(
+            session, identifier, doc_ids=visible_ids, key_snippet_cap=snippet_cap(principal)
+        )
         payloads: list[dict] = []
         if isinstance(result, dict):
             if isinstance(result.get("match"), dict):
@@ -2976,7 +3009,8 @@ async def kb_documents_by_date(
       query: optional FTS-only filter (no vector). Returns docs whose chunks
         match the query, sorted by date.
       metadata_filter: dict of {"namespace.key": value} pairs — same shape
-        as kb_search's metadata_filter, applied as JSONB containment.
+        as kb_search's metadata_filter, applied as JSONB containment (and
+        refused the same way under a key's snippet cap).
         Additionally accepts the `email.*` namespace for native Document
         column lookups (faster + typed vs. raw tika.email_* via JSONB):
           email.from_address (exact, case-insensitive)
@@ -3018,6 +3052,7 @@ async def kb_documents_by_date(
             date_field=date_field,
             limit=limit,
             doc_ids=visible_ids,
+            key_snippet_cap=snippet_cap(principal),
         )
         rows = result.get("results") if isinstance(result, dict) else None
         if isinstance(rows, list):

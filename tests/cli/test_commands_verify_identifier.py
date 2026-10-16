@@ -110,3 +110,26 @@ def test_verify_identifier_text_mode_renders_not_found(capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "not_found" in out.lower() or "not found" in out.lower()
+
+
+def test_verify_identifier_text_mode_renders_truncated_as_a_note_not_a_field(capsys):
+    """``_truncated`` lists what the size bound cut (#831): a note under the fields, never a field."""
+    payload = {
+        "status": "ambiguous",
+        "count": 2,
+        "candidates": [
+            {
+                "doc_id": "id-1",
+                "title": "Pinnacle A",
+                "discriminating_fields": {"sidecar.vendor": "Tech…", "_truncated": ["sidecar.vendor", "sidecar.notes"]},
+            },
+            {"doc_id": "id-2", "title": "Pinnacle B", "discriminating_fields": {"sidecar.vendor": "Industries"}},
+        ],
+        "suggestion": "2 candidates differ on sidecar.vendor.",
+    }
+    rc, _client = _run(["verify-identifier", "Pinnacle", "--format", "text"], payload)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "_truncated=" not in out
+    assert "(cut or omitted to fit: sidecar.vendor, sidecar.notes)" in out
+    assert "sidecar.vendor='Tech…'" in out

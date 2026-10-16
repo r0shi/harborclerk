@@ -51,3 +51,41 @@ def cap_text(text: str, cap: int | None) -> str | None:
 def cap_passage_text(text: str, principal: _CappedPrincipal) -> str | None:
     """A passage of corpus text as ``principal`` may receive it (see ``cap_text``)."""
     return cap_text(text, snippet_cap(principal))
+
+
+class SnippetCapRefusal(ValueError):
+    """A filter a capped key may not send: it would test text the key cannot read (#831)."""
+
+
+def _filter_strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _filter_strings(v)]
+    if isinstance(value, list | tuple):
+        return [s for v in value for s in _filter_strings(v)]
+    return []
+
+
+def refuse_filter_past_cap(metadata_filter: dict | None, cap: int | None) -> None:
+    """Raise ``SnippetCapRefusal`` for a capped key's ``metadata_filter`` string longer than its cap.
+
+    A filter is an exact match on the whole stored value, so a value of at most ``cap`` characters
+    can only match a stored value the key already sees whole (its first ``cap`` characters are all
+    of it); a longer one would confirm a guessed value the key was never shown. At a cap of 0 the
+    key sees no metadata text, and every string filter is refused. Numbers and booleans pass.
+    """
+    if cap is None or not metadata_filter:
+        return
+    for path, value in metadata_filter.items():
+        for text in _filter_strings(value):
+            if cap <= 0:
+                raise SnippetCapRefusal(
+                    f"metadata_filter {path!r} is refused: this API key's snippet cap is 0, so it receives no "
+                    "metadata text and may not filter on it."
+                )
+            if len(text) > cap:
+                raise SnippetCapRefusal(
+                    f"metadata_filter {path!r} is refused: its value is {len(text)} characters and this API key's "
+                    f"snippet cap is {cap}; a filter value may not be longer than the text the key can read."
+                )

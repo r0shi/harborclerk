@@ -27,6 +27,7 @@ longer than ``HINT_VALUE_MAX_CHARS`` is no usable filter value, so hints are bou
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from harbor_clerk.passage_cap import cap_text
@@ -65,7 +66,28 @@ def bound_summary(summary: str | None, cap: int | None, *, bounded: bool) -> str
     return _shorten(text, SUMMARY_MAX_CHARS)
 
 
-def _cap_tree(value: Any, cap: int | None, value_max: int | None, path: str, cut: list[str]) -> Any:
+# A path into a metadata tree: dict keys and list indices, outermost first.
+Path = tuple[str | int, ...]
+
+
+def dotted(path: Path) -> str:
+    """``("sidecar", "parties", 0, "name")`` as ``sidecar.parties[0].name``, the ``_truncated`` form."""
+    out = ""
+    for seg in path:
+        out += f"[{seg}]" if isinstance(seg, int) else (f".{seg}" if out else str(seg))
+    return out
+
+
+def _more(n: int) -> str:
+    return f"+{n} more"
+
+
+def cap_values(value: Any, cap: int | None) -> Any:
+    """``value`` with every string cut to the key's prefix (null at 0); nothing else changes."""
+    return _cap_tree(value, cap, None, (), [])
+
+
+def _cap_tree(value: Any, cap: int | None, value_max: int | None, path: Path, cut: list[Path]) -> Any:
     """``value`` with every string capped, then shortened to ``value_max`` (recorded in ``cut``)."""
     if isinstance(value, str):
         text = cap_text(value, cap)
@@ -74,22 +96,24 @@ def _cap_tree(value: Any, cap: int | None, value_max: int | None, path: str, cut
             return _shorten(text, value_max)
         return text
     if isinstance(value, dict):
-        return {k: _cap_tree(v, cap, value_max, f"{path}.{k}" if path else str(k), cut) for k, v in value.items()}
+        return {k: _cap_tree(v, cap, value_max, (*path, str(k)), cut) for k, v in value.items()}
     if isinstance(value, list | tuple):
-        return [_cap_tree(v, cap, value_max, f"{path}[{i}]", cut) for i, v in enumerate(value)]
+        return [_cap_tree(v, cap, value_max, (*path, i), cut) for i, v in enumerate(value)]
     return value
 
 
-def _fit_paths(paths: list[str], room: int) -> list[str]:
-    """As many of ``paths`` as fit in ``room`` JSON characters, then a "+N more" marker."""
-    out: list[str] = []
+def _fit_paths(paths: list[Path], room: int, describe: Callable[[Path], Any], more: Callable[[int], Any]) -> list[Any]:
+    """As many of ``paths`` (described) as fit in ``room`` JSON characters, then a "more" marker."""
+    out: list[Any] = []
     for i, path in enumerate(paths):
-        path = _shorten(path, _PATH_MAX_CHARS)
+        item = describe(path)
+        if isinstance(item, str):
+            item = _shorten(item, _PATH_MAX_CHARS)
         rest = len(paths) - i - 1
-        tail = [f"+{rest} more"] if rest else []
-        if _json_len({TRUNCATED_KEY: [*out, path, *tail]}) + 1 > room:
-            return [*out, f"+{len(paths) - i} more"]
-        out.append(path)
+        tail = [more(rest)] if rest else []
+        if _json_len({TRUNCATED_KEY: [*out, item, *tail]}) + 1 > room:
+            return [*out, more(len(paths) - i)]
+        out.append(item)
     return out
 
 
@@ -100,60 +124,64 @@ def bound_metadata(
     bounded: bool,
     value_max: int = METADATA_VALUE_MAX_CHARS,
     total_max: int = METADATA_MAX_CHARS,
+    describe: Callable[[Path], Any] = dotted,
+    more: Callable[[int], Any] = _more,
 ) -> dict | None:
     """A metadata dict as a payload may carry it (see the module docstring).
 
     The whole-payload bound works on entries two levels deep (``namespace.key``, the paths
     ``metadata_filter`` takes), kept in their stored order while they fit; a dropped entry's path
     is listed under ``_truncated`` with every shortened value's. The result's compact JSON is at
-    most ``total_max`` characters, the ``_truncated`` list included.
+    most ``total_max`` characters, the ``_truncated`` list included. ``describe`` renders a path
+    for the list (a dotted string by default) and ``more`` the marker for paths that did not fit.
     """
     if metadata is None:
         return None
-    cut: list[str] = []
-    tree = _cap_tree(metadata, cap, value_max if bounded else None, "", cut)
+    cut: list[Path] = []
+    tree = _cap_tree(metadata, cap, value_max if bounded else None, (), cut)
     if not bounded:
         return tree
-    whole = {**tree, TRUNCATED_KEY: cut} if cut else tree
-    if _json_len(whole) <= total_max:
-        return whole
+    if cut:
+        whole = {**tree, TRUNCATED_KEY: [describe(p) for p in cut]}
+        if _json_len(whole) <= total_max:
+            return whole
+    elif _json_len(tree) <= total_max:
+        return tree
 
-    # Entries: (namespace, key) for a dict namespace, (namespace, None) for anything else.
-    entries: list[tuple[str, str | None]] = []
+    # Entries: (namespace, key) for a dict namespace, (namespace,) for anything else.
+    entries: list[Path] = []
     for ns, ns_value in tree.items():
         if isinstance(ns_value, dict) and ns_value:
             entries.extend((ns, key) for key in ns_value)
         else:
-            entries.append((ns, None))
+            entries.append((ns,))
 
-    def path_of(entry: tuple[str, str | None]) -> str:
-        ns, key = entry
-        return ns if key is None else f"{ns}.{key}"
+    def value_at(entry: Path) -> Any:
+        return tree[entry[0]] if len(entry) == 1 else tree[entry[0]][entry[1]]
 
-    def assemble(kept: list[tuple[str, str | None]], dropped: list[tuple[str, str | None]]) -> dict:
+    def assemble(kept: list[Path], dropped: list[Path]) -> dict:
         out: dict[str, Any] = {}
-        for ns, key in kept:
-            if key is None:
-                out[ns] = tree[ns]
+        for entry in kept:
+            if len(entry) == 1:
+                out[entry[0]] = tree[entry[0]]
             else:
-                out.setdefault(ns, {})[key] = tree[ns][key]
-        dropped_paths = [path_of(e) for e in dropped]
+                out.setdefault(entry[0], {})[entry[1]] = value_at(entry)
         # A shortened value inside a dropped entry is reported by the entry's own path.
-        shortened = [p for p in cut if not any(p == d or p.startswith((f"{d}.", f"{d}[")) for d in dropped_paths)]
-        paths = shortened + dropped_paths
+        shortened = [p for p in cut if not any(p[: len(d)] == d for d in dropped)]
+        paths = shortened + dropped
         if paths:
-            out[TRUNCATED_KEY] = _fit_paths(paths, total_max - _json_len(out))
+            out[TRUNCATED_KEY] = _fit_paths(paths, total_max - _json_len(out), describe, more)
         return out
 
     # Greedy in stored order, against a budget that leaves room for the _truncated list; an entry
     # that does not fit is dropped and the next one is tried.
     budget = total_max - min(total_max // 4, 600)
-    kept: list[tuple[str, str | None]] = []
-    dropped: list[tuple[str, str | None]] = []
+    kept: list[Path] = []
+    dropped: list[Path] = []
     size = 2
     for entry in entries:
-        ns, key = entry
-        entry_len = _json_len({ns: tree[ns]} if key is None else {ns: {key: tree[ns][key]}})
+        wrapped = {entry[0]: value_at(entry)} if len(entry) == 1 else {entry[0]: {entry[1]: value_at(entry)}}
+        entry_len = _json_len(wrapped)
         if size + entry_len <= budget:
             kept.append(entry)
             size += entry_len

@@ -874,9 +874,9 @@ function ScopeFormFields({
           <FieldError result={parsedCap} />
         ) : (
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Passage and page text, summaries and metadata values the key receives are cut to their first N characters,
-            and a literal-text filter matches only within them; 0 returns citations without the text. Titles are not
-            capped. Empty = no limit.
+            Passage and page text, summaries and metadata values the key receives are cut to their first N characters, a
+            literal-text filter matches only within them, and a metadata filter value longer than N is refused; 0
+            returns citations without the text. Titles are not capped. Empty = no limit.
           </p>
         )}
       </div>

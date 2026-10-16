@@ -225,8 +225,13 @@ def _render_verify_identifier(payload: Any, stream: TextIO) -> None:
             stream.write("  matched by the words of the name, not exactly\n")
         for c in payload.get("candidates", []):
             stream.write(f"  - {_citation(c)}  [{c.get('doc_id', '')}]\n")
-            for path, value in (c.get("discriminating_fields") or {}).items():
+            fields = dict(c.get("discriminating_fields") or {})
+            # Not a field: the paths the size bound or the key's snippet cap cut or dropped (#831).
+            cut = fields.pop("_truncated", None)
+            for path, value in fields.items():
                 stream.write(f"      {path}={value!r}\n")
+            if cut:
+                stream.write(f"      (cut or omitted to fit: {', '.join(str(p) for p in cut)})\n")
         suggestion = payload.get("suggestion")
         if suggestion:
             stream.write(f"\n{suggestion}\n")

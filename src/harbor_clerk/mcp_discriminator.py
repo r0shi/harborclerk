@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy import select
 
 from harbor_clerk.models import Document
-from harbor_clerk.payload_bounds import HINT_VALUE_MAX_CHARS, METADATA_MAX_CHARS, bound_metadata
+from harbor_clerk.payload_bounds import HINT_VALUE_MAX_CHARS, METADATA_MAX_CHARS, bound_metadata, cap_values, dotted
 
 # Internal namespace key written by the metadata extractor framework.
 # Per-source timestamps always differ across docs, so excluding this
@@ -47,11 +47,12 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
     (str), `.doc_title` (str), `.score` (float)). `session` is a
     SQLAlchemy AsyncSession used for one SELECT against `documents.metadata`.
     `cap` is the calling key's snippet cap (``passage_cap.snippet_cap``):
-    every metadata string in the hint, the suggestion's included, is cut to
-    its first `cap` characters (#831). For every caller the values are then
+    fields are compared, and every metadata string shown, as their first
+    `cap` characters (#831). For every caller the values are then
     size-bounded (``payload_bounds``: ``HINT_VALUE_MAX_CHARS`` per value,
     ``METADATA_MAX_CHARS`` for `differing_metadata`, `_truncated` listing
-    what was cut).
+    what was cut as `{field, doc_id}`). The suggestion names a filter only
+    for a field whose values are all shown whole.
     """
     if len(hits) < 2:
         return None
@@ -88,8 +89,13 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
     rows = result.all()
     metadata_by_doc: dict[str, dict] = {str(row.doc_id): (row.doc_metadata or {}) for row in rows}
 
-    # Find paths where the candidates have differing values.
-    differing = _find_differing_metadata_fields(candidates, metadata_by_doc, titles)
+    # Find paths where the candidates have differing values. Under a cap the values are compared as
+    # the key sees them: two values that share their first `cap` characters are one value to it, and
+    # calling them different would say they differ past the cap (#831).
+    compared = (
+        {did: cap_values(meta, cap) for did, meta in metadata_by_doc.items()} if cap is not None else metadata_by_doc
+    )
+    differing = _find_differing_metadata_fields(candidates, compared, titles)
     if not differing:
         return None
 
@@ -115,16 +121,66 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
         path: {t: _compact_value(v) for t, v in values_by_title.items()} for path, values_by_title in top_fields
     }
 
-    # The key's cap, then the size bound; the suggestion quotes only what survived both.
-    bounded = bound_metadata(compacted, cap, bounded=True, value_max=HINT_VALUE_MAX_CHARS, total_max=METADATA_MAX_CHARS)
-    suggestion_fields = [(path, bounded[path]) for path, _ in top_fields if isinstance(bounded.get(path), dict)]
+    # The key's cap (already applied above), then the size bound. A `_truncated` entry names the
+    # field and the document by id: a title may contain dots, or be shared.
+    doc_id_by_title = {title: did for did, title in titles.items()}
+
+    def _describe(path: tuple) -> dict:
+        out: dict[str, Any] = {"field": path[0]}
+        if len(path) > 1:
+            out["doc_id"] = doc_id_by_title.get(path[1], path[1])
+        if len(path) > 2:
+            out["at"] = dotted(path[2:])
+        return out
+
+    bounded = bound_metadata(
+        compacted,
+        cap,
+        bounded=True,
+        value_max=HINT_VALUE_MAX_CHARS,
+        total_max=METADATA_MAX_CHARS,
+        describe=_describe,
+        more=lambda n: {"more": n},
+    )
+    # metadata_filter is an exact match on the whole stored value, so a field is offered as a filter
+    # only when every value shown is the complete stored value: never a value the bound or the cap cut.
+    filterable = [
+        (path, values)
+        for path, values in top_fields
+        if path in bounded
+        and all(_whole_filter_value(metadata_by_doc[did], path, cap) for did in candidates if did in metadata_by_doc)
+    ]
 
     return {
         "ambiguous_doc_ids": candidates,
         "ambiguous_doc_titles": [titles[d] for d in candidates],
         "differing_metadata": bounded,
-        "suggestion": _build_suggestion(suggestion_fields, titles),
+        "suggestion": _build_suggestion(filterable, titles) if filterable else _no_filter_suggestion(top_fields),
     }
+
+
+def _whole_filter_value(metadata: dict, path: str, cap: int | None) -> bool:
+    """True when the stored value at ``path`` is shown whole in the hint, so it works as an exact
+    ``metadata_filter`` value: a non-null scalar, and a string within both the hint bound and the
+    key's cap (none at a cap of 0)."""
+    ns, _, key = path.partition(".")
+    ns_value = metadata.get(ns)
+    value = ns_value.get(key) if isinstance(ns_value, dict) else None
+    if value is None or not _is_scalar(value):
+        return False
+    if not isinstance(value, str):
+        return True
+    if len(value) > HINT_VALUE_MAX_CHARS:
+        return False
+    return cap is None or (cap > 0 and len(value) <= cap)
+
+
+def _no_filter_suggestion(top_fields: list[tuple[str, dict[str, Any]]]) -> str:
+    fields = ", ".join(path for path, _ in top_fields)
+    return (
+        f"Top results are ambiguous; they differ on {fields}, but no value there is shown whole, so none "
+        "can be used as a metadata_filter (an exact match). Pin one document with doc_id instead."
+    )
 
 
 def _is_scalar(v: Any) -> bool:

@@ -633,8 +633,10 @@ def _key_principal(cap: int | None) -> Principal:
 async def test_kb_find_all_capped_key_gets_the_chunk_prefix(db_session, mock_session_factory, cap):
     """A key with max_snippet_chars gets the chunk's prefix within min(cap, 240), never a window
     on text_contains (which would let it slide through a chunk N characters at a time); a cap of
-    0 or less omits the snippet and its chunk id. The literal must lie within the first ``cap``
-    characters (#831): past them, nothing matches."""
+    0 or less omits the snippet and its chunk id. text_contains matches only within the first
+    ``cap`` characters (#831): at 50, 0 and -5 the literal finds nothing, so the snippets are
+    checked on the same search without it; at 1000 it matches every document and the snippet is
+    still the prefix."""
     from harbor_clerk.mcp_server import kb_find_all
     from harbor_clerk.search import _FIND_ALL_SNIPPET_MAX_CHARS
 
@@ -642,13 +644,15 @@ async def test_kb_find_all_capped_key_gets_the_chunk_prefix(db_session, mock_ses
     token = _mcp_principal.set(_key_principal(cap))
     try:
         payload = json.loads(await kb_find_all(query="agreement", text_contains="governed by", max_results=10))
+        if cap == 1000:
+            assert {r["doc_id"] for r in payload["results"]} == set(texts), "the literal lies within the cap"
+        else:
+            assert payload["results"] == [], "a literal past the cap must not match"
+            payload = json.loads(await kb_find_all(query="agreement", max_results=10))
     finally:
         _mcp_principal.reset(token)
 
-    within = {d for d, t in texts.items() if t.index("governed by") + len("governed by") <= max(0, cap)}
-    assert {r["doc_id"] for r in payload["results"]} == within
-    if cap == 1000:
-        assert within == set(texts), "the literal lies within a 1000-character cap"
+    assert {r["doc_id"] for r in payload["results"]} == set(texts)
     for row in payload["results"]:
         if cap <= 0:
             assert "snippet" not in row and "chunk_id" not in row["source"]

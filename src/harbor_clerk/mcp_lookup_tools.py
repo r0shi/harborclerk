@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.error_text import message_or_type
 from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields
 from harbor_clerk.models import Chunk, Document
+from harbor_clerk.passage_cap import refuse_filter_past_cap
 from harbor_clerk.search import _apply_email_metadata_filter, _apply_jsonb_metadata_filter, websearch_tsquery
 from harbor_clerk.sql_escape import escape_ilike
 
@@ -82,7 +83,10 @@ def _iter_id_like_leaves(metadata: dict) -> list[Any]:
 
 
 async def _find_candidates(
-    session: AsyncSession, identifier: str, doc_ids: Collection[uuid.UUID] | None = None
+    session: AsyncSession,
+    identifier: str,
+    doc_ids: Collection[uuid.UUID] | None = None,
+    key_snippet_cap: int | None = None,
 ) -> list[Document]:
     """Return the set of active Documents matching `identifier` by any of:
       - title CONTAINS identifier (case-insensitive, whitespace-normalised)
@@ -98,6 +102,11 @@ async def _find_candidates(
     ``doc_ids`` (a scoped principal's visible set; None is unrestricted) restricts both passes in SQL, before
     the metadata pass's cap: filtering afterwards would let a hundred out-of-scope documents fill the cap and
     hide the one the caller may see (#724).
+
+    ``key_snippet_cap`` is the calling key's snippet cap (#831). The metadata-leaf equality is a test
+    on stored metadata text, so under a cap it runs only for an identifier within the cap and matches
+    only a stored value within it, one the key sees whole; at a cap of 0 it does not run. Title,
+    filename and ``tika.title`` matching are unchanged (titles are not capped).
     """
     normalized = _normalize(identifier)
     if not normalized:
@@ -138,11 +147,16 @@ async def _find_candidates(
         stmt_meta = stmt_meta.where(scope_clause)
     meta_hits = (await session.execute(stmt_meta.limit(_VERIFY_CANDIDATE_CAP))).scalars().all()
 
+    leaf_cap = key_snippet_cap
+    if leaf_cap is not None and (leaf_cap <= 0 or len(identifier) > leaf_cap):
+        meta_hits = []  # the identifier is longer than any value this key may match
     extra: list[Document] = []
     for doc in meta_hits:
         if doc.doc_id in sql_hit_ids:
             continue
         for raw in _iter_id_like_leaves(doc.doc_metadata or {}):
+            if leaf_cap is not None and isinstance(raw, str) and len(raw) > leaf_cap:
+                continue  # a value the key never sees whole
             if isinstance(raw, str) and _normalize(raw) == normalized:
                 extra.append(doc)
                 break
@@ -265,7 +279,10 @@ def _has_nested_metadata(metadata_by_doc: dict[str, dict]) -> bool:
 
 
 async def verify_identifier(
-    session: AsyncSession, identifier: str, doc_ids: Collection[uuid.UUID] | None = None
+    session: AsyncSession,
+    identifier: str,
+    doc_ids: Collection[uuid.UUID] | None = None,
+    key_snippet_cap: int | None = None,
 ) -> dict:
     """Verify that an identifier resolves to a unique document, among those in ``doc_ids`` (a scoped
     principal's visible set; None is unrestricted).
@@ -291,7 +308,7 @@ async def verify_identifier(
     if not identifier or not identifier.strip():
         return {"error": "identifier must be a non-empty string"}
 
-    candidates = await _find_candidates(session, identifier, doc_ids)
+    candidates = await _find_candidates(session, identifier, doc_ids, key_snippet_cap)
     matched_by_words = False
     if not candidates:
         candidates = await _find_candidates_by_words(session, identifier, doc_ids)
@@ -552,9 +569,11 @@ async def documents_by_date(
     date_field: str | None = None,
     limit: int = 10,
     doc_ids: Collection[uuid.UUID] | None = None,
+    key_snippet_cap: int | None = None,
 ) -> dict:
     """Return documents sorted by their effective date. ``doc_ids`` (a scope's visible set) restricts the
-    candidates before the sort; None is unrestricted.
+    candidates before the sort; None is unrestricted. ``key_snippet_cap`` is the calling key's snippet
+    cap: a ``metadata_filter`` string longer than it is refused (``passage_cap.refuse_filter_past_cap``).
 
     Response shape:
       {"direction": <input>, "count": N, "results": [
@@ -567,6 +586,7 @@ async def documents_by_date(
     string, or metadata_filter.
     """
     try:
+        refuse_filter_past_cap(metadata_filter, key_snippet_cap)
         rows = await _query_documents_by_date(
             session,
             direction=direction,
