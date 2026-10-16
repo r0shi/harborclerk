@@ -50,7 +50,8 @@ router = APIRouter(tags=["documents"])
 def _summary_for(summary: str | None, principal: Principal) -> str | None:
     """A summary as ``principal`` may receive it (#831): a key's snippet cap, then the size bound
     for every principal but the signed-in human, whose web app shows the summary whole."""
-    return bound_summary(summary, snippet_cap(principal), bounded=not is_human(principal))
+    # REST responses are UTF-8 JSON, not escaped: the bound counts code points here (MCP counts escapes).
+    return bound_summary(summary, snippet_cap(principal), bounded=not is_human(principal), escaped=False)
 
 
 @router.get("/docs", response_model=PaginatedDocuments)

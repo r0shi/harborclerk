@@ -1630,3 +1630,119 @@ async def test_the_suggestion_stays_within_its_bound(db_session, mock_session_fa
     assert "metadata_filter={'sidecar.vendor':" in suggestion, suggestion
     assert escaped_len(suggestion) <= SUGGESTION_MAX_CHARS, escaped_len(suggestion)
     assert "more not listed" in suggestion, suggestion
+
+
+# --- eighth review: shared titles in the hint; REST counts code points (#831) --------------------
+
+
+async def _seed_titled(db_session: AsyncSession, rows: list[tuple[str, dict]]) -> list[Document]:
+    """Documents with the given (title, metadata) and the same chunk text, so a search ties them."""
+    text = "The harbour pilot ledger records every tide, buoy and beacon. " * 6
+    docs = []
+    for title, meta in rows:
+        doc = Document(
+            title=title,
+            status="active",
+            sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+            doc_metadata=meta,
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=text, language="en", ocr_used=False))
+        docs.append(doc)
+    await db_session.flush()
+    return docs
+
+
+@pytest.mark.parametrize("who", ["key cap=None", "key cap=50"])
+async def test_candidates_sharing_a_title_keep_their_own_hint_entries(
+    db_session, mock_session_factory, admin_user, who
+):
+    """Mail subjects repeat ("Re: ..."): two candidates titled "Contract" must not overwrite each other.
+    Colliding titles are labelled with the doc id's first 8 hex digits; the field stays offerable."""
+    a, b, c = await _seed_titled(
+        db_session,
+        [
+            ("Contract", {"sidecar": {"vendor": "Acme"}}),
+            ("Contract", {"sidecar": {"vendor": "Beta"}}),
+            ("Other", {"sidecar": {"vendor": "Gamma"}}),
+        ],
+    )
+    hint = await _hint_as(db_session, admin_user, who)
+    assert hint is not None
+    shown = hint["differing_metadata"]["sidecar.vendor"]
+    assert shown == {
+        f"Contract [{str(a.doc_id)[:8]}]": "Acme",
+        f"Contract [{str(b.doc_id)[:8]}]": "Beta",
+        "Other": "Gamma",
+    }, shown
+    assert "metadata_filter={'sidecar.vendor':" in hint["suggestion"], hint["suggestion"]
+    assert "(cut)" not in hint["suggestion"]
+
+
+async def test_truncated_entries_name_the_right_document_when_titles_collide(
+    db_session, mock_session_factory, admin_user
+):
+    docs = await _seed_titled(
+        db_session,
+        [("Contract", {"sidecar": {"vendor": f"{t} " + "v" * 300}}) for t in ("A", "B", "C")],
+    )
+    hint = await _hint_as(db_session, admin_user, "human")
+    assert hint is not None
+    named = {e["doc_id"] for e in hint["differing_metadata"][TRUNCATED_KEY] if "doc_id" in e}
+    assert named == {str(d.doc_id) for d in docs}, hint["differing_metadata"][TRUNCATED_KEY]
+
+
+async def test_verify_identifier_compares_candidates_sharing_a_title(db_session, mock_session_factory, admin_user):
+    """Two "Contract" candidates with different vendors differ on the vendor; a per-title comparison
+    used to collapse them into one value and report no difference."""
+    import harbor_clerk.mcp_server as m
+
+    await _seed_titled(
+        db_session,
+        [("Contract", {"sidecar": {"vendor": "Acme"}}), ("Contract", {"sidecar": {"vendor": "Beta"}})],
+    )
+    payload = await _mcp_as(db_session, admin_user, "key cap=None", lambda: m.kb_verify_identifier("Contract"))
+    assert payload["status"] == "ambiguous", payload
+    vendors = {c["discriminating_fields"].get("sidecar.vendor") for c in payload["candidates"]}
+    assert vendors == {"Acme", "Beta"}, payload["candidates"]
+
+
+_FRENCH_SUMMARY = ("Le gardien a consigné la tempête de l'été dernier. " * 30)[:1400]
+_CJK_SUMMARY = ("港の灯台守は嵐の夜に灯を守った。" * 60)[:800]
+
+
+@pytest.mark.parametrize("summary", [_FRENCH_SUMMARY, _CJK_SUMMARY], ids=["french-1400", "cjk-800"])
+async def test_summary_bound_counts_each_surfaces_unit(client, db_session, mock_session_factory, admin_user, summary):
+    """REST sends UTF-8 JSON, so its 1,500-character bound counts code points: these summaries come
+    back whole. MCP sends escaped JSON (6 characters per non-ASCII one), so the same summaries are
+    bounded there in escaped characters."""
+    import harbor_clerk.mcp_server as m
+    from harbor_clerk.payload_bounds import SUMMARY_MAX_CHARS, escaped_len
+
+    doc = Document(
+        title="Summary unit",
+        status="active",
+        sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/plain",
+        summary=summary,
+        doc_metadata={},
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    assert len(summary) <= SUMMARY_MAX_CHARS < escaped_len(summary)
+    raw = await _make_key(db_session, None)
+    principal = await _resolve_principal(raw)
+    token = _mcp_principal.set(principal)
+    try:
+        payload = json.loads(await m.kb_get_document(doc_id=str(doc.doc_id)))
+    finally:
+        _mcp_principal.reset(token)
+    assert payload["summary"].endswith(ELLIPSIS), payload["summary"][-20:]
+    assert escaped_len(payload["summary"]) <= SUMMARY_MAX_CHARS
+    resp = await client.get(f"/api/docs/{doc.doc_id}", headers=auth_header(raw))
+    assert resp.status_code == 200, resp.text[:300]
+    assert resp.json()["summary"] == summary, "REST cut a summary within 1,500 code points"

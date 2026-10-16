@@ -13,6 +13,7 @@ should check `"discriminator_hint" in response` rather than truthiness.
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from typing import Any
 
 from sqlalchemy import select
@@ -90,6 +91,9 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
 
     if len(candidates) < 2:
         return None
+    # The hint is keyed by title; replies and copies share titles, so colliding ones are disambiguated
+    # by doc id and every candidate keeps its own entry.
+    labels = candidate_labels(titles, candidates)
 
     # Fetch metadata for the candidates (one indexed lookup).
     result = await session.execute(
@@ -104,7 +108,7 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
     compared = (
         {did: cap_values(meta, cap) for did, meta in metadata_by_doc.items()} if cap is not None else metadata_by_doc
     )
-    differing = _find_differing_metadata_fields(candidates, compared, titles)
+    differing = _find_differing_metadata_fields(candidates, compared, labels)
     if not differing:
         return None
 
@@ -132,12 +136,12 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
 
     # The key's cap (already applied above), then the size bound. A `_truncated` entry names the
     # field and the document by id: a title may contain dots, or be shared.
-    doc_id_by_title = {title: did for did, title in titles.items()}
+    doc_id_by_label = {label: did for did, label in labels.items()}
 
     def _describe(path: tuple) -> dict:
         out: dict[str, Any] = {"field": path[0]}
         if len(path) > 1:
-            out["doc_id"] = doc_id_by_title.get(path[1], path[1])
+            out["doc_id"] = doc_id_by_label.get(path[1], path[1])
         if len(path) > 2:
             out["at"] = dotted(path[2:])
         return out
@@ -165,7 +169,7 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
             blocked[path] = "dropped by the size bound"
             continue
         kinds = {
-            did: _filter_kind(metadata_by_doc[did], shown, titles[did], path)
+            did: _filter_kind(metadata_by_doc[did], shown, labels[did], path)
             for did in candidates
             if did in metadata_by_doc
         }
@@ -173,7 +177,7 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
         if reasons:
             blocked[path] = " and ".join(reasons)
             continue
-        offered = {titles[did]: _value_at(metadata_by_doc[did], path) for did, kind in kinds.items() if kind == "whole"}
+        offered = {labels[did]: _value_at(metadata_by_doc[did], path) for did, kind in kinds.items() if kind == "whole"}
         if offered:
             filterable.append((path, offered))
 
@@ -181,8 +185,19 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
         "ambiguous_doc_ids": candidates,
         "ambiguous_doc_titles": [titles[d] for d in candidates],
         "differing_metadata": bounded,
-        "suggestion": _build_suggestion(filterable, titles) if filterable else _no_filter_suggestion(blocked),
+        "suggestion": _build_suggestion(filterable, labels) if filterable else _no_filter_suggestion(blocked),
     }
+
+
+def candidate_labels(titles: dict[str, str], doc_ids: list[str]) -> dict[str, str]:
+    """A distinct label per candidate for keying per-document values: its title, or for a title two
+    candidates share, the title plus the first 8 hex digits of its doc id ("Contract [3f2a1b9c]").
+    Unique titles are left as they are, so the usual output shape does not change."""
+    counts = Counter(titles[d] for d in doc_ids)
+    labels = {d: titles[d] if counts[titles[d]] == 1 else f"{titles[d]} [{d[:8]}]" for d in doc_ids}
+    if len(set(labels.values())) < len(labels):  # a prefix or a real title still collides: use the whole id
+        labels = {d: titles[d] if counts[titles[d]] == 1 else f"{titles[d]} [{d}]" for d in doc_ids}
+    return labels
 
 
 def _value_at(metadata: dict, path: str) -> Any:

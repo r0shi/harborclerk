@@ -109,7 +109,11 @@ about text answer only about what the key can see (#831):
   and `email.subject_contains` are accepted, because every mail citation carries
   the display sender and the subject whole; `email.to_addresses`,
   `cc_addresses`, `message_id`, `thread_id` and `from_address` test headers a
-  citation does not always show, and are refused at any cap.
+  citation does not always show, and are refused at any cap. **This is a
+  breaking change** for any key with `max_snippet_chars` set, however large:
+  a key that filtered on one of those five now gets a 422 (REST) or an `error`
+  result (MCP). Filter mail by `email.from_name(_contains)` or
+  `email.subject(_contains)` instead, or remove the key's snippet cap.
 - `kb_verify_identifier` matches `tika.title` and metadata identifier fields only
   against stored values within N (document titles and filenames still match).
   It, and the search `discriminator_hint`, compare metadata values as the key
@@ -146,7 +150,11 @@ What the cap does not bound:
 Independently of any cap, every MCP tool result (and every REST response to a
 key) bounds summaries at 1,500 characters, each metadata string at 1,000 and a
 metadata payload at 4,000 characters of JSON, sized against one chat tool
-result at the smallest context a model runs at. A cut value ends in `…`, and the
+result at the smallest context a model runs at. Each surface counts in the unit
+it sends: an MCP tool result (and the chat and research tools in process) is
+escaped JSON, where every non-ASCII character takes six characters (`\uXXXX`),
+so the limits count escaped characters and indentation there; a REST response is
+UTF-8 JSON, so a REST summary's 1,500 characters are code points. A cut value ends in `…`, and the
 metadata carries a `_truncated` list of every path it shortened or dropped. A cut
 value is not a `metadata_filter` value: the filter needs the whole stored value.
 The web app's own sessions over REST receive summaries whole.

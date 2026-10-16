@@ -29,7 +29,7 @@ from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.error_text import message_or_type
-from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields
+from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields, candidate_labels
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.passage_cap import ISO_DATE_PATTERN, refuse_filter_past_cap
 from harbor_clerk.payload_bounds import cap_values
@@ -343,7 +343,8 @@ async def verify_identifier(
     # their first `cap` characters are one value to it, and "candidates differ on X" would say otherwise.
     metadata_by_doc = {str(d.doc_id): cap_values(d.doc_metadata or {}, key_snippet_cap) for d in candidates}
     candidate_ids = [str(d.doc_id) for d in candidates]
-    differing = _find_differing_metadata_fields(candidate_ids, metadata_by_doc, titles)
+    # Candidates sharing a title would overwrite each other in the per-title comparison; label them apart.
+    differing = _find_differing_metadata_fields(candidate_ids, metadata_by_doc, candidate_labels(titles, candidate_ids))
 
     cand_payload: list[dict] = []
     for d in candidates:

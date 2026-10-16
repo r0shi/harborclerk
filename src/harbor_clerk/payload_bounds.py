@@ -76,15 +76,17 @@ def _escaped_len(text: str) -> int:
     return len(json.dumps(text)) - 2
 
 
-def _shorten(text: str, max_chars: int) -> str:
-    """``text`` within ``max_chars`` escaped characters (as a response carries it), ``…`` when cut."""
-    if _escaped_len(text) <= max_chars:
+def _shorten(text: str, max_chars: int, *, escaped: bool = True) -> str:
+    """``text`` within ``max_chars`` characters, ``…`` when cut. ``escaped`` counts as an MCP or chat
+    tool response carries it (escaped JSON); otherwise code points, as a REST response does."""
+    size = _escaped_len if escaped else len
+    if size(text) <= max_chars:
         return text
-    budget = max_chars - _escaped_len(ELLIPSIS)
+    budget = max_chars - size(ELLIPSIS)
     used = 0
     end = 0
     for i, ch in enumerate(text):
-        cost = _escaped_len(ch)
+        cost = size(ch)
         if used + cost > budget:
             break
         used += cost
@@ -102,15 +104,17 @@ def shorten(text: str, max_chars: int) -> str:
     return _shorten(text, max_chars)
 
 
-def bound_summary(summary: str | None, cap: int | None, *, bounded: bool) -> str | None:
+def bound_summary(summary: str | None, cap: int | None, *, bounded: bool, escaped: bool = True) -> str | None:
     """A document summary as a payload may carry it: the key's prefix (null at 0), then, when
-    ``bounded``, at most ``SUMMARY_MAX_CHARS`` escaped characters, ending in ``…`` when cut."""
+    ``bounded``, at most ``SUMMARY_MAX_CHARS`` characters, ending in ``…`` when cut. The unit is the
+    surface's: escaped JSON for an MCP or in-process tool (``escaped``), code points for REST, whose
+    JSON responses are UTF-8 unescaped."""
     if summary is None:
         return None
     text = cap_text(summary, cap)
     if text is None or not bounded:
         return text
-    return _shorten(text, SUMMARY_MAX_CHARS)
+    return _shorten(text, SUMMARY_MAX_CHARS, escaped=escaped)
 
 
 # A path into a metadata tree: dict keys and list indices, outermost first.
