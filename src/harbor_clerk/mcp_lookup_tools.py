@@ -104,8 +104,8 @@ async def _find_candidates(
     hide the one the caller may see (#724).
 
     ``key_snippet_cap`` is the calling key's snippet cap (#831). The metadata-leaf equality is a test
-    on stored metadata text, so under a cap it runs only for an identifier within the cap and matches
-    only a stored value within it, one the key sees whole; at a cap of 0 it does not run. Title,
+    on stored metadata text, so under a cap it matches only a stored value within the cap, one the key
+    sees whole (so a guessed value past the cap is never confirmed), and at a cap of 0 none. Title,
     filename and ``tika.title`` matching are unchanged (titles are not capped).
     """
     normalized = _normalize(identifier)
@@ -147,16 +147,13 @@ async def _find_candidates(
         stmt_meta = stmt_meta.where(scope_clause)
     meta_hits = (await session.execute(stmt_meta.limit(_VERIFY_CANDIDATE_CAP))).scalars().all()
 
-    leaf_cap = key_snippet_cap
-    if leaf_cap is not None and (leaf_cap <= 0 or len(identifier) > leaf_cap):
-        meta_hits = []  # the identifier is longer than any value this key may match
     extra: list[Document] = []
     for doc in meta_hits:
         if doc.doc_id in sql_hit_ids:
             continue
         for raw in _iter_id_like_leaves(doc.doc_metadata or {}):
-            if leaf_cap is not None and isinstance(raw, str) and len(raw) > leaf_cap:
-                continue  # a value the key never sees whole
+            if key_snippet_cap is not None and isinstance(raw, str) and len(raw) > max(0, key_snippet_cap):
+                continue  # a value the key never sees whole: no match on it can be reported
             if isinstance(raw, str) and _normalize(raw) == normalized:
                 extra.append(doc)
                 break

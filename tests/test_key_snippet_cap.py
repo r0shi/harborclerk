@@ -1031,6 +1031,8 @@ FILTER_REST = {
 FILTER_CASES = {
     "long string": ({"sidecar.vendor": _LONG_FILTER}, True, True),
     "short string": ({"sidecar.vendor": "Acme"}, False, True),
+    # Even "" tests metadata text (that the stored value is empty); a cap-0 key sees none.
+    "empty string": ({"sidecar.vendor": ""}, False, True),
     "list with a long string": ({"email.to_addresses": ["a@b.c", _LONG_FILTER]}, True, True),
     "number": ({"sidecar.term_months": 24}, False, False),
 }
