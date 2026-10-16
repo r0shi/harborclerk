@@ -89,25 +89,41 @@ is refused to a key with a cap. A cap of 0 returns citations and metadata with
 the text fields null or absent. Leave the cap unset for no limit; negative values
 are rejected.
 
-The cap bounds the document's text, not only passages (#831). Summaries
-(`kb_get_document`, `kb_list_recent`, `kb_corpus_overview`, `kb_find_related` and
-`GET /api/docs`, `/api/docs/overview`, `/api/docs/{id}`, `/api/docs/{id}/related`)
-and every metadata string value (`kb_get_document`'s `metadata`, the search
-`discriminator_hint`, `kb_verify_identifier`'s `discriminating_fields`) are their
-first N characters, null at 0. A `text_contains` filter (`kb_search`,
-`kb_find_all`, `POST /api/search`, `/api/search/find-all`) matches only within
-each chunk's first N characters, so it answers nothing about text the key cannot
-read. A `metadata_filter` is an exact match on the whole stored value, so a
-string value longer than N is refused (422 over REST, an `error` result over
-MCP) on `kb_search`, `kb_batch_search`, `kb_find_all`, `kb_documents_by_date`,
-`POST /api/search` and `/api/search/find-all`, and at a cap of 0 every string
-filter is; a value within N can only match a value the key already sees whole.
-`kb_verify_identifier` matches its identifier against metadata identifier fields
-only under the same rule (titles and filenames still match). The search
-`discriminator_hint` compares values as the key sees them and suggests a filter
-only for values shown whole. `kb_entity_search` returns entity strings without
-their `start_char` / `end_char`. Document titles and headings are returned as
-they are.
+The cap bounds the text a key receives, and the filters that answer yes or no
+about text answer only about what the key can see (#831):
+
+- Summaries (`kb_get_document`, `kb_list_recent`, `kb_corpus_overview`,
+  `kb_find_related` and `GET /api/docs`, `/api/docs/overview`, `/api/docs/{id}`,
+  `/api/docs/{id}/related`) and every metadata string value (`kb_get_document`'s
+  `metadata`, the search `discriminator_hint`, `kb_verify_identifier`'s
+  `discriminating_fields`) are their first N characters, null at 0.
+- A `text_contains` filter (`kb_search`, `kb_find_all`, `POST /api/search`,
+  `/api/search/find-all`) matches only within each chunk's first N characters.
+- A `metadata_filter` is an exact match on the whole stored value, so a string
+  value longer than N is refused (422 over REST, an `error` result over MCP) on
+  `kb_search`, `kb_batch_search`, `kb_find_all`, `kb_documents_by_date`,
+  `POST /api/search` and `/api/search/find-all`, and at a cap of 0 every string
+  filter is. `email.*` filters are exempt: they match the mail header columns,
+  and every citation of a message already carries its sender and subject whole.
+- `kb_verify_identifier` matches `tika.title` and metadata identifier fields only
+  against stored values within N (document titles and filenames still match).
+  It, and the search `discriminator_hint`, compare metadata values as the key
+  sees them; the hint suggests a filter only for values shown whole.
+- `kb_entity_search` returns entity strings without their `start_char` /
+  `end_char`.
+
+What the cap does not bound:
+
+- **Ranked search.** The `query` of `kb_search`, `kb_batch_search`, `kb_find_all`,
+  `kb_documents_by_date` and the REST search routes is matched against the whole
+  document, as ranking must be. Which documents come back, and a quoted phrase
+  query in particular, can indicate that words occur past the cap.
+- **Dates.** An ISO 8601 date or datetime in `tika.created_at`,
+  `frontmatter.date` or `sidecar.date` is structured data:
+  `kb_documents_by_date` sorts, filters (`after`, `before`, `date_field`) and
+  reports on it, and `kb_get_document` returns it whole under any cap. Anything
+  else stored under those keys is text, and is capped.
+- Document titles, headings, and entity strings.
 
 Independently of any cap, every MCP tool result (and every REST response to a
 key) bounds summaries at 1,500 characters, each metadata string at 1,000 and a

@@ -958,9 +958,9 @@ async def kb_search(
         understand score distribution and document coverage before narrowing down
       Under an API key with a snippet cap of N characters, a hit's text is the
       chunk's first N characters at every detail level (none at a cap of 0).
-      The cap bounds the document's text, not only passages: text_contains
-      matches only within each chunk's first N characters, and the
-      discriminator hint's metadata values are cut to their first N.
+      Under the cap, text_contains matches only within each chunk's first N
+      characters and the discriminator hint's metadata values are cut to
+      their first N; the query itself is still ranked against whole chunks.
 
     faceted: if true, groups hits by document with per-document top_score
       and hit_count — useful for understanding which documents are most

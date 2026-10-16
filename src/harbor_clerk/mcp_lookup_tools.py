@@ -24,7 +24,7 @@ from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sqlalchemy import case, cast, func, literal, null, or_, select
+from sqlalchemy import and_, case, cast, func, literal, null, or_, select
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +32,7 @@ from harbor_clerk.error_text import message_or_type
 from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.passage_cap import refuse_filter_past_cap
+from harbor_clerk.payload_bounds import cap_values
 from harbor_clerk.search import _apply_email_metadata_filter, _apply_jsonb_metadata_filter, websearch_tsquery
 from harbor_clerk.sql_escape import escape_ilike
 
@@ -103,10 +104,10 @@ async def _find_candidates(
     the metadata pass's cap: filtering afterwards would let a hundred out-of-scope documents fill the cap and
     hide the one the caller may see (#724).
 
-    ``key_snippet_cap`` is the calling key's snippet cap (#831). The metadata-leaf equality is a test
-    on stored metadata text, so under a cap it matches only a stored value within the cap, one the key
-    sees whole (so a guessed value past the cap is never confirmed), and at a cap of 0 none. Title,
-    filename and ``tika.title`` matching are unchanged (titles are not capped).
+    ``key_snippet_cap`` is the calling key's snippet cap (#831). The ``tika.title`` and metadata-leaf
+    equalities are tests on stored metadata text, so under a cap each matches only a stored value
+    within the cap, one the key sees whole (a guessed value past the cap is never confirmed), and at
+    a cap of 0 none. ``Document.title`` and filename matching are unchanged: titles are not capped.
     """
     normalized = _normalize(identifier)
     if not normalized:
@@ -119,6 +120,14 @@ async def _find_candidates(
     # The metadata-key match needs Python-side traversal because the leaf
     # paths are variable.
     pattern = f"%{escape_ilike(normalized)}%"
+    # JSONB ->> returns text; func.lower() gives true case-insensitive
+    # equality without wildcard semantics (normalized is already lowercase).
+    tika_title = Document.doc_metadata["tika"]["title"].astext
+    tika_match = func.lower(tika_title) == normalized
+    if key_snippet_cap is not None:
+        # tika.title is a metadata string (bound_metadata caps it; Document.title is not set from it):
+        # under a cap it matches only a stored value the key sees whole (#831).
+        tika_match = and_(tika_match, func.length(tika_title) <= max(0, key_snippet_cap))
     stmt = (
         select(Document)
         .where(Document.status == "active")
@@ -126,9 +135,7 @@ async def _find_candidates(
             or_(
                 Document.title.op("ILIKE")(pattern),
                 Document.canonical_filename.op("ILIKE")(pattern),
-                # JSONB ->> returns text; func.lower() gives true case-insensitive
-                # equality without wildcard semantics (normalized is already lowercase).
-                func.lower(Document.doc_metadata["tika"]["title"].astext) == normalized,
+                tika_match,
             )
         )
     )
@@ -332,7 +339,9 @@ async def verify_identifier(
 
     # Ambiguous — compute which metadata paths differ across candidates.
     titles = {str(d.doc_id): (d.title or str(d.doc_id)) for d in candidates}
-    metadata_by_doc = {str(d.doc_id): (d.doc_metadata or {}) for d in candidates}
+    # Under a cap, values are compared and projected as the key sees them (#831): two values that share
+    # their first `cap` characters are one value to it, and "candidates differ on X" would say otherwise.
+    metadata_by_doc = {str(d.doc_id): cap_values(d.doc_metadata or {}, key_snippet_cap) for d in candidates}
     candidate_ids = [str(d.doc_id) for d in candidates]
     differing = _find_differing_metadata_fields(candidate_ids, metadata_by_doc, titles)
 

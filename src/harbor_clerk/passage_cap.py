@@ -10,12 +10,16 @@ chunks and pages it reads, so it can receive the first ``cap`` characters of eac
 or a negative value stored before create/update validated it — returns no
 passage text (None). Humans, OAuth agents and keys with no cap are unaffected.
 
-The cap bounds the document's text, not only passages (#831): summaries and
-metadata string values take the same prefix rule (``payload_bounds``), a
-capped key's ``text_contains`` matches only within each chunk's first ``cap``
-characters (``text_contains.text_contains_clause``), and entity strings come
-without their ``start_char``/``end_char``. Titles, headings and entity strings
-themselves are not capped.
+The cap bounds the text a key receives, and the yes/no filters answer only about
+what it can see (#831): summaries and metadata string values take the same prefix
+rule (``payload_bounds``; ISO dates in the date fields excepted, as structured
+data), a capped key's ``text_contains`` matches only within each chunk's first
+``cap`` characters (``text_contains.text_contains_clause``), a ``metadata_filter``
+string longer than the cap is refused (``refuse_filter_past_cap``; ``email.*``
+exempt), and entity strings come without their ``start_char``/``end_char``. Ranked
+search still matches its query against the whole document, so a phrase query can
+indicate that words occur past the cap. Titles, headings and entity strings are not
+capped.
 
 This module sits below the API layer so that ``search.py`` can use it.
 """
@@ -74,10 +78,17 @@ def refuse_filter_past_cap(metadata_filter: dict | None, cap: int | None) -> Non
     can only match a stored value the key already sees whole (its first ``cap`` characters are all
     of it); a longer one would confirm a guessed value the key was never shown. At a cap of 0 the
     key sees no metadata text, and every string filter is refused. Numbers and booleans pass.
+
+    ``email.*`` keys are exempt: they filter the dedicated ``Document.email_*`` header columns, not
+    ``doc_metadata``, and every key already receives the sender and subject whole in each mail
+    citation (``source_ref``); refusing them would only stop a capped key filtering mail by sender
+    or message id.
     """
     if cap is None or not metadata_filter:
         return
     for path, value in metadata_filter.items():
+        if path.startswith("email."):
+            continue
         for text in _filter_strings(value):
             if cap <= 0:
                 raise SnippetCapRefusal(

@@ -135,7 +135,7 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
 
     bounded = bound_metadata(
         compacted,
-        cap,
+        None,  # the cap is already in `compared` (with its ISO-date exemption); only the size bound here
         bounded=True,
         value_max=HINT_VALUE_MAX_CHARS,
         total_max=METADATA_MAX_CHARS,
@@ -148,7 +148,11 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
         (path, values)
         for path, values in top_fields
         if path in bounded
-        and all(_whole_filter_value(metadata_by_doc[did], path, cap) for did in candidates if did in metadata_by_doc)
+        and all(
+            _whole_filter_value(metadata_by_doc[did], compared[did], path)
+            for did in candidates
+            if did in metadata_by_doc
+        )
     ]
 
     return {
@@ -159,20 +163,22 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
     }
 
 
-def _whole_filter_value(metadata: dict, path: str, cap: int | None) -> bool:
-    """True when the stored value at ``path`` is shown whole in the hint, so it works as an exact
-    ``metadata_filter`` value: a non-null scalar, and a string within both the hint bound and the
-    key's cap (none at a cap of 0)."""
+def _value_at(metadata: dict, path: str) -> Any:
     ns, _, key = path.partition(".")
     ns_value = metadata.get(ns)
-    value = ns_value.get(key) if isinstance(ns_value, dict) else None
+    return ns_value.get(key) if isinstance(ns_value, dict) else None
+
+
+def _whole_filter_value(stored: dict, shown: dict, path: str) -> bool:
+    """True when the stored value at ``path`` is shown whole in the hint, so it works as an exact
+    ``metadata_filter`` value: a non-null scalar that the key's cap left unchanged (``shown`` is the
+    capped metadata; at a cap of 0 a string shows as null) and, for a string, within the hint bound."""
+    value = _value_at(stored, path)
     if value is None or not _is_scalar(value):
         return False
     if not isinstance(value, str):
         return True
-    if len(value) > HINT_VALUE_MAX_CHARS:
-        return False
-    return cap is None or (cap > 0 and len(value) <= cap)
+    return len(value) <= HINT_VALUE_MAX_CHARS and _value_at(shown, path) == value
 
 
 def _no_filter_suggestion(top_fields: list[tuple[str, dict[str, Any]]]) -> str:

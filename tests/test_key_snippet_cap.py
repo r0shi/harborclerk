@@ -831,6 +831,11 @@ async def test_mcp_derived_text_is_capped_for_keys_and_bounded_for_everyone(
                     assert entry["doc_id"] in (str(derived.a.doc_id), str(derived.b.doc_id)), entry
     if surface == "kb_verify_identifier":
         assert payload.get("status") == "ambiguous", payload
+        if cap is not None and cap <= 0:
+            # Every string compares as null at a cap of 0, so no field tells the candidates apart.
+            assert all(c["discriminating_fields"] == {} for c in payload["candidates"]), payload["candidates"]
+            assert "differ on" not in payload["suggestion"] and SECRET not in json.dumps(payload)
+            return
     _assert_derived(payload, derived, _cap_of(who), bounded=True, surface=surface)
 
 
@@ -891,11 +896,13 @@ def _hints(payload: dict) -> list[dict]:
 # --- the discriminator suggestion names only whole values (#831 review) --------------------------
 
 
-async def _seed_hint_pair(db_session: AsyncSession, meta: Callable[[str], dict]) -> tuple[Document, Document]:
-    """Two documents with the same chunk text (a search ties them) and metadata ``meta(tag)``."""
+async def _seed_hint_pair(
+    db_session: AsyncSession, meta: Callable[[str], dict], tags: tuple[str, ...] = ("A", "B")
+) -> list[Document]:
+    """Documents (one per tag) with the same chunk text (a search ties them) and metadata ``meta(tag)``."""
     text = "The harbour pilot ledger records every tide, buoy and beacon. " * 6
     docs = []
-    for tag in ("A", "B"):
+    for tag in tags:
         doc = Document(
             title=f"Pilot Ledger {tag}",
             status="active",
@@ -909,7 +916,7 @@ async def _seed_hint_pair(db_session: AsyncSession, meta: Callable[[str], dict])
         db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=text, language="en", ocr_used=False))
         docs.append(doc)
     await db_session.flush()
-    return docs[0], docs[1]
+    return docs
 
 
 async def _hint_as(db_session, admin_user, who: str) -> dict | None:
@@ -959,9 +966,13 @@ async def test_suggestion_quotes_a_whole_value(db_session, mock_session_factory,
 
 async def test_suggestion_under_a_cap_skips_a_value_longer_than_the_cap(db_session, mock_session_factory, admin_user):
     """At cap=50 a 62-character vendor is shown as its first 50 characters: never offered as a filter;
-    the short region, shown whole, is."""
+    the short region, shown whole, is. Three documents with three vendors and two regions make the
+    vendor rank first (more distinct values), so without the cap check it is always the one offered,
+    whatever the set iteration order."""
     await _seed_hint_pair(
-        db_session, lambda t: {"sidecar": {"vendor": f"{t} " + "v" * 60, "region": f"North Basin {t}"}}
+        db_session,
+        lambda t: {"sidecar": {"vendor": f"{t} " + "v" * 60, "region": "North Basin " + ("A" if t == "A" else "B")}},
+        tags=("A", "B", "C"),
     )
     hint = await _hint_as(db_session, admin_user, "key cap=50")
     assert hint is not None
@@ -1033,7 +1044,7 @@ FILTER_CASES = {
     "short string": ({"sidecar.vendor": "Acme"}, False, True),
     # Even "" tests metadata text (that the stored value is empty); a cap-0 key sees none.
     "empty string": ({"sidecar.vendor": ""}, False, True),
-    "list with a long string": ({"email.to_addresses": ["a@b.c", _LONG_FILTER]}, True, True),
+    "list with a long string": ({"sidecar.tags": ["pilotage", _LONG_FILTER]}, True, True),
     "number": ({"sidecar.term_months": 24}, False, False),
 }
 
@@ -1138,3 +1149,130 @@ async def test_verify_identifier_title_matching_is_unchanged_under_a_cap(db_sess
     await db_session.flush()
     payload = await _mcp_as(db_session, admin_user, "key cap=50", lambda: m.kb_verify_identifier(title))
     assert payload["status"] == "unique", payload
+
+
+# --- second review: verify_identifier comparisons, tika.title, email filters, dates (#831) -------
+
+
+@pytest.mark.parametrize(("who", "differs"), [("key cap=None", True), ("key cap=50", False), ("key cap=0", False)])
+async def test_verify_identifier_compares_values_as_the_key_sees_them(
+    db_session, mock_session_factory, admin_user, who, differs
+):
+    """Two vendors that differ only past the 50th character: a cap=50 key sees one value (a cap-0 key
+    sees nulls), so it must not be told the candidates differ on the vendor."""
+    import harbor_clerk.mcp_server as m
+
+    shared = "S" * 50
+    await _seed_hint_pair(db_session, lambda t: {"sidecar": {"vendor": shared + ("-alpha" if t == "A" else "-beta")}})
+    payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_verify_identifier("Pilot Ledger"))
+    assert payload["status"] == "ambiguous", payload
+    fields = [set(c["discriminating_fields"]) - {TRUNCATED_KEY} for c in payload["candidates"]]
+    assert all(("sidecar.vendor" in f) is differs for f in fields), payload["candidates"]
+    assert ("sidecar.vendor" in payload["suggestion"]) is differs, payload["suggestion"]
+    assert "alpha" not in json.dumps(payload) or differs
+
+
+_LONG_TIKA_TITLE = "Pilotage Agreement for the North Basin, executed in duplicate"  # 61 characters
+assert len(_LONG_TIKA_TITLE) > 50
+
+
+@pytest.mark.parametrize(
+    ("who", "identifier", "found"),
+    [
+        ("key cap=None", _LONG_TIKA_TITLE, True),
+        ("human", _LONG_TIKA_TITLE, True),
+        ("key cap=50", _LONG_TIKA_TITLE, False),  # a dc:title the key never sees whole
+        ("key cap=50", "Harbour Tariff 2024", True),  # within the cap
+        ("key cap=0", "Harbour Tariff 2024", False),
+    ],
+)
+async def test_verify_identifier_tika_title_matches_only_within_the_cap(
+    db_session, mock_session_factory, admin_user, who, identifier, found
+):
+    """tika.title is a metadata string (bound_metadata caps it) and Document.title is not set from it:
+    under a cap the exact tika.title match runs only on a stored value within the cap."""
+    import harbor_clerk.mcp_server as m
+
+    for tag, tika_title in (("one", _LONG_TIKA_TITLE), ("two", "Harbour Tariff 2024")):
+        db_session.add(
+            Document(
+                title=f"scan_{tag}.pdf",
+                status="active",
+                sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+                pipeline_status=PipelineStatus.ready,
+                mime_type="application/pdf",
+                doc_metadata={"tika": {"title": tika_title}},
+            )
+        )
+    await db_session.flush()
+    payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_verify_identifier(identifier))
+    assert (payload["status"] == "unique") is found, payload
+    if not found:
+        assert payload["status"] == "not_found", payload
+
+
+_MESSAGE_ID = "<20240115.0001.pilotage-notice@mail.northbasin.example>"
+assert len(_MESSAGE_ID) > 40
+
+
+@pytest.mark.parametrize("cap", [40, 0])
+@pytest.mark.parametrize(
+    "metadata_filter",
+    [{"email.from_address": "harbourmaster@northbasin.example.org"}, {"email.message_id": _MESSAGE_ID}],
+    ids=["from_address", "message_id"],
+)
+async def test_a_capped_key_can_filter_mail_by_header(
+    client, db_session, corpus, mock_session_factory, admin_user, cap, metadata_filter
+):
+    """email.* filters target the Document.email_* header columns, which every key receives whole in
+    mail citations: they are not refused, whatever the cap and however long the value."""
+    import harbor_clerk.mcp_server as m
+
+    raw = await _make_key(db_session, cap)
+    principal = await _resolve_principal(raw)
+    token = _mcp_principal.set(principal)
+    try:
+        for call in (
+            lambda: m.kb_search(query="lighthouse keeper", metadata_filter=metadata_filter),
+            lambda: m.kb_find_all(query="lighthouse", metadata_filter=metadata_filter),
+            lambda: m.kb_documents_by_date(direction="earliest", metadata_filter=metadata_filter),
+        ):
+            payload = json.loads(await call())
+            assert "error" not in payload, payload
+    finally:
+        _mcp_principal.reset(token)
+    resp = await client.post(
+        "/api/search",
+        json={"query": "lighthouse keeper", "metadata_filter": metadata_filter},
+        headers=auth_header(raw),
+    )
+    assert resp.status_code == 200, resp.text[:300]
+
+
+@pytest.mark.parametrize("cap", [50, 10, 0])
+async def test_iso_dates_in_the_date_fields_are_structured_data(db_session, mock_session_factory, admin_user, cap):
+    """kb_documents_by_date sorts, filters and reports on these dates whole; kb_get_document does not cut
+    an ISO date there either. Prose stored under a date key is text, and is capped."""
+    import harbor_clerk.mcp_server as m
+
+    doc = Document(
+        title="Tide table",
+        status="active",
+        sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+        pipeline_status=PipelineStatus.ready,
+        mime_type="application/pdf",
+        doc_metadata={
+            "tika": {"created_at": "2024-01-15T08:00:00Z", "title": "Tide table for the North Basin pilots"},
+            "frontmatter": {"date": "sometime in the spring before the great storm of that year"},
+            "sidecar": {"date": "2024-02-01"},
+        },
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    payload = await _mcp_as(db_session, admin_user, f"key cap={cap}", lambda: m.kb_get_document(doc_id=str(doc.doc_id)))
+    meta = payload["metadata"]
+    assert meta["tika"]["created_at"] == "2024-01-15T08:00:00Z"
+    assert meta["sidecar"]["date"] == "2024-02-01"
+    prose = "sometime in the spring before the great storm of that year"
+    assert meta["frontmatter"]["date"] == (prose[:cap] if cap > 0 else None)
+    assert meta["tika"]["title"] == ("Tide table for the North Basin pilots"[:cap] if cap > 0 else None)
