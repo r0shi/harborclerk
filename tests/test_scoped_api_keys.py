@@ -246,6 +246,27 @@ def test_apply_scope_empty_topics_is_unrestricted():
     assert str(result.compile()) == str(query.compile())
 
 
+def test_scope_summary_leaves_expiry_to_the_client():
+    """The summary never prints the UTC date: west of UTC it is the day after the chosen local date (#833)."""
+    from datetime import UTC, datetime
+
+    from harbor_clerk.api.routes.api_keys import _scope_summary
+    from harbor_clerk.models import ApiKey
+
+    key = ApiKey(
+        name="k",
+        permission_tier="read",
+        scope_topic_ids=[1],
+        scope_folder_ids=None,
+        max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
+        expires_at=datetime(2027, 1, 16, 4, 59, 59, tzinfo=UTC),  # end of 2027-01-15 in UTC-5
+    )
+    summary = _scope_summary(key)
+    assert summary == "Read only, 1 topic", summary
+
+
 # --- Integration tests with real DB ---
 
 import pytest  # noqa: E402

@@ -51,8 +51,8 @@ def _scope_summary(api_key: ApiKey) -> str:
         parts.append(f"{api_key.rate_limit_rpm} rpm" if api_key.rate_limit_rpm > 0 else "unlimited rpm")
     if api_key.rate_limit_rph is not None:
         parts.append(f"{api_key.rate_limit_rph} rph" if api_key.rate_limit_rph > 0 else "unlimited rph")
-    if api_key.expires_at:
-        parts.append(f"expires {api_key.expires_at.date().isoformat()}")
+    # No expiry here: the server knows only the UTC date, which is the day after the operator's
+    # chosen date west of UTC. The UI shows `expires_at` itself, in the browser's time zone (#833).
     return ", ".join(parts) if parts else "Full access"
 
 

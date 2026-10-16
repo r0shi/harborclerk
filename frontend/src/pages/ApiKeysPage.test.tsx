@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { get, patch, post } from '../api'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { del, get, patch, post } from '../api'
+import { EXPIRY_REQUIRED_ERROR, endOfLocalDayIso } from '../utils/apiKeyForm'
 import ApiKeysPage from './ApiKeysPage'
 
 vi.mock('../api', () => ({
@@ -11,6 +12,7 @@ vi.mock('../api', () => ({
   post: vi.fn(),
 }))
 
+const delMock = vi.mocked(del)
 const getMock = vi.mocked(get)
 const patchMock = vi.mocked(patch)
 const postMock = vi.mocked(post)
@@ -77,9 +79,11 @@ async function savedBody(call = 0): Promise<Record<string, unknown>> {
 
 describe('ApiKeysPage edit and create', () => {
   beforeEach(() => {
+    delMock.mockReset()
     getMock.mockReset()
     patchMock.mockReset()
     postMock.mockReset()
+    delMock.mockResolvedValue(undefined)
     patchMock.mockResolvedValue({})
     postMock.mockImplementation((path: string) =>
       path === '/api/api-keys/scope-preview'
@@ -168,7 +172,7 @@ describe('ApiKeysPage edit and create', () => {
       'expiry',
       { expires_at: '2026-12-01T10:30:00Z' },
       () => fireEvent.change(document.querySelector('input[type="date"]')!, { target: { value: '2027-01-15' } }),
-      { expires_at: '2027-01-15T23:59:59Z' },
+      { expires_at: endOfLocalDayIso('2027-01-15') },
     ],
     [
       'rpm',
@@ -300,5 +304,166 @@ describe('ApiKeysPage edit and create', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))
     await waitFor(() => expect(createdBody()).toBeDefined())
     expect(createdBody()?.max_snippet_chars).toBe(0)
+  })
+})
+
+// --- #833 ---------------------------------------------------------------------------
+
+describe('ApiKeysPage (#833)', () => {
+  beforeEach(() => {
+    delMock.mockReset()
+    getMock.mockReset()
+    patchMock.mockReset()
+    postMock.mockReset()
+    delMock.mockResolvedValue(undefined)
+    patchMock.mockResolvedValue({})
+    postMock.mockImplementation((path: string) =>
+      path === '/api/api-keys/scope-preview'
+        ? Promise.resolve({ accessible_documents: 1, total_documents: 1 })
+        : Promise.resolve({ key_id: 'k2', name: 'n', raw_key: 'hc_x', mcp_path: '/t/hc_x', created_at: '' }),
+    )
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // 1. Revoke ---------------------------------------------------------------------------
+
+  it('revokes through the in-page confirm, even where window.confirm returns false (WKWebView)', async () => {
+    const nativeConfirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    stubKeys([key()])
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
+    expect(screen.getByText('Revoke this key? This cannot be undone.')).toBeInTheDocument()
+    expect(delMock).not.toHaveBeenCalled() // the first click only asks
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm revoke' }))
+    await waitFor(() => expect(delMock).toHaveBeenCalledWith('/api/api-keys/k1'))
+    expect(delMock).toHaveBeenCalledTimes(1)
+    expect(nativeConfirm).not.toHaveBeenCalled()
+    // The list is reloaded after the revoke.
+    await waitFor(() => expect(getMock.mock.calls.filter((c) => c[0] === '/api/api-keys')).toHaveLength(2))
+  })
+
+  it('sends nothing when the revoke is cancelled', async () => {
+    stubKeys([key()])
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('button', { name: 'Confirm revoke' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Revoke' })).toBeInTheDocument()
+    expect(delMock).not.toHaveBeenCalled()
+  })
+
+  it('shows a failed revoke on the page', async () => {
+    delMock.mockRejectedValue(new Error('Key not found'))
+    stubKeys([key()])
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm revoke' }))
+    expect(await screen.findByText('Key not found')).toBeInTheDocument()
+  })
+
+  // 2. An emptied date is invalid, never "never expires" ----------------------------------
+
+  function dateInput() {
+    return screen.getByLabelText('Expiry date') as HTMLInputElement
+  }
+
+  it('refuses an emptied expiry date in the edit modal instead of saving "never expires"', async () => {
+    stubKeys([key({ expires_at: '2027-03-01T10:00:00Z' })])
+    await openEdit()
+    fireEvent.change(dateInput(), { target: { value: '' } }) // what a cleared date segment reports
+    expect(dateInput()).toBeInTheDocument() // the input stays, so the operator can finish the date
+    expect((screen.getByLabelText('Set expiry date') as HTMLInputElement).checked).toBe(true)
+    expect(screen.getByRole('alert')).toHaveTextContent(EXPIRY_REQUIRED_ERROR)
+    await save()
+    expect(await screen.findByText(EXPIRY_REQUIRED_ERROR, { selector: 'div' })).toBeInTheDocument()
+    expect(patchMock).not.toHaveBeenCalled()
+  })
+
+  it('refuses an emptied expiry date on create', async () => {
+    stubKeys([])
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Create Key' }))
+    fireEvent.change(screen.getByPlaceholderText('e.g. Claude Desktop'), { target: { value: 'Expiring' } })
+    fireEvent.click(screen.getByLabelText('Set expiry date'))
+    fireEvent.change(dateInput(), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(await screen.findByText(EXPIRY_REQUIRED_ERROR, { selector: 'div' })).toBeInTheDocument()
+    expect(postMock.mock.calls.find((c) => c[0] === '/api/api-keys')).toBeUndefined()
+  })
+
+  it('removes an expiry only when the box is unticked', async () => {
+    stubKeys([key({ expires_at: '2027-03-01T10:00:00Z' })])
+    await openEdit()
+    fireEvent.click(screen.getByLabelText('Set expiry date'))
+    await save()
+    expect(await savedBody()).toEqual({ expires_at: null })
+  })
+
+  // 3. One time-zone convention -------------------------------------------------------------
+
+  describe('east of UTC', () => {
+    beforeEach(() => {
+      vi.stubEnv('TZ', 'Pacific/Auckland') // UTC+13 in January
+    })
+    afterEach(() => {
+      vi.unstubAllEnvs()
+    })
+
+    it('shows a stored expiry as the same local date in the table and the modal', async () => {
+      // 2027-01-15T23:59:59Z is already 2027-01-16 in Auckland: the old modal showed the 15th,
+      // the table the 16th.
+      stubKeys([key({ expires_at: '2027-01-15T23:59:59Z' })])
+      renderPage()
+      expect(await screen.findByText(new Date(2027, 0, 16).toLocaleDateString())).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      expect(dateInput().value).toBe('2027-01-16')
+    })
+
+    it('saves a chosen date as the end of that local day, in UTC', async () => {
+      stubKeys([key()])
+      await openEdit()
+      fireEvent.click(screen.getByLabelText('Set expiry date'))
+      fireEvent.change(dateInput(), { target: { value: '2027-01-15' } })
+      await save()
+      expect(await savedBody()).toEqual({ expires_at: '2027-01-15T10:59:59.000Z' })
+    })
+  })
+
+  // 4. Stored scope ids that are no longer listed ---------------------------------------------
+
+  it('shows a stored topic id that is no longer listed, and keeps it until it is removed', async () => {
+    stubKeys([key({ scope_topic_ids: [1, 99] })])
+    await openEdit()
+    expect(screen.getByText(/Document scope: limited to 2 topics/)).toHaveTextContent('(1 no longer listed)')
+    const chips = await screen.findByRole('list', { name: 'Unlisted topics' })
+    expect(chips).toHaveTextContent('Topic 99')
+
+    // Unticking the only visible topic leaves the key limited to the unlisted one, and says so.
+    fireEvent.click(await screen.findByLabelText('Leases'))
+    expect(screen.getByText(/Document scope:/)).toHaveTextContent('Document scope: limited to 1 topic')
+    await save()
+    expect(await savedBody()).toEqual({ scope_topic_ids: [99] })
+  })
+
+  it('removing the last unlisted topic chip drops the restriction', async () => {
+    stubKeys([key({ scope_topic_ids: [99] })])
+    await openEdit()
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove topic 99' }))
+    expect(screen.queryByRole('list', { name: 'Unlisted topics' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Document scope:/)).toHaveTextContent('Document scope: no restriction')
+    await save()
+    expect(await savedBody()).toEqual({ scope_topic_ids: null })
+  })
+
+  it('shows and removes a stored folder id that is no longer listed', async () => {
+    stubKeys([key({ scope_folder_ids: ['f1', 'gone-folder'] })])
+    await openEdit()
+    expect(await screen.findByRole('list', { name: 'Unlisted folders' })).toHaveTextContent('Folder gone-folder')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove folder gone-folder' }))
+    await save()
+    expect(await savedBody()).toEqual({ scope_folder_ids: ['f1'] })
   })
 })

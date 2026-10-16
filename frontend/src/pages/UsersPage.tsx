@@ -17,6 +17,9 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [showCreate, setShowCreate] = useState(false)
+  // Delete is confirmed in the row: in the macOS app's WKWebView window.confirm silently returns
+  // false, so a native confirm made Delete do nothing (#833).
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
 
   async function loadUsers() {
     try {
@@ -58,7 +61,7 @@ export default function UsersPage() {
   }
 
   async function handleDelete(user: UserInfo) {
-    if (!confirm(`Delete user ${user.email}?`)) return
+    setPendingDeleteId(null)
     try {
       await del(`/api/users/${user.user_id}`)
       await loadUsers()
@@ -152,12 +155,30 @@ export default function UsersPage() {
                   {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'Never'}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <button
-                    onClick={() => handleDelete(u)}
-                    className="text-sm text-red-600 dark:text-red-400 hover:underline"
-                  >
-                    Delete
-                  </button>
+                  {pendingDeleteId === u.user_id ? (
+                    <div className="flex items-center justify-end gap-2">
+                      <span className="text-sm text-red-600 dark:text-red-400">Delete user {u.email}?</span>
+                      <button
+                        onClick={() => handleDelete(u)}
+                        className="rounded-lg bg-red-600 px-3 py-1 text-sm font-medium text-white shadow-xs hover:bg-red-700"
+                      >
+                        Confirm delete
+                      </button>
+                      <button
+                        onClick={() => setPendingDeleteId(null)}
+                        className="rounded-lg bg-gray-200 dark:bg-gray-700 px-3 py-1 text-sm font-medium text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setPendingDeleteId(u.user_id)}
+                      className="text-sm text-red-600 dark:text-red-400 hover:underline"
+                    >
+                      Delete
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}

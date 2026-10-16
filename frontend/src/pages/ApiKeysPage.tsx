@@ -3,7 +3,19 @@ import { Link } from 'react-router'
 import { del, get, patch, post } from '../api'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
-import { parseRateLimit, parseSnippetCap, snippetCapInput, type NumberFieldParse } from '../utils/apiKeyForm'
+import {
+  defaultExpiryDate,
+  documentScopeSummary,
+  expiryDateInput,
+  formatExpiry,
+  parseExpiry,
+  parseRateLimit,
+  parseSnippetCap,
+  snippetCapInput,
+  unknownScopeIds,
+  type ExpiryParse,
+  type NumberFieldParse,
+} from '../utils/apiKeyForm'
 
 type PermissionTier = 'search' | 'read' | 'full'
 
@@ -104,7 +116,10 @@ function toggleToolOverride(
 }
 
 interface ScopeFormState {
-  expiresAt: string // yyyy-mm-dd or ''
+  // Kept apart from the date: a date input reports '' while a segment is cleared, and that must
+  // read as "incomplete", not as "never expires".
+  expiryEnabled: boolean
+  expiresAt: string // yyyy-mm-dd in local time, or '' (incomplete or unset)
   tier: PermissionTier
   toolOverrides: Record<string, boolean>
   topicIds: number[] | null
@@ -118,6 +133,7 @@ interface ScopeFormState {
 
 function emptyScopeState(): ScopeFormState {
   return {
+    expiryEnabled: false,
     expiresAt: '',
     tier: 'full',
     toolOverrides: {},
@@ -133,7 +149,8 @@ function emptyScopeState(): ScopeFormState {
 
 function scopeStateFromKey(k: ApiKeyInfo): ScopeFormState {
   return {
-    expiresAt: k.expires_at ? k.expires_at.slice(0, 10) : '',
+    expiryEnabled: k.expires_at != null,
+    expiresAt: expiryDateInput(k.expires_at),
     tier: k.permission_tier,
     toolOverrides: { ...k.tool_overrides },
     topicIds: k.scope_topic_ids,
@@ -161,8 +178,8 @@ interface ScopePayload {
 
 type FieldResult<T> = { ok: true; value: T } | { ok: false; error: string }
 
-function expiresAtPayload(expiresAt: string): string | null {
-  return expiresAt ? expiresAt + 'T23:59:59Z' : null
+function expiryField(s: ScopeFormState): ExpiryParse {
+  return parseExpiry(s.expiryEnabled, s.expiresAt)
 }
 
 function snippetCapField(s: ScopeFormState): NumberFieldParse {
@@ -179,6 +196,8 @@ function rphField(s: ScopeFormState): NumberFieldParse {
 
 /** The whole payload for a new key, or the first field error to show. */
 function scopeStateToPayload(s: ScopeFormState): FieldResult<ScopePayload> {
+  const expiry = expiryField(s)
+  if (!expiry.ok) return expiry
   const cap = snippetCapField(s)
   if (!cap.ok) return cap
   const rpm = rpmField(s)
@@ -188,7 +207,7 @@ function scopeStateToPayload(s: ScopeFormState): FieldResult<ScopePayload> {
   return {
     ok: true,
     value: {
-      expires_at: expiresAtPayload(s.expiresAt),
+      expires_at: expiry.value,
       permission_tier: s.tier,
       tool_overrides: s.toolOverrides,
       scope_topic_ids: s.topicIds,
@@ -225,7 +244,11 @@ function changedFields(
     if (!name.trim()) return { ok: false, error: KEY_NAME_ERROR }
     body.name = name.trim()
   }
-  if (s.expiresAt !== initial.expiresAt) body.expires_at = expiresAtPayload(s.expiresAt)
+  if (s.expiryEnabled !== initial.expiryEnabled || (s.expiryEnabled && s.expiresAt !== initial.expiresAt)) {
+    const expiry = expiryField(s)
+    if (!expiry.ok) return expiry
+    body.expires_at = expiry.value
+  }
   if (s.tier !== initial.tier) body.permission_tier = s.tier
   if (!sameSet(s.toolOverrides, initial.toolOverrides)) body.tool_overrides = s.toolOverrides
   if (!sameSet(s.topicIds, initial.topicIds)) body.scope_topic_ids = s.topicIds
@@ -256,7 +279,7 @@ function changedFields(
 
 const KEY_NAME_ERROR = 'Key name cannot be empty.'
 
-function FieldError({ result }: { result: NumberFieldParse }) {
+function FieldError({ result }: { result: { ok: true } | { ok: false; error: string } }) {
   if (result.ok) return null
   return (
     <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">
@@ -282,8 +305,6 @@ export default function ApiKeysPage() {
       setKeys(data)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load keys')
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -301,15 +322,21 @@ export default function ApiKeysPage() {
   }
 
   useEffect(() => {
+    // The forms open only once the topic and folder lists are in: before that, every stored
+    // scope id would show as no longer listed.
     async function run() {
-      await loadKeys()
-      await loadScopeOptions()
+      await Promise.all([loadKeys(), loadScopeOptions()])
+      setLoading(false)
     }
     run()
   }, [])
 
+  // Revoke is confirmed in the row, not with window.confirm: the macOS app hosts this page in a
+  // WKWebView, where window.confirm silently returns false, so Revoke never revoked (#833).
+  const [pendingRevokeId, setPendingRevokeId] = useState<string | null>(null)
+
   async function handleRevoke(keyId: string) {
-    if (!confirm('Revoke this API key? This cannot be undone.')) return
+    setPendingRevokeId(null)
     try {
       await del(`/api/api-keys/${keyId}`)
       await loadKeys()
@@ -431,9 +458,7 @@ export default function ApiKeysPage() {
                   </span>
                 </td>
                 <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-300">{k.scope_summary}</td>
-                <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                  {k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'Never'}
-                </td>
+                <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">{formatExpiry(k.expires_at)}</td>
                 <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                   {new Date(k.created_at).toLocaleDateString()}
                 </td>
@@ -441,7 +466,26 @@ export default function ApiKeysPage() {
                   {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'Never'}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  {k.is_active && (
+                  {k.is_active && pendingRevokeId === k.key_id && (
+                    <div className="flex items-center justify-end gap-2">
+                      <span className="text-sm text-red-600 dark:text-red-400">
+                        Revoke this key? This cannot be undone.
+                      </span>
+                      <button
+                        onClick={() => handleRevoke(k.key_id)}
+                        className="rounded-lg bg-red-600 px-3 py-1 text-sm font-medium text-white shadow-xs hover:bg-red-700"
+                      >
+                        Confirm revoke
+                      </button>
+                      <button
+                        onClick={() => setPendingRevokeId(null)}
+                        className="rounded-lg bg-gray-200 dark:bg-gray-700 px-3 py-1 text-sm font-medium text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                  {k.is_active && pendingRevokeId !== k.key_id && (
                     <div className="flex justify-end gap-3">
                       <button
                         onClick={() => setEditingKey(k)}
@@ -450,7 +494,7 @@ export default function ApiKeysPage() {
                         Edit
                       </button>
                       <button
-                        onClick={() => handleRevoke(k.key_id)}
+                        onClick={() => setPendingRevokeId(k.key_id)}
                         className="text-sm text-red-600 dark:text-red-400 hover:underline"
                       >
                         Revoke
@@ -491,6 +535,47 @@ export default function ApiKeysPage() {
 // Shared scope form fields
 // ---------------------------------------------------------------------------
 
+function UnknownScopeChips<T extends number | string>({
+  kind,
+  ids,
+  onRemove,
+}: {
+  kind: 'topic' | 'folder'
+  ids: T[]
+  onRemove: (id: T) => void
+}) {
+  if (ids.length === 0) return null
+  return (
+    <div className="mb-2 rounded-sm bg-amber-50 dark:bg-amber-900/20 p-2 text-xs text-amber-800 dark:text-amber-300">
+      <p className="mb-1.5">
+        The key is still limited to {ids.length === 1 ? `this ${kind}` : `these ${kind}s`}, which{' '}
+        {ids.length === 1 ? 'is' : 'are'} no longer in the list. Remove {ids.length === 1 ? 'it' : 'them'} to drop the
+        restriction.
+      </p>
+      <ul className="flex flex-wrap gap-1.5" aria-label={`Unlisted ${kind}s`}>
+        {ids.map((id) => (
+          <li
+            key={String(id)}
+            className="flex items-center gap-1 rounded-md bg-white dark:bg-[#1e1e1f] px-2 py-0.5 ring-1 ring-amber-300 dark:ring-amber-700"
+          >
+            <span className="font-mono">
+              {kind === 'topic' ? 'Topic' : 'Folder'} {String(id)}
+            </span>
+            <button
+              type="button"
+              onClick={() => onRemove(id)}
+              aria-label={`Remove ${kind} ${String(id)}`}
+              className="text-amber-700 hover:text-amber-900 dark:text-amber-400 dark:hover:text-amber-200"
+            >
+              ×
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function ScopeFormFields({
   state,
   setState,
@@ -503,29 +588,51 @@ function ScopeFormFields({
   folders: WatchedFolderInfo[]
 }) {
   const parsedCap = snippetCapField(state)
+  const parsedExpiry = expiryField(state)
+  // Stored ids the lists no longer show (a topic re-clustered away, a folder removed, or a list
+  // that failed to load). The key is still limited to them, so they stay visible and removable.
+  const unknownTopicIds = unknownScopeIds(
+    state.topicIds,
+    topics.map((t) => t.cluster_id),
+  )
+  const unknownFolderIds = unknownScopeIds(
+    state.folderIds,
+    folders.map((f) => f.folder_id),
+  )
   return (
     <div className="space-y-4">
       <div>
         <label className="flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
           <input
             type="checkbox"
-            checked={state.expiresAt !== ''}
+            checked={state.expiryEnabled}
             onChange={(e) =>
               setState((s) => ({
                 ...s,
-                expiresAt: e.target.checked ? new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10) : '',
+                expiryEnabled: e.target.checked,
+                expiresAt: e.target.checked ? s.expiresAt || defaultExpiryDate() : '',
               }))
             }
           />
           Set expiry date
         </label>
-        {state.expiresAt !== '' && (
-          <input
-            type="date"
-            value={state.expiresAt}
-            onChange={(e) => setState((s) => ({ ...s, expiresAt: e.target.value }))}
-            className="mt-1.5 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
-          />
+        {state.expiryEnabled && (
+          <>
+            <input
+              type="date"
+              aria-label="Expiry date"
+              value={state.expiresAt}
+              onChange={(e) => setState((s) => ({ ...s, expiresAt: e.target.value }))}
+              className="mt-1.5 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+            />
+            {!parsedExpiry.ok ? (
+              <FieldError result={parsedExpiry} />
+            ) : (
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                The key stops working at the end of this day, in this computer&apos;s time zone.
+              </p>
+            )}
+          </>
         )}
       </div>
 
@@ -579,11 +686,27 @@ function ScopeFormFields({
 
       <details className="rounded-lg bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) p-3">
         <summary className="cursor-pointer text-xs font-medium text-gray-700 dark:text-gray-300">
-          Document scope (empty = no restriction)
+          Document scope: {documentScopeSummary(state.topicIds, state.folderIds)}
+          {unknownTopicIds.length + unknownFolderIds.length > 0 && (
+            <span className="ml-1 text-amber-700 dark:text-amber-400">
+              ({unknownTopicIds.length + unknownFolderIds.length} no longer listed)
+            </span>
+          )}
         </summary>
         <div className="mt-3 space-y-3">
+          <p className="text-xs text-gray-500 dark:text-gray-400">Tick nothing for no restriction.</p>
           <div>
             <p className="mb-1 text-xs font-medium text-gray-600 dark:text-gray-400">Topics</p>
+            <UnknownScopeChips
+              kind="topic"
+              ids={unknownTopicIds}
+              onRemove={(id) =>
+                setState((s) => {
+                  const next = (s.topicIds ?? []).filter((t) => t !== id)
+                  return { ...s, topicIds: next.length > 0 ? next : null }
+                })
+              }
+            />
             {topics.length === 0 ? (
               <p className="text-xs text-gray-500 dark:text-gray-400">No topics available.</p>
             ) : (
@@ -615,6 +738,16 @@ function ScopeFormFields({
 
           <div>
             <p className="mb-1 text-xs font-medium text-gray-600 dark:text-gray-400">Watched folders</p>
+            <UnknownScopeChips
+              kind="folder"
+              ids={unknownFolderIds}
+              onRemove={(id) =>
+                setState((s) => {
+                  const next = (s.folderIds ?? []).filter((f) => f !== id)
+                  return { ...s, folderIds: next.length > 0 ? next : null }
+                })
+              }
+            />
             {folders.length === 0 ? (
               <p className="text-xs text-gray-500 dark:text-gray-400">No watched folders configured.</p>
             ) : (

@@ -80,7 +80,9 @@ Chat conversations live at `/c/:id` (not `/chat/`); old paths redirect.
 The macOS app hosts this SPA in a WKWebView, where `window.confirm` and
 `window.alert` **silently return false** rather than prompting. Use an inline
 two-click confirmation pattern instead — a native dialog will appear to do
-nothing.
+nothing. ESLint rejects `confirm`, `alert` and `prompt` (bare or on
+`window`/`globalThis`/`self`): the API Keys page's Revoke shipped this way and
+never revoked in the Mac app (#833).
 
 ## Feature detection
 

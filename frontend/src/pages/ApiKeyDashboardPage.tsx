@@ -4,6 +4,7 @@ import { del, get } from '../api'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
+import { formatExpiry } from '../utils/apiKeyForm'
 
 /* ---------- types ---------- */
 
@@ -13,6 +14,7 @@ interface ApiKeyInfo {
   is_active: boolean
   permission_tier: string
   scope_summary: string
+  expires_at: string | null
 }
 
 type RangeMap<T> = Record<string, T>
@@ -235,7 +237,11 @@ export default function ApiKeyDashboardPage() {
               </span>
             </span>
           }
-          subtitle={keyInfo.scope_summary}
+          subtitle={
+            keyInfo.expires_at
+              ? `${keyInfo.scope_summary} · expires ${formatExpiry(keyInfo.expires_at)}`
+              : keyInfo.scope_summary
+          }
           actions={
             <div>
               {!purgeConfirm ? (

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { get, post, del } from '../api'
@@ -179,5 +179,28 @@ describe('DocumentDetailPage', () => {
     expect(screen.getByText('not needed')).toBeInTheDocument()
     expect(screen.getByText('summary available')).toBeInTheDocument()
     expect(screen.queryByText('pending')).not.toBeInTheDocument()
+  })
+
+  // #833: window.confirm silently returns false in the macOS app's WKWebView.
+  it('deletes through the in-page confirm, even where window.confirm returns false', async () => {
+    const nativeConfirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    delMock.mockResolvedValue(undefined)
+    renderDocumentDetail()
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    expect(screen.getByText('Delete this document? This cannot be undone.')).toBeInTheDocument()
+    expect(delMock).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }))
+    await waitFor(() => expect(delMock).toHaveBeenCalledWith('/api/docs/doc-1'))
+    expect(nativeConfirm).not.toHaveBeenCalled()
+    nativeConfirm.mockRestore()
+  })
+
+  it('sends nothing when the document delete is cancelled', async () => {
+    renderDocumentDetail()
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('button', { name: 'Confirm delete' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+    expect(delMock).not.toHaveBeenCalled()
   })
 })

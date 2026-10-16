@@ -637,6 +637,9 @@ export default function DocumentDetailPage() {
   const [error, setError] = useState('')
   const [showContent, setShowContent] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
+  // Delete is confirmed in the page header: in the macOS app's WKWebView window.confirm silently
+  // returns false, so a native confirm made Delete do nothing (#833).
+  const [deleteArmed, setDeleteArmed] = useState(false)
   const [contentPage, setContentPage] = useState(1)
   const [pageSize, setPageSize] = useState(user?.preferences?.page_size || 10)
   const [highlightPage, setHighlightPage] = useState<number | null>(null)
@@ -808,7 +811,7 @@ export default function DocumentDetailPage() {
   }
 
   async function handleDelete() {
-    if (!confirm('Delete this document? This cannot be undone.')) return
+    setDeleteArmed(false)
     setActionLoading(true)
     try {
       await del(`/api/docs/${id}`)
@@ -852,13 +855,34 @@ export default function DocumentDetailPage() {
                   >
                     Reprocess
                   </button>
-                  <button
-                    onClick={handleDelete}
-                    disabled={actionLoading}
-                    className="rounded-lg bg-red-500/10 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-500/20 disabled:opacity-50"
-                  >
-                    Delete
-                  </button>
+                  {deleteArmed ? (
+                    <>
+                      <span className="text-sm text-red-600 dark:text-red-400">
+                        Delete this document? This cannot be undone.
+                      </span>
+                      <button
+                        onClick={handleDelete}
+                        disabled={actionLoading}
+                        className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-red-700 disabled:opacity-50"
+                      >
+                        Confirm delete
+                      </button>
+                      <button
+                        onClick={() => setDeleteArmed(false)}
+                        className="rounded-lg bg-gray-200 dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => setDeleteArmed(true)}
+                      disabled={actionLoading}
+                      className="rounded-lg bg-red-500/10 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-500/20 disabled:opacity-50"
+                    >
+                      Delete
+                    </button>
+                  )}
                 </>
               ) : undefined
             }
