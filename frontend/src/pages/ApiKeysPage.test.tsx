@@ -520,6 +520,7 @@ describe('ApiKeysPage (#833)', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Loading topics and folders…')
     expect(screen.getByText(/Document scope:/)).toHaveTextContent('limited to 1 topic') // from the stored ids
     expect(screen.queryByRole('list', { name: 'Unlisted topics' })).not.toBeInTheDocument() // not "stale" yet
+    expect(screen.queryByText(/no longer listed/)).not.toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: 'Leases' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
