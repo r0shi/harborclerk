@@ -43,6 +43,9 @@ RETURNS (JSON)
         "summary":            "string",    // auto-generated summary (may be null); at most
                                          //   1,500 chars ("…" when cut); under a key's
                                          //   snippet cap of N, its first N (null at 0)
+                                         //   (limits count escaped JSON: CJK text is cut
+                                         //   at a sixth as many visible chars, accented
+                                         //   French at somewhat fewer)
         "similarity":         0.91,        // cosine similarity 0–1, higher = more similar
         "source":             "embedding", // "embedding" or "linked"
         "doc_type":           "string",    // document type label

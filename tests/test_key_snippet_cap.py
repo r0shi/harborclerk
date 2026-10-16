@@ -1746,3 +1746,41 @@ async def test_summary_bound_counts_each_surfaces_unit(client, db_session, mock_
     resp = await client.get(f"/api/docs/{doc.doc_id}", headers=auth_header(raw))
     assert resp.status_code == 200, resp.text[:300]
     assert resp.json()["summary"] == summary, "REST cut a summary within 1,500 code points"
+
+
+# --- ninth review: a refused filter is a 422 even when a scope check would answer empty (#831) ----
+
+
+@pytest.mark.parametrize("path", ["key scope", "request scope"])
+@pytest.mark.parametrize("surface", list(FILTER_REST))
+async def test_rest_refuses_a_capped_filter_before_scope_early_returns(client, db_session, corpus, surface, path):
+    """Both REST search routes answer an empty 200 when a scope leaves nothing visible; a capped key's
+    refused metadata_filter must still get the documented 422, so the refusal comes first."""
+    from harbor_clerk.models.watched import WatchedFolder
+
+    empty = WatchedFolder(path="/empty-scope", display_name="Empty", auto_discovered=False)
+    db_session.add(empty)
+    await db_session.flush()
+    raw = generate_api_key()
+    db_session.add(
+        ApiKey(
+            name="scoped-cap",
+            key_hash=hash_api_key(raw),
+            permission_tier="full",
+            max_snippet_chars=50,
+            scope_folder_ids=[str(empty.folder_id)] if path == "key scope" else None,
+        )
+    )
+    await db_session.flush()
+    route, body = FILTER_REST[surface]
+    body = {**body, "metadata_filter": {"sidecar.vendor": _LONG_FILTER}}
+    if path == "request scope":
+        body["scope"] = {"folder_ids": [str(empty.folder_id)]}
+    resp = await client.post(route, json=body, headers=auth_header(raw))
+    assert resp.status_code == 422, resp.text[:300]
+    assert "snippet cap" in resp.json()["detail"]
+    # The same request without the refused filter takes the scope's empty 200: the path is real.
+    body.pop("metadata_filter")
+    resp = await client.post(route, json=body, headers=auth_header(raw))
+    assert resp.status_code == 200, resp.text[:300]
+    assert str(corpus.paged_doc.doc_id) not in resp.text

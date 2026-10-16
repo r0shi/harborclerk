@@ -28,7 +28,7 @@ from harbor_clerk.api.scope_validation import validate_scope_folders
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.models import Chunk, Document
-from harbor_clerk.passage_cap import cap_passage_text, cap_text, snippet_cap
+from harbor_clerk.passage_cap import SnippetCapRefusal, cap_passage_text, cap_text, refuse_filter_past_cap, snippet_cap
 from harbor_clerk.search import find_all, hybrid_search
 from harbor_clerk.search_types import FindAllHit
 from harbor_clerk.source_ref import SourceRef, format_document_citation, format_pages, load_source_ref_context
@@ -131,12 +131,21 @@ def _empty_find_all_response(
     )
 
 
+def _refuse_capped_filter(metadata_filter: dict | None, principal: Principal) -> None:
+    """A capped key's refused metadata_filter is a 422 before any scope check can answer an empty 200."""
+    try:
+        refuse_filter_past_cap(metadata_filter, snippet_cap(principal))
+    except SnippetCapRefusal as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+
 @router.post("/search", response_model=SearchResponse | FacetedSearchResponse)
 async def search(
     body: SearchRequest,
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
+    _refuse_capped_filter(body.metadata_filter, principal)
     await validate_scope_folders(body.scope, session)
 
     doc_id = uuid.UUID(body.doc_id) if body.doc_id else None
@@ -303,6 +312,7 @@ async def search_find_all(
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
+    _refuse_capped_filter(body.metadata_filter, principal)
     await validate_scope_folders(body.scope, session)
 
     doc_id = body.doc_id

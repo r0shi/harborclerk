@@ -57,6 +57,8 @@ RETURNS (JSON)
     // 1,000 chars of JSON per candidate; "_truncated" lists every path cut or
     // dropped. Under a key's snippet cap of N, each string is its first N
     // (null at 0), and fields are compared as the key sees them.
+    // Limits count escaped JSON characters: non-ASCII text (CJK; accented French
+    // to a lesser degree) is cut at fewer visible characters.
     "suggestion": "3 candidates differ on sidecar.vendor — pick one." }
 
   // ambiguous with overflow (> 100 matches)

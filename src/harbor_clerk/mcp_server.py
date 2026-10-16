@@ -915,7 +915,11 @@ async def kb_search(
       - `discriminator_hint` (when present): top hits span multiple docs that differ on
         a structured metadata field. Use `metadata_filter` with the suggested key/value
         to pin the right doc. The hint includes `ambiguous_doc_titles`,
-        `differing_metadata` (per-doc values), and a `suggestion` string.
+        `differing_metadata` (per-doc values keyed by title; titles shared by
+        two candidates appear as "Title [8hex]", from the doc_id), and a
+        `suggestion` string. Values are size-bounded; `differing_metadata`
+        may carry `_truncated`: a list of {"field", "doc_id", "at"?} for each
+        value cut or entry dropped, ending with {"more": N} when long.
 
     When to iterate:
       - One query returned ambiguous results across multiple docs → call `kb_batch_search`
@@ -1831,7 +1835,8 @@ async def kb_get_document(doc_id: str) -> str:
       - Size bounds: a string value over 1,000 characters and a summary over
         1,500 end in "…"; metadata over 4,000 characters of JSON keeps the
         entries that fit. `metadata._truncated` lists every path cut or
-        dropped. Under a key with a snippet cap of N, the summary and every
+        dropped as a dotted string ("sidecar.notes", "sidecar.parties[0].name"),
+        ending with "+N more" when long. Under a key with a snippet cap of N, the summary and every
         metadata string are their first N characters (none at a cap of 0).
         A cut value (listed in `_truncated`, or N characters long under a
         cap) is NOT a metadata_filter value: the filter matches the whole
@@ -2947,7 +2952,9 @@ async def kb_verify_identifier(identifier: str) -> str:
       - status="unique": one match — its doc_id, title, canonical_filename
       - status="ambiguous": multiple matches — each candidate carries
         discriminating_fields (the metadata that distinguishes them) and
-        a suggestion for how to pick one
+        a suggestion for how to pick one. Values are size-bounded; a
+        candidate's discriminating_fields may carry `_truncated`, dotted
+        paths of what was cut or dropped (as kb_get_document's metadata)
 
     When the response is ambiguous, the discriminating_fields per candidate
     tell you what differs — pick the one matching the user's intent, or ask

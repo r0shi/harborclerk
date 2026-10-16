@@ -74,6 +74,10 @@ EXAMPLES
   Under a key with a snippet cap of N, the summary and every metadata string
   value are their first N characters (null at a cap of 0).
 
+  The size limits count escaped JSON characters (each non-ASCII character is a
+  6-character \uXXXX), so CJK text is cut at about a sixth as many visible
+  characters, and accented French at somewhat fewer.
+
 COMMON MISTAKES
   - Using get-document to retrieve body text — it returns metadata only.
     For text use `read-document`.
