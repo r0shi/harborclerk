@@ -111,6 +111,11 @@ export function unknownScopeIds<T>(stored: T[] | null, known: readonly T[]): T[]
   return stored.filter((id) => !knownSet.has(id))
 }
 
+/** Whether the ids limit the key at all; false means the key reads the whole corpus. */
+export function isScopeRestricted(topicIds: unknown[] | null, folderIds: unknown[] | null): boolean {
+  return (topicIds?.length ?? 0) > 0 || (folderIds?.length ?? 0) > 0
+}
+
 /** The document-scope label, computed from the stored ids. */
 export function documentScopeSummary(topicIds: unknown[] | null, folderIds: unknown[] | null): string {
   const t = topicIds?.length ?? 0

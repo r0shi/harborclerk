@@ -8,6 +8,7 @@ import {
   endOfLocalDayIso,
   expiryDateInput,
   formatExpiry,
+  isScopeRestricted,
   parseExpiry,
   parseRateLimit,
   parseSnippetCap,
@@ -97,6 +98,13 @@ describe('document scope helpers', () => {
     expect(unknownScopeIds(['f1', 'gone'], ['f1'])).toEqual(['gone'])
     expect(unknownScopeIds(null, [1])).toEqual([])
     expect(unknownScopeIds([3], [])).toEqual([3]) // a list that failed to load hides nothing
+  })
+
+  it('treats null and [] alike as unrestricted, as the server does', () => {
+    expect(isScopeRestricted(null, null)).toBe(false)
+    expect(isScopeRestricted([], [])).toBe(false)
+    expect(isScopeRestricted([7], null)).toBe(true)
+    expect(isScopeRestricted(null, ['f'])).toBe(true)
   })
 
   it('computes "no restriction" from the stored ids, unknown ones included', () => {

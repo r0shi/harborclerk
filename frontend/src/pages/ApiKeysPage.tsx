@@ -8,6 +8,7 @@ import {
   documentScopeSummary,
   expiryDateInput,
   formatExpiry,
+  isScopeRestricted,
   parseExpiry,
   parseRateLimit,
   parseSnippetCap,
@@ -52,6 +53,13 @@ interface TopicCluster {
 interface WatchedFolderInfo {
   folder_id: string
   path: string
+}
+
+interface ScopeOptions {
+  topics: TopicCluster[]
+  folders: WatchedFolderInfo[]
+  topicsFailed: boolean // the list failed to load: its stored ids are unknown, not stale
+  foldersFailed: boolean
 }
 
 interface ScopePreview {
@@ -296,8 +304,12 @@ export default function ApiKeysPage() {
   const [newKey, setNewKey] = useState<ApiKeyCreated | null>(null)
   const [editingKey, setEditingKey] = useState<ApiKeyInfo | null>(null)
 
-  const [topics, setTopics] = useState<TopicCluster[]>([])
-  const [folders, setFolders] = useState<WatchedFolderInfo[]>([])
+  const [scopeOptions, setScopeOptions] = useState<ScopeOptions>({
+    topics: [],
+    folders: [],
+    topicsFailed: false,
+    foldersFailed: false,
+  })
 
   async function loadKeys() {
     try {
@@ -308,17 +320,20 @@ export default function ApiKeysPage() {
     }
   }
 
+  // A list that failed to load is not an empty list: read as empty, every stored id would look
+  // stale, and removing those ids could leave the key with no restriction at all.
   async function loadScopeOptions() {
-    try {
-      const [t, f] = await Promise.all([
-        get<{ clusters: TopicCluster[] }>('/api/stats/topics').catch(() => ({ clusters: [] })),
-        get<WatchedFolderInfo[]>('/api/watch/folders').catch(() => [] as WatchedFolderInfo[]),
-      ])
-      setTopics(t.clusters || [])
-      setFolders(Array.isArray(f) ? f : [])
-    } catch {
-      // non-fatal
-    }
+    const [t, f] = await Promise.all([
+      get<{ clusters: TopicCluster[] }>('/api/stats/topics').then(
+        (r) => r.clusters || [],
+        () => null,
+      ),
+      get<WatchedFolderInfo[]>('/api/watch/folders').then(
+        (r) => (Array.isArray(r) ? r : []),
+        () => null,
+      ),
+    ])
+    setScopeOptions({ topics: t ?? [], folders: f ?? [], topicsFailed: t === null, foldersFailed: f === null })
   }
 
   useEffect(() => {
@@ -398,8 +413,7 @@ export default function ApiKeysPage() {
 
       {showCreate && !newKey && (
         <CreateKeyForm
-          topics={topics}
-          folders={folders}
+          options={scopeOptions}
           onCreated={(key) => {
             setNewKey(key)
             loadKeys()
@@ -518,8 +532,7 @@ export default function ApiKeysPage() {
       {editingKey && (
         <EditKeyModal
           apiKey={editingKey}
-          topics={topics}
-          folders={folders}
+          options={scopeOptions}
           onClose={() => setEditingKey(null)}
           onSaved={() => {
             setEditingKey(null)
@@ -576,29 +589,45 @@ function UnknownScopeChips<T extends number | string>({
   )
 }
 
+function ScopeListFailed({ kind, storedCount }: { kind: 'topic' | 'folder'; storedCount: number }) {
+  return (
+    <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+      The {kind} list could not be loaded, so {kind}s cannot be changed here.{' '}
+      {storedCount > 0
+        ? `The key's ${storedCount} stored ${kind} restriction${storedCount === 1 ? ' is' : 's are'} kept as is.`
+        : ''}{' '}
+      Reload the page to try again.
+    </p>
+  )
+}
+
 function ScopeFormFields({
   state,
   setState,
-  topics,
-  folders,
+  options,
 }: {
   state: ScopeFormState
   setState: (updater: (prev: ScopeFormState) => ScopeFormState) => void
-  topics: TopicCluster[]
-  folders: WatchedFolderInfo[]
+  options: ScopeOptions
 }) {
   const parsedCap = snippetCapField(state)
   const parsedExpiry = expiryField(state)
-  // Stored ids the lists no longer show (a topic re-clustered away, a folder removed, or a list
-  // that failed to load). The key is still limited to them, so they stay visible and removable.
-  const unknownTopicIds = unknownScopeIds(
-    state.topicIds,
-    topics.map((t) => t.cluster_id),
-  )
-  const unknownFolderIds = unknownScopeIds(
-    state.folderIds,
-    folders.map((f) => f.folder_id),
-  )
+  const { topics, folders, topicsFailed, foldersFailed } = options
+  // Stored ids a loaded list no longer shows (a topic re-clustered away, a folder removed). The
+  // key is still limited to them, so they stay visible and removable. A list that failed to load
+  // says nothing about its ids: they are shown as kept, with nothing offered for removal.
+  const unknownTopicIds = topicsFailed
+    ? []
+    : unknownScopeIds(
+        state.topicIds,
+        topics.map((t) => t.cluster_id),
+      )
+  const unknownFolderIds = foldersFailed
+    ? []
+    : unknownScopeIds(
+        state.folderIds,
+        folders.map((f) => f.folder_id),
+      )
   return (
     <div className="space-y-4">
       <div>
@@ -610,7 +639,8 @@ function ScopeFormFields({
               setState((s) => ({
                 ...s,
                 expiryEnabled: e.target.checked,
-                expiresAt: e.target.checked ? s.expiresAt || defaultExpiryDate() : '',
+                // Unticking keeps the date, so ticking again restores it rather than a new default.
+                expiresAt: e.target.checked ? s.expiresAt || defaultExpiryDate() : s.expiresAt,
               }))
             }
           />
@@ -692,6 +722,12 @@ function ScopeFormFields({
               ({unknownTopicIds.length + unknownFolderIds.length} no longer listed)
             </span>
           )}
+          {(topicsFailed || foldersFailed) && (
+            <span className="ml-1 text-red-600 dark:text-red-400">
+              ({[topicsFailed && 'topics', foldersFailed && 'folders'].filter(Boolean).join(' and ')} could not be
+              loaded)
+            </span>
+          )}
         </summary>
         <div className="mt-3 space-y-3">
           <p className="text-xs text-gray-500 dark:text-gray-400">Tick nothing for no restriction.</p>
@@ -707,7 +743,9 @@ function ScopeFormFields({
                 })
               }
             />
-            {topics.length === 0 ? (
+            {topicsFailed ? (
+              <ScopeListFailed kind="topic" storedCount={state.topicIds?.length ?? 0} />
+            ) : topics.length === 0 ? (
               <p className="text-xs text-gray-500 dark:text-gray-400">No topics available.</p>
             ) : (
               <div className="max-h-40 overflow-y-auto rounded-sm bg-white dark:bg-[#1e1e1f] p-2 ring-1 ring-(--color-border)">
@@ -748,7 +786,9 @@ function ScopeFormFields({
                 })
               }
             />
-            {folders.length === 0 ? (
+            {foldersFailed ? (
+              <ScopeListFailed kind="folder" storedCount={state.folderIds?.length ?? 0} />
+            ) : folders.length === 0 ? (
               <p className="text-xs text-gray-500 dark:text-gray-400">No watched folders configured.</p>
             ) : (
               <div className="max-h-40 overflow-y-auto rounded-sm bg-white dark:bg-[#1e1e1f] p-2 ring-1 ring-(--color-border)">
@@ -870,13 +910,11 @@ function ScopeFormFields({
 function CreateKeyForm({
   onCreated,
   onError,
-  topics,
-  folders,
+  options,
 }: {
   onCreated: (key: ApiKeyCreated) => void
   onError: (msg: string) => void
-  topics: TopicCluster[]
-  folders: WatchedFolderInfo[]
+  options: ScopeOptions
 }) {
   const [name, setName] = useState('')
   const [scope, setScope] = useState<ScopeFormState>(emptyScopeState())
@@ -920,7 +958,7 @@ function CreateKeyForm({
           />
         </div>
 
-        <ScopeFormFields state={scope} setState={setScope} topics={topics} folders={folders} />
+        <ScopeFormFields state={scope} setState={setScope} options={options} />
 
         <div className="flex justify-end">
           <button
@@ -942,14 +980,12 @@ function CreateKeyForm({
 
 function EditKeyModal({
   apiKey,
-  topics,
-  folders,
+  options,
   onClose,
   onSaved,
 }: {
   apiKey: ApiKeyInfo
-  topics: TopicCluster[]
-  folders: WatchedFolderInfo[]
+  options: ScopeOptions
   onClose: () => void
   onSaved: () => void
 }) {
@@ -959,6 +995,9 @@ function EditKeyModal({
   // Shown inside the modal: the page's error banner sits behind the overlay.
   const [saveError, setSaveError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  // Asked in the modal (no native dialog) before a save that leaves a restricted key with no
+  // document restriction, so it would read the whole corpus. Any scope edit withdraws the question.
+  const [confirmUnrestrict, setConfirmUnrestrict] = useState(false)
   const [preview, setPreview] = useState<ScopePreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const debounceRef = useRef<number | null>(null)
@@ -998,7 +1037,12 @@ function EditKeyModal({
     }
   }, [apiKey.key_id, payloadKey, scopePayload])
 
-  async function handleSave() {
+  function updateScope(updater: (prev: ScopeFormState) => ScopeFormState) {
+    setConfirmUnrestrict(false)
+    setScope(updater)
+  }
+
+  async function handleSave(unrestrictConfirmed = false) {
     setSaveError('')
     const changed = changedFields(name, apiKey.name, scope, initialScope)
     if (!changed.ok) {
@@ -1009,6 +1053,14 @@ function EditKeyModal({
       onClose() // nothing changed: nothing to send
       return
     }
+    const dropsLastRestriction =
+      isScopeRestricted(initialScope.topicIds, initialScope.folderIds) &&
+      !isScopeRestricted(scope.topicIds, scope.folderIds)
+    if (dropsLastRestriction && !unrestrictConfirmed) {
+      setConfirmUnrestrict(true)
+      return
+    }
+    setConfirmUnrestrict(false)
     setSubmitting(true)
     try {
       await patch(`/api/api-keys/${apiKey.key_id}`, changed.value)
@@ -1050,7 +1102,7 @@ function EditKeyModal({
           />
         </div>
 
-        <ScopeFormFields state={scope} setState={setScope} topics={topics} folders={folders} />
+        <ScopeFormFields state={scope} setState={updateScope} options={options} />
 
         <div className="mt-4 rounded-lg bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) p-3 text-xs">
           {previewLoading && <span className="text-gray-500 dark:text-gray-400">Loading scope preview…</span>}
@@ -1074,6 +1126,33 @@ function EditKeyModal({
           </div>
         )}
 
+        {confirmUnrestrict && (
+          <div
+            role="alert"
+            className="mt-4 rounded-sm bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-300"
+          >
+            <p>
+              This removes the key&apos;s last document restriction. Once saved, it can read every document in the
+              corpus.
+            </p>
+            <div className="mt-2 flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmUnrestrict(false)}
+                className="rounded-lg bg-gray-200 dark:bg-gray-700 px-3 py-1 text-sm font-medium text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600"
+              >
+                Keep editing
+              </button>
+              <button
+                onClick={() => handleSave(true)}
+                disabled={submitting}
+                className="rounded-lg bg-red-600 px-3 py-1 text-sm font-medium text-white shadow-xs hover:bg-red-700 disabled:opacity-50"
+              >
+                Remove restriction and save
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="mt-5 flex justify-end gap-3">
           <button
             onClick={onClose}
@@ -1082,7 +1161,7 @@ function EditKeyModal({
             Cancel
           </button>
           <button
-            onClick={handleSave}
+            onClick={() => handleSave()}
             disabled={submitting}
             className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
           >

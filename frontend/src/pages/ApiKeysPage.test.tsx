@@ -36,8 +36,9 @@ function key(fields: Record<string, unknown> = {}) {
   }
 }
 
-function stubKeys(keys: ReturnType<typeof key>[]) {
+function stubKeys(keys: ReturnType<typeof key>[], failing: string[] = []) {
   getMock.mockImplementation((path: string) => {
+    if (failing.includes(path)) return Promise.reject(new Error('500 Internal Server Error'))
     if (path === '/api/api-keys') return Promise.resolve(keys)
     if (path === '/api/stats/topics')
       return Promise.resolve({
@@ -394,6 +395,20 @@ describe('ApiKeysPage (#833)', () => {
     expect(postMock.mock.calls.find((c) => c[0] === '/api/api-keys')).toBeUndefined()
   })
 
+  it('re-ticking "Set expiry date" restores the key\'s date, not a new default, and sends nothing', async () => {
+    stubKeys([key({ expires_at: '2027-03-01T10:00:00Z' })])
+    await openEdit()
+    const stored = dateInput().value
+    const box = screen.getByLabelText('Set expiry date')
+    fireEvent.click(box) // untick
+    expect(screen.queryByLabelText('Expiry date')).not.toBeInTheDocument()
+    fireEvent.click(box) // tick again
+    expect(dateInput().value).toBe(stored)
+    await save()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument())
+    expect(patchMock).not.toHaveBeenCalled()
+  })
+
   it('removes an expiry only when the box is unticked', async () => {
     stubKeys([key({ expires_at: '2027-03-01T10:00:00Z' })])
     await openEdit()
@@ -448,14 +463,77 @@ describe('ApiKeysPage (#833)', () => {
     expect(await savedBody()).toEqual({ scope_topic_ids: [99] })
   })
 
-  it('removing the last unlisted topic chip drops the restriction', async () => {
+  it('removing the last unlisted topic chip drops the restriction only after an in-modal confirmation', async () => {
     stubKeys([key({ scope_topic_ids: [99] })])
     await openEdit()
     fireEvent.click(await screen.findByRole('button', { name: 'Remove topic 99' }))
     expect(screen.queryByRole('list', { name: 'Unlisted topics' })).not.toBeInTheDocument()
     expect(screen.getByText(/Document scope:/)).toHaveTextContent('Document scope: no restriction')
     await save()
+    expect(await screen.findByText(/removes the key's last document restriction/)).toBeInTheDocument()
+    expect(patchMock).not.toHaveBeenCalled() // Save alone does not unrestrict the key
+    fireEvent.click(screen.getByRole('button', { name: 'Remove restriction and save' }))
     expect(await savedBody()).toEqual({ scope_topic_ids: null })
+  })
+
+  it('unticking the last listed restriction also asks first, and "Keep editing" sends nothing', async () => {
+    stubKeys([key({ scope_folder_ids: ['f1'] })])
+    await openEdit()
+    fireEvent.click(await screen.findByLabelText('/Users/x/Contracts'))
+    await save()
+    fireEvent.click(await screen.findByRole('button', { name: 'Keep editing' }))
+    expect(screen.queryByText(/removes the key's last document restriction/)).not.toBeInTheDocument()
+    expect(patchMock).not.toHaveBeenCalled()
+  })
+
+  it('withdraws the question when the scope is edited again', async () => {
+    stubKeys([key({ scope_topic_ids: [1] })])
+    await openEdit()
+    const leases = await screen.findByLabelText('Leases')
+    fireEvent.click(leases) // no restriction left
+    await save()
+    expect(await screen.findByText(/removes the key's last document restriction/)).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Invoices')) // restricted again, to a different topic
+    expect(screen.queryByText(/removes the key's last document restriction/)).not.toBeInTheDocument()
+    await save()
+    expect(await savedBody()).toEqual({ scope_topic_ids: [2] })
+  })
+
+  it('does not ask when the key had no restriction to begin with', async () => {
+    stubKeys([key()])
+    await openEdit()
+    fireEvent.click(screen.getByRole('radio', { name: 'full' }))
+    await save()
+    expect(await savedBody()).toEqual({ permission_tier: 'full' })
+  })
+
+  // A list that failed to load is not an empty one.
+
+  it('says a failed topic list failed, keeps the stored topics and offers nothing to remove', async () => {
+    stubKeys([key({ scope_topic_ids: [3, 4] })], ['/api/stats/topics'])
+    await openEdit()
+    expect(screen.getByText(/Document scope:/)).toHaveTextContent('limited to 2 topics')
+    expect(screen.getByText(/Document scope:/)).toHaveTextContent('(topics could not be loaded)')
+    expect(screen.getByText(/The topic list could not be loaded/)).toHaveTextContent(
+      "The key's 2 stored topic restrictions are kept as is.",
+    )
+    expect(screen.queryByRole('list', { name: 'Unlisted topics' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Remove topic/ })).not.toBeInTheDocument()
+    expect(screen.queryByText(/no longer listed/)).not.toBeInTheDocument()
+    // Other edits save without touching the stored topics.
+    fireEvent.change(screen.getByLabelText('Requests per minute'), { target: { value: '30' } })
+    await save()
+    expect(await savedBody()).toEqual({ rate_limit_rpm: 30 })
+  })
+
+  it('says a failed folder list failed while the topic list still works', async () => {
+    stubKeys([key({ scope_folder_ids: ['f9'] })], ['/api/watch/folders'])
+    await openEdit()
+    expect(screen.getByText(/The folder list could not be loaded/)).toHaveTextContent(
+      "The key's 1 stored folder restriction is kept as is.",
+    )
+    expect(screen.queryByRole('button', { name: /Remove folder/ })).not.toBeInTheDocument()
+    expect(await screen.findByLabelText('Leases')).toBeInTheDocument()
   })
 
   it('shows and removes a stored folder id that is no longer listed', async () => {
