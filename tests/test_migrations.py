@@ -568,6 +568,8 @@ def test_concurrent_runs_are_serialised_and_rewrite_once(alembic_cfg, sync_engin
 def test_0009_fails_fast_when_chunks_is_held(alembic_cfg, sync_engine):
     """On a live API another transaction may hold chunks; 0009's ALTER waits at most 10 s
     (lock_timeout) rather than queueing every search behind it, says so, and leaves 0008 stamped."""
+    import subprocess
+
     command.upgrade(alembic_cfg, "head")
     command.downgrade(alembic_cfg, "0008_chunk_text_ws_fold")
     blocker = sync_engine.connect()
@@ -575,9 +577,14 @@ def test_0009_fails_fast_when_chunks_is_held(alembic_cfg, sync_engine):
     try:
         blocker.execute(text("LOCK TABLE public.chunks IN ROW EXCLUSIVE MODE"))
         started = time.monotonic()
-        with pytest.raises(RuntimeError, match="could not lock public.chunks within 10s: another transaction holds it"):
-            command.upgrade(alembic_cfg, "head")
+        # A subprocess with a bound: without the lock_timeout the ALTER would wait for the blocker
+        # forever, and this test would hang instead of failing.
+        run = subprocess.run(
+            ["alembic", "upgrade", "head"], env=dict(os.environ), capture_output=True, text=True, timeout=60
+        )
         elapsed = time.monotonic() - started
+        assert run.returncode != 0
+        assert "could not lock public.chunks within 10s: another transaction holds it" in run.stderr, run.stderr[-800:]
         blocker_tx.rollback()
         with sync_engine.connect() as conn:
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0008_chunk_text_ws_fold"
