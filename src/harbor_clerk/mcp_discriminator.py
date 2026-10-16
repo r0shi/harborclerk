@@ -142,24 +142,31 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
         describe=_describe,
         more=lambda n: {"more": n},
     )
-    # metadata_filter is an exact match on the whole stored value, so a field is offered as a filter
-    # only when every value shown is the complete stored value: never a value the bound or the cap cut.
-    filterable = [
-        (path, values)
-        for path, values in top_fields
-        if path in bounded
-        and all(
-            _whole_filter_value(metadata_by_doc[did], compared[did], path)
-            for did in candidates
-            if did in metadata_by_doc
-        )
-    ]
+    # metadata_filter is an exact match on the whole stored value, so a field is offered as a filter only
+    # when no candidate's value there is cut (by the bound or the cap) or a list/dict, and then only its
+    # whole values are quoted. A candidate holding null there neither blocks the field nor is offered.
+    filterable: list[tuple[str, dict[str, Any]]] = []
+    blocked: dict[str, str] = {}
+    for path, _values in top_fields:
+        if path not in bounded:
+            blocked[path] = "dropped by the size bound"
+            continue
+        kinds = {
+            did: _filter_kind(metadata_by_doc[did], compared[did], path) for did in candidates if did in metadata_by_doc
+        }
+        reasons = sorted(set(kinds.values()) - {"whole", "null"})
+        if reasons:
+            blocked[path] = " and ".join(reasons)
+            continue
+        offered = {titles[did]: _value_at(metadata_by_doc[did], path) for did, kind in kinds.items() if kind == "whole"}
+        if offered:
+            filterable.append((path, offered))
 
     return {
         "ambiguous_doc_ids": candidates,
         "ambiguous_doc_titles": [titles[d] for d in candidates],
         "differing_metadata": bounded,
-        "suggestion": _build_suggestion(filterable, titles) if filterable else _no_filter_suggestion(top_fields),
+        "suggestion": _build_suggestion(filterable, titles) if filterable else _no_filter_suggestion(blocked),
     }
 
 
@@ -169,23 +176,26 @@ def _value_at(metadata: dict, path: str) -> Any:
     return ns_value.get(key) if isinstance(ns_value, dict) else None
 
 
-def _whole_filter_value(stored: dict, shown: dict, path: str) -> bool:
-    """True when the stored value at ``path`` is shown whole in the hint, so it works as an exact
-    ``metadata_filter`` value: a non-null scalar that the key's cap left unchanged (``shown`` is the
-    capped metadata; at a cap of 0 a string shows as null) and, for a string, within the hint bound."""
+def _filter_kind(stored: dict, shown: dict, path: str) -> str:
+    """How a candidate's stored value at ``path`` serves as an exact ``metadata_filter`` value:
+    "null" (null or absent), "not a scalar" (a list or dict), "cut" (a string the hint bound or the
+    key's cap shortened; at a cap of 0 a string shows as null), or "whole" (``shown`` is the capped
+    metadata)."""
     value = _value_at(stored, path)
-    if value is None or not _is_scalar(value):
-        return False
-    if not isinstance(value, str):
-        return True
-    return len(value) <= HINT_VALUE_MAX_CHARS and _value_at(shown, path) == value
+    if value is None:
+        return "null"
+    if not _is_scalar(value):
+        return "not a scalar"
+    if isinstance(value, str) and (len(value) > HINT_VALUE_MAX_CHARS or _value_at(shown, path) != value):
+        return "cut"
+    return "whole"
 
 
-def _no_filter_suggestion(top_fields: list[tuple[str, dict[str, Any]]]) -> str:
-    fields = ", ".join(path for path, _ in top_fields)
+def _no_filter_suggestion(blocked: dict[str, str]) -> str:
+    fields = ", ".join(f"{path} ({reason})" for path, reason in blocked.items())
     return (
-        f"Top results are ambiguous; they differ on {fields}, but no value there is shown whole, so none "
-        "can be used as a metadata_filter (an exact match). Pin one document with doc_id instead."
+        f"Top results are ambiguous; they differ on {fields}, so no value can be used as a metadata_filter, "
+        "which matches a whole scalar value exactly. Pin one document with doc_id instead."
     )
 
 

@@ -103,12 +103,13 @@ about text answer only about what the key can see (#831):
   value longer than N is refused (422 over REST, an `error` result over MCP) on
   `kb_search`, `kb_batch_search`, `kb_find_all`, `kb_documents_by_date`,
   `POST /api/search` and `/api/search/find-all`, and at a cap of 0 every string
-  filter is, except an ISO date on a date field (see Dates below). Of the
-  `email.*` filters, only `email.from_name`, `email.from_name_contains`,
-  `email.subject` and `email.subject_contains` are accepted, because every mail
-  citation carries the display sender and the subject whole; `email.to_addresses`,
+  filter is, and a null filter value too (every string shows as null at 0),
+  except a strict ISO date on a date field (see Dates below). Of the `email.*`
+  filters, only `email.from_name`, `email.from_name_contains`, `email.subject`
+  and `email.subject_contains` are accepted, because every mail citation carries
+  the display sender and the subject whole; `email.to_addresses`,
   `cc_addresses`, `message_id`, `thread_id` and `from_address` test headers a
-  capped key never receives, and are refused at any cap.
+  citation does not always show, and are refused at any cap.
 - `kb_verify_identifier` matches `tika.title` and metadata identifier fields only
   against stored values within N (document titles and filenames still match).
   It, and the search `discriminator_hint`, compare metadata values as the key
@@ -122,12 +123,18 @@ What the cap does not bound:
   `kb_documents_by_date` and the REST search routes is matched against the whole
   document, as ranking must be. Which documents come back, and a quoted phrase
   query in particular, can indicate that words occur past the cap.
-- **Dates.** An ISO 8601 date or datetime in `tika.created_at`,
-  `frontmatter.date` or `sidecar.date` is structured data:
-  `kb_documents_by_date` sorts, filters (`after`, `before`, `date_field`) and
-  reports on it, `kb_get_document` returns it whole under any cap, and a
-  `metadata_filter` may name it whatever its length. Anything else stored under
-  those keys is text, and is capped (and refused as a filter past the cap).
+- **Dates.** A strict ISO 8601 date or datetime sitting directly in
+  `tika.created_at`, `frontmatter.date` or `sidecar.date` (the value itself, or
+  an element of a list there) is structured data. The strict form is
+  `YYYY-MM-DD`, optionally followed by `T` or a space and `HH:MM`, `:SS`, up to
+  six fractional digits, and `Z` or `±HH:MM`. Under a cap,
+  `kb_get_document` returns such a date whole, a `metadata_filter` may name it
+  whatever its length, and `kb_documents_by_date` sorts, filters (`after`,
+  `before`, `date_field`) and reports on it and on nothing looser. Anything
+  else stored under those keys, such as `2024-01-15 08:00:00 PST` or a value
+  nested in a dict, is text: it is capped, refused as a filter past the cap, and
+  ignored by the date tool for a capped key. Uncapped callers keep the date
+  tool's wider reading, which takes any value that starts `YYYY-MM-DD`.
 - Document titles, headings, and entity strings.
 
 Independently of any cap, every MCP tool result (and every REST response to a

@@ -24,6 +24,7 @@ capped.
 This module sits below the API layer so that ``search.py`` can use it.
 """
 
+import re
 from datetime import datetime
 from typing import Protocol
 
@@ -59,28 +60,57 @@ def cap_passage_text(text: str, principal: _CappedPrincipal) -> str | None:
 
 
 # The metadata date fields kb_documents_by_date sorts, filters and reports on (``metadata_dates``).
-# A value there that parses whole as an ISO 8601 date or datetime is structured data, not document
-# text: the snippet cap leaves it whole in a payload (``payload_bounds``) and lets a filter on it
-# through (``refuse_filter_past_cap``), as the date tool already returns and filters on it. Anything
-# else stored under these keys is text and is capped like any other string.
+# A value sitting directly on one (the scalar, or an element of a list there; never a dict child) that
+# is a strict ISO 8601 date or datetime is structured data, not document text: the snippet cap leaves
+# it whole in a payload (``payload_bounds``), lets a filter on it through (``refuse_filter_past_cap``),
+# and is the only value the date tool uses under a cap (``mcp_lookup_tools``). Anything else stored
+# under these keys is text and is capped like any other string.
 DATE_FIELD_PATHS = frozenset({"tika.created_at", "frontmatter.date", "sidecar.date"})
 
+# The strict form, one pattern for Python (``re.fullmatch``) and Postgres (``~ '^(?:...)$'``, with
+# ``pg_input_is_valid`` for the calendar): YYYY-MM-DD, optionally a time after "T" or a space
+# (HH:MM, :SS, up to six fractional digits) and a "Z" or ±HH:MM offset. Hours, minutes, seconds and
+# offsets are bounded where Python and Postgres would otherwise disagree (24:00, a leap second 60,
+# offsets past ±15:59). ``tests/test_key_snippet_cap.py`` holds the two sides in agreement.
+ISO_DATE_PATTERN = (
+    r"\d{4}-\d{2}-\d{2}"
+    r"(?:[T ](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,6})?)?(?:Z|[+-](?:0\d|1[0-5]):[0-5]\d)?)?"
+)
+_ISO_DATE_RE = re.compile(ISO_DATE_PATTERN)
 
-def is_structured_date(path: str, value: object) -> bool:
-    """True when ``value`` at the dotted metadata ``path`` is an ISO 8601 date in a date field."""
-    if path not in DATE_FIELD_PATHS or not isinstance(value, str) or len(value) > 40:
+
+def date_path_of(segments: tuple[str | int, ...]) -> str | None:
+    """The date field a value sits directly on, or None.
+
+    ``segments`` is the value's path: dict keys and list indices, outermost first, a key possibly a
+    dotted ``ns.key`` itself (``("tika", "created_at")``, ``("tika.created_at",)``, or with trailing list
+    indices for a list element). A dict child (``("tika", "created_at", "k")``) is not on the path."""
+    keys = list(segments)
+    while keys and isinstance(keys[-1], int):
+        keys.pop()
+    if not keys or not all(isinstance(k, str) for k in keys):
+        return None
+    path = ".".join(keys)  # type: ignore[arg-type]
+    return path if path in DATE_FIELD_PATHS else None
+
+
+def is_structured_date(path: str | None, value: object) -> bool:
+    """True when ``value`` on the date field ``path`` (from ``date_path_of``) is a strict ISO date."""
+    if path is None or path not in DATE_FIELD_PATHS or not isinstance(value, str):
+        return False
+    if _ISO_DATE_RE.fullmatch(value) is None:
         return False
     try:
-        datetime.fromisoformat(value.strip())
+        datetime.fromisoformat(value)
     except ValueError:
         return False
     return True
 
 
 # The email.* filters on header fields every mail citation carries whole (``source_ref``: the display
-# sender and the subject). The other email.* filters (to, cc, message id, thread id, and the address
-# behind a display name) test fields a key never receives, To and Cc also opening chunk 0 as passage
-# text, so a capped key may not send them at all.
+# sender and the subject). The other email.* filters test fields a citation does not always show (to,
+# cc, message id, thread id; the address only when there is no display name), To and Cc also opening
+# chunk 0 as passage text, so a capped key may not send them at all.
 CITED_EMAIL_FILTERS = frozenset(
     {"email.from_name", "email.from_name_contains", "email.subject", "email.subject_contains"}
 )
@@ -90,14 +120,13 @@ class SnippetCapRefusal(ValueError):
     """A filter a capped key may not send: it would test text the key cannot read (#831)."""
 
 
-def _filter_strings(value: object) -> list[str]:
-    if isinstance(value, str):
-        return [value]
+def _filter_leaves(value: object, position: tuple[str | int, ...] = ()) -> list[tuple[tuple[str | int, ...], object]]:
+    """Every scalar in a filter value (None included), with its position under the filter's key."""
     if isinstance(value, dict):
-        return [s for v in value.values() for s in _filter_strings(v)]
+        return [leaf for k, v in value.items() for leaf in _filter_leaves(v, (*position, str(k)))]
     if isinstance(value, list | tuple):
-        return [s for v in value for s in _filter_strings(v)]
-    return []
+        return [leaf for i, v in enumerate(value) for leaf in _filter_leaves(v, (*position, i))]
+    return [(position, value)]
 
 
 def refuse_filter_past_cap(metadata_filter: dict | None, cap: int | None) -> None:
@@ -106,13 +135,15 @@ def refuse_filter_past_cap(metadata_filter: dict | None, cap: int | None) -> Non
     A filter is an exact match on the whole stored value, so a value of at most ``cap`` characters
     can only match a stored value the key already sees whole (its first ``cap`` characters are all
     of it); a longer one would confirm a guessed value the key was never shown. At a cap of 0 the
-    key sees no metadata text, and every string filter is refused. Numbers and booleans pass.
+    key sees no metadata text, and every string filter is refused, and so is a null: every string
+    shows as null at 0, so matching a real null would tell it apart from a hidden string. Numbers and
+    booleans pass.
 
-    Two exceptions follow what the key already receives whole. An ISO date on a date field
-    (``is_structured_date``) passes, as structured data. Of the ``email.*`` keys, which filter the
-    ``Document.email_*`` header columns, only ``CITED_EMAIL_FILTERS`` (display sender, subject) pass,
-    since every mail citation carries them; every other ``email.*`` key (to, cc, message id, thread
-    id, from address) is refused at any cap, whatever its value.
+    Two exceptions follow what the key already receives whole. A strict ISO date directly on a date
+    field (``date_path_of``, ``is_structured_date``) passes, as structured data. Of the ``email.*``
+    keys, which filter the ``Document.email_*`` header columns, only ``CITED_EMAIL_FILTERS`` (display
+    sender, subject) pass, since every mail citation carries them; every other ``email.*`` key (to,
+    cc, message id, thread id, from address) is refused at any cap, whatever its value.
     """
     if cap is None or not metadata_filter:
         return
@@ -121,19 +152,28 @@ def refuse_filter_past_cap(metadata_filter: dict | None, cap: int | None) -> Non
             continue
         if path.startswith("email."):
             raise SnippetCapRefusal(
-                f"metadata_filter {path!r} is refused: it tests a mail header this API key never receives "
-                "(it has a snippet cap). Filter mail by email.from_name or email.subject instead."
+                f"metadata_filter {path!r} is refused: this API key has a snippet cap, and it may not filter on a "
+                "mail header that citations do not always show. Filter mail by email.from_name or email.subject."
             )
-        for text in _filter_strings(value):
-            if is_structured_date(path, text):
+        for position, leaf in _filter_leaves(value):
+            if leaf is None:
+                if cap <= 0:
+                    raise SnippetCapRefusal(
+                        f"metadata_filter {path!r} is refused: this API key's snippet cap is 0, so every metadata "
+                        "string shows as null to it, and a null filter would tell a real null from hidden text."
+                    )
+                continue
+            if not isinstance(leaf, str):
+                continue
+            if is_structured_date(date_path_of((path, *position)), leaf):
                 continue
             if cap <= 0:
                 raise SnippetCapRefusal(
                     f"metadata_filter {path!r} is refused: this API key's snippet cap is 0, so it receives no "
                     "metadata text and may not filter on it."
                 )
-            if len(text) > cap:
+            if len(leaf) > cap:
                 raise SnippetCapRefusal(
-                    f"metadata_filter {path!r} is refused: its value is {len(text)} characters and this API key's "
+                    f"metadata_filter {path!r} is refused: its value is {len(leaf)} characters and this API key's "
                     f"snippet cap is {cap}; a filter value may not be longer than the text the key can read."
                 )

@@ -30,7 +30,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from harbor_clerk.passage_cap import cap_text, is_structured_date
+from harbor_clerk.passage_cap import cap_text, date_path_of, is_structured_date
 
 ELLIPSIS = "…"
 TRUNCATED_KEY = "_truncated"
@@ -91,12 +91,9 @@ def cap_values(value: Any, cap: int | None) -> Any:
 def _cap_tree(value: Any, cap: int | None, value_max: int | None, path: Path, cut: list[Path]) -> Any:
     """``value`` with every string capped, then shortened to ``value_max`` (recorded in ``cut``)."""
     if isinstance(value, str):
-        # A list element on a date path is judged by the path that holds the list, as the filter
-        # exemption judges each element (``passage_cap.refuse_filter_past_cap``).
-        field = path
-        while field and isinstance(field[-1], int):
-            field = field[:-1]
-        date = cap is not None and is_structured_date(dotted(field), value)
+        # The same notion of "directly on a date field" as the filter exemption (scalar or list element,
+        # never a dict child): ``passage_cap.date_path_of``.
+        date = cap is not None and is_structured_date(date_path_of(path), value)
         text = value if date else cap_text(value, cap)
         if text is not None and value_max is not None and len(text) > value_max:
             cut.append(path)

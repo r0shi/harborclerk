@@ -373,7 +373,10 @@ def _text_contains_scope(text_contains: str | None, principal: Principal) -> dic
     if text_contains is None or cap is None:
         return {}
     if cap == 0:
-        note = "text_contains matches nothing for this API key: its snippet cap is 0."
+        note = (
+            "This API key's snippet cap is 0, so text_contains matches no text: only an all-whitespace "
+            "literal, which matches every passage, passes."
+        )
     else:
         note = (
             f"text_contains is matched only within the first {cap} characters of each passage "
@@ -965,7 +968,7 @@ async def kb_search(
         (already mapped to email_date_sent for emails).
         Under a key with a snippet cap of N: email.from_name(_contains) and
         email.subject(_contains) are accepted at any length; the other
-        email.* keys are refused; an ISO date on tika.created_at,
+        email.* keys are refused; a strict ISO date on tika.created_at,
         frontmatter.date or sidecar.date is accepted; any other string
         longer than N is refused (every string at a cap of 0).
 
@@ -1272,7 +1275,7 @@ async def kb_find_all(
     (already mapped to email_date_sent for emails).
     Under a key with a snippet cap of N: email.from_name(_contains) and
     email.subject(_contains) are accepted at any length; the other
-    email.* keys are refused; an ISO date on tika.created_at,
+    email.* keys are refused; a strict ISO date on tika.created_at,
     frontmatter.date or sidecar.date is accepted; any other string
     longer than N is refused (every string at a cap of 0).
 
@@ -3071,7 +3074,7 @@ async def kb_documents_by_date(
         (already mapped to email_date_sent for emails).
         Under a key with a snippet cap of N: email.from_name(_contains) and
         email.subject(_contains) are accepted at any length; the other
-        email.* keys are refused; an ISO date on tika.created_at,
+        email.* keys are refused; a strict ISO date on tika.created_at,
         frontmatter.date or sidecar.date is accepted; any other string
         longer than N is refused (every string at a cap of 0).
       after, before: ISO 8601 date or datetime strings; bound the

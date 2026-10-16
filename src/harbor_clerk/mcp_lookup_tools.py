@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.error_text import message_or_type
 from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields
 from harbor_clerk.models import Chunk, Document
-from harbor_clerk.passage_cap import refuse_filter_past_cap
+from harbor_clerk.passage_cap import ISO_DATE_PATTERN, refuse_filter_past_cap
 from harbor_clerk.payload_bounds import cap_values
 from harbor_clerk.search import _apply_email_metadata_filter, _apply_jsonb_metadata_filter, websearch_tsquery
 from harbor_clerk.sql_escape import escape_ilike
@@ -424,7 +424,24 @@ def _safe_timestamp_cast(text_expr: Any) -> Any:
     )
 
 
-def _date_components() -> list[tuple[str, Any]]:
+def _strict_timestamp_cast(text_expr: Any) -> Any:
+    """Like ``_safe_timestamp_cast``, but only for a value ``passage_cap.is_structured_date`` accepts:
+    the same strict pattern, anchored, and ``pg_input_is_valid`` for the calendar (Python's
+    ``fromisoformat``). Used under a snippet cap (#831), so the date tool sorts, ranges and reports only
+    on dates the key also sees whole; anything looser is text, capped on display, and ignored here."""
+    return case(
+        (
+            and_(
+                text_expr.op("~")(f"^(?:{ISO_DATE_PATTERN})$"),
+                func.pg_input_is_valid(text_expr, "timestamptz"),
+            ),
+            cast(text_expr, TIMESTAMP(timezone=True)),
+        ),
+        else_=null(),
+    )
+
+
+def _date_components(strict: bool = False) -> list[tuple[str, Any]]:
     """Return (label, expr) tuples per priority slot.
 
     Expressions are built fresh per call — SQLAlchemy column elements are
@@ -435,9 +452,10 @@ def _date_components() -> list[tuple[str, Any]]:
     (e.g. Tika emitting "N/A") returns NULL and falls through to the next
     priority slot instead of raising an invalid_datetime_format error.
     """
-    tika_expr = _safe_timestamp_cast(Document.doc_metadata["tika"]["created_at"].astext)
-    fm_expr = _safe_timestamp_cast(Document.doc_metadata["frontmatter"]["date"].astext)
-    sc_expr = _safe_timestamp_cast(Document.doc_metadata["sidecar"]["date"].astext)
+    slot_cast = _strict_timestamp_cast if strict else _safe_timestamp_cast
+    tika_expr = slot_cast(Document.doc_metadata["tika"]["created_at"].astext)
+    fm_expr = slot_cast(Document.doc_metadata["frontmatter"]["date"].astext)
+    sc_expr = slot_cast(Document.doc_metadata["sidecar"]["date"].astext)
     ingest_expr = Document.created_at
     return [
         ("tika.created_at", tika_expr),
@@ -469,6 +487,7 @@ async def _query_documents_by_date(
     date_field: str | None = None,
     limit: int = 10,
     doc_ids: Collection[uuid.UUID] | None = None,
+    strict_dates: bool = False,
 ) -> list[tuple[Document, datetime, str]]:
     """Run the SQL query for documents_by_date and return rows.
 
@@ -484,7 +503,8 @@ async def _query_documents_by_date(
     if direction not in ("earliest", "latest"):
         raise ValueError(f"direction must be 'earliest' or 'latest'; got {direction!r}")
 
-    components = _date_components()
+    # strict_dates: a capped key's date tool uses only strict ISO dates (``_strict_timestamp_cast``).
+    components = _date_components(strict=strict_dates)
 
     # Build the effective-date expression + source-label CASE.
     if date_field is not None:
@@ -603,6 +623,7 @@ async def documents_by_date(
             date_field=date_field,
             limit=limit,
             doc_ids=doc_ids,
+            strict_dates=key_snippet_cap is not None,
         )
     except ValueError as exc:
         return {"error": message_or_type(exc)}

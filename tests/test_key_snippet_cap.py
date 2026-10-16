@@ -1052,6 +1052,8 @@ FILTER_CASES = {
     "short string": ({"sidecar.vendor": "Acme"}, False, True),
     # Even "" tests metadata text (that the stored value is empty); a cap-0 key sees none.
     "empty string": ({"sidecar.vendor": ""}, False, True),
+    # At cap 0 every string shows as null, so a null filter would tell a real null from hidden text.
+    "null": ({"sidecar.vendor": None}, False, True),
     "list with a long string": ({"sidecar.tags": ["pilotage", _LONG_FILTER]}, True, True),
     "number": ({"sidecar.term_months": 24}, False, False),
 }
@@ -1406,3 +1408,125 @@ async def test_iso_dates_in_a_list_on_a_date_field_display_whole_as_the_filter_a
     )
     assert "error" not in found, found
     assert {h["doc_id"] for h in found["hits"]} == {str(docs[0].doc_id)}, found["hits"]
+
+
+# --- fifth review: nulls in the hint and in filters, dict children, strict dates (#831) ----------
+
+
+@pytest.mark.parametrize("who", ["human", "key cap=None", "key cap=50"])
+async def test_a_null_candidate_does_not_block_the_suggestion(db_session, mock_session_factory, admin_user, who):
+    """vendor "Acme" against a JSON null: the whole value is offered, the null is neither offered nor a
+    reason to offer nothing."""
+    await _seed_hint_pair(db_session, lambda t: {"sidecar": {"vendor": "Acme" if t == "A" else None}})
+    hint = await _hint_as(db_session, admin_user, who)
+    assert hint is not None
+    assert "metadata_filter={'sidecar.vendor': 'Acme'}" in hint["suggestion"], hint["suggestion"]
+    assert "None" not in hint["suggestion"].split("Available values:")[-1], hint["suggestion"]
+
+
+@pytest.mark.parametrize(
+    ("meta", "reason"),
+    [
+        (lambda t: {"sidecar": {"tags": [f"tag {t}", "shared"]}}, "sidecar.tags (not a scalar)"),
+        (lambda t: {"sidecar": {"vendor": f"{_LONG_VENDOR} {t}"}}, "sidecar.vendor (cut)"),
+    ],
+    ids=["list", "cut"],
+)
+async def test_no_filter_suggestion_states_the_reason(db_session, mock_session_factory, admin_user, meta, reason):
+    await _seed_hint_pair(db_session, meta)
+    hint = await _hint_as(db_session, admin_user, "human")
+    assert hint is not None
+    assert reason in hint["suggestion"], hint["suggestion"]
+    assert "metadata_filter={" not in hint["suggestion"]
+
+
+@pytest.mark.parametrize("cap", [5, 0])
+async def test_a_date_in_a_dict_child_is_text(db_session, corpus, mock_session_factory, admin_user, cap):
+    """Only a scalar or a list element directly on a date field is structured; a dict child under one
+    is text: displayed cut, refused as a filter past the cap."""
+    import harbor_clerk.mcp_server as m
+
+    doc = Document(
+        title="Nested date",
+        status="active",
+        sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/plain",
+        doc_metadata={"tika": {"created_at": {"k": "2024-01-15"}}},
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    who = f"key cap={cap}"
+    payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_get_document(doc_id=str(doc.doc_id)))
+    assert payload["metadata"]["tika"]["created_at"] == {"k": "2024-01-15"[:cap] if cap > 0 else None}
+    refused = await _mcp_as(
+        db_session, admin_user, who, lambda: FILTER_MCP["kb_search"]({"tika.created_at": {"k": "2024-01-15"}})
+    )
+    assert "snippet cap" in refused.get("error", ""), refused
+
+
+# Each edge string, and whether it is a strict ISO date (Python and Postgres must agree).
+_DATE_EDGES = {
+    "2024-01-15": True,
+    "2024-01-15T08:00": True,
+    "2024-01-15T08:00:00": True,
+    "2024-01-15 08:00:00": True,
+    "2024-01-15T08:00:00Z": True,
+    "2024-01-15T08:00:00.123456": True,
+    "2024-01-15T08:00:00+05:30": True,
+    "2024-01-15T08:00:00-15:59": True,
+    "2024-01-15T08:00:00.1234567": False,
+    "2024-01-15T08:00:00+16:00": False,
+    "2024-01-15T24:00:00": False,
+    "2024-01-15T08:00:60": False,
+    "2024-01-15T8:00": False,
+    "2024-01-15T08": False,
+    "2024-01-15t08:00": False,
+    "2024-01-15 08:00:00 PST": False,
+    "2024-01-15 and more": False,
+    " 2024-01-15": False,
+    "2024-01-15\n": False,
+    "2024-02-30": False,
+    "2024-13-45": False,
+    "0000-01-01": False,
+    "20240115": False,
+    "2024-W03-1": False,
+    "N/A": False,
+}
+
+
+async def test_the_strict_date_rule_agrees_in_python_and_postgres(db_session):
+    """The display and filter exemption (Python) and the capped date tool (SQL) accept the same values."""
+    from sqlalchemy import literal, select
+
+    from harbor_clerk.mcp_lookup_tools import _strict_timestamp_cast
+    from harbor_clerk.passage_cap import is_structured_date
+
+    for value, expected in _DATE_EDGES.items():
+        python = is_structured_date("tika.created_at", value)
+        sql = (await db_session.execute(select(_strict_timestamp_cast(literal(value)).isnot(None)))).scalar()
+        assert python is expected, (value, python)
+        assert sql is expected, (value, sql)
+
+
+@pytest.mark.parametrize(("who", "source"), [("key cap=10", "ingest"), ("key cap=None", "tika.created_at")])
+async def test_the_capped_date_tool_uses_only_strict_dates(db_session, mock_session_factory, admin_user, who, source):
+    """'2024-01-15 08:00:00 PST' shows as '2024-01-15' at cap 10, so the capped date tool must not range
+    over the time the key cannot see; uncapped callers keep the wider reading."""
+    import harbor_clerk.mcp_server as m
+
+    doc = Document(
+        title="Tide notice",
+        status="active",
+        sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/plain",
+        doc_metadata={"tika": {"created_at": "2024-01-15 08:00:00 PST"}},
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_documents_by_date(direction="earliest"))
+    (row,) = [r for r in payload["results"] if r["doc_id"] == str(doc.doc_id)]
+    assert row["date_source"] == source, row
+    if source == "tika.created_at":
+        assert row["date"].startswith("2024-01-15T16:00:00"), row

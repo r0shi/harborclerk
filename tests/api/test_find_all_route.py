@@ -246,14 +246,16 @@ async def test_find_all_route_returns_brief_snippets_from_postgres(client, admin
     assert row["top_chunk"]["text"] == text
 
 
-@pytest.mark.parametrize("cap", [50, 0])
+@pytest.mark.parametrize("cap", [50, 0, 1000])
 async def test_find_all_route_capped_key_gets_the_chunk_prefix(client, db_session, cap) -> None:
-    """Over REST, a key with max_snippet_chars gets the chunk's prefix within its cap, not a window
-    on text_contains; a cap of 0 omits the snippet and its chunk id. As on kb_find_all. A literal
-    past the cap matches nothing (#831)."""
+    """Over REST, a key with max_snippet_chars gets the chunk's prefix within min(cap, 240), never a
+    window centred on text_contains; a cap of 0 omits the snippet and its chunk id. As on kb_find_all.
+    At caps 50 and 0 the literal (about 520 characters in) is past the cap and matches nothing (#831),
+    so the snippet is checked without it; at 1000 it matches, and the snippet is still the prefix."""
     from harbor_clerk.auth import generate_api_key, hash_api_key
     from harbor_clerk.models import ApiKey, Chunk, Document
     from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import _FIND_ALL_SNIPPET_MAX_CHARS
     from tests.conftest import auth_header
 
     filler = "The supplier shall deliver the goods described in the schedule on the agreed dates. "
@@ -274,21 +276,26 @@ async def test_find_all_route_capped_key_gets_the_chunk_prefix(client, db_sessio
     )
     await db_session.flush()
 
-    body = {"query": "terminate", "text_contains": "terminate for convenience"}
+    literal = "terminate for convenience"
+    assert text.index(literal) > _FIND_ALL_SNIPPET_MAX_CHARS and text.index(literal) + len(literal) <= 1000
+    body = {"query": "terminate", "text_contains": literal}
     resp = await client.post("/api/search/find-all", json=body, headers=auth_header(raw_key))
     assert resp.status_code == 200, resp.text[:300]
-    assert resp.json()["results"] == [], "a literal past the cap must not match (#831)"
-
-    resp = await client.post("/api/search/find-all", json={"query": "terminate"}, headers=auth_header(raw_key))
-    assert resp.status_code == 200, resp.text[:300]
-    (row,) = resp.json()["results"]
+    if cap == 1000:
+        (row,) = resp.json()["results"]  # the literal is within the cap: it matches
+    else:
+        assert resp.json()["results"] == [], "a literal past the cap must not match (#831)"
+        resp = await client.post("/api/search/find-all", json={"query": "terminate"}, headers=auth_header(raw_key))
+        assert resp.status_code == 200, resp.text[:300]
+        (row,) = resp.json()["results"]
     if cap == 0:
         assert row["snippet"] is None
         assert row["source"].get("chunk_id") is None
         return
-    assert 0 < len(row["snippet"]) <= cap
-    assert "terminate for convenience" not in row["snippet"]
-    assert " ".join(text[:cap].split()).startswith(row["snippet"].removesuffix("\u2026"))
+    bound = min(cap, _FIND_ALL_SNIPPET_MAX_CHARS)
+    assert 0 < len(row["snippet"]) <= bound
+    assert literal not in row["snippet"], "a window centred on the literal, not the prefix"
+    assert " ".join(text[:bound].split()).startswith(row["snippet"].removesuffix("\u2026"))
     assert row["source"]["chunk_id"]
 
 
