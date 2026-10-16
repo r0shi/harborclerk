@@ -18,7 +18,16 @@ from typing import Any
 from sqlalchemy import select
 
 from harbor_clerk.models import Document
-from harbor_clerk.payload_bounds import HINT_VALUE_MAX_CHARS, METADATA_MAX_CHARS, bound_metadata, cap_values, dotted
+from harbor_clerk.payload_bounds import (
+    HINT_VALUE_MAX_CHARS,
+    METADATA_MAX_CHARS,
+    SUGGESTION_MAX_CHARS,
+    bound_metadata,
+    cap_values,
+    dotted,
+    escaped_len,
+    shorten,
+)
 
 # Internal namespace key written by the metadata extractor framework.
 # Per-source timestamps always differ across docs, so excluding this
@@ -144,16 +153,21 @@ async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> 
         more=lambda n: {"more": n},
     )
     # metadata_filter is an exact match on the whole stored value, so a field is offered as a filter only
-    # when no candidate's value there is cut (by the bound or the cap) or a list/dict, and then only its
-    # whole values are quoted. A candidate holding null there neither blocks the field nor is offered.
+    # when no candidate's value there is cut (by the bound or the cap), dropped by the size bound, or a
+    # list/dict, and then only its whole values are quoted. "Whole" is decided against what
+    # `differing_metadata` actually shows, so the hint and the suggestion cannot disagree. A candidate
+    # holding null there neither blocks the field nor is offered.
     filterable: list[tuple[str, dict[str, Any]]] = []
     blocked: dict[str, str] = {}
     for path, _values in top_fields:
-        if path not in bounded:
+        shown = bounded.get(path)
+        if not isinstance(shown, dict):
             blocked[path] = "dropped by the size bound"
             continue
         kinds = {
-            did: _filter_kind(metadata_by_doc[did], compared[did], path) for did in candidates if did in metadata_by_doc
+            did: _filter_kind(metadata_by_doc[did], shown, titles[did], path)
+            for did in candidates
+            if did in metadata_by_doc
         }
         reasons = sorted(set(kinds.values()) - {"whole", "null"})
         if reasons:
@@ -177,27 +191,32 @@ def _value_at(metadata: dict, path: str) -> Any:
     return ns_value.get(key) if isinstance(ns_value, dict) else None
 
 
-def _filter_kind(stored: dict, shown: dict, path: str) -> str:
-    """How a candidate's stored value at ``path`` serves as an exact ``metadata_filter`` value:
-    "null" (null or absent), "not a scalar" (a list or dict), "cut" (a string the hint bound or the
-    key's cap shortened; at a cap of 0 a string shows as null), or "whole" (``shown`` is the capped
-    metadata)."""
+def _filter_kind(stored: dict, shown: dict, title: str, path: str) -> str:
+    """How a candidate's stored value at ``path`` serves as an exact ``metadata_filter`` value, judged
+    against ``shown``, the field's entry in the bounded ``differing_metadata`` ({title: value}):
+    "null" (null or absent), "not a scalar" (a list or dict), "dropped by the size bound" (no entry
+    for this candidate), "cut" (shown differently from what is stored: the hint bound, in escaped
+    characters, or the key's cap, which shows a string as null at 0), or "whole"."""
     value = _value_at(stored, path)
     if value is None:
         return "null"
     if not _is_scalar(value):
         return "not a scalar"
-    if isinstance(value, str) and (len(value) > HINT_VALUE_MAX_CHARS or _value_at(shown, path) != value):
+    if title not in shown:
+        return "dropped by the size bound"
+    if shown[title] != value:
         return "cut"
     return "whole"
 
 
 def _no_filter_suggestion(blocked: dict[str, str]) -> str:
     fields = ", ".join(f"{path} ({reason})" for path, reason in blocked.items())
-    return (
+    text = (
         f"Top results are ambiguous; they differ on {fields}, so no value can be used as a metadata_filter, "
         "which matches a whole scalar value exactly. Pin one document with doc_id instead."
     )
+    # Field names are stored keys of any length; this text quotes no filter value, so a cut is safe.
+    return shorten(text, SUGGESTION_MAX_CHARS)
 
 
 def _is_scalar(v: Any) -> bool:
@@ -291,12 +310,15 @@ def _build_suggestion(top_fields: list[tuple[str, dict[str, Any]]], titles: dict
     one concrete metadata_filter call. Prefers a value that uniquely pins
     a single doc when one exists; otherwise falls back to the first-iterated
     value and softens the claim to "narrow results".
+
+    The whole string stays within ``SUGGESTION_MAX_CHARS`` escaped characters: "Available values"
+    lists as many candidates as fit and says how many it left out, and a filter too long to quote at
+    all becomes a no-filter suggestion.
     """
     if not top_fields:
         return "Top results are ambiguous but no discriminating metadata fields found."
 
     path, values_by_title = top_fields[0]
-    available = ", ".join(f"{t}={v!r}" for t, v in values_by_title.items())
 
     # Count how often each value appears across candidates to prefer one that
     # uniquely pins a single doc.
@@ -311,14 +333,23 @@ def _build_suggestion(top_fields: list[tuple[str, dict[str, Any]]], titles: dict
         None,
     )
     if unique_value is not None:
-        return (
-            f"Top results are ambiguous. Use metadata_filter={{'{path}': {unique_value!r}}} "
-            f"to pin one doc. Available values: {available}."
-        )
+        head = f"Top results are ambiguous. Use metadata_filter={{'{path}': {unique_value!r}}} to pin one doc."
+    else:
+        # No value uniquely pins → soften the claim
+        first_value = next(iter(values_by_title.values()))
+        head = f"Top results are ambiguous. Use metadata_filter={{'{path}': {first_value!r}}} to narrow results."
 
-    # No value uniquely pins → soften the claim
-    first_value = next(iter(values_by_title.values()))
-    return (
-        f"Top results are ambiguous. Use metadata_filter={{'{path}': {first_value!r}}} "
-        f"to narrow results. Available values: {available}."
-    )
+    def compose(listed: list[str], omitted: int) -> str:
+        more = f"{', ' if listed else ''}{omitted} more not listed" if omitted else ""
+        return f"{head} Available values: {', '.join(listed)}{more}."
+
+    if escaped_len(compose([], len(values_by_title))) > SUGGESTION_MAX_CHARS:
+        return _no_filter_suggestion({path: "filter too long to quote"})
+    items = [f"{t}={v!r}" for t, v in values_by_title.items()]
+    listed: list[str] = []
+    for i, item in enumerate(items):
+        rest = len(items) - i - 1
+        if escaped_len(compose([*listed, item], rest)) > SUGGESTION_MAX_CHARS:
+            return compose(listed, len(items) - i)
+        listed.append(item)
+    return compose(listed, 0)

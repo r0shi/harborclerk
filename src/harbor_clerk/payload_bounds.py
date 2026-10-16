@@ -45,6 +45,9 @@ METADATA_VALUE_MAX_CHARS = 1_000
 METADATA_MAX_CHARS = 4_000
 HINT_VALUE_MAX_CHARS = 200
 HINT_MAX_CHARS = 1_000  # per candidate in kb_verify_identifier's discriminating_fields
+# The discriminator's suggestion quotes one filter value and lists the candidates' values: room for
+# about four hint values plus the fixed text, in escaped characters.
+SUGGESTION_MAX_CHARS = 4 * HINT_VALUE_MAX_CHARS + 400
 
 # A dropped path longer than this is listed cut, so a pathological key cannot blow the list.
 _PATH_MAX_CHARS = 120
@@ -87,6 +90,16 @@ def _shorten(text: str, max_chars: int) -> str:
         used += cost
         end = i + 1
     return text[:end] + ELLIPSIS
+
+
+def escaped_len(text: str) -> int:
+    """Characters ``text`` takes as a JSON string in a tool response, quotes excluded."""
+    return _escaped_len(text)
+
+
+def shorten(text: str, max_chars: int) -> str:
+    """``text`` within ``max_chars`` escaped characters, ending in ``…`` when cut."""
+    return _shorten(text, max_chars)
 
 
 def bound_summary(summary: str | None, cap: int | None, *, bounded: bool) -> str | None:

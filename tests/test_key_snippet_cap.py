@@ -927,10 +927,10 @@ async def _seed_hint_pair(
     return docs
 
 
-async def _hint_as(db_session, admin_user, who: str) -> dict | None:
+async def _hint_as(db_session, admin_user, who: str, k: int = 10) -> dict | None:
     import harbor_clerk.mcp_server as m
 
-    payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_search(query="harbour pilot ledger"))
+    payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_search(query="harbour pilot ledger", k=k))
     assert "error" not in payload, payload
     return payload.get("discriminator_hint")
 
@@ -1578,3 +1578,55 @@ async def test_kb_get_document_fits_the_tight_fit_chat_budget_end_to_end(
     assert _truncate_for_llm(out, budget) == out
     payload = json.loads(out)
     assert payload["summary"].endswith(ELLIPSIS) and payload["metadata"][TRUNCATED_KEY]
+
+
+# --- seventh review: "whole" is what differing_metadata shows; the suggestion is bounded (#831) -----
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "港の灯台守の日誌" * 7,  # 56 code points, 336 escaped characters: shown cut at the 200 hint bound
+        '"\n' * 60,  # 120 ASCII characters that escape to 240
+    ],
+    ids=["cjk", "escapes"],
+)
+async def test_a_value_shown_cut_in_the_hint_is_not_offered(db_session, mock_session_factory, admin_user, value):
+    """The hint bound counts escaped characters: a value under 200 code points can still show cut in
+    differing_metadata, and the suggestion must then not quote the stored value as if it were whole."""
+    await _seed_hint_pair(db_session, lambda t: {"sidecar": {"vendor": f"{t}{value}"}})
+    hint = await _hint_as(db_session, admin_user, "human")
+    assert hint is not None
+    shown = hint["differing_metadata"]["sidecar.vendor"]
+    assert all(v.endswith(ELLIPSIS) for v in shown.values()), shown
+    assert "metadata_filter={" not in hint["suggestion"], hint["suggestion"]
+    assert "sidecar.vendor (cut)" in hint["suggestion"], hint["suggestion"]
+
+
+async def test_an_entry_dropped_by_the_hint_bound_is_not_offered(db_session, mock_session_factory, admin_user):
+    """Twenty-five candidates with 190-character values overflow the hint's 4,000-character bound: some
+    (field, document) entries are dropped, so the field cannot be offered."""
+    tags = tuple(f"{i:02d}" for i in range(25))
+    await _seed_hint_pair(db_session, lambda t: {"sidecar": {"vendor": f"Vendor {t} " + "v" * 180}}, tags=tags)
+    hint = await _hint_as(db_session, admin_user, "human", k=25)
+    assert hint is not None
+    shown = hint["differing_metadata"].get("sidecar.vendor", {})
+    assert len(shown) < 25, "the bound did not drop any entry"
+    assert hint["differing_metadata"][TRUNCATED_KEY]
+    assert "metadata_filter={" not in hint["suggestion"], hint["suggestion"]
+    assert "dropped by the size bound" in hint["suggestion"], hint["suggestion"]
+
+
+async def test_the_suggestion_stays_within_its_bound(db_session, mock_session_factory, admin_user):
+    """Ten candidates with whole CJK values (180 escaped characters each): "Available values" lists as
+    many as fit within SUGGESTION_MAX_CHARS and says how many it left out."""
+    from harbor_clerk.payload_bounds import SUGGESTION_MAX_CHARS, escaped_len
+
+    tags = tuple(f"{i:02d}" for i in range(10))
+    await _seed_hint_pair(db_session, lambda t: {"sidecar": {"vendor": t + "港の灯台守" * 5 + "日誌"}}, tags=tags)
+    hint = await _hint_as(db_session, admin_user, "human")
+    assert hint is not None
+    suggestion = hint["suggestion"]
+    assert "metadata_filter={'sidecar.vendor':" in suggestion, suggestion
+    assert escaped_len(suggestion) <= SUGGESTION_MAX_CHARS, escaped_len(suggestion)
+    assert "more not listed" in suggestion, suggestion
