@@ -192,6 +192,12 @@ _SEARCH_OVER_UNSEARCHED_MESSAGE = (
 _now = time.monotonic
 
 
+def _tool_result_max_chars(context_tokens: int) -> int:
+    """The per-tool-result truncation cap: a quarter of the context at ~3.5 characters a token, at most
+    80,000 characters. ``payload_bounds`` sizes the summary and metadata bounds against it (#831)."""
+    return min(int(context_tokens * 0.25 * 3.5), 80_000)
+
+
 def _stopped_early_note(spent_seconds: float) -> str:
     minutes = max(1, round(spent_seconds / 60))
     unit = "minute" if minutes == 1 else "minutes"
@@ -646,7 +652,7 @@ async def chat_stream(
     # macOS launcher clamps -c to what fits this Mac (#556).
     model = get_model(settings.llm_model_id) if settings.llm_model_id else None
     context_tokens = context_budget(model, settings.llm_yarn_enabled)
-    tool_result_max_chars = min(int(context_tokens * 0.25 * 3.5), 80_000)
+    tool_result_max_chars = _tool_result_max_chars(context_tokens)
 
     async with async_session_factory() as session:
         # Save user message

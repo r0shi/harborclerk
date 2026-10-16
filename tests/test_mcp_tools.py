@@ -542,6 +542,7 @@ def mock_hybrid_search(monkeypatch):
         mime_type=None,
         metadata_filter=None,
         text_contains=None,
+        text_contains_prefix_chars=None,
     ):
         captured.update(
             query=query,
@@ -762,6 +763,7 @@ def mock_hybrid_search_multi(monkeypatch):
         mime_type=None,
         metadata_filter=None,
         text_contains=None,
+        text_contains_prefix_chars=None,
     ):
         calls.append(
             dict(

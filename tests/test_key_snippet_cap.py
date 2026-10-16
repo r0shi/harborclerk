@@ -25,6 +25,13 @@ from harbor_clerk.mcp_server import _mcp_principal, _resolve_principal
 from harbor_clerk.models import ApiKey, Chunk, Document, DocumentPage
 from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.passage_cap import cap_passage_text, cap_text, snippet_cap
+from harbor_clerk.payload_bounds import (
+    HINT_MAX_CHARS,
+    METADATA_MAX_CHARS,
+    METADATA_VALUE_MAX_CHARS,
+    SUMMARY_MAX_CHARS,
+    TRUNCATED_KEY,
+)
 from harbor_clerk.search import _brief_snippet
 from tests.conftest import auth_header
 
@@ -433,3 +440,427 @@ async def test_key_name_is_stored_stripped(client, admin_token):
     key_id = created.json()["key_id"]
     resp = await client.patch(f"/api/api-keys/{key_id}", json={"name": " Codex "}, headers=auth_header(admin_token))
     assert resp.status_code == 200 and resp.json()["name"] == "Codex"
+
+
+# --- derived text: text_contains, summaries, metadata, hints, entities (#831) --------------------
+#
+# The cap bounds the document's text, not only passages: a capped key's text_contains answers only
+# about each chunk's first N characters, summaries and metadata strings are their first N, entity
+# rows lose their offsets. Every MCP/tool payload (and every key over REST) also carries a size
+# bound on summaries and metadata; the human's web app over REST does not.
+
+# A literal inside every capped prefix this file uses (chars 15-40 of the paged doc's chunk 1) and
+# one past it (its fourth sentence, ~300 chars in).
+_LITERAL_IN_PREFIX = "keeper logged the page1-0"
+_LITERAL_PAST_CAP = "page1-3 storm"
+
+# MCP principals: a key at each cap, the human (a JWT, as the in-process chat and research tools
+# run) and an OAuth agent. REST has no OAuth principal.
+MCP_PRINCIPALS = [f"key cap={c}" for c in CAPS] + ["human", "oauth"]
+REST_PRINCIPALS = [f"key cap={c}" for c in CAPS] + ["human"]
+
+
+def _cap_of(who: str) -> int | None:
+    if who.startswith("key cap="):
+        raw = who.removeprefix("key cap=")
+        return None if raw == "None" else int(raw)
+    return None
+
+
+async def _mcp_as(db_session, admin_user, who: str, call: Callable[[], Awaitable[str]]) -> dict:
+    if who == "human":
+        principal = Principal(type="user", id=admin_user.user_id, role="admin")
+    elif who == "oauth":
+        principal = Principal(type="oauth", id=uuid.uuid4(), role="user")
+    else:
+        principal = await _resolve_principal(await _make_key(db_session, _cap_of(who)))
+    token = _mcp_principal.set(principal)
+    try:
+        return json.loads(await call())
+    finally:
+        _mcp_principal.reset(token)
+
+
+async def _rest_headers(db_session, admin_user, who: str) -> dict:
+    if who == "human":
+        return auth_header(create_access_token(admin_user.user_id, admin_user.role.value))
+    return auth_header(await _make_key(db_session, _cap_of(who)))
+
+
+def _literal_visible(literal: str, cap: int | None, source: str) -> bool:
+    return cap is None or literal in source[: max(0, cap)]
+
+
+def _tc_mcp(name: str, **kwargs):
+    async def call(literal: str) -> str:
+        import harbor_clerk.mcp_server as m
+
+        return await getattr(m, name)(text_contains=literal, **kwargs)
+
+    return call
+
+
+TEXT_CONTAINS_MCP: dict[str, Callable[[str], Awaitable[str]]] = {
+    "kb_search": _tc_mcp("kb_search", query="lighthouse keeper"),
+    "kb_find_all": _tc_mcp("kb_find_all", query="lighthouse"),
+}
+TEXT_CONTAINS_REST = {
+    "POST /api/search": ("/api/search", {"query": "lighthouse keeper"}),
+    "POST /api/search/find-all": ("/api/search/find-all", {"query": "lighthouse"}),
+}
+
+
+@pytest.mark.parametrize("literal", [_LITERAL_IN_PREFIX, _LITERAL_PAST_CAP])
+@pytest.mark.parametrize("who", MCP_PRINCIPALS)
+@pytest.mark.parametrize("surface", list(TEXT_CONTAINS_MCP))
+async def test_mcp_text_contains_matches_only_within_a_capped_keys_prefix(
+    db_session, corpus, mock_session_factory, admin_user, surface, who, literal
+):
+    source = corpus.sources[1]  # the paged document's chunk 1
+    assert literal in source
+    payload = await _mcp_as(db_session, admin_user, who, lambda: TEXT_CONTAINS_MCP[surface](literal))
+    found = str(corpus.paged_doc.doc_id) in json.dumps(payload)
+    assert found == _literal_visible(literal, _cap_of(who), source), (who, literal, payload)
+
+
+@pytest.mark.parametrize("literal", [_LITERAL_IN_PREFIX, _LITERAL_PAST_CAP])
+@pytest.mark.parametrize("who", REST_PRINCIPALS)
+@pytest.mark.parametrize("surface", list(TEXT_CONTAINS_REST))
+async def test_rest_text_contains_matches_only_within_a_capped_keys_prefix(
+    client, db_session, corpus, admin_user, surface, who, literal
+):
+    source = corpus.sources[1]
+    path, body = TEXT_CONTAINS_REST[surface]
+    resp = await client.post(
+        path, json={**body, "text_contains": literal}, headers=await _rest_headers(db_session, admin_user, who)
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    found = str(corpus.paged_doc.doc_id) in resp.text
+    assert found == _literal_visible(literal, _cap_of(who), source), (who, literal, resp.text[:300])
+
+
+@pytest.mark.parametrize("literal", [_LITERAL_IN_PREFIX, _LITERAL_PAST_CAP])
+async def test_chat_find_all_text_contains_is_unchanged_for_the_human(
+    db_session, corpus, mock_session_factory, admin_user, literal
+):
+    """The in-process chat tool runs as the human: no cap, so a literal anywhere in a chunk matches."""
+    from harbor_clerk.llm.tools import execute_tool
+
+    out = await execute_tool(
+        "find_all_documents", {"query": "lighthouse", "text_contains": literal}, user_id=admin_user.user_id
+    )
+    assert str(corpus.paged_doc.doc_id) in out
+
+
+async def _seed_chunk_doc(db_session: AsyncSession, title: str, text: str) -> Document:
+    doc = Document(
+        title=title,
+        status="active",
+        sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/plain",
+        doc_metadata={},
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=text, language="en", ocr_used=False))
+    await db_session.flush()
+    return doc
+
+
+async def _matching(db_session, literal: str, cap: int | None, docs: list[Document]) -> set[str]:
+    from harbor_clerk.search import hybrid_search
+
+    result = await hybrid_search(
+        db_session,
+        "clause",
+        k=10,
+        doc_ids=[d.doc_id for d in docs],
+        text_contains=literal,
+        text_contains_prefix_chars=cap,
+    )
+    return {h.doc_title for h in result.hits}
+
+
+async def test_text_contains_under_a_cap_answers_only_about_the_prefix(db_session):
+    """Two chunks share their first N characters and differ right after: under a cap of N every
+    probe, word boundaries included, answers the same for both, so nothing past the cap leaks."""
+    prefix = "The lease clause names the keep"
+    cap = len(prefix)
+    a = await _seed_chunk_doc(db_session, "A", prefix + "er of the clause records.")
+    b = await _seed_chunk_doc(db_session, "B", prefix + " clause and the keeper.")
+    probes = ["keep", "keep ", " keep ", "keeper", "keep clause", "the keep", "clause names", "records"]
+    for probe in probes:
+        got = await _matching(db_session, probe, cap, [a, b])
+        assert got in (set(), {"A", "B"}), (probe, got)
+    assert await _matching(db_session, "keeper", None, [a, b]) == {"A", "B"}  # uncapped: anywhere
+    assert await _matching(db_session, "keep clause", None, [a, b]) == {"B"}
+    assert await _matching(db_session, "clause names", cap, [a, b]) == {"A", "B"}
+
+
+async def test_text_contains_prefix_is_the_raw_prefix_folded(db_session):
+    """The prefix is the chunk's first N raw characters, then folded: folding first would bring
+    text from past the cap into it (forty line breaks fold to one space)."""
+    doc = await _seed_chunk_doc(db_session, "W", "clause word" + "\n" * 40 + "secret tail")
+    assert await _matching(db_session, "word secret", None, [doc]) == {"W"}
+    assert await _matching(db_session, "word secret", 20, [doc]) == set()
+    assert await _matching(db_session, "clause word", 20, [doc]) == {"W"}
+    assert await _matching(db_session, "clause", 0, [doc]) == set()
+
+
+# --- summaries, metadata, hints ------------------------------------------------------------------
+
+SECRET = "SECRET"  # sits past the 50-character cap in every derived string, before the 200 hint bound
+
+
+def _derived_metadata(tag: str) -> dict:
+    notes = {
+        f"note_{i:02d}": f"{tag} note {i:02d} of the keeper's log, kept by hand at night. {SECRET}-NOTE "
+        + "storm log " * 80
+        for i in range(20)
+    }
+    return {
+        "tika": {
+            "title": f"Ledger {tag}",
+            "description": f"{tag} description of the keeper's ledger entries, written by hand. {SECRET}-DESC-{tag} "
+            + "entry " * 300,
+            "pages": 3,
+        },
+        "sidecar": {
+            "vendor": f"{tag} Vendor of lamp oil, wicks and brass fittings, est. 1902. {SECRET}-VEND-{tag}",
+            "tags": [f"{tag} tag naming the lamp room and the tide tables, both. {SECRET}-TAG", "short"],
+            **notes,
+        },
+    }
+
+
+def _derived_summary(tag: str) -> str:
+    return f"{tag} summary of the keeper's ledger: storms, lamps and wicks. {SECRET}-SUM-{tag} " + "more words " * 250
+
+
+def _strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
+@dataclass
+class Derived:
+    a: Document
+    b: Document
+    summaries: list[str]
+    meta_strings: list[str]
+
+
+@pytest.fixture
+async def derived(db_session: AsyncSession) -> Derived:
+    """Two documents with identical chunk text (so a search ties them and the discriminator hint
+    fires), long summaries, a large metadata payload with differing values, embeddings (so each is
+    the other's related document) and an entity mention 300 characters into the chunk."""
+    from harbor_clerk.models import Entity
+
+    text = "The lighthouse keeper ledger records every storm, lamp and wick. " * 8
+    emb = [0.0] * 768
+    emb[0] = 1.0
+    docs = []
+    for tag in ("A", "B"):
+        doc = Document(
+            title=f"Keeper Ledger {tag}",
+            status="active",
+            sha256=(tag * 32).encode(),
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+            summary=_derived_summary(tag),
+            doc_metadata=_derived_metadata(tag),
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        chunk = Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=text, language="en", ocr_used=False, embedding=emb)
+        db_session.add(chunk)
+        await db_session.flush()
+        db_session.add(
+            Entity(
+                chunk_id=chunk.chunk_id,
+                doc_id=doc.doc_id,
+                entity_text="Keeper Ledger Company",
+                entity_type="ORG",
+                start_char=300,
+                end_char=321,
+            )
+        )
+        docs.append(doc)
+    await db_session.flush()
+    for tag in ("A", "B"):
+        assert 50 < _derived_summary(tag).index(SECRET) < 150
+        for s in _strings(_derived_metadata(tag)):
+            assert SECRET not in s or 50 < s.index(SECRET) < 150, s
+    return Derived(
+        docs[0],
+        docs[1],
+        [_derived_summary(t) for t in ("A", "B")],
+        [s for t in ("A", "B") for s in _strings(_derived_metadata(t))],
+    )
+
+
+# Every payload field holding metadata values, with its whole-payload bound.
+_METADATA_FIELDS = {
+    "metadata": METADATA_MAX_CHARS,
+    "differing_metadata": METADATA_MAX_CHARS,
+    "discriminating_fields": HINT_MAX_CHARS,
+}
+
+
+def _derived_values(obj: object) -> tuple[list[str | None], list[str | None], list[tuple[str, dict]]]:
+    """(summaries, metadata strings, (field, dict) for every metadata-bearing dict) in a payload."""
+    summaries: list[str | None] = []
+    strings: list[str | None] = []
+    blocks: list[tuple[str, dict]] = []
+
+    def leaves(v: object) -> None:
+        if isinstance(v, dict):
+            for k, x in v.items():
+                if k != TRUNCATED_KEY:
+                    leaves(x)
+        elif isinstance(v, list):
+            for x in v:
+                leaves(x)
+        elif v is None or isinstance(v, str):
+            strings.append(v)
+
+    def walk(o: object) -> None:
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k == "summary" and (v is None or isinstance(v, str)):
+                    summaries.append(v)
+                elif k in _METADATA_FIELDS and isinstance(v, dict):
+                    blocks.append((k, v))
+                    leaves(v)
+                else:
+                    walk(v)
+        elif isinstance(o, list):
+            for x in o:
+                walk(x)
+
+    walk(obj)
+    return summaries, strings, blocks
+
+
+def _assert_derived(payload: dict, d: Derived, cap: int | None, *, bounded: bool, surface: str) -> None:
+    summaries, strings, blocks = _derived_values(payload)
+    dump = json.dumps(payload, ensure_ascii=False)
+    assert summaries or strings, f"{surface} returned no summary or metadata to check: {dump[:300]}"
+    if cap is not None and cap <= 0:
+        assert all(s is None for s in summaries), summaries
+        assert all(s is None for s in strings), strings
+        assert SECRET not in dump
+        return
+    if cap is not None:
+        assert SECRET not in dump, f"text past a cap of {cap} reached the key"
+        for s in summaries:
+            assert s is not None and len(s) <= cap and any(src.startswith(s) for src in d.summaries), s
+        for s in strings:
+            assert s is not None and len(s) <= cap and any(src.startswith(s) for src in d.meta_strings), s
+        return
+    assert SECRET in dump, "an uncapped caller saw none of the derived text"
+    if not bounded:
+        for s in summaries:
+            assert s in d.summaries, f"the human's web app got a cut summary ({len(s or '')} chars)"
+        return
+    for s in summaries:
+        assert s is not None and len(s) <= SUMMARY_MAX_CHARS, len(s or "")
+        assert any(src.startswith(s.removesuffix(ELLIPSIS)) for src in d.summaries), s
+        assert s.endswith(ELLIPSIS), "every source summary is past the bound"
+    for s in strings:
+        assert s is not None and len(s) <= METADATA_VALUE_MAX_CHARS, len(s or "")
+        assert any(src.startswith(s.removesuffix(ELLIPSIS)) for src in d.meta_strings), s
+    for field, block in blocks:
+        size = len(json.dumps(block, ensure_ascii=False, separators=(",", ":")))
+        assert size <= _METADATA_FIELDS[field], (field, size)
+    for field, block in blocks:
+        if field == "metadata":
+            assert block.get(TRUNCATED_KEY), "a payload past the bound must say what it cut"
+
+
+def _d_mcp(name: str, **kwargs):
+    async def call(d: Derived) -> str:
+        import harbor_clerk.mcp_server as m
+
+        return await getattr(m, name)(**{k: (v(d) if callable(v) else v) for k, v in kwargs.items()})
+
+    return call
+
+
+DERIVED_MCP: dict[str, Callable[[Derived], Awaitable[str]]] = {
+    "kb_get_document": _d_mcp("kb_get_document", doc_id=lambda d: str(d.a.doc_id)),
+    "kb_list_recent": _d_mcp("kb_list_recent"),
+    "kb_corpus_overview": _d_mcp("kb_corpus_overview"),
+    "kb_find_related": _d_mcp("kb_find_related", doc_id=lambda d: str(d.a.doc_id)),
+    "kb_search discriminator_hint": _d_mcp("kb_search", query="lighthouse keeper ledger"),
+    "kb_batch_search discriminator_hint": _d_mcp("kb_batch_search", queries=["lighthouse keeper ledger"]),
+    "kb_verify_identifier": _d_mcp("kb_verify_identifier", identifier="Keeper Ledger"),
+}
+DERIVED_REST = ["/api/docs", "/api/docs/overview", "/api/docs/{a}", "/api/docs/{a}/related"]
+
+
+@pytest.mark.parametrize("who", MCP_PRINCIPALS)
+@pytest.mark.parametrize("surface", list(DERIVED_MCP))
+async def test_mcp_derived_text_is_capped_for_keys_and_bounded_for_everyone(
+    db_session, derived, mock_session_factory, admin_user, surface, who
+):
+    payload = await _mcp_as(db_session, admin_user, who, lambda: DERIVED_MCP[surface](derived))
+    if "discriminator_hint" in surface:
+        assert "discriminator_hint" in json.dumps(payload), f"the hint did not fire: {json.dumps(payload)[:300]}"
+    if surface == "kb_verify_identifier":
+        assert payload.get("status") == "ambiguous", payload
+    _assert_derived(payload, derived, _cap_of(who), bounded=True, surface=surface)
+
+
+@pytest.mark.parametrize("who", REST_PRINCIPALS)
+@pytest.mark.parametrize("path", DERIVED_REST)
+async def test_rest_derived_text_is_capped_and_bounded_for_keys_and_whole_for_the_human(
+    client, db_session, derived, admin_user, path, who
+):
+    resp = await client.get(
+        path.replace("{a}", str(derived.a.doc_id)), headers=await _rest_headers(db_session, admin_user, who)
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    _assert_derived(resp.json(), derived, _cap_of(who), bounded=who != "human", surface=path)
+
+
+async def test_chat_get_document_is_bounded_in_process(db_session, derived, mock_session_factory, admin_user):
+    """The chat tools run as the human, and their payload goes into a local model's context: the
+    size bound applies there (a 64 KB sidecar must not land whole), the cap does not."""
+    from harbor_clerk.llm.tools import execute_tool
+
+    out = await execute_tool("get_document", {"doc_id": str(derived.a.doc_id)}, user_id=admin_user.user_id)
+    _assert_derived(json.loads(out), derived, None, bounded=True, surface="chat get_document")
+
+
+@pytest.mark.parametrize("who", MCP_PRINCIPALS)
+async def test_mcp_entity_search_drops_offsets_for_a_capped_key(
+    db_session, derived, mock_session_factory, admin_user, who
+):
+    import harbor_clerk.mcp_server as m
+
+    payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_entity_search("Keeper Ledger"))
+    rows = payload["entities"]
+    assert rows and all(r["entity_text"] == "Keeper Ledger Company" for r in rows)
+    if _cap_of(who) is None:
+        assert all(r["start_char"] == 300 and r["end_char"] == 321 for r in rows)
+    else:
+        assert all("start_char" not in r and "end_char" not in r for r in rows), rows
+
+
+@pytest.mark.parametrize("who", REST_PRINCIPALS)
+@pytest.mark.parametrize("path", ["/api/docs/{a}/entities", "/api/docs/entities/autocomplete?q=Keeper"])
+async def test_rest_entity_routes_never_carry_offsets(client, db_session, derived, admin_user, path, who):
+    resp = await client.get(
+        path.replace("{a}", str(derived.a.doc_id)), headers=await _rest_headers(db_session, admin_user, who)
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    assert "Keeper Ledger Company" in resp.text
+    assert "start_char" not in resp.text and "end_char" not in resp.text

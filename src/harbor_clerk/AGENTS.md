@@ -105,10 +105,10 @@ responses in `redact_paths_for_principal`; register a new path field in
 does) in `ABSOLUTE_PATH_TEXT_FIELDS`. Snippet cap (#823): all chunk or page text
 in a key-reachable payload goes through `passage_cap.py` (`cap_passage_text`,
 `cap_text`, `snippet_cap`): each passage's first N characters (per passage, not
-per document), never a window within it; null at 0; a stored negative is 0.
-Titles, summaries, metadata, headings, entity strings and `text_contains`
-matches are not passage text (a match tells a capped key the literal is in the
-chunk). New surface: a row in `tests/test_key_snippet_cap.py`.
+per document), never a window within it; null at 0; a stored negative is 0. Summaries
+and metadata strings take the prefix too (`payload_bounds.py` also size-bounds them in
+every tool payload and for keys); `text_contains` matches only in the prefix; entity rows
+drop offsets; titles, headings stay whole (#831). New surface: a row in `tests/test_key_snippet_cap.py`.
 
 ## The chat token estimate is raw; the bounds are predicted
 

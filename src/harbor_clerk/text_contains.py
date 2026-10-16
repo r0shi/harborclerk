@@ -92,7 +92,9 @@ def escape_are(value: str) -> str:
     return _ARE_PUNCTUATION_RE.sub(r"\\\1", value)
 
 
-def text_contains_clause(column: ColumnElement[str], value: str) -> ColumnElement[bool]:
+def text_contains_clause(
+    column: ColumnElement[str], value: str, *, prefix_chars: int | None = None
+) -> ColumnElement[bool]:
     """``column`` contains ``value`` as a literal, case-insensitive, whitespace-folded substring.
 
     Inner whitespace matches any run of whitespace. Leading or trailing whitespace asks for a word
@@ -103,11 +105,25 @@ def text_contains_clause(column: ColumnElement[str], value: str) -> ColumnElemen
     The left side must stay exactly ``hc_fold_whitespace(<column>)`` for the planner to use
     ``ix_chunks_chunk_text_ws_trgm``; ``%``, ``_`` and ``\\`` in ``value`` match literally. An
     all-whitespace value folds to "" and matches every chunk.
+
+    ``prefix_chars`` is a capped API key's snippet cap (``passage_cap.snippet_cap``, #831): the value
+    must then occur within the column's first ``prefix_chars`` characters, the text the key can
+    already read, so the filter answers nothing about text past the cap. The indexed substring match
+    over the whole column stays as the prefilter, and the prefix recheck (``hc_fold_whitespace`` over
+    ``left(column, n)``, the raw prefix folded) is ANDed to it; the word-boundary recheck runs on the
+    prefix too, so a boundary at the cap is end of text and the character after it is never consulted.
+    A cap of 0 (or less) matches nothing but an all-whitespace value.
     """
     folded_column = func.hc_fold_whitespace(column)
     folded = fold_whitespace(value)
     core = folded.strip(" ")
-    clause = folded_column.ilike(f"%{escape_ilike(core)}%", escape="\\")
+    pattern_ilike = f"%{escape_ilike(core)}%"
+    clause = folded_column.ilike(pattern_ilike, escape="\\")
+    checked = folded_column  # what the boundary recheck reads
+    if prefix_chars is not None:
+        checked = func.hc_fold_whitespace(func.left(column, max(0, prefix_chars)))
+        if core:
+            clause = and_(clause, checked.ilike(pattern_ilike, escape="\\"))
     if not core:
         return clause
     start = _WORD_START if folded.startswith(" ") else ""
@@ -118,5 +134,5 @@ def text_contains_clause(column: ColumnElement[str], value: str) -> ColumnElemen
         # sign would pass the ILIKE and fail the recheck. The core is lowered, not the boundary
         # class (which already lists both cases).
         pattern = func.concat(start, func.lower(escape_are(core)), end)
-        clause = and_(clause, func.lower(folded_column).op("~")(pattern))
+        clause = and_(clause, func.lower(checked).op("~")(pattern))
     return clause

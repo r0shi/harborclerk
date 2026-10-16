@@ -433,7 +433,8 @@ def test_brief_snippet_literal_longer_than_the_bound_is_cut_at_the_bound():
 @pytest.mark.parametrize(("cap", "bound"), [(50, 50), (1000, 240), (0, None), (-5, None)])
 async def test_find_all_key_cap_gives_the_chunk_prefix(db_session, cap, bound):
     """key_max_snippet_chars: the snippet is the chunk's prefix within min(cap, 240), even with
-    text_contains deep in the chunk; a cap of 0 or less omits the snippet and its chunk id."""
+    text_contains deep in the chunk; a cap of 0 or less omits the snippet and its chunk id. The
+    literal must lie within the chunk's first ``cap`` characters (#831): past them, no hit."""
     literal = "governed by the laws of Delaware"
     text = _FILLER * 8 + f"This Agreement shall be {literal}. " + _FILLER * 8
     assert text.index(literal) > 240
@@ -441,6 +442,9 @@ async def test_find_all_key_cap_gives_the_chunk_prefix(db_session, cap, bound):
 
     result = await find_all(db_session, "agreement", max_results=10, text_contains=literal, key_max_snippet_chars=cap)
 
+    if text.index(literal) + len(literal) > max(0, cap):
+        assert result.hits == [] and result.total_matches == 0
+        return
     (hit,) = result.hits
     if bound is None:
         assert hit.snippet is None and hit.snippet_chunk_id is None

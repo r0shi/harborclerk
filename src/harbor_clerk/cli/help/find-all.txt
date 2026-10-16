@@ -19,6 +19,7 @@ USAGE
 OPTIONS
       --query TEXT             Relevance query; alternative to positional query
       --text-contains TEXT     Require an exact substring in matching chunk text
+                               (under a key's snippet cap of N: in the first N chars)
       --max-results INT        Max documents returned (default: 100)
   -o, --offset INT             Pagination offset (default: 0)
       --presentation brief|full

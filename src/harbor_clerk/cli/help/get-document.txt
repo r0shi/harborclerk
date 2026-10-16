@@ -32,11 +32,17 @@ RETURNS (JSON)
     "title":           "string",             // filename or extracted title
     "status":          "active",             // "active" | "deleted"
     "pipeline_status": "done",               // "queued"|"running"|"done"|"error"|null
-    "summary":         "string",             // LLM-generated summary, or null
+    "summary":         "string",             // LLM-generated summary, or null; at most
+                                             //   1,500 chars ("…" when cut)
     "mime_type":       "application/pdf",    // detected MIME type, or null
     "size_bytes":      204800,               // original file size in bytes, or null
     "extracted_chars": 38450,                // characters extracted by Tika/UTF-8
     "updated_at":      "2026-05-20T14:33:00.000Z",  // ISO 8601 timestamp
+    "metadata":        {"tika": {...}, "sidecar": {...}},  // structured metadata:
+                                             //   a string value over 1,000 chars ends
+                                             //   in "…"; over 4,000 chars of JSON keeps
+                                             //   the entries that fit; "_truncated"
+                                             //   lists every path cut or dropped
     "jobs": [
       {
         "stage":  "extract",   // pipeline stage name
@@ -64,6 +70,9 @@ EXAMPLES
   # Find any errored jobs across the pipeline
   harbor-clerk get-document 3e4f9a12-... \
     | jq '.jobs[] | select(.status == "error")'
+
+  Under a key with a snippet cap of N, the summary and every metadata string
+  value are their first N characters (null at a cap of 0).
 
 COMMON MISTAKES
   - Using get-document to retrieve body text — it returns metadata only.

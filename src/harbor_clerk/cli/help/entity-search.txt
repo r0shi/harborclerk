@@ -32,8 +32,8 @@ RETURNS (JSON)
         "entity_type": "string",    // e.g. PERSON, ORG, GPE
         "doc_id":      "uuid",      // source document
         "chunk_id":    "uuid",      // source chunk (pass to read-passages)
-        "start_char":  42,          // char offset within chunk
-        "end_char":    55           // char offset within chunk
+        "start_char":  42,          // char offset within chunk (omitted under a
+        "end_char":    55           //   key with a snippet cap)
       }
     ],
     "total":    100,   // total matching records across all pages

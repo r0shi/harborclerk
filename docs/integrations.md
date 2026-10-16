@@ -89,11 +89,23 @@ is refused to a key with a cap. A cap of 0 returns citations and metadata with
 the text fields null or absent. Leave the cap unset for no limit; negative values
 are rejected.
 
-The cap does not cover what is not passage text: document titles, summaries,
-metadata, headings and entity strings are returned as they are. Nor does it hide
-whether a `text_contains` literal occurs: a search with `text_contains` returns a
-chunk only if the chunk contains the literal, so a capped key can confirm that a
-phrase appears in a chunk without receiving the text around it.
+The cap bounds the document's text, not only passages (#831). Summaries
+(`kb_get_document`, `kb_list_recent`, `kb_corpus_overview`, `kb_find_related` and
+`GET /api/docs`, `/api/docs/overview`, `/api/docs/{id}`, `/api/docs/{id}/related`)
+and every metadata string value (`kb_get_document`'s `metadata`, the search
+`discriminator_hint`, `kb_verify_identifier`'s `discriminating_fields`) are their
+first N characters, null at 0. A `text_contains` filter (`kb_search`,
+`kb_find_all`, `POST /api/search`, `/api/search/find-all`) matches only within
+each chunk's first N characters, so it answers nothing about text the key cannot
+read. `kb_entity_search` returns entity strings without their `start_char` /
+`end_char`. Document titles and headings are returned as they are.
+
+Independently of any cap, every MCP tool result (and every REST response to a
+key) bounds summaries at 1,500 characters, each metadata string at 1,000 and a
+metadata payload at 4,000 characters of JSON, sized against one chat tool
+result at the smallest context a model runs at. A cut value ends in `…`, and the
+metadata carries a `_truncated` list of every path it shortened or dropped. The
+web app's own sessions over REST receive summaries whole.
 
 If a skill or harness tries a tool outside its key scope, treat that as a
 recoverable scope mismatch. The agent should continue with search and passage

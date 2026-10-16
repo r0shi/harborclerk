@@ -249,7 +249,8 @@ async def test_find_all_route_returns_brief_snippets_from_postgres(client, admin
 @pytest.mark.parametrize("cap", [50, 0])
 async def test_find_all_route_capped_key_gets_the_chunk_prefix(client, db_session, cap) -> None:
     """Over REST, a key with max_snippet_chars gets the chunk's prefix within its cap, not a window
-    on text_contains; a cap of 0 omits the snippet and its chunk id. As on kb_find_all."""
+    on text_contains; a cap of 0 omits the snippet and its chunk id. As on kb_find_all. A literal
+    past the cap matches nothing (#831)."""
     from harbor_clerk.auth import generate_api_key, hash_api_key
     from harbor_clerk.models import ApiKey, Chunk, Document
     from harbor_clerk.models.enums import PipelineStatus
@@ -275,6 +276,10 @@ async def test_find_all_route_capped_key_gets_the_chunk_prefix(client, db_sessio
 
     body = {"query": "terminate", "text_contains": "terminate for convenience"}
     resp = await client.post("/api/search/find-all", json=body, headers=auth_header(raw_key))
+    assert resp.status_code == 200, resp.text[:300]
+    assert resp.json()["results"] == [], "a literal past the cap must not match (#831)"
+
+    resp = await client.post("/api/search/find-all", json={"query": "terminate"}, headers=auth_header(raw_key))
     assert resp.status_code == 200, resp.text[:300]
     (row,) = resp.json()["results"]
     if cap == 0:

@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import select
 
 from harbor_clerk.models import Document
+from harbor_clerk.payload_bounds import HINT_VALUE_MAX_CHARS, METADATA_MAX_CHARS, bound_metadata
 
 # Internal namespace key written by the metadata extractor framework.
 # Per-source timestamps always differ across docs, so excluding this
@@ -38,13 +39,19 @@ _MAX_FIELDS_IN_HINT = 3
 _COLLECTION_SUMMARY_FIRST_CHARS = 60
 
 
-async def _compute_discriminator_hint(hits, session) -> dict | None:
+async def _compute_discriminator_hint(hits, session, cap: int | None = None) -> dict | None:
     """Return a discriminator_hint dict if top hits are ambiguous on a
     structured metadata field, or None if no hint applies.
 
     `hits` is a list of SearchHit-shaped objects (must have `.doc_id`
     (str), `.doc_title` (str), `.score` (float)). `session` is a
     SQLAlchemy AsyncSession used for one SELECT against `documents.metadata`.
+    `cap` is the calling key's snippet cap (``passage_cap.snippet_cap``):
+    every metadata string in the hint, the suggestion's included, is cut to
+    its first `cap` characters (#831). For every caller the values are then
+    size-bounded (``payload_bounds``: ``HINT_VALUE_MAX_CHARS`` per value,
+    ``METADATA_MAX_CHARS`` for `differing_metadata`, `_truncated` listing
+    what was cut).
     """
     if len(hits) < 2:
         return None
@@ -108,11 +115,15 @@ async def _compute_discriminator_hint(hits, session) -> dict | None:
         path: {t: _compact_value(v) for t, v in values_by_title.items()} for path, values_by_title in top_fields
     }
 
+    # The key's cap, then the size bound; the suggestion quotes only what survived both.
+    bounded = bound_metadata(compacted, cap, bounded=True, value_max=HINT_VALUE_MAX_CHARS, total_max=METADATA_MAX_CHARS)
+    suggestion_fields = [(path, bounded[path]) for path, _ in top_fields if isinstance(bounded.get(path), dict)]
+
     return {
         "ambiguous_doc_ids": candidates,
         "ambiguous_doc_titles": [titles[d] for d in candidates],
-        "differing_metadata": compacted,
-        "suggestion": _build_suggestion(top_fields, titles),
+        "differing_metadata": bounded,
+        "suggestion": _build_suggestion(suggestion_fields, titles),
     }
 
 

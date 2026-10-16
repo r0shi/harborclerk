@@ -31,7 +31,8 @@ OPTIONS
       --mime-type MIME      Restrict by MIME type (e.g. application/pdf)
       --metadata-filter JSON
                              JSON metadata containment filter
-      --text-contains TEXT  Require an exact substring in chunk text
+      --text-contains TEXT  Require an exact substring in chunk text (under a
+                             key's snippet cap of N: in the first N chars)
       --faceted             Include document-grouped results
 
 RETURNS (JSON)

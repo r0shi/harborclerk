@@ -39,11 +39,18 @@ from harbor_clerk.models import (
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.watched import WatchedFile, WatchedFolder
 from harbor_clerk.passage_cap import snippet_cap
+from harbor_clerk.payload_bounds import bound_summary
 from harbor_clerk.sql_escape import escape_ilike
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["documents"])
+
+
+def _summary_for(summary: str | None, principal: Principal) -> str | None:
+    """A summary as ``principal`` may receive it (#831): a key's snippet cap, then the size bound
+    for every principal but the signed-in human, whose web app shows the summary whole."""
+    return bound_summary(summary, snippet_cap(principal), bounded=not is_human(principal))
 
 
 @router.get("/docs", response_model=PaginatedDocuments)
@@ -195,7 +202,7 @@ async def list_documents(
                 pipeline_status=doc.pipeline_status.value if doc.pipeline_status else None,
                 created_at=doc.created_at,
                 updated_at=doc.updated_at,
-                summary=doc.summary,
+                summary=_summary_for(doc.summary, principal),
                 summary_model=doc.summary_model,
                 doc_type=doc.doc_type,
                 source_path=doc.source_path,
@@ -314,7 +321,7 @@ async def corpus_overview(
             {
                 "doc_id": str(doc.doc_id),
                 "title": doc.title,
-                "summary": doc.summary,
+                "summary": _summary_for(doc.summary, principal),
                 "status": doc.pipeline_status.value if doc.pipeline_status else None,
                 "updated_at": doc.updated_at,
             }
@@ -518,7 +525,7 @@ async def get_document(
         status=doc.status,
         pipeline_status=doc.pipeline_status.value if doc.pipeline_status else None,
         pipeline_seq=doc.pipeline_seq,
-        summary=doc.summary,
+        summary=_summary_for(doc.summary, principal),
         doc_type=doc.doc_type,
         mime_type=doc.mime_type,
         source_path=doc.source_path,
@@ -784,7 +791,7 @@ async def find_related_documents(
             {
                 "doc_id": str(rid),
                 "title": rdoc.title,
-                "summary": rdoc.summary,
+                "summary": _summary_for(rdoc.summary, principal),
                 "similarity": round(1.0 - distances[rid], 4),
                 "doc_type": rdoc.doc_type,
                 "mime_type": rdoc.mime_type,

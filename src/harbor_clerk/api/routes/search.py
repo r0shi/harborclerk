@@ -227,6 +227,8 @@ async def search(
             mime_type=body.mime_type,
             metadata_filter=body.metadata_filter,
             text_contains=body.text_contains,
+            # A capped key's literal matches only within the prefix it can read (#831).
+            text_contains_prefix_chars=snippet_cap(principal),
             summary_state=body.summary_state,
             pipeline_status=body.pipeline_status,
             job_stage=body.job_stage,

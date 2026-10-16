@@ -10,9 +10,12 @@ chunks and pages it reads, so it can receive the first ``cap`` characters of eac
 or a negative value stored before create/update validated it — returns no
 passage text (None). Humans, OAuth agents and keys with no cap are unaffected.
 
-Titles, summaries, metadata, entity strings and headings are not passage text
-and are not capped; nor is the fact that a ``text_contains`` filter matched,
-which tells a caller whether a literal occurs in a chunk.
+The cap bounds the document's text, not only passages (#831): summaries and
+metadata string values take the same prefix rule (``payload_bounds``), a
+capped key's ``text_contains`` matches only within each chunk's first ``cap``
+characters (``text_contains.text_contains_clause``), and entity strings come
+without their ``start_char``/``end_char``. Titles, headings and entity strings
+themselves are not capped.
 
 This module sits below the API layer so that ``search.py`` can use it.
 """

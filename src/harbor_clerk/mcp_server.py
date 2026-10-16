@@ -35,6 +35,7 @@ from harbor_clerk.models import (
 )
 from harbor_clerk.oauth import validate_access_token as validate_oauth_access_token
 from harbor_clerk.passage_cap import cap_passage_text, cap_text, snippet_cap
+from harbor_clerk.payload_bounds import HINT_MAX_CHARS, HINT_VALUE_MAX_CHARS, bound_metadata, bound_summary
 from harbor_clerk.search import (
     FindAllHit,
     FindAllResult,
@@ -336,6 +337,14 @@ def _human_session() -> bool:
     """
     principal = _mcp_principal.get()
     return principal is not None and is_human(principal)
+
+
+def _bounded_summary(summary: str | None, principal: Principal) -> str | None:
+    """A summary in a tool payload: the key's snippet cap, then the size bound (#831).
+
+    Bounded for every caller, the human's in-process chat and research tools included: the payload
+    lands in a model's context either way (``payload_bounds``)."""
+    return bound_summary(summary, snippet_cap(principal), bounded=True)
 
 
 def _error_text(text: str | None) -> str | None:
@@ -929,8 +938,9 @@ async def kb_search(
         understand score distribution and document coverage before narrowing down
       Under an API key with a snippet cap of N characters, a hit's text is the
       chunk's first N characters at every detail level (none at a cap of 0).
-      The cap applies to passage text only: titles, metadata and whether a
-      text_contains literal matched are returned as usual.
+      The cap bounds the document's text, not only passages: text_contains
+      matches only within each chunk's first N characters, and the
+      discriminator hint's metadata values are cut to their first N.
 
     faceted: if true, groups hits by document with per-document top_score
       and hit_count — useful for understanding which documents are most
@@ -944,7 +954,8 @@ async def kb_search(
       for a word boundary on that side: " IP " matches "the IP clause"
       and "IP." but not "ship". Special chars (% _) are matched
       literally. Combine with `query` for relevance ranking among the
-      literal-match subset.
+      literal-match subset. Under a key with a snippet cap of N, the
+      literal must occur within a chunk's first N characters.
     """
     principal = _get_principal()
     settings = get_settings()
@@ -1025,13 +1036,15 @@ async def kb_search(
             mime_type=mime_type,
             metadata_filter=metadata_filter,
             text_contains=text_contains,
+            # A capped key's literal matches only within the prefix it can read (#831).
+            text_contains_prefix_chars=snippet_cap(principal),
         )
         heading_map = await _resolve_headings(session, result.hits)
         source_context = await _source_context(session, [h.doc_id for h in result.hits])
         # Compute discriminator_hint if applicable. Cheap post-processing:
         # one indexed SELECT for top-K candidate docs' metadata. Skips when
         # fewer than 2 hits.
-        discriminator_hint = await _compute_discriminator_hint(result.hits, session)
+        discriminator_hint = await _compute_discriminator_hint(result.hits, session, snippet_cap(principal))
 
     # Resolve brief_chars for brief mode
     effective_brief_chars = brief_chars if brief_chars > 0 else settings.mcp_brief_chars
@@ -1176,7 +1189,9 @@ async def kb_find_all(
         tabs, line breaks or non-breaking spaces matches a single space.
         Leading or trailing whitespace asks for a word boundary on that
         side: " IP " matches "the IP clause" and "IP." but not "ship".
-        Special chars (% _) are matched literally.
+        Special chars (% _) are matched literally. Under a key with a
+        snippet cap of N, the literal must occur within a chunk's first N
+        characters.
       max_results: cap on documents returned (default 100; server clamps
         at settings.find_all_max_results_cap, default 500).
       offset: pagination offset over the sorted result set. Default 0.
@@ -1518,7 +1533,7 @@ async def kb_batch_search(
                 snippet_cap(principal),
             )
             resp["query"] = query
-            hint = await _compute_discriminator_hint(result.hits, session)
+            hint = await _compute_discriminator_hint(result.hits, session, snippet_cap(principal))
             if hint is not None:
                 resp["discriminator_hint"] = hint
             results.append(resp)
@@ -1744,6 +1759,11 @@ async def kb_get_document(doc_id: str) -> str:
         EXACTLY the filter keys you can pass to kb_search via metadata_filter
         — e.g. `metadata.sidecar.vendor` becomes
         `metadata_filter={"sidecar.vendor": "..."}`
+      - Size bounds: a string value over 1,000 characters and a summary over
+        1,500 end in "…"; metadata over 4,000 characters of JSON keeps the
+        entries that fit. `metadata._truncated` lists every path cut or
+        dropped. Under a key with a snippet cap of N, the summary and every
+        metadata string are their first N characters (none at a cap of 0).
 
     When to use it:
       - You want to inspect what filter keys exist on a doc before crafting
@@ -1788,12 +1808,13 @@ async def kb_get_document(doc_id: str) -> str:
         "title": doc.title,
         "status": doc.status,
         "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
-        "summary": doc.summary,
+        "summary": _bounded_summary(doc.summary, principal),
         "mime_type": doc.mime_type,
         "size_bytes": doc.size_bytes,
         "extracted_chars": doc.extracted_chars,
         "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
-        "metadata": doc.doc_metadata,
+        # The key's snippet cap on every string value, then the size bound for every caller (#831).
+        "metadata": bound_metadata(doc.doc_metadata, snippet_cap(principal), bounded=True),
         "jobs": jobs,
     }
     if doc.error:
@@ -1848,7 +1869,7 @@ async def kb_list_recent(limit: int = 20) -> str:
         item = {
             "doc_id": str(doc.doc_id),
             "title": doc.title,
-            "summary": doc.summary,
+            "summary": _bounded_summary(doc.summary, principal),
             "status": doc.status,
             "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
             "updated_at": doc.updated_at.isoformat(),
@@ -1993,7 +2014,7 @@ async def kb_corpus_overview(limit: int = 50) -> str:
         item = {
             "doc_id": str(doc.doc_id),
             "title": doc.title,
-            "summary": doc.summary,
+            "summary": _bounded_summary(doc.summary, principal),
             "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
             "updated_at": doc.updated_at.isoformat(),
         }
@@ -2311,7 +2332,7 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         item = {
             "doc_id": str(rid),
             "title": rdoc.title,
-            "summary": rdoc.summary,
+            "summary": _bounded_summary(rdoc.summary, principal),
             "similarity": similarity,
             "source": source,
             "doc_type": rdoc.doc_type,
@@ -2436,6 +2457,11 @@ async def kb_entity_search(
                 }
                 for e in rows
             ]
+            if snippet_cap(principal) is not None:
+                # An exact string at an offset places text past the key's cap in the chunk: a capped
+                # key keeps the entity's text and loses where it sits (#831).
+                for entity in entities:
+                    del entity["start_char"], entity["end_char"]
 
     return json.dumps(
         {
@@ -2881,8 +2907,18 @@ async def kb_verify_identifier(identifier: str) -> str:
             if isinstance(candidates, list):
                 payloads.extend(candidate for candidate in candidates if isinstance(candidate, dict))
         source_context = await _source_context(session, _valid_doc_ids_from_payloads(payloads))
+        cap = snippet_cap(principal)
         for payload in payloads:
             _enrich_doc_payload_with_source(payload, source_context)
+            # Metadata values: the key's snippet cap, then the hint bound for every caller (#831).
+            if isinstance(payload.get("discriminating_fields"), dict):
+                payload["discriminating_fields"] = bound_metadata(
+                    payload["discriminating_fields"],
+                    cap,
+                    bounded=True,
+                    value_max=HINT_VALUE_MAX_CHARS,
+                    total_max=HINT_MAX_CHARS,
+                )
     # Response-level anti-hedge directive for the not_found case. The docstring
     # already says "do NOT fall back to closest match", but the BEFORE/AFTER on
     # PR-J showed frontier models reproduce the exact padding the docstring

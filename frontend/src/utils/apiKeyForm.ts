@@ -4,7 +4,7 @@
 // which would read as "no limit" and silently remove a cap.
 //
 // max_snippet_chars: null = no cap, N >= 0 = the first N characters of the passage and page
-// text the key receives, none at 0 (#823). Rate limits: null = the system default, 0 =
+// text the key receives, and of summaries and metadata values (#831), none at 0 (#823). Rate limits: null = the system default, 0 =
 // unlimited, N >= 1 requests. The server rejects anything outside 0..2^31-1, the range of
 // its integer columns (src/harbor_clerk/api/schemas/api_keys.py).
 
