@@ -546,6 +546,9 @@ def test_concurrent_runs_are_serialised_and_rewrite_once(alembic_cfg, sync_engin
         # The second run polled: idle between tries (no open transaction), no lock wait, no snapshot.
         state, wait_type, _, _, xmin = second_while_waiting
         assert state == "idle" and wait_type != "Lock" and xmin is None, second_while_waiting
+        # ... and said who it was waiting for.
+        assert "Waiting for another migration run to finish (held by pid " in outputs[1], outputs[1][-800:]
+        assert f"application_name '{first}')" in outputs[1], outputs[1][-800:]
     finally:
         if blocker_tx.is_active:
             blocker_tx.rollback()
@@ -560,3 +563,29 @@ def test_concurrent_runs_are_serialised_and_rewrite_once(alembic_cfg, sync_engin
             conn.execute(text("DROP TABLE IF EXISTS hc_test_rewrites"))
         _drop_invalid_leftovers(sync_engine, "ix_chunks_chunk_text_ws_trgm", "ix_chunks_chunk_text_trgm")
         command.upgrade(alembic_cfg, "head")
+
+
+def test_0009_fails_fast_when_chunks_is_held(alembic_cfg, sync_engine):
+    """On a live API another transaction may hold chunks; 0009's ALTER waits at most 10 s
+    (lock_timeout) rather than queueing every search behind it, says so, and leaves 0008 stamped."""
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, "0008_chunk_text_ws_fold")
+    blocker = sync_engine.connect()
+    blocker_tx = blocker.begin()
+    try:
+        blocker.execute(text("LOCK TABLE public.chunks IN ROW EXCLUSIVE MODE"))
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="could not lock public.chunks within 10s: another transaction holds it"):
+            command.upgrade(alembic_cfg, "head")
+        elapsed = time.monotonic() - started
+        blocker_tx.rollback()
+        with sync_engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0008_chunk_text_ws_fold"
+        assert "hc_fold_whitespace" not in _fts_expressions(sync_engine)["fts_en"]
+        assert 9 < elapsed < 30, elapsed
+    finally:
+        if blocker_tx.is_active:
+            blocker_tx.rollback()
+        blocker.close()
+        command.upgrade(alembic_cfg, "head")
+    assert "hc_fold_whitespace" in _fts_expressions(sync_engine)["fts_en"]

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import subprocess
+import sys
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -14,7 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from harbor_clerk.api.deps import Principal, require_admin
 from harbor_clerk.api.schemas.system import (
@@ -1080,6 +1082,8 @@ async def run_migrations(
     """
     from harbor_clerk import migration_session
 
+    # "cancelled" stays only if the request task is cancelled in-process (an asyncio cancellation:
+    # a BaseException, so not the `except Exception` below).
     audit: dict[str, Any] = {"outcome": "cancelled", "version": None}
     try:
         if await migration_session.migration_lock_holder(session) is not None:
@@ -1106,9 +1110,11 @@ async def run_migrations(
                 raise HTTPException(status_code=504, detail=_timeout_detail(stop)) from None
         finally:
             if not finished and proc.returncode is None:
-                # Any other way out (the request cancelled on shutdown or disconnect, an error):
-                # alembic must not outlive the request, nor its backend keep a lock. Shielded, so
-                # a second cancellation does not interrupt the cleanup.
+                # Any other way out (the request task cancelled in-process, an error): alembic must
+                # not outlive the request, nor its backend keep a lock. Shielded, so a second
+                # cancellation does not interrupt the cleanup. A client disconnect does not cancel
+                # this handler, and a forced exit (SIGKILL of the API) skips this too: the orphaned
+                # alembic then finishes on its own, and the next runner waits for its lock.
                 stop = await asyncio.shield(_stop_alembic(proc, session_name))
                 audit["version"] = stop.version
         if proc.returncode != 0:
@@ -1118,6 +1124,12 @@ async def run_migrations(
         version = await _schema_version(session)
         audit.update(outcome="ok", version=version)
         return {"status": "ok", "schema_version": version}
+    except HTTPException:
+        raise
+    except Exception:
+        # Anything else that failed (alembic could not be started, the pre-check query, ...).
+        audit["outcome"] = "error"
+        raise
     finally:
         await asyncio.shield(_audit_run(session, admin.id, audit))
 
@@ -1133,6 +1145,8 @@ async def _audit_run(session: AsyncSession, user_id, detail: dict[str, Any]) -> 
 
 # How long the timeout path waits for the cancelled backends to exit before reporting.
 MIGRATION_CANCEL_WAIT_SECONDS = 10.0
+# Connect timeout of the dedicated connection that cancels a run.
+STOP_CONNECT_TIMEOUT_SECONDS = 10.0
 # lock_timeout for reading alembic_version after a cancelled run.
 SCHEMA_VERSION_LOCK_TIMEOUT = "5s"
 
@@ -1142,7 +1156,8 @@ def _start_alembic(session_name: str) -> subprocess.Popen:
     from harbor_clerk.migration_session import APPLICATION_NAME_ENV
 
     return subprocess.Popen(
-        ["python", "-m", "alembic", "upgrade", "head"],
+        # This interpreter, not whichever "python" is first on PATH.
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -1169,16 +1184,23 @@ async def _stop_alembic(proc: subprocess.Popen, session_name: str) -> _Stopped:
     runs to its end under its locks and only then rolls back. Never raises: a failure is reported
     in the result.
     """
-    from harbor_clerk.db import async_session_factory
     from harbor_clerk.migration_session import cancel_backends, migration_lock_holder, wait_for_exit
 
     try:
         proc.kill()
     except ProcessLookupError:
         pass
+    engine = None
     try:
         await asyncio.to_thread(proc.wait)
-        async with async_session_factory() as db:
+        _close_pipes(proc)
+        # A connection of its own, not the API pool: the deadline fires exactly when requests are
+        # queued behind the rewrite, each holding a pooled connection, so the pool is likely
+        # exhausted and its checkout would wait out the pool timeout while the lock stays held.
+        engine = create_async_engine(
+            get_settings().database_url, poolclass=NullPool, connect_args={"timeout": STOP_CONNECT_TIMEOUT_SECONDS}
+        )
+        async with async_sessionmaker(engine, expire_on_commit=False)() as db:
             # Past the route's pre-check, a run can still start just behind another and spend the
             # whole deadline polling for the lock: then the lock's holder is someone else.
             holder = await migration_lock_holder(db)
@@ -1191,6 +1213,9 @@ async def _stop_alembic(proc: subprocess.Popen, session_name: str) -> _Stopped:
     except Exception as exc:
         logger.exception("Could not cancel the migration run %s", session_name)
         return _Stopped(error=describe_error(exc))
+    finally:
+        if engine is not None:
+            await engine.dispose()
     logger.warning(
         "Stopped migration run %s: %d session(s) cancelled (%d backend(s)); exited=%s; schema at %s",
         session_name,
@@ -1202,12 +1227,22 @@ async def _stop_alembic(proc: subprocess.Popen, session_name: str) -> _Stopped:
     return _Stopped(sessions=cancelled.sessions, exited=exited, version=version, queued=queued)
 
 
+def _close_pipes(proc: subprocess.Popen) -> None:
+    """Close the killed child's pipes (communicate() did not finish, so nothing else will)."""
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except Exception:  # a reader thread may still be draining it; the fd goes with the object
+                pass
+
+
 def _timeout_detail(stop: _Stopped) -> str:
     prefix = f"Migration timed out after {MIGRATION_TIMEOUT_SECONDS}s"
     if stop.error is not None:
         return (
             f"{prefix}; it was killed, but cancelling its database session could not be confirmed "
-            f"({stop.error}). A search may wait until it ends. Restart the app to finish the migration at startup."
+            f"({stop.error}). A search may wait until it ends. Restart the app (or the API container) to finish the migration at startup."
         )
     still = "" if stop.exited else " (still stopping)"
     if stop.queued:
@@ -1224,7 +1259,7 @@ def _timeout_detail(stop: _Stopped) -> str:
         )
     return (
         f"{prefix} and was cancelled ({stop.sessions} database session(s) stopped{still}); the database "
-        f"is at revision {stop.version}. Restart the app to finish the migration at startup."
+        f"is at revision {stop.version}. Restart the app (or the API container) to finish the migration at startup."
     )
 
 

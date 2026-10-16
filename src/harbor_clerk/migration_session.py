@@ -34,24 +34,24 @@ MIGRATION_LOCK_KEY = int.from_bytes(b"HC_MIGRT", "big")
 MIGRATION_LOCK_POLL_SECONDS = 1.0
 
 
+# The backend holding the migration lock in this database: (pid, application_name), no row if free.
+# A bigint advisory key shows as its high half in classid and its low half in objid.
+LOCK_HOLDER_SQL = (
+    "SELECT l.pid, coalesce(a.application_name, '') FROM pg_locks l "
+    "LEFT JOIN pg_stat_activity a ON a.pid = l.pid "
+    "WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 1 "
+    "AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+    "AND l.classid::bigint = CAST(:high AS bigint) AND l.objid::bigint = CAST(:low AS bigint) "
+    "LIMIT 1"
+)
+LOCK_HOLDER_PARAMS = {"high": MIGRATION_LOCK_KEY >> 32, "low": MIGRATION_LOCK_KEY & 0xFFFFFFFF}
+
+
 async def migration_lock_holder(session: AsyncSession) -> str | None:
     """The application_name of the backend holding the migration lock in this database ("" if it
     has none), or None if nobody holds it. Reads pg_locks; takes nothing."""
-    row = (
-        await session.execute(
-            text(
-                "SELECT coalesce(a.application_name, '') FROM pg_locks l "
-                "LEFT JOIN pg_stat_activity a ON a.pid = l.pid "
-                "WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 1 "
-                "AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
-                # A bigint key shows as its high half in classid and its low half in objid.
-                "AND l.classid::bigint = CAST(:high AS bigint) AND l.objid::bigint = CAST(:low AS bigint) "
-                "LIMIT 1"
-            ),
-            {"high": MIGRATION_LOCK_KEY >> 32, "low": MIGRATION_LOCK_KEY & 0xFFFFFFFF},
-        )
-    ).first()
-    return None if row is None else row[0]
+    row = (await session.execute(text(LOCK_HOLDER_SQL), LOCK_HOLDER_PARAMS)).first()
+    return None if row is None else row[1]
 
 
 def application_name() -> str:

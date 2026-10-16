@@ -50,10 +50,14 @@ migrates before it serves, and the workers wait on its health check (``start_per
 a long migration does not mark it unhealthy; one longer than about 650 s still leaves the
 dependents failed until ``docker compose up`` is run again, and a broken API now takes up to 10
 minutes to be reported unhealthy). The "Run Migrations" maintenance action runs alembic
-beside a live API with a 120 s limit: a search during the rewrite waits for it, and at the limit
+beside a live API with a 120 s limit. The ALTER waits at most 10 s for its lock
+(``lock_timeout``) and otherwise fails, saying another transaction holds ``chunks``, rather than
+queueing every search behind it; a search during the rewrite waits for it, and at the limit
 the route kills alembic and cancels its backends by their ``application_name``
-(``harbor_clerk.migration_session``), as it does when the request itself is cancelled, so the
-transaction rolls back at once instead of holding the lock to the end. It reports the revision
+(``harbor_clerk.migration_session``), as it does when the request task is cancelled in-process,
+so the transaction rolls back at once instead of holding the lock to the end. (A client disconnect
+does not cancel the request; after a SIGKILL of the API the orphaned alembic finishes on its own,
+and the next runner waits for its lock.) It reports the revision
 the database is at (a run that started below 0008 keeps 0008's committed function and index but
 stays at 0007), or that the migration completed if the deadline fell after its commit. Above
 roughly 180,000 chunks this migration does not fit in that limit; restart the app (or the API
@@ -75,6 +79,8 @@ Create Date: 2026-10-15
 import importlib.util
 from collections.abc import Sequence
 from pathlib import Path
+
+import sqlalchemy as sa
 
 from alembic import op
 
@@ -107,9 +113,27 @@ def _require_fold_function() -> None:
     module._create_fold_function(op.get_bind())
 
 
+# How long the ALTER may wait for ACCESS EXCLUSIVE on chunks. At startup (the Mac app, the Compose
+# entrypoint) nothing else holds the table; on a live API (the Run Migrations route) a long wait
+# would queue every search behind the ALTER, so it fails fast instead.
+ALTER_LOCK_TIMEOUT = "10s"
+LOCK_NOT_AVAILABLE = "55P03"
+
+
 def _set_expressions(expressions: dict[str, str]) -> None:
     clauses = ", ".join(f"ALTER COLUMN {column} SET EXPRESSION AS ({expr})" for column, expr in expressions.items())
-    op.execute(f"ALTER TABLE public.chunks {clauses}")
+    op.execute(f"SET LOCAL lock_timeout = '{ALTER_LOCK_TIMEOUT}'")
+    try:
+        op.execute(f"ALTER TABLE public.chunks {clauses}")
+    except sa.exc.DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", None) != LOCK_NOT_AVAILABLE:
+            raise
+        raise RuntimeError(
+            f"0009 could not lock public.chunks within {ALTER_LOCK_TIMEOUT}: another transaction holds it "
+            "(a search or a worker on a running API). Retry when it is idle, or restart the app (or the API "
+            "container) so the migration runs at startup, before anything else opens the table."
+        ) from exc
+    op.execute("SET LOCAL lock_timeout = DEFAULT")
 
 
 def upgrade() -> None:

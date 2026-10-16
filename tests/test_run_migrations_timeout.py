@@ -13,6 +13,7 @@ complete). Every wait here is bounded.
 import asyncio
 import os
 import subprocess
+import sys
 import threading
 import time
 
@@ -124,12 +125,22 @@ class _Sleeper:
         self._thread.join(35)
 
 
+class _Pipe:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class _FakeAlembic:
     """Stands in for the alembic child: ``communicate`` runs ``on_communicate`` (which may raise
     TimeoutExpired), then returns ``returncode``/``stderr``, or with ``hang`` blocks until killed."""
 
     def __init__(self, name: str, *, returncode: int = 0, stderr: str = "", on_communicate=None, hang=False):
         self.name = name
+        self.stdout = _Pipe()
+        self.stderr = _Pipe()
         self.returncode: int | None = None
         self.killed = False
         self.entered = threading.Event()
@@ -188,7 +199,12 @@ def _hold_migration_lock(application_name: str):
     conn = psycopg2.connect(_SYNC_DSN, application_name=application_name)
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("SELECT pg_advisory_lock(%s)", (migration_session.MIGRATION_LOCK_KEY,))
+        # Never the blocking pg_advisory_lock in a test: a leftover holder would hang it.
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (migration_session.MIGRATION_LOCK_KEY,))
+        acquired = cur.fetchone()[0]
+    if not acquired:
+        conn.close()
+        raise AssertionError("the migration lock is already held: a leftover run or holder")
     return conn
 
 
@@ -273,7 +289,36 @@ async def test_timeout_cancels_every_backend_and_waits_for_them(client, admin_to
     assert f"revision {_version()}" in detail, detail
     assert "rolled back" not in detail and "still stopping" not in detail
     assert started[0].killed
+    assert started[0].stdout.closed and started[0].stderr.closed
     assert sleepers[0].outcome == "cancelled" and sleepers[0].after < 15
+
+
+async def test_the_cancel_does_not_wait_on_an_exhausted_api_pool(client, admin_token, monkeypatch):
+    """At the deadline, requests queued behind the rewrite hold every pooled connection. The cancel
+    uses a connection of its own: with the API pool's only connection held (and a 2 s pool
+    timeout) the backend is still cancelled and the stop confirmed."""
+    exhausted = create_async_engine(os.environ["DATABASE_URL"], pool_size=1, max_overflow=0, pool_timeout=2)
+    monkeypatch.setattr("harbor_clerk.db.engine", exhausted)
+    monkeypatch.setattr("harbor_clerk.db.async_session_factory", async_sessionmaker(exhausted, expire_on_commit=False))
+    sleepers: list[_Sleeper] = []
+
+    def _start_sleeper_then_time_out(proc, timeout):
+        sleepers.append(_Sleeper(proc.name))
+        _wait_for(lambda: len(_backends(proc.name)) == 1, "the named backend")
+        _times_out(proc, timeout)
+
+    _fake(monkeypatch, on_communicate=_start_sleeper_then_time_out)
+    held = await exhausted.connect()  # the pool's only connection
+    try:
+        resp = await client.post("/api/system/run-migrations", headers=auth_header(admin_token))
+    finally:
+        await held.close()
+        await exhausted.dispose()
+        for sleeper in sleepers:
+            sleeper.join()
+    assert resp.status_code == 504
+    assert "(1 database session(s) stopped)" in resp.json()["detail"], resp.json()["detail"]
+    assert sleepers[0].outcome == "cancelled"
 
 
 async def test_a_run_that_only_waited_for_another_says_so(client, admin_token, db_session, monkeypatch):
@@ -370,12 +415,55 @@ async def test_a_cancelled_request_kills_alembic_and_cancels_its_backend(db_sess
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, 30)
         assert started[0].killed
+        assert started[0].stdout.closed and started[0].stderr.closed
         assert _backends(started[0].name) == []
     finally:
         if sleeper is not None:
             await asyncio.to_thread(sleeper.join)
     assert sleeper.outcome == "cancelled"
     assert await _audits(db_session) == [{"outcome": "cancelled", "version": _version()}]
+
+
+async def test_alembic_that_cannot_start_is_audited_as_an_error(db_session, admin_user, monkeypatch):
+    await db_session.commit()
+
+    def _no_python(session_name):
+        raise FileNotFoundError("no interpreter")
+
+    monkeypatch.setattr(system_routes, "_start_alembic", _no_python)
+    with pytest.raises(FileNotFoundError):
+        await system_routes.run_migrations(
+            admin=Principal(type="user", id=admin_user.user_id, role="admin"), session=db_session
+        )
+    assert await _audits(db_session) == [{"outcome": "error", "version": None}]
+
+
+async def test_a_failing_pre_check_is_audited_as_an_error(db_session, admin_user, monkeypatch):
+    await db_session.commit()
+
+    async def _broken(session):
+        raise RuntimeError("pg_locks unreadable")
+
+    monkeypatch.setattr(migration_session, "migration_lock_holder", _broken)
+    started = _fake(monkeypatch)
+    with pytest.raises(RuntimeError, match="pg_locks unreadable"):
+        await system_routes.run_migrations(
+            admin=Principal(type="user", id=admin_user.user_id, role="admin"), session=db_session
+        )
+    assert started == []
+    assert await _audits(db_session) == [{"outcome": "error", "version": None}]
+
+
+def test_alembic_runs_under_this_interpreter(monkeypatch):
+    calls: list = []
+
+    def _record(args, **kwargs):
+        calls.append(args)
+        return object()
+
+    monkeypatch.setattr(subprocess, "Popen", _record)
+    system_routes._start_alembic("hc-test-name")
+    assert calls == [[sys.executable, "-m", "alembic", "upgrade", "head"]]
 
 
 # ---------------------------------------------------------------------------

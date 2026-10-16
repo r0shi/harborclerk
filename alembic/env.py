@@ -9,7 +9,13 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from harbor_clerk.migration_session import MIGRATION_LOCK_KEY, MIGRATION_LOCK_POLL_SECONDS, application_name
+from harbor_clerk.migration_session import (
+    LOCK_HOLDER_PARAMS,
+    LOCK_HOLDER_SQL,
+    MIGRATION_LOCK_KEY,
+    MIGRATION_LOCK_POLL_SECONDS,
+    application_name,
+)
 
 # Import all models so they register on Base.metadata
 from harbor_clerk.models import Base
@@ -64,7 +70,10 @@ def _acquire_migration_lock(connection: Connection) -> None:
                 log.info("Another migration run finished; continuing")
             return
         if not waiting:
-            log.info("Waiting for another migration run to finish")
+            holder = connection.execute(text(LOCK_HOLDER_SQL), LOCK_HOLDER_PARAMS).first()
+            connection.commit()
+            pid, name = holder if holder else (None, "")
+            log.info("Waiting for another migration run to finish (held by pid %s, application_name %r)", pid, name)
             waiting = True
         time.sleep(MIGRATION_LOCK_POLL_SECONDS)
 

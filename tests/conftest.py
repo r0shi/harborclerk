@@ -207,6 +207,9 @@ def _engine():
         ["alembic", "upgrade", "head"],
         check=True,
         env={**os.environ, "DATABASE_URL": settings.database_url},
+        # Bounded: env.py waits for another run's migration lock, and a stuck one must fail the
+        # session rather than hang it.
+        timeout=600,
     )
 
     engine = create_async_engine(settings.database_url, echo=False, poolclass=NullPool)
