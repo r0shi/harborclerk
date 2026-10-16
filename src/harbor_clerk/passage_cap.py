@@ -16,10 +16,13 @@ rule (``payload_bounds``; ISO dates in the date fields excepted, as structured
 data), a capped key's ``text_contains`` matches only within each chunk's first
 ``cap`` characters (``text_contains.text_contains_clause``), a ``metadata_filter``
 string longer than the cap is refused (``refuse_filter_past_cap``: ISO dates pass;
-of ``email.*`` only the cited sender name and subject pass), and entity strings come without their ``start_char``/``end_char``. Ranked
-search still matches its query against the whole document, so a phrase query can
-indicate that words occur past the cap. Titles, headings and entity strings are not
-capped.
+of ``email.*`` only the cited sender name and subject pass; a null at cap 0 is
+refused, since whether a field holds hidden text is content), and entity strings
+come without their ``start_char``/``end_char``. Ranked search still matches its
+query against the whole document, so a phrase query can indicate that words occur
+past the cap. Titles, headings and entity strings are not capped. Pipeline state is
+not text: under any cap a key may learn that a summary exists (``summary_state``,
+``summary_model``, the summarize job's status), never its text past the cap.
 
 This module sits below the API layer so that ``search.py`` can use it.
 """
@@ -127,19 +130,6 @@ def _filter_leaves(value: object, position: tuple[str | int, ...] = ()) -> list[
     if isinstance(value, list | tuple):
         return [leaf for i, v in enumerate(value) for leaf in _filter_leaves(v, (*position, i))]
     return [(position, value)]
-
-
-def refuse_summary_state_at_cap_zero(summary_state: str | None, cap: int | None) -> None:
-    """Raise ``SnippetCapRefusal`` for any ``summary_state`` filter from a key capped at 0.
-
-    At a cap of 0 every summary shows as null, so filtering on whether one exists (or on its job's
-    state) would tell the key which nulls hide a real summary. Above 0 the summary's prefix is shown,
-    so the filter tells it nothing new."""
-    if summary_state and cap is not None and cap <= 0:
-        raise SnippetCapRefusal(
-            "summary_state is refused: this API key's snippet cap is 0, so every summary shows as null to it, "
-            "and filtering on whether one exists would tell a real summary from a hidden one."
-        )
 
 
 def refuse_filter_past_cap(metadata_filter: dict | None, cap: int | None) -> None:

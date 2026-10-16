@@ -1532,7 +1532,7 @@ async def test_the_capped_date_tool_uses_only_strict_dates(db_session, mock_sess
         assert row["date"].startswith("2024-01-15T16:00:00"), row
 
 
-# --- sixth review: the bound in the chat's own unit; summary_state at cap 0 (#831) ---------------
+# --- sixth review: the bound in the chat's own unit (#831) ---------------------------------------
 
 _WORST_TEXT = {
     "cjk": "港の灯台守は嵐の夜に灯を守り、潮の満ち引きを日誌に記した。",
@@ -1578,25 +1578,3 @@ async def test_kb_get_document_fits_the_tight_fit_chat_budget_end_to_end(
     assert _truncate_for_llm(out, budget) == out
     payload = json.loads(out)
     assert payload["summary"].endswith(ELLIPSIS) and payload["metadata"][TRUNCATED_KEY]
-
-
-# summary_state tests whether a summary exists; at cap 0 every summary shows as null, so it would tell
-# a key which nulls hide a real summary.
-SUMMARY_STATE_SURFACES = {
-    "GET /api/docs": ("GET", "/api/docs?summary_state=has", None),
-    "POST /api/search": ("POST", "/api/search", {"query": "lighthouse keeper", "summary_state": "missing"}),
-    "POST /api/search/find-all": ("POST", "/api/search/find-all", {"query": "lighthouse", "summary_state": "has"}),
-}
-
-
-@pytest.mark.parametrize("who", REST_PRINCIPALS)
-@pytest.mark.parametrize("surface", list(SUMMARY_STATE_SURFACES))
-async def test_rest_summary_state_is_refused_at_cap_zero(client, db_session, corpus, admin_user, surface, who):
-    method, path, body = SUMMARY_STATE_SURFACES[surface]
-    resp = await client.request(method, path, json=body, headers=await _rest_headers(db_session, admin_user, who))
-    cap = _cap_of(who)
-    if cap is not None and cap <= 0:
-        assert resp.status_code == 422, resp.text[:300]
-        assert "snippet cap" in resp.json()["detail"]
-    else:
-        assert resp.status_code == 200, resp.text[:300]

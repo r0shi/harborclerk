@@ -135,6 +135,12 @@ What the cap does not bound:
   nested in a dict, is text: it is capped, refused as a filter past the cap, and
   ignored by the date tool for a capped key. Uncapped callers keep the date
   tool's wider reading, which takes any value that starts `YYYY-MM-DD`.
+- **Pipeline state.** Under any cap a key may learn that a summary exists (the
+  `summary_state` filter, `summary_model` and `summarize_job_status` on
+  `/api/docs`, the summarize stage in job lists): that is processing status. It
+  never receives a summary's text past the cap. A null `metadata_filter` is still
+  refused at a cap of 0, because whether a metadata field holds hidden text is
+  content.
 - Document titles, headings, and entity strings.
 
 Independently of any cap, every MCP tool result (and every REST response to a
