@@ -971,9 +971,12 @@ async def kb_search(
           email.thread_id / email.message_id (exact)
         For date filtering on emails, use the after=/before= filters
         (already mapped to email_date_sent for emails).
-        Under a key with a snippet cap of N: email.from_name(_contains) and
-        email.subject(_contains) are accepted at any length; the other
-        email.* keys are refused; a strict ISO date on tika.created_at,
+        Mail headers (sender, recipients, cc, subject, message and thread
+        ids, date) are envelope fields outside the snippet cap: every
+        email.* key is accepted at any length (the header block opening a
+        message's first passage is still passage text, capped). Under a
+        key with a cap of N:
+        a strict ISO date on tika.created_at,
         frontmatter.date or sidecar.date is accepted; any other string
         longer than N is refused (every string at a cap of 0).
 
@@ -1280,9 +1283,12 @@ async def kb_find_all(
       email.thread_id / email.message_id (exact)
     For date filtering on emails, use the after=/before= filters
     (already mapped to email_date_sent for emails).
-    Under a key with a snippet cap of N: email.from_name(_contains) and
-    email.subject(_contains) are accepted at any length; the other
-    email.* keys are refused; a strict ISO date on tika.created_at,
+    Mail headers (sender, recipients, cc, subject, message and thread
+    ids, date) are envelope fields outside the snippet cap: every
+    email.* key is accepted at any length (the header block opening a
+    message's first passage is still passage text, capped). Under a
+    key with a cap of N:
+    a strict ISO date on tika.created_at,
     frontmatter.date or sidecar.date is accepted; any other string
     longer than N is refused (every string at a cap of 0).
 
@@ -3082,9 +3088,12 @@ async def kb_documents_by_date(
           email.thread_id / email.message_id (exact)
         For date filtering on emails, use the after=/before= filters
         (already mapped to email_date_sent for emails).
-        Under a key with a snippet cap of N: email.from_name(_contains) and
-        email.subject(_contains) are accepted at any length; the other
-        email.* keys are refused; a strict ISO date on tika.created_at,
+        Mail headers (sender, recipients, cc, subject, message and thread
+        ids, date) are envelope fields outside the snippet cap: every
+        email.* key is accepted at any length (the header block opening a
+        message's first passage is still passage text, capped). Under a
+        key with a cap of N:
+        a strict ISO date on tika.created_at,
         frontmatter.date or sidecar.date is accepted; any other string
         longer than N is refused (every string at a cap of 0).
       after, before: ISO 8601 date or datetime strings; bound the

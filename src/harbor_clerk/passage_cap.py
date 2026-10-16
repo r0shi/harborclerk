@@ -16,13 +16,16 @@ rule (``payload_bounds``; ISO dates in the date fields excepted, as structured
 data), a capped key's ``text_contains`` matches only within each chunk's first
 ``cap`` characters (``text_contains.text_contains_clause``), a ``metadata_filter``
 string longer than the cap is refused (``refuse_filter_past_cap``: ISO dates pass;
-of ``email.*`` only the cited sender name and subject pass; a null at cap 0 is
-refused, since whether a field holds hidden text is content), and entity strings
+a null at cap 0 is refused, since whether a field holds hidden text is content),
+and entity strings
 come without their ``start_char``/``end_char``. Ranked search still matches its
 query against the whole document, so a phrase query can indicate that words occur
 past the cap. Titles, headings and entity strings are not capped. Pipeline state is
 not text: under any cap a key may learn that a summary exists (``summary_state``,
-``summary_model``, the summarize job's status), never its text past the cap.
+``summary_model``, the summarize job's status), never its text past the cap. Mail
+headers (sender, recipients, cc, subject, message and thread ids, date) are envelope
+fields, like a title, outside the cap: every ``email.*`` filter passes. The header
+block at the start of a message's first passage is passage text, and is capped.
 
 This module sits below the API layer so that ``search.py`` can use it.
 """
@@ -110,15 +113,6 @@ def is_structured_date(path: str | None, value: object) -> bool:
     return True
 
 
-# The email.* filters on header fields every mail citation carries whole (``source_ref``: the display
-# sender and the subject). The other email.* filters test fields a citation does not always show (to,
-# cc, message id, thread id; the address only when there is no display name), To and Cc also opening
-# chunk 0 as passage text, so a capped key may not send them at all.
-CITED_EMAIL_FILTERS = frozenset(
-    {"email.from_name", "email.from_name_contains", "email.subject", "email.subject_contains"}
-)
-
-
 class SnippetCapRefusal(ValueError):
     """A filter a capped key may not send: it would test text the key cannot read (#831)."""
 
@@ -142,22 +136,16 @@ def refuse_filter_past_cap(metadata_filter: dict | None, cap: int | None) -> Non
     shows as null at 0, so matching a real null would tell it apart from a hidden string. Numbers and
     booleans pass.
 
-    Two exceptions follow what the key already receives whole. A strict ISO date directly on a date
-    field (``date_path_of``, ``is_structured_date``) passes, as structured data. Of the ``email.*``
-    keys, which filter the ``Document.email_*`` header columns, only ``CITED_EMAIL_FILTERS`` (display
-    sender, subject) pass, since every mail citation carries them; every other ``email.*`` key (to,
-    cc, message id, thread id, from address) is refused at any cap, whatever its value.
+    Two exceptions. A strict ISO date directly on a date field (``date_path_of``,
+    ``is_structured_date``) passes, as structured data. Every ``email.*`` key passes, at any cap and
+    length: mail headers (sender, recipients, cc, subject, message and thread ids, date) are envelope
+    fields in the ``Document.email_*`` columns, like a title, not document text (owner's decision).
     """
     if cap is None or not metadata_filter:
         return
     for path, value in metadata_filter.items():
-        if path in CITED_EMAIL_FILTERS:
-            continue
         if path.startswith("email."):
-            raise SnippetCapRefusal(
-                f"metadata_filter {path!r} is refused: this API key has a snippet cap, and it may not filter on a "
-                "mail header that citations do not always show. Filter mail by email.from_name or email.subject."
-            )
+            continue  # a mail header: an envelope field, outside the cap
         for position, leaf in _filter_leaves(value):
             if leaf is None:
                 if cap <= 0:

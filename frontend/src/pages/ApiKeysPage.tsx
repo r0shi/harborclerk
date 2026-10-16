@@ -877,8 +877,7 @@ function ScopeFormFields({
             Passage and page text, summaries and metadata values the key receives are cut to their first N characters, a
             literal-text filter matches only within them, and a metadata filter value longer than N is refused; 0
             returns citations without the text. Ranked search still matches the whole document, so results can show that
-            words occur past the cap. Titles and dates are not capped. Any cap also refuses mail filters on the from
-            address, to, cc, message id and thread id. Empty = no limit.
+            words occur past the cap. Titles and dates are not capped. Empty = no limit.
           </p>
         )}
       </div>

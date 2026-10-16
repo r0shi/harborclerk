@@ -104,16 +104,8 @@ about text answer only about what the key can see (#831):
   `kb_search`, `kb_batch_search`, `kb_find_all`, `kb_documents_by_date`,
   `POST /api/search` and `/api/search/find-all`, and at a cap of 0 every string
   filter is, and a null filter value too (every string shows as null at 0),
-  except a strict ISO date on a date field (see Dates below). Of the `email.*`
-  filters, only `email.from_name`, `email.from_name_contains`, `email.subject`
-  and `email.subject_contains` are accepted, because every mail citation carries
-  the display sender and the subject whole; `email.to_addresses`,
-  `cc_addresses`, `message_id`, `thread_id` and `from_address` test headers a
-  citation does not always show, and are refused at any cap. **This is a
-  breaking change** for any key with `max_snippet_chars` set, however large:
-  a key that filtered on one of those five now gets a 422 (REST) or an `error`
-  result (MCP). Filter mail by `email.from_name(_contains)` or
-  `email.subject(_contains)` instead, or remove the key's snippet cap.
+  except a strict ISO date on a date field (see Dates below). Every `email.*`
+  filter is accepted at any cap and length (see Mail headers below).
 - `kb_verify_identifier` matches `tika.title` and metadata identifier fields only
   against stored values within N (document titles and filenames still match).
   It, and the search `discriminator_hint`, compare metadata values as the key
@@ -139,6 +131,15 @@ What the cap does not bound:
   nested in a dict, is text: it is capped, refused as a filter past the cap, and
   ignored by the date tool for a capped key. Uncapped callers keep the date
   tool's wider reading, which takes any value that starts `YYYY-MM-DD`.
+- **Mail headers.** The sender, recipients, cc, subject, message and thread ids
+  and date of a message are envelope fields, like a title, stored in their own
+  columns: they are outside the snippet cap, and every `email.*` filter is
+  accepted for every key. The header block at the start of a message's first
+  passage is passage text, and is capped like the rest of it. Any surface that
+  returns these fields to a key bounds them by the RFC limits: an address at
+  most 254 characters (RFC 5321), a message id at most 998 (RFC 5322's line
+  limit), and a To or Cc list at most 10 addresses plus a count. Today only a
+  citation's display sender can be an address, and it is bounded at 254.
 - **Pipeline state.** Under any cap a key may learn that a summary exists (the
   `summary_state` filter, `summary_model` and `summarize_job_status` on
   `/api/docs`, the summarize stage in job lists): that is processing status. It

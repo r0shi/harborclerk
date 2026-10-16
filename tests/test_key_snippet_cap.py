@@ -1248,50 +1248,37 @@ async def test_verify_identifier_tika_title_matches_only_within_the_cap(
 
 _MESSAGE_ID = "<20240115.0001.pilotage-notice@mail.northbasin.example>"
 
-# Header filters on what every mail citation carries whole (the display sender and the subject): any
-# key may send them, at any length. A long subject shows the length rule does not apply to them.
-CITED_MAIL_FILTERS = {
-    "from_name": {"email.from_name": "Harbour Master"},
-    "from_name_contains": {"email.from_name_contains": "Harbour"},
+# Every email.* filter key, with values past a 50-character cap where the field allows it: mail headers
+# are envelope fields outside the snippet cap (owner's decision on #837), so none is refused.
+MAIL_FILTERS = {
+    "from_address": {"email.from_address": "harbourmaster.north-basin.pilotage@port-authority.example.org"},
+    "from_name": {"email.from_name": "Harbour Master of the North Basin Pilotage Station, Port Authority"},
+    "from_name_contains": {"email.from_name_contains": "Harbour Master"},
     "subject": {"email.subject": "Pilotage notice for the North Basin, January sailings and tides"},
     "subject_contains": {"email.subject_contains": "Pilotage"},
-}
-# Header filters on what a key never receives: refused for a capped key at any cap, however short.
-UNCITED_MAIL_FILTERS = {
-    "to_addresses": {"email.to_addresses": ["pilots@nb.example"]},
-    "cc_addresses": {"email.cc_addresses": "ops@nb.example"},
+    "to_addresses": {"email.to_addresses": ["pilots.on.duty.north-basin@port-authority.example.org", "x@y.z"]},
+    "cc_addresses": {"email.cc_addresses": "operations.desk.north-basin@port-authority.example.org"},
     "message_id": {"email.message_id": _MESSAGE_ID},
-    "thread_id": {"email.thread_id": "t-1"},
-    "from_address": {"email.from_address": "hm@nb.example"},
+    "thread_id": {"email.thread_id": "thread-2024-01-north-basin-pilotage-notices-january"},
 }
-MAIL_FILTERS = {**CITED_MAIL_FILTERS, **UNCITED_MAIL_FILTERS}
-
-
-def _mail_refused(who: str, name: str) -> bool:
-    return _cap_of(who) is not None and name in UNCITED_MAIL_FILTERS
+assert len(MAIL_FILTERS) == 9
 
 
 @pytest.mark.parametrize("name", list(MAIL_FILTERS))
-@pytest.mark.parametrize("who", MCP_PRINCIPALS)
+@pytest.mark.parametrize("who", ["key cap=50", "key cap=0"])
 @pytest.mark.parametrize("surface", list(FILTER_MCP))
-async def test_mcp_mail_filters_follow_what_the_citation_shows(
+async def test_mcp_mail_header_filters_pass_for_a_capped_key(
     db_session, corpus, mock_session_factory, admin_user, surface, who, name
 ):
-    """To, Cc, message id, thread id and the address behind a display name are never returned to a key
-    (To and Cc open chunk 0 as passage text): a capped key may not filter on them. The display sender
-    and the subject are in every mail citation: any key may."""
-    metadata_filter = MAIL_FILTERS[name]
-    payload = await _mcp_as(db_session, admin_user, who, lambda: FILTER_MCP[surface](metadata_filter))
-    if _mail_refused(who, name):
-        assert "snippet cap" in payload.get("error", ""), payload
-    else:
-        assert "error" not in payload, payload
+    """Mail headers are envelope fields, like a title: a capped key, even at 0, may filter on any."""
+    payload = await _mcp_as(db_session, admin_user, who, lambda: FILTER_MCP[surface](MAIL_FILTERS[name]))
+    assert "error" not in payload, payload
 
 
 @pytest.mark.parametrize("name", list(MAIL_FILTERS))
-@pytest.mark.parametrize("who", REST_PRINCIPALS)
+@pytest.mark.parametrize("who", ["key cap=50", "key cap=0"])
 @pytest.mark.parametrize("surface", list(FILTER_REST))
-async def test_rest_mail_filters_follow_what_the_citation_shows(
+async def test_rest_mail_header_filters_pass_for_a_capped_key(
     client, db_session, corpus, admin_user, surface, who, name
 ):
     path, body = FILTER_REST[surface]
@@ -1300,11 +1287,18 @@ async def test_rest_mail_filters_follow_what_the_citation_shows(
         json={**body, "metadata_filter": MAIL_FILTERS[name]},
         headers=await _rest_headers(db_session, admin_user, who),
     )
-    if _mail_refused(who, name):
-        assert resp.status_code == 422, resp.text[:300]
-        assert "snippet cap" in resp.json()["detail"]
-    else:
-        assert resp.status_code == 200, resp.text[:300]
+    assert resp.status_code == 200, resp.text[:300]
+
+
+def test_a_citation_bounds_a_sender_address_at_the_rfc_limit():
+    """The one key-facing place a mail address appears: the citation's display sender, when the
+    message has no display name. RFC 5321 caps an address at 254 characters; so does the citation."""
+    from harbor_clerk.source_ref import format_email_citation
+
+    citation = format_email_citation(from_address="a" * 400 + "@example.org", subject="Notice")
+    sender = citation.removeprefix("Email from ").split(", ")[0]
+    assert len(sender) == 254 and sender.endswith(ELLIPSIS), len(sender)
+    assert format_email_citation(from_address="hm@nb.example") == "Email from hm@nb.example"
 
 
 @pytest.mark.parametrize("cap", [0, -5, 10])

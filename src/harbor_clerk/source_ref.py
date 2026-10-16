@@ -357,8 +357,18 @@ def _page_label(pages: str | None) -> str | None:
     return f"pp. {clean}" if "-" in clean else f"p. {clean}"
 
 
+# RFC 5321's limit on an address path: a citation never carries a longer "address" whole (#831).
+_ADDRESS_MAX_CHARS = 254
+
+
 def _display_sender(*, from_name: str | None, from_address: str | None) -> str | None:
-    return _clean(from_name) or _clean(from_address)
+    name = _clean(from_name)
+    if name:
+        return name
+    address = _clean(from_address)
+    if address and len(address) > _ADDRESS_MAX_CHARS:
+        return address[: _ADDRESS_MAX_CHARS - 1] + "…"
+    return address
 
 
 def _format_date(value: datetime | date | str | None) -> str | None:
