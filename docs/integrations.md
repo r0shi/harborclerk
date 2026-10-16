@@ -103,8 +103,12 @@ about text answer only about what the key can see (#831):
   value longer than N is refused (422 over REST, an `error` result over MCP) on
   `kb_search`, `kb_batch_search`, `kb_find_all`, `kb_documents_by_date`,
   `POST /api/search` and `/api/search/find-all`, and at a cap of 0 every string
-  filter is. `email.*` filters are exempt: they match the mail header columns,
-  and every citation of a message already carries its sender and subject whole.
+  filter is, except an ISO date on a date field (see Dates below). Of the
+  `email.*` filters, only `email.from_name`, `email.from_name_contains`,
+  `email.subject` and `email.subject_contains` are accepted, because every mail
+  citation carries the display sender and the subject whole; `email.to_addresses`,
+  `cc_addresses`, `message_id`, `thread_id` and `from_address` test headers a
+  capped key never receives, and are refused at any cap.
 - `kb_verify_identifier` matches `tika.title` and metadata identifier fields only
   against stored values within N (document titles and filenames still match).
   It, and the search `discriminator_hint`, compare metadata values as the key
@@ -121,8 +125,9 @@ What the cap does not bound:
 - **Dates.** An ISO 8601 date or datetime in `tika.created_at`,
   `frontmatter.date` or `sidecar.date` is structured data:
   `kb_documents_by_date` sorts, filters (`after`, `before`, `date_field`) and
-  reports on it, and `kb_get_document` returns it whole under any cap. Anything
-  else stored under those keys is text, and is capped.
+  reports on it, `kb_get_document` returns it whole under any cap, and a
+  `metadata_filter` may name it whatever its length. Anything else stored under
+  those keys is text, and is capped (and refused as a filter past the cap).
 - Document titles, headings, and entity strings.
 
 Independently of any cap, every MCP tool result (and every REST response to a

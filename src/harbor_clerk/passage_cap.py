@@ -15,8 +15,8 @@ what it can see (#831): summaries and metadata string values take the same prefi
 rule (``payload_bounds``; ISO dates in the date fields excepted, as structured
 data), a capped key's ``text_contains`` matches only within each chunk's first
 ``cap`` characters (``text_contains.text_contains_clause``), a ``metadata_filter``
-string longer than the cap is refused (``refuse_filter_past_cap``; ``email.*``
-exempt), and entity strings come without their ``start_char``/``end_char``. Ranked
+string longer than the cap is refused (``refuse_filter_past_cap``: ISO dates pass;
+of ``email.*`` only the cited sender name and subject pass), and entity strings come without their ``start_char``/``end_char``. Ranked
 search still matches its query against the whole document, so a phrase query can
 indicate that words occur past the cap. Titles, headings and entity strings are not
 capped.
@@ -24,6 +24,7 @@ capped.
 This module sits below the API layer so that ``search.py`` can use it.
 """
 
+from datetime import datetime
 from typing import Protocol
 
 
@@ -57,6 +58,34 @@ def cap_passage_text(text: str, principal: _CappedPrincipal) -> str | None:
     return cap_text(text, snippet_cap(principal))
 
 
+# The metadata date fields kb_documents_by_date sorts, filters and reports on (``metadata_dates``).
+# A value there that parses whole as an ISO 8601 date or datetime is structured data, not document
+# text: the snippet cap leaves it whole in a payload (``payload_bounds``) and lets a filter on it
+# through (``refuse_filter_past_cap``), as the date tool already returns and filters on it. Anything
+# else stored under these keys is text and is capped like any other string.
+DATE_FIELD_PATHS = frozenset({"tika.created_at", "frontmatter.date", "sidecar.date"})
+
+
+def is_structured_date(path: str, value: object) -> bool:
+    """True when ``value`` at the dotted metadata ``path`` is an ISO 8601 date in a date field."""
+    if path not in DATE_FIELD_PATHS or not isinstance(value, str) or len(value) > 40:
+        return False
+    try:
+        datetime.fromisoformat(value.strip())
+    except ValueError:
+        return False
+    return True
+
+
+# The email.* filters on header fields every mail citation carries whole (``source_ref``: the display
+# sender and the subject). The other email.* filters (to, cc, message id, thread id, and the address
+# behind a display name) test fields a key never receives, To and Cc also opening chunk 0 as passage
+# text, so a capped key may not send them at all.
+CITED_EMAIL_FILTERS = frozenset(
+    {"email.from_name", "email.from_name_contains", "email.subject", "email.subject_contains"}
+)
+
+
 class SnippetCapRefusal(ValueError):
     """A filter a capped key may not send: it would test text the key cannot read (#831)."""
 
@@ -79,17 +108,25 @@ def refuse_filter_past_cap(metadata_filter: dict | None, cap: int | None) -> Non
     of it); a longer one would confirm a guessed value the key was never shown. At a cap of 0 the
     key sees no metadata text, and every string filter is refused. Numbers and booleans pass.
 
-    ``email.*`` keys are exempt: they filter the dedicated ``Document.email_*`` header columns, not
-    ``doc_metadata``, and every key already receives the sender and subject whole in each mail
-    citation (``source_ref``); refusing them would only stop a capped key filtering mail by sender
-    or message id.
+    Two exceptions follow what the key already receives whole. An ISO date on a date field
+    (``is_structured_date``) passes, as structured data. Of the ``email.*`` keys, which filter the
+    ``Document.email_*`` header columns, only ``CITED_EMAIL_FILTERS`` (display sender, subject) pass,
+    since every mail citation carries them; every other ``email.*`` key (to, cc, message id, thread
+    id, from address) is refused at any cap, whatever its value.
     """
     if cap is None or not metadata_filter:
         return
     for path, value in metadata_filter.items():
-        if path.startswith("email."):
+        if path in CITED_EMAIL_FILTERS:
             continue
+        if path.startswith("email."):
+            raise SnippetCapRefusal(
+                f"metadata_filter {path!r} is refused: it tests a mail header this API key never receives "
+                "(it has a snippet cap). Filter mail by email.from_name or email.subject instead."
+            )
         for text in _filter_strings(value):
+            if is_structured_date(path, text):
+                continue
             if cap <= 0:
                 raise SnippetCapRefusal(
                     f"metadata_filter {path!r} is refused: this API key's snippet cap is 0, so it receives no "

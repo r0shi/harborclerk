@@ -40,7 +40,9 @@ RETURNS (JSON)
       {
         "doc_id":             "uuid",      // related document
         "title":              "string",
-        "summary":            "string",    // auto-generated summary (may be null)
+        "summary":            "string",    // auto-generated summary (may be null); at most
+                                         //   1,500 chars ("…" when cut); under a key's
+                                         //   snippet cap of N, its first N (null at 0)
         "similarity":         0.91,        // cosine similarity 0–1, higher = more similar
         "source":             "embedding", // "embedding" or "linked"
         "doc_type":           "string",    // document type label

@@ -28,10 +28,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import datetime
 from typing import Any
 
-from harbor_clerk.passage_cap import cap_text
+from harbor_clerk.passage_cap import cap_text, is_structured_date
 
 ELLIPSIS = "…"
 TRUNCATED_KEY = "_truncated"
@@ -83,33 +82,16 @@ def _more(n: int) -> str:
     return f"+{n} more"
 
 
-# The metadata date fields kb_documents_by_date sorts, filters and reports on (``metadata_dates``).
-# A value there that parses whole as an ISO 8601 date or datetime is structured data, not document
-# text: the snippet cap leaves it whole, as the date tool already returns it (the size bound still
-# applies). Anything else stored under these keys is text and is capped like any other string.
-DATE_FIELD_PATHS = frozenset({"tika.created_at", "frontmatter.date", "sidecar.date"})
-
-
-def _is_iso_date(text: str) -> bool:
-    if len(text) > 40:
-        return False
-    try:
-        datetime.fromisoformat(text.strip())
-    except ValueError:
-        return False
-    return True
-
-
 def cap_values(value: Any, cap: int | None) -> Any:
     """``value`` with every string cut to the key's prefix (null at 0), ISO dates in the date
-    fields excepted (``DATE_FIELD_PATHS``); nothing else changes."""
+    fields excepted (``passage_cap.DATE_FIELD_PATHS``); nothing else changes."""
     return _cap_tree(value, cap, None, (), [])
 
 
 def _cap_tree(value: Any, cap: int | None, value_max: int | None, path: Path, cut: list[Path]) -> Any:
     """``value`` with every string capped, then shortened to ``value_max`` (recorded in ``cut``)."""
     if isinstance(value, str):
-        date = cap is not None and dotted(path) in DATE_FIELD_PATHS and _is_iso_date(value)
+        date = cap is not None and is_structured_date(dotted(path), value)
         text = value if date else cap_text(value, cap)
         if text is not None and value_max is not None and len(text) > value_max:
             cut.append(path)

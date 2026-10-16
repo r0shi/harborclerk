@@ -1212,41 +1212,111 @@ async def test_verify_identifier_tika_title_matches_only_within_the_cap(
 
 
 _MESSAGE_ID = "<20240115.0001.pilotage-notice@mail.northbasin.example>"
-assert len(_MESSAGE_ID) > 40
+
+# Header filters on what every mail citation carries whole (the display sender and the subject): any
+# key may send them, at any length. A long subject shows the length rule does not apply to them.
+CITED_MAIL_FILTERS = {
+    "from_name": {"email.from_name": "Harbour Master"},
+    "from_name_contains": {"email.from_name_contains": "Harbour"},
+    "subject": {"email.subject": "Pilotage notice for the North Basin, January sailings and tides"},
+    "subject_contains": {"email.subject_contains": "Pilotage"},
+}
+# Header filters on what a key never receives: refused for a capped key at any cap, however short.
+UNCITED_MAIL_FILTERS = {
+    "to_addresses": {"email.to_addresses": ["pilots@nb.example"]},
+    "cc_addresses": {"email.cc_addresses": "ops@nb.example"},
+    "message_id": {"email.message_id": _MESSAGE_ID},
+    "thread_id": {"email.thread_id": "t-1"},
+    "from_address": {"email.from_address": "hm@nb.example"},
+}
+MAIL_FILTERS = {**CITED_MAIL_FILTERS, **UNCITED_MAIL_FILTERS}
 
 
-@pytest.mark.parametrize("cap", [40, 0])
-@pytest.mark.parametrize(
-    "metadata_filter",
-    [{"email.from_address": "harbourmaster@northbasin.example.org"}, {"email.message_id": _MESSAGE_ID}],
-    ids=["from_address", "message_id"],
-)
-async def test_a_capped_key_can_filter_mail_by_header(
-    client, db_session, corpus, mock_session_factory, admin_user, cap, metadata_filter
+def _mail_refused(who: str, name: str) -> bool:
+    return _cap_of(who) is not None and name in UNCITED_MAIL_FILTERS
+
+
+@pytest.mark.parametrize("name", list(MAIL_FILTERS))
+@pytest.mark.parametrize("who", MCP_PRINCIPALS)
+@pytest.mark.parametrize("surface", list(FILTER_MCP))
+async def test_mcp_mail_filters_follow_what_the_citation_shows(
+    db_session, corpus, mock_session_factory, admin_user, surface, who, name
 ):
-    """email.* filters target the Document.email_* header columns, which every key receives whole in
-    mail citations: they are not refused, whatever the cap and however long the value."""
+    """To, Cc, message id, thread id and the address behind a display name are never returned to a key
+    (To and Cc open chunk 0 as passage text): a capped key may not filter on them. The display sender
+    and the subject are in every mail citation: any key may."""
+    metadata_filter = MAIL_FILTERS[name]
+    payload = await _mcp_as(db_session, admin_user, who, lambda: FILTER_MCP[surface](metadata_filter))
+    if _mail_refused(who, name):
+        assert "snippet cap" in payload.get("error", ""), payload
+    else:
+        assert "error" not in payload, payload
+
+
+@pytest.mark.parametrize("name", list(MAIL_FILTERS))
+@pytest.mark.parametrize("who", REST_PRINCIPALS)
+@pytest.mark.parametrize("surface", list(FILTER_REST))
+async def test_rest_mail_filters_follow_what_the_citation_shows(
+    client, db_session, corpus, admin_user, surface, who, name
+):
+    path, body = FILTER_REST[surface]
+    resp = await client.post(
+        path,
+        json={**body, "metadata_filter": MAIL_FILTERS[name]},
+        headers=await _rest_headers(db_session, admin_user, who),
+    )
+    if _mail_refused(who, name):
+        assert resp.status_code == 422, resp.text[:300]
+        assert "snippet cap" in resp.json()["detail"]
+    else:
+        assert resp.status_code == 200, resp.text[:300]
+
+
+@pytest.mark.parametrize("cap", [0, -5, 10])
+async def test_a_capped_key_can_send_the_date_filter_the_hint_suggests(
+    db_session, mock_session_factory, admin_user, cap
+):
+    """ISO dates on the date fields are structured data on both sides: the hint offers one whole as a
+    filter, and the same key's search with exactly that filter is accepted and finds the document."""
+    import ast
+    import re
+
     import harbor_clerk.mcp_server as m
 
-    raw = await _make_key(db_session, cap)
-    principal = await _resolve_principal(raw)
-    token = _mcp_principal.set(principal)
-    try:
-        for call in (
-            lambda: m.kb_search(query="lighthouse keeper", metadata_filter=metadata_filter),
-            lambda: m.kb_find_all(query="lighthouse", metadata_filter=metadata_filter),
-            lambda: m.kb_documents_by_date(direction="earliest", metadata_filter=metadata_filter),
-        ):
-            payload = json.loads(await call())
-            assert "error" not in payload, payload
-    finally:
-        _mcp_principal.reset(token)
-    resp = await client.post(
-        "/api/search",
-        json={"query": "lighthouse keeper", "metadata_filter": metadata_filter},
-        headers=auth_header(raw),
+    dates = {"A": "2024-01-15T08:00:00Z", "B": "2024-02-01T09:30:00Z"}
+    # Only the date differs, so the suggestion has one field to offer (no tie for set order to break).
+    docs = await _seed_hint_pair(db_session, lambda t: {"tika": {"created_at": dates[t]}})
+    hint = await _hint_as(db_session, admin_user, f"key cap={cap}")
+    assert hint is not None
+    match = re.search(r"metadata_filter=(\{.*?\})", hint["suggestion"])
+    assert match, hint["suggestion"]
+    suggested = ast.literal_eval(match.group(1))
+    assert list(suggested) == ["tika.created_at"] and suggested["tika.created_at"] in dates.values(), suggested
+    payload = await _mcp_as(
+        db_session,
+        admin_user,
+        f"key cap={cap}",
+        lambda: m.kb_search(query="harbour pilot ledger", metadata_filter=suggested),
     )
-    assert resp.status_code == 200, resp.text[:300]
+    assert "error" not in payload, payload
+    wanted = next(
+        str(d.doc_id) for d, t in zip(docs, ("A", "B"), strict=True) if dates[t] == suggested["tika.created_at"]
+    )
+    assert {h["doc_id"] for h in payload["hits"]} == {wanted}, payload["hits"]
+
+
+@pytest.mark.parametrize(
+    ("cap", "value"),
+    [(10, "sometime in the spring before the storm"), (0, "spring"), (5, "2024-13-45")],
+)
+async def test_a_non_iso_string_on_a_date_field_is_refused_past_the_cap(
+    db_session, corpus, mock_session_factory, admin_user, cap, value
+):
+    """Only a value that parses as an ISO date passes on a date field; anything else is text."""
+    payload = await _mcp_as(
+        db_session, admin_user, f"key cap={cap}", lambda: FILTER_MCP["kb_search"]({"frontmatter.date": value})
+    )
+    assert "snippet cap" in payload.get("error", ""), payload
 
 
 @pytest.mark.parametrize("cap", [50, 10, 0])

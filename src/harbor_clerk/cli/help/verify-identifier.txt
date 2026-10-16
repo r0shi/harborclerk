@@ -53,6 +53,10 @@ RETURNS (JSON)
         "discriminating_fields": { "sidecar.vendor": "Acme",
                                    "sidecar.term_months": 24 } }
     ],
+    // discriminating_fields values: at most 200 chars each ("…" when cut) and
+    // 1,000 chars of JSON per candidate; "_truncated" lists every path cut or
+    // dropped. Under a key's snippet cap of N, each string is its first N
+    // (null at 0), and fields are compared as the key sees them.
     "suggestion": "3 candidates differ on sidecar.vendor — pick one." }
 
   // ambiguous with overflow (> 100 matches)

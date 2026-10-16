@@ -45,7 +45,9 @@ RETURNS (JSON)
       {
         "doc_id":          "uuid",            // document identifier
         "title":           "string",          // filename or extracted title
-        "summary":         "string",          // LLM-generated summary, or null
+        "summary":         "string",          // LLM-generated summary, or null; at most
+                                            //   1,500 chars ("…" when cut); under a key's
+                                            //   snippet cap of N, its first N (null at 0)
         "pipeline_status": "done",            // "queued"|"running"|"done"|"error"|null
         "updated_at":      "2026-05-20T14:33:00.000Z"
       }
