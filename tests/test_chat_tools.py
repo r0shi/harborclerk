@@ -348,3 +348,22 @@ def test_find_all_documents_presentation_says_brief_rows_may_carry_a_snippet():
     desc = fa["function"]["parameters"]["properties"]["presentation"]["description"]
     assert "may carry a short snippet" in desc
     assert "triage" in desc and "read_passages" in desc and "'full'" in desc
+
+
+def test_the_fixed_overhead_of_every_chat_prompt_leaves_the_smallest_slot_room():
+    """The tool schema and the system prompt go with every chat prompt. tests/test_chat_time_budget.py replaces both
+    with fixed stand-ins (so its scenarios measure the loop, not description length, #826), which leaves this test as
+    the guard on their production size. Predicted at the prose seed, on the smallest slot a model is given
+    (``TIGHT_FIT_CONTEXT``, 16,384), they took 4,666 tokens, 28% of it, when this was written (schema 3,044 raw
+    tokens, system prompt 845). The bound is 55%: about twice that, so a growth that halves what the trim target (70%
+    of the slot) leaves for history, the question and results trips it, and a sentence added to a description does
+    not."""
+    from harbor_clerk.llm import chat
+    from harbor_clerk.llm.models import TIGHT_FIT_CONTEXT
+
+    raw = chat._get_tool_schema_tokens(None) + chat._estimate_tokens(chat.SYSTEM_PROMPT)
+    predicted = raw * chat._PROSE_RATIO_DEFAULT
+    assert predicted < 0.55 * TIGHT_FIT_CONTEXT, (
+        f"schema and system prompt predicted at {predicted:.0f} tokens, {predicted / TIGHT_FIT_CONTEXT:.0%} of the "
+        f"{TIGHT_FIT_CONTEXT}-token slot (28% when this bound was set)"
+    )

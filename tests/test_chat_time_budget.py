@@ -94,11 +94,11 @@ async def chat_session_factory(db_session, _engine, monkeypatch):
 
 
 # The tool schema every test in this file sends: fixed, so a scenario measures the loop and not the length of the
-# production tool descriptions. The production schema goes with every prompt, and the ratio tests drive a 32K context
-# to the context-budget stop: the ratio moves halfway from 2.0 to 3.0 each measured round, five rounds reach 2.969
-# (within 0.05 of 3.0) and four 2.9375 (not), and #822 plus #824 each lengthened a description, together cost a round
-# and failed both tests on every run (#826). Every scenario here holds with a schema of 9,800 to 10,700 characters
-# beside the system prompt below (measured; the production schema was 10,654, 50 short of the top): this is the middle.
+# production tool descriptions. The production schema goes with every prompt, and #822 plus #824 each lengthened a
+# description, together cost the ratio tests a round and failed them on every run (#826). Only the JSON's length
+# reaches the loop (the estimate is characters over _CHARS_PER_TOKEN; the fake servers count from the estimate), so
+# the number of tools is arbitrary (production has 17). The production size is guarded on its own, against the
+# smallest slot, in tests/test_chat_tools.py.
 _FIXED_TOOL_SCHEMA_CHARS = 10_250
 _FIXED_TOOL_COUNT = 16
 # The system prompt goes with every prompt too, and moves the same scenarios by its length: fixed for the same reason,
@@ -134,28 +134,35 @@ def _fixed_chat_tools(*, model=None) -> list[dict]:
 
 @pytest.fixture(autouse=True)
 async def _isolated_chat_state(monkeypatch):
-    """Every test starts from a known state and leaves none behind (#826): the process-wide ratio tables empty
-    before and after (and replaced by fresh ones for the test, so nothing it measures reaches the process's), no task
-    the chat stream started still running into the next test, and the fixed tool schema and system prompt above."""
+    """Every test starts from a known state and leaves none behind (#826). Before: the process-wide ratio tables
+    emptied (another file may have filled them) and replaced by fresh ones for the test, the fixed tool schema and
+    system prompt above, and no corpus-topics line in the system prompt (``get_topic_summary`` reads tables a dirty
+    earlier session could leave). After, failing the test: nothing written to the process-wide tables (a write that
+    bypassed the test's own tables, as a test driving ``chat_stream`` without them once left prose 3.0 there for the
+    rest of the session), and no task the chat stream started still running."""
     import asyncio
 
     from harbor_clerk.llm import chat as chat_module
 
-    chat_module._estimate_ratios.clear()
-    chat_module._prose_ratios.clear()
+    process_estimate, process_prose = chat_module._estimate_ratios, chat_module._prose_ratios
+    process_estimate.clear()
+    process_prose.clear()
     monkeypatch.setattr(chat_module, "_estimate_ratios", {})
     monkeypatch.setattr(chat_module, "_prose_ratios", {})
     monkeypatch.setattr(chat_module, "get_chat_tools", _fixed_chat_tools)
     monkeypatch.setattr(chat_module, "SYSTEM_PROMPT", _FIXED_SYSTEM_PROMPT)
+
+    async def _no_topics():
+        return None
+
+    monkeypatch.setattr("harbor_clerk.topics.get_topic_summary", _no_topics)
     yield
     me = asyncio.current_task()
     left = [t for t in asyncio.all_tasks() if t is not me and not t.done()]
-    for task in left:
-        task.cancel()
-    await asyncio.gather(*left, return_exceptions=True)
-    monkeypatch.undo()
-    chat_module._estimate_ratios.clear()
-    chat_module._prose_ratios.clear()
+    assert not left, f"tasks still running after the test: {left}"
+    assert process_estimate == {} and process_prose == {}, (
+        f"the test wrote the process-wide ratio tables: tool {process_estimate}, prose {process_prose}"
+    )
 
 
 def _history(conversation_id, rows: list[dict]) -> list:
@@ -167,7 +174,8 @@ def _history(conversation_id, rows: list[dict]) -> list:
     heap holds them, which, once ``db_session``'s cleanup has deleted earlier tests' rows and a vacuum has freed the
     space, is not the order they were added. A history read out of order trims differently: an old search's result
     sorted early was trimmed away from the retry, or the first prompt, and the refused-first tests failed at random
-    (#826)."""
+    (#826). The rows ``chat_stream`` itself stores for one turn still share one ``created_at``: that is the product
+    defect #809, not something a test can stamp away."""
     from datetime import UTC, datetime, timedelta
 
     from harbor_clerk.models.chat_message import ChatMessage
@@ -2059,6 +2067,22 @@ def _counting_client(
     return client, sent
 
 
+def _ratio_after_the_rounds(server_ratio: float, sent: list[dict]) -> float:
+    """The tool ratio the loop should stand at after the rounds the fake server saw, each counted at
+    ``server_ratio``: one increment measured between each two successive prompts (a call and its result, each over the
+    floor), each blended in at half weight from the default. Read from the rounds that ran rather than assumed, so a
+    scenario that fits one round more or fewer (a longer prompt, a different schema) still checks the measurement."""
+    from harbor_clerk.llm import chat as chat_module
+
+    increments = [after["messages"][len(before["messages"]) :] for before, after in zip(sent, sent[1:], strict=False)]
+    assert increments, "the scenario: at least two prompts, so at least one increment"
+    for increment in increments:
+        assert [m["role"] for m in increment] == ["assistant", "tool"], "the scenario: a call and its result"
+        assert chat_module._estimate_messages_tokens(increment) >= chat_module._INCREMENT_FLOOR_TOKENS
+    default = chat_module._ESTIMATE_RATIO_DEFAULT
+    return server_ratio - (server_ratio - default) * chat_module._ESTIMATE_RATIO_SMOOTHING ** len(increments)
+
+
 def test_the_ratio_is_measured_clamped_and_smoothed():
     """A first measurement replaces the default; a later one is blended in at the smoothing weight; a measurement
     is clamped before it is blended; a count or an estimate that is not positive records nothing."""
@@ -2221,7 +2245,9 @@ async def test_the_context_budget_stop_fires_at_the_servers_count_not_the_estima
     )
     assert done["stop_reason"] == "context_budget" and text == "From the results."
     assert 2 <= len(tool_calls) < chat_module._MAX_TOOL_ROUNDS
-    assert table[_MODEL_KEY] == pytest.approx(ratio, abs=0.05), "the server's ratio, measured on the tool rounds"
+    assert table[_MODEL_KEY] == pytest.approx(_ratio_after_the_rounds(ratio, sent), abs=0.005), (
+        "the server's ratio, measured on the tool rounds"
+    )
     assert all(p["stream_options"] == {"include_usage": True} for p in sent)
     forced = client.stream.call_args.kwargs["json"]
     assert forced["stream_options"] == {"include_usage": True}
@@ -2450,7 +2476,9 @@ async def test_the_forced_calls_count_is_bookkeeping_not_a_measurement(
         ratios=table,
     )
     assert done["stop_reason"] == "context_budget" and text == "From the results." and len(tool_calls) >= 2
-    assert table[_MODEL_KEY] == pytest.approx(3.0, abs=0.05), "the loop's measurement; the forced 2.0 is not blended"
+    assert table[_MODEL_KEY] == pytest.approx(_ratio_after_the_rounds(3.0, sent), abs=0.005), (
+        "the loop's measurement; the forced 2.0 is not blended"
+    )
     forced = client.stream.call_args.kwargs["json"]["messages"]
     forced_count = int(2.0 * chat_module._estimate_messages_tokens(forced))
     assert done["context_pct"] == round(min((forced_count + 5) / ctx, 1.0) * 100), "the forced count, kept"
@@ -3119,8 +3147,9 @@ async def _prose_history(
 async def test_a_refusal_later_in_the_loop_ends_the_search_and_the_forced_call_keeps_the_question(
     db_session, admin_user, chat_session_factory, monkeypatch
 ):
-    """The third review's run: the tool ratio dragged to 1.0, six prose exchanges, a result at the cap counted at
-    2.2x on a 16,384 slot. Round one's prompt is predicted under the budget and sent; the server refuses it. The
+    """The third review's run: the tool ratio dragged to 1.0, prose exchanges, a result at the cap counted at 2.2x
+    on a 16,384 slot. Round one's prompt is predicted under the budget and sent; the server refuses it (the question
+    is padded to put round zero's prompt mid-way in the band where both hold, whatever the fixed overhead). The
     history trim would keep the latest tool row as the "question" and pop the real one: instead the search ends as
     at the context budget, the forced prompt holds the question and the call with its result, and the answer is the
     forced one, with its stop reason. The refusal's count is an increment like any other (the table moves from 1.0
@@ -3131,10 +3160,29 @@ async def test_a_refusal_later_in_the_loop_ends_the_search_and_the_forced_call_k
     from harbor_clerk.llm import chat as chat_module
     from harbor_clerk.models.chat_message import ChatMessage
 
-    conv = await _prose_history(db_session, admin_user, exchanges=6)
+    conv = await _prose_history(db_session, admin_user, exchanges=4)
     ctx = 16384
     client, sent, counts, forced_counts, _count = _two_density_client(ctx, forced_usage=False)
     table = {_MODEL_KEY: 1.0}
+    # Round one adds the call and a result at the cap: the server counts it at 2.2x, the prediction at the table's
+    # 1.0. Round zero's count must leave the server's round one over the slot and the predicted one under the budget.
+    delta = json.loads(_tool_call_chunk()[6:])["choices"][0]["delta"]
+    call = {"role": "assistant", "content": "", "tool_calls": delta["tool_calls"]}
+    cap = min(int(ctx * 0.25 * 3.5), 80_000)  # chat_stream's per-result truncation at this context
+    result = {"role": "tool", "content": chat_module._truncate_for_llm(_big_search_result(60), cap)}
+    low = ctx - _count([call, result])
+    high = chat_module._TOOL_LOOP_BUDGET * ctx - chat_module._predict_messages_tokens([call, result], 1.0, 1.2)
+    assert low < high, f"the scenario: a band for round zero's count ({low}, {high})"
+    rows = await db_session.execute(
+        select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id).order_by(ChatMessage.created_at)
+    )
+    history = [{"role": r.role, "content": r.content} for r in rows.scalars()]
+    question = "What did the Q3 contract cost?"
+    system = {"role": "system", "content": chat_module.SYSTEM_PROMPT}
+    tools = chat_module.get_chat_tools(model=None)
+    short = (low + high) / 2 - _count([system, *history, {"role": "user", "content": question}], tools)
+    assert short >= 0, "the scenario: round zero's prompt unpadded is under the band's middle"
+    question += " Is it the fee?" * int(short * chat_module._CHARS_PER_TOKEN / 1.2 / 15)
     events: list[dict] = []
     text, done, tool_calls = await _drive(
         conv.conversation_id,
@@ -3147,7 +3195,9 @@ async def test_a_refusal_later_in_the_loop_ends_the_search_and_the_forced_call_k
         context_tokens=ctx,
         ratios=table,
         events_out=events,
+        question=question,
     )
+    assert low < counts[0] < high, f"the scenario: round zero's count in the band ({low}, {counts[0]}, {high})"
     assert len(sent) == 2 and counts[0] < ctx < counts[1], f"the scenario: round one's prompt refused ({counts})"
     assert tool_calls == ["search_documents"]
     assert done["stop_reason"] == "context_budget" and text == "From the results.", (done, text)
@@ -3156,7 +3206,7 @@ async def test_a_refusal_later_in_the_loop_ends_the_search_and_the_forced_call_k
     assert [m["role"] for m in forced[-4:]] == ["user", "assistant", "tool", "user"], (
         "question, call, result, search-over"
     )
-    assert forced[-4]["content"] == "What did the Q3 contract cost?" and forced[-3].get("tool_calls")
+    assert forced[-4]["content"] == question and forced[-3].get("tool_calls")
     assert forced[-2]["tool_call_id"] == forced[-3]["tool_calls"][0]["id"], "the result still answers its call"
     assert forced[-1] == {"role": "user", "content": chat_module._SEARCH_OVER_MESSAGE}
     assert len(forced_counts) == 1 and forced_counts[0] < ctx, "the forced prompt fit"
@@ -3226,8 +3276,6 @@ async def test_a_refused_first_prompt_with_old_results_is_retried_on_the_count_a
     measures neither ratio (the prose density would be diluted, the tool one is only ever an increment), but the
     refusal's count still calibrates the retry, which fits the slot and keeps the question."""
     from harbor_clerk.llm import chat as chat_module
-
-    assert chat_module._estimate_ratios == {} and chat_module._prose_ratios == {}, "no measurement to start from"
 
     conv = await _prose_history(db_session, admin_user, tool_rows=True)
     ctx = 16384
@@ -3371,8 +3419,6 @@ async def test_a_refused_first_prompt_is_retried_to_the_slot_the_refusal_states(
     no error."""
     from harbor_clerk.llm import chat as chat_module
 
-    assert chat_module._estimate_ratios == {} and chat_module._prose_ratios == {}, "no measurement to start from"
-
     conv = await _prose_history(db_session, admin_user)
     server_ctx, registry_ctx = 16384, 32768
     prose: dict = {}
@@ -3408,8 +3454,6 @@ async def test_a_refused_first_prompt_with_dense_old_results_is_retried_above_th
     so the retry reads results and prose alike at least at that density and fits first time; read at the defaults
     the same retry looks far under the target, which is how the defaults alone got it refused again."""
     from harbor_clerk.llm import chat as chat_module
-
-    assert chat_module._estimate_ratios == {} and chat_module._prose_ratios == {}, "no measurement to start from"
 
     conv = await _prose_history(
         db_session, admin_user, exchanges=10, tool_rows=True, tool_result=_big_search_result(20)
@@ -3497,7 +3541,14 @@ async def test_a_retry_trimmed_to_the_floor_is_still_sent_when_nothing_has_been_
 
     conv = await _prose_history(db_session, admin_user, exchanges=2)
     ctx = 16384
-    question = "What does this say about the fee? " + "clause " * 2500  # about 5,000 raw tokens
+    # A pasted question sized so the floor (system prompt, schema, question) is predicted at 96.5% of the slot at
+    # 1.8x, where the fifth review's run put it: over the budget, inside the slot, and the first prompt (the floor and
+    # two exchanges) over it, whatever the fixed overhead.
+    schema = chat_module._get_tool_schema_tokens(None)
+    system_tokens = chat_module._estimate_tokens(chat_module.SYSTEM_PROMPT) + 4
+    question_tokens = 0.965 * ctx / 1.8 - schema - system_tokens - 4
+    prefix = "What does this say about the fee? "
+    question = prefix + "clause " * int((question_tokens * chat_module._CHARS_PER_TOKEN - len(prefix)) / 7)
     client, sent = _counting_client(1.8, ctx=ctx)
     prose: dict = {}
     events: list[dict] = []
@@ -3517,7 +3568,6 @@ async def test_a_retry_trimmed_to_the_floor_is_still_sent_when_nothing_has_been_
     assert len(sent) == 2 and counts[0] > ctx, f"the scenario: the first prompt refused ({counts})"
     floor = sent[1]["messages"]
     assert [m["role"] for m in floor] == ["system", "user"], "the retry is the floor"
-    schema = chat_module._get_tool_schema_tokens(None)
     predicted = chat_module._predict_prompt_tokens(floor, None, 0, schema, chat_module._ESTIMATE_RATIO_DEFAULT, 1.8)
     assert chat_module._TOOL_LOOP_BUDGET * ctx <= predicted < ctx, "the scenario: over the budget, inside the slot"
     assert chat_module._TOOL_LOOP_BUDGET * ctx <= counts[1] < ctx, f"and the server took it: {counts}"
