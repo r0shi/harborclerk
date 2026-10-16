@@ -42,9 +42,8 @@ fetched and stored, because there is no file on disk to reference.
 
 ## Retrieval
 
-- Full-text search is **bilingual**: query both `fts_en` and `fts_fr`, each
-  through `search.websearch_tsquery` (the columns index whitespace-folded text
-  since #825, so the query is folded the same way).
+- Full-text search is **bilingual**: query `fts_en` and `fts_fr`, each through
+  `search.websearch_tsquery`, which folds whitespace as the columns do (#825).
 - The reranker is on by default (`reranker_enabled`) and **degrades gracefully**
   — if it is unreachable, the merged FTS+vector score is the final ordering.
   Never let a reranker failure fail a search.
@@ -135,12 +134,11 @@ An increment under `_INCREMENT_FLOOR_TOKENS` raw tokens is not measured.
 The prose table is per model while density is per conversation, so alternating
 languages oscillate it (EN/CJK/EN measured 1.20, 1.64, 1.72, 1.46, 1.62);
 per-conversation keying is #810.
-The tool ratio is measured only as the **increment**
-between two counted prompts of one turn's loop (the result and its call,
-nothing else): never from a tool-less prompt, never from a turn's first
-prompt even when the history holds results (diluted), never from the forced
-call (it drops the tools); blended at half weight from the default, never
-replaced.
+The tool ratio is measured only as the **increment** between two counted prompts
+of one turn's loop (the result and its call, nothing else): never from a
+tool-less prompt, never from a turn's first prompt even when the history holds
+results (diluted), never from the forced call (it drops the tools); blended at
+half weight from the default, never replaced.
 The prose ratio is measured over every prompt with no tool row, accepted or
 refused (seed 1.2, replaced by the first measurement, blended after); once a
 conversation has searched, its later first prompts are tool-bearing and
