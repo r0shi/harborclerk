@@ -364,6 +364,24 @@ def _filter_refusal(metadata_filter: dict | None, principal: Principal) -> str |
     return None
 
 
+def _text_contains_scope(text_contains: str | None, principal: Principal) -> dict:
+    """For a capped key that sent ``text_contains``, a note on where the literal is matched (#831).
+
+    Present on every such response, matching or not, so it says nothing about the result: an empty
+    result then reads as "not in the first N characters", not "not in the corpus"."""
+    cap = snippet_cap(principal)
+    if text_contains is None or cap is None:
+        return {}
+    if cap == 0:
+        note = "text_contains matches nothing for this API key: its snippet cap is 0."
+    else:
+        note = (
+            f"text_contains is matched only within the first {cap} characters of each passage "
+            "(this API key's snippet cap); a literal further in is not found."
+        )
+    return {"text_contains_scope": note}
+
+
 def _error_text(text: str | None) -> str | None:
     """Pipeline error text, with every path-like token replaced by ``[path]`` for an agent.
 
@@ -934,8 +952,7 @@ async def kb_search(
         metadata_filter={"sidecar.vendor": "Acme", "sidecar.term_months": 24}.
         Inspect a document's available metadata via kb_get_document. A value
         must be the whole stored value: one shown cut (ending in "…", or at
-        the key's snippet cap) matches nothing. Under a key with a snippet cap
-        of N, a string value longer than N is refused (all strings at 0).
+        the key's snippet cap) matches nothing.
         Additionally accepts the `email.*` namespace for native Document
         column lookups (faster + typed vs. raw tika.email_* via JSONB):
           email.from_address (exact, case-insensitive)
@@ -946,6 +963,11 @@ async def kb_search(
           email.thread_id / email.message_id (exact)
         For date filtering on emails, use the after=/before= filters
         (already mapped to email_date_sent for emails).
+        Under a key with a snippet cap of N: email.from_name(_contains) and
+        email.subject(_contains) are accepted at any length; the other
+        email.* keys are refused; an ISO date on tika.created_at,
+        frontmatter.date or sidecar.date is accepted; any other string
+        longer than N is refused (every string at a cap of 0).
 
     detail levels control how much text is returned per hit:
       "full" (default): complete chunk text — best for reading a small
@@ -975,11 +997,13 @@ async def kb_search(
       and "IP." but not "ship". Special chars (% _) are matched
       literally. Combine with `query` for relevance ranking among the
       literal-match subset. Under a key with a snippet cap of N, the
-      literal must occur within a chunk's first N characters.
+      literal must occur within a chunk's first N characters, and the
+      response's text_contains_scope says so.
     """
     principal = _get_principal()
     if (refusal := _filter_refusal(metadata_filter, principal)) is not None:
         return json.dumps({"error": refusal})
+    scope_note = _text_contains_scope(text_contains, principal)
     settings = get_settings()
 
     # Mutual exclusion check
@@ -1035,13 +1059,13 @@ async def kb_search(
                 resp_empty: dict = {"hits": [], "total_candidates": 0, "has_more": False}
                 if unscoped_count > 0:
                     resp_empty["would_match_unscoped"] = unscoped_count
-                return json.dumps(resp_empty, indent=2)
+                return json.dumps({**resp_empty, **scope_note}, indent=2)
             if did is not None and did not in visible_ids:
-                return json.dumps({"hits": [], "total_candidates": 0, "has_more": False}, indent=2)
+                return json.dumps({"hits": [], "total_candidates": 0, "has_more": False, **scope_note}, indent=2)
             if parsed_doc_ids is not None:
                 parsed_doc_ids = [d for d in parsed_doc_ids if d in visible_ids]
                 if not parsed_doc_ids:
-                    return json.dumps({"hits": [], "total_candidates": 0, "has_more": False}, indent=2)
+                    return json.dumps({"hits": [], "total_candidates": 0, "has_more": False, **scope_note}, indent=2)
             elif did is None:
                 parsed_doc_ids = list(visible_ids)
 
@@ -1160,6 +1184,7 @@ async def kb_search(
 
     if discriminator_hint is not None:
         resp["discriminator_hint"] = discriminator_hint
+    resp.update(scope_note)
 
     return json.dumps(resp, indent=2)
 
@@ -1213,7 +1238,7 @@ async def kb_find_all(
         side: " IP " matches "the IP clause" and "IP." but not "ship".
         Special chars (% _) are matched literally. Under a key with a
         snippet cap of N, the literal must occur within a chunk's first N
-        characters.
+        characters (the response's text_contains_scope says so).
       max_results: cap on documents returned (default 100; server clamps
         at settings.find_all_max_results_cap, default 500).
       offset: pagination offset over the sorted result set. Default 0.
@@ -1245,6 +1270,11 @@ async def kb_find_all(
       email.thread_id / email.message_id (exact)
     For date filtering on emails, use the after=/before= filters
     (already mapped to email_date_sent for emails).
+    Under a key with a snippet cap of N: email.from_name(_contains) and
+    email.subject(_contains) are accepted at any length; the other
+    email.* keys are refused; an ISO date on tika.created_at,
+    frontmatter.date or sidecar.date is accepted; any other string
+    longer than N is refused (every string at a cap of 0).
 
     Response:
       results: list of {doc_id, doc_title, mime_type, language, score,
@@ -1260,6 +1290,7 @@ async def kb_find_all(
     principal = _get_principal()
     if (refusal := _filter_refusal(metadata_filter, principal)) is not None:
         return json.dumps({"error": refusal})
+    scope_note = _text_contains_scope(text_contains, principal)
     settings = get_settings()
 
     # Mutual exclusion check
@@ -1316,6 +1347,7 @@ async def kb_find_all(
                         "truncated": False,
                         "sort_by": sort_by,
                         "presentation": presentation,
+                        **scope_note,
                     },
                     indent=2,
                 )
@@ -1329,6 +1361,7 @@ async def kb_find_all(
                         "truncated": False,
                         "sort_by": sort_by,
                         "presentation": presentation,
+                        **scope_note,
                     },
                     indent=2,
                 )
@@ -1344,6 +1377,7 @@ async def kb_find_all(
                             "truncated": False,
                             "sort_by": sort_by,
                             "presentation": presentation,
+                            **scope_note,
                         },
                         indent=2,
                     )
@@ -1404,6 +1438,7 @@ async def kb_find_all(
         "truncated": result.truncated,
         "sort_by": result.sort_by,
         "presentation": result.presentation,
+        **scope_note,
     }
     return json.dumps(resp, indent=2)
 
@@ -2919,6 +2954,9 @@ async def kb_verify_identifier(identifier: str) -> str:
         as this one. A question about content is still answerable: search
         for the subject and the parties with kb_search and present what you
         find under its own title, not as the document the user named.
+        Under a key with a snippet cap, identifiers held only in metadata
+        longer than the cap are not checked: not_found then means "not
+        found", not "does not exist", and its instruction says so.
       - status="ambiguous" with no discriminating_fields means the
         candidates are indistinguishable by metadata; inspect with
         kb_get_document if you must.
@@ -2958,7 +2996,18 @@ async def kb_verify_identifier(identifier: str) -> str:
     # forbids ("the closest proxy is..."). The directive lands harder when it's
     # in the tool RESULT the model is reading at decision time, not in the
     # tools/list description it saw at session start.
-    if isinstance(result, dict) and result.get("status") == "not_found":
+    if isinstance(result, dict) and result.get("status") == "not_found" and cap is not None:
+        # A capped key does not check identifiers held only in metadata longer than its cap (#831), so
+        # "it does not exist" could be false. Every capped not_found says so, whether or not a match was
+        # left unchecked, so the wording reveals nothing about the corpus.
+        result["instruction"] = (
+            "No document matched among the fields this API key may check: titles, filenames, and metadata "
+            "identifiers within its snippet cap. Identifiers held only in longer metadata are not checked, so "
+            "tell the user it was not found, not that it does not exist. Do NOT present a similar or adjacent "
+            "document as this one. If the question is about content, answer it with kb_search on the subject "
+            "and the parties, and present what you find under its own title."
+        )
+    elif isinstance(result, dict) and result.get("status") == "not_found":
         result["instruction"] = (
             "No document carries this identifier, exactly or by its words: it does not exist in the corpus. "
             "State that plainly to the user. "
@@ -3009,8 +3058,7 @@ async def kb_documents_by_date(
       query: optional FTS-only filter (no vector). Returns docs whose chunks
         match the query, sorted by date.
       metadata_filter: dict of {"namespace.key": value} pairs — same shape
-        as kb_search's metadata_filter, applied as JSONB containment (and
-        refused the same way under a key's snippet cap).
+        as kb_search's metadata_filter, applied as JSONB containment.
         Additionally accepts the `email.*` namespace for native Document
         column lookups (faster + typed vs. raw tika.email_* via JSONB):
           email.from_address (exact, case-insensitive)
@@ -3021,6 +3069,11 @@ async def kb_documents_by_date(
           email.thread_id / email.message_id (exact)
         For date filtering on emails, use the after=/before= filters
         (already mapped to email_date_sent for emails).
+        Under a key with a snippet cap of N: email.from_name(_contains) and
+        email.subject(_contains) are accepted at any length; the other
+        email.* keys are refused; an ISO date on tika.created_at,
+        frontmatter.date or sidecar.date is accepted; any other string
+        longer than N is refused (every string at a cap of 0).
       after, before: ISO 8601 date or datetime strings; bound the
         effective-date range.
       date_field: explicit override for the effective-date source. Accepted

@@ -91,7 +91,12 @@ def cap_values(value: Any, cap: int | None) -> Any:
 def _cap_tree(value: Any, cap: int | None, value_max: int | None, path: Path, cut: list[Path]) -> Any:
     """``value`` with every string capped, then shortened to ``value_max`` (recorded in ``cut``)."""
     if isinstance(value, str):
-        date = cap is not None and is_structured_date(dotted(path), value)
+        # A list element on a date path is judged by the path that holds the list, as the filter
+        # exemption judges each element (``passage_cap.refuse_filter_past_cap``).
+        field = path
+        while field and isinstance(field[-1], int):
+            field = field[:-1]
+        date = cap is not None and is_structured_date(dotted(field), value)
         text = value if date else cap_text(value, cap)
         if text is not None and value_max is not None and len(text) > value_max:
             cut.append(path)

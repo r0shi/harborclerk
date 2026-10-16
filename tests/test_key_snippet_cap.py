@@ -521,6 +521,14 @@ async def test_mcp_text_contains_matches_only_within_a_capped_keys_prefix(
     payload = await _mcp_as(db_session, admin_user, who, lambda: TEXT_CONTAINS_MCP[surface](literal))
     found = str(corpus.paged_doc.doc_id) in json.dumps(payload)
     assert found == _literal_visible(literal, _cap_of(who), source), (who, literal, payload)
+    # A capped key is always told where the literal was matched, found or not, so the note reveals
+    # nothing about the result; nobody else gets the note.
+    cap = _cap_of(who)
+    if cap is None:
+        assert "text_contains_scope" not in payload, payload
+    else:
+        expected = f"first {cap} characters" if cap > 0 else "snippet cap is 0"
+        assert expected in payload.get("text_contains_scope", ""), payload
 
 
 @pytest.mark.parametrize("literal", [_LITERAL_IN_PREFIX, _LITERAL_PAST_CAP])
@@ -1128,7 +1136,31 @@ async def test_verify_identifier_matches_metadata_leaves_only_within_the_cap(
     payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_verify_identifier(identifier))
     assert (payload["status"] == "unique") is found, payload
     if not found:
+        # The identifier exists (in metadata the key may not check): the tool must not claim absence.
         assert payload["status"] == "not_found", payload
+        _assert_capped_not_found(payload)
+
+
+def _assert_capped_not_found(payload: dict) -> None:
+    assert "does not exist in the corpus" not in payload["instruction"], payload["instruction"]
+    assert "not found, not that it does not exist" in payload["instruction"], payload["instruction"]
+
+
+@pytest.mark.parametrize("who", MCP_PRINCIPALS)
+async def test_verify_identifier_not_found_claims_absence_only_when_everything_was_checked(
+    db_session, mock_session_factory, admin_user, who
+):
+    """An identifier nobody holds. Uncapped callers checked every field, so "it does not exist" is true
+    and they get the plain instruction; every capped key gets the softened one, whether or not anything
+    was left unchecked, so the wording reveals nothing."""
+    import harbor_clerk.mcp_server as m
+
+    payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_verify_identifier("ZZ-NO-SUCH-IDENT-4242"))
+    assert payload["status"] == "not_found", payload
+    if _cap_of(who) is None:
+        assert "it does not exist in the corpus" in payload["instruction"], payload["instruction"]
+    else:
+        _assert_capped_not_found(payload)
 
 
 async def test_verify_identifier_title_matching_is_unchanged_under_a_cap(db_session, mock_session_factory, admin_user):
@@ -1209,6 +1241,7 @@ async def test_verify_identifier_tika_title_matches_only_within_the_cap(
     assert (payload["status"] == "unique") is found, payload
     if not found:
         assert payload["status"] == "not_found", payload
+        _assert_capped_not_found(payload)
 
 
 _MESSAGE_ID = "<20240115.0001.pilotage-notice@mail.northbasin.example>"
@@ -1346,3 +1379,30 @@ async def test_iso_dates_in_the_date_fields_are_structured_data(db_session, mock
     prose = "sometime in the spring before the great storm of that year"
     assert meta["frontmatter"]["date"] == (prose[:cap] if cap > 0 else None)
     assert meta["tika"]["title"] == ("Tide table for the North Basin pilots"[:cap] if cap > 0 else None)
+
+
+@pytest.mark.parametrize("cap", [5, 0])
+async def test_iso_dates_in_a_list_on_a_date_field_display_whole_as_the_filter_accepts_them(
+    db_session, mock_session_factory, admin_user, cap
+):
+    """Dates are structured wherever they sit on a date path: a list of ISO dates displays whole, so the
+    filter that accepts each element confirms nothing the key was not shown."""
+    import harbor_clerk.mcp_server as m
+
+    dates = ["2024-01-15", "2025-03-02"]
+    docs = await _seed_hint_pair(
+        db_session, lambda t: {"frontmatter": {"date": dates if t == "A" else ["2023-07-01"], "note": "logbook"}}
+    )
+    payload = await _mcp_as(
+        db_session, admin_user, f"key cap={cap}", lambda: m.kb_get_document(doc_id=str(docs[0].doc_id))
+    )
+    assert payload["metadata"]["frontmatter"]["date"] == dates, payload["metadata"]
+    assert payload["metadata"]["frontmatter"]["note"] == ("logbook"[:cap] if cap > 0 else None)
+    found = await _mcp_as(
+        db_session,
+        admin_user,
+        f"key cap={cap}",
+        lambda: m.kb_search(query="harbour pilot ledger", metadata_filter={"frontmatter.date": "2025-03-02"}),
+    )
+    assert "error" not in found, found
+    assert {h["doc_id"] for h in found["hits"]} == {str(docs[0].doc_id)}, found["hits"]
