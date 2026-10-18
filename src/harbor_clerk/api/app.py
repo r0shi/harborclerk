@@ -8,7 +8,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from harbor_clerk.api.routes.api_keys import router as api_keys_router
@@ -405,6 +405,46 @@ def build_version() -> str:
         return "0.0.0+unstamped"
 
 
+# First path segments that belong to the API, MCP and OAuth surfaces. A GET under
+# one of them that matches no route is a JSON 404, never the SPA shell (#603).
+_API_PREFIXES = frozenset({"api", "mcp", "t", "oauth", ".well-known"})
+
+# `_static_file`'s answer for a path that is malformed or names something outside
+# the static directory: a 404, not the SPA shell.
+_OUTSIDE = object()
+
+
+def _not_found() -> JSONResponse:
+    return JSONResponse({"detail": "Not Found"}, status_code=404)
+
+
+def _is_api_path(full_path: str) -> bool:
+    return full_path.split("/", 1)[0] in _API_PREFIXES
+
+
+def _static_file(static_root: Path, full_path: str) -> Path | object | None:
+    """The file inside ``static_root`` that ``full_path`` names.
+
+    ``static_root`` is already resolved; ``full_path`` is the URL path after its
+    leading slash, as the server decoded it. Returns the resolved file, None when
+    nothing inside the directory has that name (a client-side route), or
+    ``_OUTSIDE`` when the path is malformed or resolves, symlinks followed, to
+    somewhere outside the directory.
+    """
+    if "\x00" in full_path or "\\" in full_path:
+        return _OUTSIDE
+    segments = full_path.split("/")
+    if segments[0] == "" or ".." in segments:
+        return _OUTSIDE
+    try:
+        resolved = (static_root / full_path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return _OUTSIDE
+    if not resolved.is_relative_to(static_root):
+        return _OUTSIDE
+    return resolved if resolved.is_file() else None
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Harbor Clerk",
@@ -462,13 +502,20 @@ def create_app() -> FastAPI:
         app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
 
         # SPA fallback: serve index.html for all non-API, non-asset routes
-        index_html = static_dir / "index.html"
+        static_root = static_dir.resolve()
+        index_html = static_root / "index.html"
 
         @app.get("/{full_path:path}", include_in_schema=False)
         async def spa_fallback(full_path: str):
+            if _is_api_path(full_path):
+                return _not_found()
+            if not full_path:
+                return FileResponse(index_html)
             # Try to serve a real file first (favicon.ico, etc.)
-            file = static_dir / full_path
-            if full_path and file.is_file():
+            file = _static_file(static_root, full_path)
+            if file is _OUTSIDE:
+                return _not_found()
+            if file is not None:
                 return FileResponse(file)
             return FileResponse(index_html)
 
