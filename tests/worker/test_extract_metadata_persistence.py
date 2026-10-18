@@ -39,19 +39,29 @@ async def _watch(
     )
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("enabled", "status"),
-    [(False, WatchedFileStatus.active), (True, WatchedFileStatus.removed)],
-    ids=["folder-disabled", "file-removed"],
-)
-async def test_extract_stage_reads_no_sidecar_without_an_active_watched_file(
-    db_session, tmp_path: Path, enabled, status
-):
-    """The watched file must be active and its folder enabled for the document to be read in place."""
+async def _extract_watched_doc(
+    db_session,
+    tmp_path: Path,
+    *,
+    enabled: bool = True,
+    status: WatchedFileStatus = WatchedFileStatus.active,
+    stored: bytes | None = None,
+) -> tuple[dict | None, int | None, str]:
+    """Extract a watched document (its file and a sidecar on disk), optionally also
+    carrying a stored original with different bytes. Returns (metadata, chars, page text)."""
+    import io
+    import uuid
+
+    from harbor_clerk.models import DocumentPage
+    from harbor_clerk.storage import get_storage
+
     source = tmp_path / "0003_doc.txt"
-    source.write_text("Body text")
+    source.write_text("Edited on disk body text")
     (tmp_path / "0003_doc.json").write_text(json.dumps({"vendor": "Acme"}))
+    key = None
+    if stored is not None:
+        key = f"originals/docs/{uuid.uuid4()}/0003_doc.txt"
+        get_storage().put_object("originals", key, io.BytesIO(stored), len(stored), "text/plain")
     doc = Document(
         title="0003_doc",
         canonical_filename="0003_doc.txt",
@@ -60,6 +70,8 @@ async def test_extract_stage_reads_no_sidecar_without_an_active_watched_file(
         pipeline_status=PipelineStatus.queued,
         mime_type="text/plain",
         source_path=str(source),
+        original_bucket="originals" if key else None,
+        original_object_key=key,
     )
     db_session.add(doc)
     await db_session.flush()
@@ -70,13 +82,57 @@ async def test_extract_stage_reads_no_sidecar_without_an_active_watched_file(
 
     from harbor_clerk.worker.stages.extract import run_extract
 
-    run_extract(doc_id)
+    try:
+        run_extract(doc_id)
+    finally:
+        if key:
+            get_storage().remove_object("originals", key)
 
     sync_session = get_sync_session()
     try:
-        metadata = sync_session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one().doc_metadata
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        pages = (
+            sync_session.execute(select(DocumentPage.page_text).where(DocumentPage.doc_id == doc_id)).scalars().all()
+        )
+        return refreshed.doc_metadata, refreshed.extracted_chars, " ".join(pages)
     finally:
         sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_extract_stage_reads_the_sidecar_of_a_paused_folders_document(db_session, tmp_path: Path):
+    """A disabled folder's documents are still read in place, sidecar included."""
+    metadata, _, _ = await _extract_watched_doc(db_session, tmp_path, enabled=False)
+    assert (metadata or {}).get("sidecar") == {"vendor": "Acme"}, f"expected the sidecar, got: {metadata}"
+
+
+@pytest.mark.asyncio
+async def test_extract_stage_reads_no_sidecar_for_a_removed_watched_file(db_session, tmp_path: Path):
+    metadata, _, _ = await _extract_watched_doc(db_session, tmp_path, status=WatchedFileStatus.removed)
+    assert "sidecar" not in (metadata or {}), f"no sidecar expected, got: {metadata}"
+
+
+@pytest.mark.asyncio
+async def test_extract_stage_reads_a_watched_doc_from_disk_despite_a_stale_stored_original(db_session, tmp_path: Path):
+    """A watched document that also carries an older stored original (#859) is
+    extracted from its file, so a disk edit reaches the index with its sidecar."""
+    metadata, chars, text = await _extract_watched_doc(db_session, tmp_path, stored=b"Stale stored body")
+    assert "Edited on disk" in text and "Stale" not in text, text
+    assert chars == len("Edited on disk body text")
+    assert (metadata or {}).get("sidecar") == {"vendor": "Acme"}
+
+
+@pytest.mark.asyncio
+async def test_extract_stage_degrades_when_the_watched_file_lookup_fails(db_session, tmp_path: Path, monkeypatch):
+    """A failing watched-file query costs the sidecar, not the extract."""
+    from sqlalchemy import text
+
+    import harbor_clerk.watched_source as watched_source
+
+    monkeypatch.setattr(watched_source, "watched_paths_query", lambda doc_id: text("SELECT * FROM no_such_table_603"))
+    metadata, chars, page_text = await _extract_watched_doc(db_session, tmp_path)
+    assert chars == len("Edited on disk body text"), "the extract must still commit"
+    assert "Edited on disk" in page_text
     assert "sidecar" not in (metadata or {}), f"no sidecar expected, got: {metadata}"
 
 

@@ -508,6 +508,57 @@ async def test_download_returns_bytes_when_enabled(client, admin_user, admin_tok
     assert "doc.pdf" in resp.headers["content-disposition"]
 
 
+async def test_download_serves_a_watched_doc_from_disk_despite_a_stale_stored_original(
+    client, admin_user, admin_token, db_session, tmp_path
+):
+    """A watched document that also carries an older stored original (#859) downloads its file."""
+    import io
+
+    from harbor_clerk.config import get_settings
+    from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+    from harbor_clerk.storage import get_storage
+
+    src = tmp_path / "doc.txt"
+    src.write_bytes(b"edited on disk")
+    key = f"originals/docs/{uuid.uuid4()}/doc.txt"
+    get_storage().put_object("originals", key, io.BytesIO(b"stale stored"), len(b"stale stored"), "text/plain")
+    doc = Document(
+        title="Watched",
+        status="active",
+        source_path=str(src),
+        original_bucket="originals",
+        original_object_key=key,
+        **_DOC_DEFAULTS,
+    )
+    db_session.add(doc)
+    folder = WatchedFolder(path=str(tmp_path), display_name=tmp_path.name)
+    db_session.add(folder)
+    await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=folder.folder_id,
+            relative_path=src.name,
+            bookmark_data=b"",
+            sha256=doc.sha256,
+            doc_id=doc.doc_id,
+            status=WatchedFileStatus.active,
+        )
+    )
+    await db_session.flush()
+
+    s = get_settings()
+    original = s.allow_source_download
+    s.allow_source_download = True
+    try:
+        resp = await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
+    finally:
+        s.allow_source_download = original
+        get_storage().remove_object("originals", key)
+
+    assert resp.status_code == 200
+    assert resp.content == b"edited on disk"
+
+
 async def test_download_403_fires_before_doc_existence_check(client, admin_user, admin_token):
     """Verify the 403 short-circuits before the DB query — i.e. an attacker
     can't probe doc_id existence via differential 403 vs 404 responses."""

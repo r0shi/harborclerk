@@ -851,8 +851,15 @@ async def download_document(
     import os
     from pathlib import Path
 
-    # Read from storage if available; fall back to source_path for watched folder files
-    if doc.original_object_key:
+    from harbor_clerk.watched_source import in_place_path_async
+
+    # Read as the extract stage does: a document read in place from its watched file
+    # (even with a stored original, #859), else storage, else source_path.
+    in_place = await in_place_path_async(session, doc)
+    if in_place is not None and os.path.exists(in_place):
+        file_bytes = Path(in_place).read_bytes()
+        filename = posixpath.basename(in_place)
+    elif doc.original_object_key:
         storage = get_storage()
         obj = storage.get_object(doc.original_bucket, doc.original_object_key)
         file_bytes = obj.read()

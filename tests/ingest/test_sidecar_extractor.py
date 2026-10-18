@@ -69,7 +69,7 @@ def test_run_all_reads_a_sidecar_only_beside_the_in_place_path(tmp_path: Path, m
 
 
 def test_verified_in_place_path_is_the_watched_path_only_when_source_path_matches(tmp_path: Path):
-    from harbor_clerk.ingest.metadata_extractors import verified_in_place_path
+    from harbor_clerk.watched_source import verified_in_place_path
 
     folder = tmp_path / "folder"
     (folder / "sub").mkdir(parents=True)

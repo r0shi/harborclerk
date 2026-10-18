@@ -22,9 +22,9 @@ from sqlalchemy import select
 
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
-from harbor_clerk.ingest.metadata_extractors import verified_in_place_path, watched_paths_query
 from harbor_clerk.models.document import Document
 from harbor_clerk.storage import get_storage
+from harbor_clerk.watched_source import in_place_path_async
 
 log = logging.getLogger("reextract_metadata")
 
@@ -40,11 +40,17 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
 
         for doc in docs:
             processed += 1
-            # Load raw bytes as the extract stage does: from storage when the original
-            # is stored (uploads, mail; their source_path is only a label), else in
-            # place from source_path (watched folder).
+            # Load raw bytes as the extract stage does: in place from the watched file
+            # (harbor_clerk.watched_source), else from storage when the original is
+            # stored (uploads, mail; their source_path is only a label), else from
+            # source_path.
             raw_bytes: bytes | None = None
-            if doc.original_object_key:
+            in_place = await in_place_path_async(session, doc)
+            if in_place is not None and not Path(in_place).is_file():
+                in_place = None
+            if in_place is not None:
+                raw_bytes = Path(in_place).read_bytes()
+            elif doc.original_object_key:
                 try:
                     response = storage.get_object(doc.original_bucket, doc.original_object_key)
                     raw_bytes = response.read()
@@ -59,12 +65,7 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
                 skipped += 1
                 continue
 
-            watched = (await session.execute(watched_paths_query(doc.doc_id))).all()
-            metadata = run_metadata_extractors(
-                doc=doc,
-                raw_bytes=raw_bytes,
-                in_place_path=verified_in_place_path(watched, doc.source_path),
-            )
+            metadata = run_metadata_extractors(doc=doc, raw_bytes=raw_bytes, in_place_path=in_place)
             if metadata == doc.doc_metadata:
                 continue  # idempotent no-op
             if dry_run:

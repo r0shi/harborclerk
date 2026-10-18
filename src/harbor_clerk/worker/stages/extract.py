@@ -14,10 +14,10 @@ from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.error_text import describe_error
 from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS, sniff_mime
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
-from harbor_clerk.ingest.metadata_extractors import verified_in_place_path, watched_paths_query
 from harbor_clerk.models import Document, DocumentHeading, DocumentLink, DocumentPage
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
+from harbor_clerk.watched_source import in_place_path
 from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
 from harbor_clerk.worker.markdown_extract import MarkdownExtractResult, extract_markdown
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
@@ -244,8 +244,16 @@ def run_extract(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         if worker_seq is None:
             worker_seq = doc.pipeline_seq
 
-        # Read from storage if available; fall back to source_path for watched folder docs
-        if doc.original_object_key:
+        # A document read in place is read from its watched file, even when it also
+        # carries a stored original (#859); otherwise from storage, falling back to
+        # source_path for a watched document whose path did not verify. The metadata
+        # extractors get the in-place path only when the body came from it.
+        in_place = in_place_path(session, doc)
+        if in_place is not None and not os.path.exists(in_place):
+            in_place = None
+        if in_place is not None:
+            data = Path(in_place).read_bytes()
+        elif doc.original_object_key:
             storage = get_storage()
             response = storage.get_object(doc.original_bucket, doc.original_object_key)
             data = response.read()
@@ -576,10 +584,7 @@ def run_extract(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         # extraction so raw_bytes are available and the document attributes
         # (mime_type, source_path) are fully resolved on the doc object.
         try:
-            watched = session.execute(watched_paths_query(doc.doc_id)).all()
-            metadata = run_metadata_extractors(
-                doc=doc, raw_bytes=data, in_place_path=verified_in_place_path(watched, doc.source_path)
-            )
+            metadata = run_metadata_extractors(doc=doc, raw_bytes=data, in_place_path=in_place)
             doc.doc_metadata = metadata
         except Exception as exc:
             # Extractor framework swallows individual extractor failures already;

@@ -16,6 +16,7 @@ from harbor_clerk.events import publish_job_event
 from harbor_clerk.models import Document, DocumentPage, IngestionJob
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
+from harbor_clerk.watched_source import in_place_path
 from harbor_clerk.worker.ocr_languages import get_ocr_languages_for_doc
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 
@@ -74,8 +75,12 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             mark_stage_done(doc_id, JobStage.ocr, worker_seq=worker_seq)
             return
 
-        # Read from storage if available; fall back to source_path for watched folder docs
-        if doc.original_object_key:
+        # Read as the extract stage does: a document read in place from its watched
+        # file (even with a stored original, #859), else storage, else source_path.
+        in_place = in_place_path(session, doc)
+        if in_place is not None and os.path.exists(in_place):
+            data = Path(in_place).read_bytes()
+        elif doc.original_object_key:
             storage = get_storage()
             response = storage.get_object(doc.original_bucket, doc.original_object_key)
             data = response.read()
