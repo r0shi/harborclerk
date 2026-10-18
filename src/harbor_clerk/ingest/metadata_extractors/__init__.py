@@ -21,6 +21,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
+from sqlalchemy import Select, exists, select
+
 log = logging.getLogger(__name__)
 
 
@@ -82,8 +84,24 @@ EXTRACTORS: list[MetadataExtractor] = [
 ]
 
 
-def run_all(*, doc, raw_bytes: bytes, source_path: str | None) -> dict[str, Any]:
+def read_in_place_query(doc_id) -> Select:
+    """A query for whether the document is read in place from a watched folder.
+
+    True iff a watched file maps to it. Only such a document's ``source_path``
+    names a file on this host: an upload's is a label its client supplied, and
+    it may still carry a stored original. Usable with a sync or an async session.
+    """
+    from harbor_clerk.models.watched import WatchedFile
+
+    return select(exists().where(WatchedFile.doc_id == doc_id))
+
+
+def run_all(*, doc, raw_bytes: bytes, source_path: str | None, read_in_place: bool) -> dict[str, Any]:
     """Entry point used by the extract stage. Runs EXTRACTORS in order,
     merges results, returns a namespaced dict suitable for assigning to
-    Document.doc_metadata."""
-    return _run_extractors(EXTRACTORS, doc=doc, raw_bytes=raw_bytes, source_path=source_path)
+    Document.doc_metadata.
+
+    ``read_in_place`` is ``read_in_place_query``'s answer. Without it the
+    extractors get no ``source_path``, so nothing beside it (a sidecar) is read.
+    """
+    return _run_extractors(EXTRACTORS, doc=doc, raw_bytes=raw_bytes, source_path=source_path if read_in_place else None)

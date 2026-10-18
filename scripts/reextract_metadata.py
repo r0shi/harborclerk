@@ -21,6 +21,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from harbor_clerk.db import async_session_factory
+from harbor_clerk.ingest.metadata_extractors import read_in_place_query
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
 from harbor_clerk.models.document import Document
 from harbor_clerk.storage import get_storage
@@ -43,7 +44,7 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
             # is stored (uploads, mail; their source_path is only a label), else in
             # place from source_path (watched folder).
             raw_bytes: bytes | None = None
-            if doc.original_bucket and doc.original_object_key:
+            if doc.original_object_key:
                 try:
                     response = storage.get_object(doc.original_bucket, doc.original_object_key)
                     raw_bytes = response.read()
@@ -58,10 +59,12 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
                 skipped += 1
                 continue
 
+            read_in_place = bool((await session.execute(read_in_place_query(doc.doc_id))).scalar())
             metadata = run_metadata_extractors(
                 doc=doc,
                 raw_bytes=raw_bytes,
                 source_path=doc.source_path,
+                read_in_place=read_in_place,
             )
             if metadata == doc.doc_metadata:
                 continue  # idempotent no-op

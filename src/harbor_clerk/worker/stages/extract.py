@@ -13,6 +13,7 @@ from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.error_text import describe_error
 from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS, sniff_mime
+from harbor_clerk.ingest.metadata_extractors import read_in_place_query
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
 from harbor_clerk.models import Document, DocumentHeading, DocumentLink, DocumentPage
 from harbor_clerk.models.enums import JobStage
@@ -575,7 +576,10 @@ def run_extract(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         # extraction so raw_bytes are available and the document attributes
         # (mime_type, source_path) are fully resolved on the doc object.
         try:
-            metadata = run_metadata_extractors(doc=doc, raw_bytes=data, source_path=doc.source_path)
+            read_in_place = bool(session.execute(read_in_place_query(doc.doc_id)).scalar())
+            metadata = run_metadata_extractors(
+                doc=doc, raw_bytes=data, source_path=doc.source_path, read_in_place=read_in_place
+            )
             doc.doc_metadata = metadata
         except Exception as exc:
             # Extractor framework swallows individual extractor failures already;

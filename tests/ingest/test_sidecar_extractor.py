@@ -53,25 +53,21 @@ def test_sidecar_extractor_returns_none_when_source_path_unset():
     assert out is None
 
 
-@dataclass
-class _FakeStoredDoc:
-    doc_id: uuid.UUID
-    title: str
-    original_object_key: str
+def test_run_all_reads_a_sidecar_only_for_a_document_read_in_place(tmp_path: Path, monkeypatch):
+    """run_all hands the extractors a source_path only when read_in_place is true."""
+    from harbor_clerk.ingest import metadata_extractors
 
-
-def test_sidecar_extractor_ignores_source_path_of_a_stored_original(tmp_path: Path):
-    """A document whose original is in storage reads nothing beside its source_path."""
+    monkeypatch.setattr(metadata_extractors, "EXTRACTORS", [SidecarExtractor()])
     doc_file = tmp_path / "0001_invoice.txt"
     doc_file.write_text("body")
     (tmp_path / "0001_invoice.json").write_text(json.dumps({"vendor": "Acme"}))
+    doc = _FakeDoc(doc_id=uuid.uuid4(), title="i")
 
-    out = SidecarExtractor().extract(
-        doc=_FakeStoredDoc(doc_id=uuid.uuid4(), title="i", original_object_key="originals/docs/x/0001_invoice.txt"),
-        raw_bytes=b"body",
-        source_path=str(doc_file),
-    )
-    assert out is None
+    labelled = metadata_extractors.run_all(doc=doc, raw_bytes=b"body", source_path=str(doc_file), read_in_place=False)
+    in_place = metadata_extractors.run_all(doc=doc, raw_bytes=b"body", source_path=str(doc_file), read_in_place=True)
+
+    assert labelled == {}
+    assert in_place["sidecar"] == {"vendor": "Acme"}
 
 
 def test_sidecar_extractor_logs_and_returns_none_on_malformed_json(tmp_path: Path):

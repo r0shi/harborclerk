@@ -12,6 +12,24 @@ from sqlalchemy import select
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.models import Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
+from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+
+
+async def _watch(db_session, doc: Document, source: Path) -> None:
+    """Map ``doc`` to a watched file, as the watcher does for a document it reads in place."""
+    folder = WatchedFolder(path=str(source.parent), display_name=source.parent.name)
+    db_session.add(folder)
+    await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=folder.folder_id,
+            relative_path=source.name,
+            bookmark_data=b"",
+            sha256=doc.sha256,
+            doc_id=doc.doc_id,
+            status=WatchedFileStatus.active,
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -35,6 +53,7 @@ async def test_extract_stage_writes_sidecar_metadata_to_doc(db_session, tmp_path
     )
     db_session.add(doc)
     await db_session.flush()
+    await _watch(db_session, doc, source)
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
     await db_session.commit()
     doc_id = doc.doc_id
@@ -58,27 +77,26 @@ async def test_extract_stage_writes_sidecar_metadata_to_doc(db_session, tmp_path
     assert "sidecar" in metadata["_source_provenance"]
 
 
-@pytest.mark.asyncio
-async def test_extract_stage_reads_no_sidecar_for_a_stored_original(db_session, tmp_path: Path):
-    """An uploaded document's source_path is a client-supplied label: the extract
-    stage reads its bytes from storage and attaches no file found beside that path."""
+async def _extract_with_stored_original(db_session, tmp_path: Path, *, watched: bool) -> tuple[dict | None, int | None]:
+    """Extract a document whose original is in storage and whose source_path
+    names a different file with a sidecar beside it. Returns (metadata, chars)."""
     import io
     import uuid
 
     from harbor_clerk.storage import get_storage
 
-    body = b"Uploaded body text"
-    labelled = tmp_path / "0002_upload.txt"
-    labelled.write_text("a different file at the labelled path")
-    (tmp_path / "0002_upload.json").write_text(json.dumps({"vendor": "Outside"}))
+    body = b"Stored body text"
+    labelled = tmp_path / "0002_doc.txt"
+    labelled.write_text("a different file at the source_path")
+    (tmp_path / "0002_doc.json").write_text(json.dumps({"vendor": "Beside"}))
 
     bucket = "originals"
-    key = f"originals/docs/{uuid.uuid4()}/0002_upload.txt"
+    key = f"originals/docs/{uuid.uuid4()}/0002_doc.txt"
     get_storage().put_object(bucket, key, io.BytesIO(body), len(body), "text/plain")
 
     doc = Document(
-        title="0002_upload",
-        canonical_filename="0002_upload.txt",
+        title="0002_doc",
+        canonical_filename="0002_doc.txt",
         status="active",
         sha256=hashlib.sha256(body).digest(),
         pipeline_status=PipelineStatus.queued,
@@ -89,6 +107,8 @@ async def test_extract_stage_reads_no_sidecar_for_a_stored_original(db_session, 
     )
     db_session.add(doc)
     await db_session.flush()
+    if watched:
+        await _watch(db_session, doc, labelled)
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
     await db_session.commit()
     doc_id = doc.doc_id
@@ -103,13 +123,28 @@ async def test_extract_stage_reads_no_sidecar_for_a_stored_original(db_session, 
     sync_session = get_sync_session()
     try:
         refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
-        metadata = refreshed.doc_metadata
-        extracted_chars = refreshed.extracted_chars
+        return refreshed.doc_metadata, refreshed.extracted_chars
     finally:
         sync_session.close()
 
-    assert extracted_chars == len(body), "the body must come from storage, not the labelled path"
-    assert "sidecar" not in (metadata or {}), f"no sidecar may be read beside a stored original, got: {metadata}"
+
+@pytest.mark.asyncio
+async def test_extract_stage_reads_no_sidecar_beside_an_uploads_source_path(db_session, tmp_path: Path):
+    """An upload's source_path is a client-supplied label: the extract stage reads
+    its bytes from storage and attaches no file found beside that path."""
+    metadata, extracted_chars = await _extract_with_stored_original(db_session, tmp_path, watched=False)
+
+    assert extracted_chars == len(b"Stored body text"), "the body must come from storage"
+    assert "sidecar" not in (metadata or {}), f"no sidecar may be read for an upload, got: {metadata}"
+
+
+@pytest.mark.asyncio
+async def test_extract_stage_reads_the_sidecar_of_a_watched_doc_with_a_stored_original(db_session, tmp_path: Path):
+    """A watched document that also carries an object key (a confirmed new
+    version) is still read in place for its sidecar."""
+    metadata, _ = await _extract_with_stored_original(db_session, tmp_path, watched=True)
+
+    assert (metadata or {}).get("sidecar") == {"vendor": "Beside"}, f"expected the sidecar, got: {metadata}"
 
 
 @pytest.mark.asyncio
