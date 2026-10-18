@@ -266,7 +266,7 @@ def test_trailing_slash_in_the_source_is_the_same_bind() -> None:
 
 
 def test_watch_root_env_matches_the_watcher() -> None:
-    """The app's watch API reads WATCH_ROOT (Docker vs native picker, folder confinement)."""
+    """The app reads WATCH_ROOT: Docker vs native picker (POST /folders is 409 on Docker) and its startup check."""
     services = _load_services()
     watcher_name, watcher = _watcher(services)
     watcher_root = (watcher.get("environment") or {}).get("WATCH_ROOT")

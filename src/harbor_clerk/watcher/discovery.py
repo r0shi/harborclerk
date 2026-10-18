@@ -39,8 +39,11 @@ def scan_watch_root(session: Session, watch_root: str) -> None:
 
     # New paths → insert, unless some row (auto-discovered or not) already has the path
     for path in sorted(on_disk):
-        if os.path.realpath(path) in known:
+        real = os.path.realpath(path)
+        if real in known:
             continue
+        # Two entries in one scan can resolve to the same directory (`b -> a`).
+        known.add(real)
         session.add(
             WatchedFolder(
                 path=path,
@@ -80,6 +83,30 @@ def _mount_points(mountinfo_path: str) -> set[str] | None:
     return points
 
 
+def _watch_root_check(watch_root: str, mountinfo_path: str) -> tuple[str, str] | None:
+    """(kind, message) for a WATCH_ROOT that cannot work, or None. kind: invalid, missing, unmounted."""
+    if not watch_root:
+        return None
+    root = Path(watch_root)
+    if not root.is_absolute():
+        return "invalid", f"WATCH_ROOT={watch_root} is not an absolute path."
+    if not root.is_dir():
+        return "missing", (
+            f"WATCH_ROOT={watch_root} does not exist or is not a directory. It must be the watch "
+            "mount (/data/watch in docker-compose.yml) or a directory under it that exists on the host."
+        )
+    points = _mount_points(mountinfo_path)
+    if points is None:
+        return None
+    real = Path(os.path.realpath(root))
+    if not any(str(p) in points for p in (real, *real.parents) if str(p) != "/"):
+        return "unmounted", (
+            f"WATCH_ROOT={watch_root} is not on a mounted volume. It must be the watch mount "
+            "(/data/watch in docker-compose.yml) or a directory under it."
+        )
+    return None
+
+
 def watch_root_problem(watch_root: str, mountinfo_path: str = _MOUNTINFO) -> str | None:
     """Why WATCH_ROOT cannot work, or None.
 
@@ -90,32 +117,33 @@ def watch_root_problem(watch_root: str, mountinfo_path: str = _MOUNTINFO) -> str
     must be a mount point. A root on the container's own filesystem is invisible
     to the workers and lost on recreate. Empty WATCH_ROOT (macOS native) is fine.
     """
-    if not watch_root:
-        return None
-    root = Path(watch_root)
-    if not root.is_absolute():
-        return f"WATCH_ROOT={watch_root} is not an absolute path"
-    if not root.is_dir():
-        return (
-            f"WATCH_ROOT={watch_root} does not exist or is not a directory. It must be the watch "
-            "mount (/data/watch in docker-compose.yml) or a directory under it that exists on the host."
-        )
-    points = _mount_points(mountinfo_path)
-    if points is None:
-        return None
-    real = Path(os.path.realpath(root))
-    if not any(str(p) in points for p in (real, *real.parents) if str(p) != "/"):
-        return (
-            f"WATCH_ROOT={watch_root} is not on a mounted volume. It must be the watch mount "
-            "(/data/watch in docker-compose.yml) or a directory under it; files anywhere else are "
-            "not visible to the workers that read them."
-        )
-    return None
+    check = _watch_root_check(watch_root, mountinfo_path)
+    return check[1] if check else None
 
 
-def log_watch_root_problem(watch_root: str, service: str) -> str | None:
-    """Log watch_root_problem() at ERROR for a service's startup; returns the problem."""
-    problem = watch_root_problem(watch_root)
-    if problem:
-        logger.error("%s: %s Watched folders will not be discovered until this is fixed.", service, problem)
+# What each problem means for the service that found it.
+_CONSEQUENCES = {
+    ("watcher", "invalid"): "No watched folders will be discovered until this is fixed.",
+    ("watcher", "missing"): "No watched folders will be discovered until this is fixed.",
+    ("watcher", "unmounted"): (
+        "Folders there are discovered, but their documents will fail to extract: the workers "
+        "and the app cannot see files that exist only in the watcher's container."
+    ),
+    ("api", "invalid"): "Watched documents cannot be downloaded, and the Folders page will list none from it.",
+    ("api", "missing"): "Watched documents cannot be downloaded, and the Folders page will list none from it.",
+    ("api", "unmounted"): (
+        "Watched documents cannot be downloaded from this container, and their folders will show "
+        "extraction failures: no other service can see files outside the watch mount."
+    ),
+}
+
+
+def log_watch_root_problem(watch_root: str, service: str, mountinfo_path: str = _MOUNTINFO) -> str | None:
+    """Log a WATCH_ROOT problem at ERROR for a service's startup, with what it means there; returns it."""
+    check = _watch_root_check(watch_root, mountinfo_path)
+    if not check:
+        return None
+    kind, problem = check
+    consequence = _CONSEQUENCES.get((service, kind), "Watched folders will not work until this is fixed.")
+    logger.error("%s: %s %s", service, problem, consequence)
     return problem

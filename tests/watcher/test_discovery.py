@@ -176,8 +176,55 @@ def test_watch_root_problem_without_mountinfo_checks_existence_only(tmp_path):
     assert watch_root_problem(str(root), str(tmp_path / "no-such-mountinfo")) is None
 
 
-def test_log_watch_root_problem_logs_an_error(tmp_path, caplog):
+def _logged_error(caplog, watch_root: str, service: str, mountinfo: str) -> str:
     with caplog.at_level(logging.ERROR, logger="harbor_clerk.watcher.discovery"):
-        problem = log_watch_root_problem(str(tmp_path / "missing"), "watcher")
+        problem = log_watch_root_problem(watch_root, service, mountinfo)
     assert problem is not None
-    assert any(r.levelno == logging.ERROR and "watcher:" in r.getMessage() for r in caplog.records)
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and errors[0].startswith(f"{service}: ")
+    return errors[0]
+
+
+def test_log_watcher_missing_root_says_nothing_is_discovered(tmp_path, caplog):
+    message = _logged_error(caplog, str(tmp_path / "missing"), "watcher", _mountinfo(tmp_path, "/"))
+    assert "does not exist" in message and "No watched folders will be discovered" in message
+
+
+def test_log_watcher_unmounted_root_says_extraction_fails(tmp_path, caplog):
+    """Discovery works on a root outside the mount; the workers just can't read it."""
+    root = tmp_path / "app"
+    root.mkdir()
+    message = _logged_error(caplog, str(root), "watcher", _mountinfo(tmp_path, "/"))
+    assert "not on a mounted volume" in message
+    assert "are discovered, but their documents will fail to extract" in message
+    assert "will not be discovered" not in message
+
+
+def test_log_api_problems_are_worded_for_the_app(tmp_path, caplog):
+    root = tmp_path / "app"
+    root.mkdir()
+    unmounted = _logged_error(caplog, str(root), "api", _mountinfo(tmp_path, "/"))
+    assert "cannot be downloaded" in unmounted and "discovered" not in unmounted
+    caplog.clear()
+    missing = _logged_error(caplog, str(tmp_path / "missing"), "api", _mountinfo(tmp_path, "/"))
+    assert "cannot be downloaded" in missing and "discovered" not in missing
+
+
+def test_log_watch_root_problem_is_silent_when_fine(tmp_path, caplog):
+    root = tmp_path / "watch"
+    root.mkdir()
+    with caplog.at_level(logging.ERROR, logger="harbor_clerk.watcher.discovery"):
+        assert log_watch_root_problem(str(root), "watcher", _mountinfo(tmp_path, "/", str(root))) is None
+    assert not caplog.records
+
+
+def test_two_entries_resolving_to_one_directory_in_one_scan_make_one_row(sync_session, tmp_path):
+    """`a` and `b -> a` in the same scan: the second must see the first's insert (#870 review)."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").symlink_to(tmp_path / "a")
+
+    scan_watch_root(sync_session, str(tmp_path))
+    sync_session.commit()
+
+    rows = sync_session.query(WatchedFolder).all()
+    assert [r.path for r in rows] == [str(tmp_path / "a")]

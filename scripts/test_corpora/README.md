@@ -14,7 +14,7 @@ See [`docs/superpowers/specs/2026-05-04-test-corpora-execution-design.md`](../..
 
 ## Quickstart
 
-Prerequisite: Harbor Clerk is running locally — either the macOS Server menubar app or `docker compose up`.
+Prerequisite: Harbor Clerk is running locally as the macOS Server menubar app. A `docker compose up` instance is not supported by the sweep's ingest flow: the sweep registers the corpus folder with `POST /api/watch/folders`, which answers 409 on Docker (folders are discovered under `WATCH_ROOT`), and the corpus directory is not mounted into the containers. The Docker row below is kept for reference until the sweep supports discovery-based ingest.
 
 | Setup              | URL                                                             | TLS?                    |
 | ------------------ | --------------------------------------------------------------- | ----------------------- |
