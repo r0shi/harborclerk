@@ -466,3 +466,18 @@ def test_cancellation_propagates_rather_than_becoming_a_500(stub_model):
 
     with patch("embedder.app.release_gpu_cache"), pytest.raises(asyncio.CancelledError):
         asyncio.run(asyncio.wait_for(_call(), timeout=10))
+
+
+def test_a_500_names_the_exception_type_never_its_message(stub_model, caplog):
+    """The 500 detail travels into documents.error (readable by API keys) and the
+    health verdict. An exception's message can quote the input: it stays in the
+    embedder's own log."""
+    import logging
+
+    secret = "Privileged: settlement figure 4.2M"
+    with caplog.at_level(logging.ERROR, logger="embedder.app"):
+        r = _post(stub_model, ["a"], encode_raises=RuntimeError(f"cannot encode {secret!r}"))
+
+    assert r.status_code == 500
+    assert r.json() == {"detail": "encode failed: RuntimeError"}, r.json()
+    assert any(secret in rec.getMessage() for rec in caplog.records), "the full message was not logged"

@@ -346,15 +346,69 @@ def test_busy_events_inside_the_gap_say_for_how_long_and_stay_ok(monkeypatch):
     assert note == f"{query_embed_health.BUSY_NOTE}; busy for {10 * (gap - 1):.0f}s", note
 
 
-async def test_an_old_verdict_is_not_served_as_current(client, monkeypatch):
-    """/health served an hour-old "ok" for a dead embedder on the first call. Past
-    the maximum evidence age it says "checking", with the age, and probes."""
+def _closed_port_url() -> str:
+    """An http URL on localhost where nothing listens: every connection is refused."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    return f"http://127.0.0.1:{port}"
+
+
+async def test_a_dead_embedder_polled_every_90s_reads_as_an_error_every_time(monkeypatch):
+    """The ninth review's repro: a refused connection, polled less than once a minute.
+    Every poll found the evidence over the maximum age, which read "checking"
+    (healthy) while the fresh probe ran in the background: a dead embedder
+    reported healthy on every call. Old evidence now waits for its probe."""
     from harbor_clerk import query_embed_health
+    from harbor_clerk.api.routes import system
 
     clock = [1000.0]
     monkeypatch.setattr(query_embed_health, "_now", lambda: clock[0])
+    dead = _closed_port_url()
+
+    assert (await system._embedder_check(dead))[0] == "checking"  # no evidence yet: answers at once
+    await _await_probe()
+
+    for poll in range(4):
+        clock[0] += 90
+        status, note = await system._embedder_check(dead)
+        assert status.startswith("error"), f"poll {poll}: a dead embedder read {status!r} ({note})"
+        assert note is None, f"poll {poll}: not this poll's probe but old evidence: {note}"
+
+
+async def test_an_old_failure_stays_an_error_while_a_slow_probe_runs(client, monkeypatch):
+    """Past the wait the probe is still running: an old failure is reported as the
+    error it was, with its age, never as "checking"."""
+    from harbor_clerk import query_embed_health
+
+    monkeypatch.setattr("harbor_clerk.api.routes.system.EMBEDDER_STALE_PROBE_WAIT_SECONDS", 0.2)
+    clock = [1000.0]
+    monkeypatch.setattr(query_embed_health, "_now", lambda: clock[0])
+    query_embed_health.record_failure("/embed returned HTTP 500")
+    _stub_embedder(monkeypatch, embed_delay=1.0)
+
+    clock[0] += query_embed_health.EMBEDDER_MAX_EVIDENCE_AGE_SECONDS + 1
+    data = (await client.get("/api/system/health")).json()
+    await _await_probe()
+
+    assert data["checks"]["embedder"] == "error: /embed returned HTTP 500", data["checks"]["embedder"]
+    assert "61s old" in data["notes"]["embedder"], data["notes"]
+    assert data["status"] == "degraded"
+
+
+async def test_an_old_ok_reads_checking_while_a_slow_probe_runs(client, monkeypatch):
+    """/health served an hour-old "ok" for a dead embedder. Past the maximum
+    evidence age it waits for the fresh probe; one still running past the wait
+    turns an old "ok" into "checking", with the age, and its verdict lands next."""
+    from harbor_clerk import query_embed_health
+
+    monkeypatch.setattr("harbor_clerk.api.routes.system.EMBEDDER_STALE_PROBE_WAIT_SECONDS", 0.2)
+    clock = [1000.0]
+    monkeypatch.setattr(query_embed_health, "_now", lambda: clock[0])
     query_embed_health.record_success()
-    calls = _stub_embedder(monkeypatch, embed_status=500)
+    calls = _stub_embedder(monkeypatch, embed_status=500, embed_delay=1.0)
 
     clock[0] += query_embed_health.EMBEDDER_MAX_EVIDENCE_AGE_SECONDS + 1
     data = (await client.get("/api/system/health")).json()
@@ -365,6 +419,23 @@ async def test_an_old_verdict_is_not_served_as_current(client, monkeypatch):
     assert calls, "no fresh probe was started"
     settled = (await client.get("/api/system/health")).json()
     assert settled["checks"]["embedder"] == "error: /embed returned HTTP 500"
+
+
+async def test_old_evidence_reports_the_probe_that_lands_within_the_wait(client, monkeypatch):
+    """An old "ok" and an embedder that now fails fast: the answer is the fresh
+    failure, on this call, not "checking"."""
+    from harbor_clerk import query_embed_health
+
+    clock = [1000.0]
+    monkeypatch.setattr(query_embed_health, "_now", lambda: clock[0])
+    query_embed_health.record_success()
+    _stub_embedder(monkeypatch, embed_status=500)
+
+    clock[0] += 90
+    data = (await client.get("/api/system/health")).json()
+
+    assert data["checks"]["embedder"] == "error: /embed returned HTTP 500", data["checks"]["embedder"]
+    assert "notes" not in data or "embedder" not in data["notes"], data.get("notes")
 
 
 async def test_a_verdict_within_the_maximum_age_is_still_served(client, monkeypatch):
@@ -417,11 +488,11 @@ async def test_a_503_from_embed_is_degraded(client, monkeypatch):
     assert "embedder" not in data["notes"]
 
 
-def _raise_from(cause: BaseException, exc_type=None, message: str = "embedder call failed"):
+def _raise_from(cause: BaseException, exc_type=None, message: str = "embedder call failed", status_code=None):
     from harbor_clerk.embedder_client import EmbedderError
 
     async def _failing(texts, **kwargs):
-        raise (exc_type or EmbedderError)(message) from cause
+        raise (exc_type or EmbedderError)(message, status_code=status_code) from cause
 
     return _failing
 
@@ -436,7 +507,9 @@ async def test_a_recent_failed_query_embed_is_degraded_even_if_the_probe_passes(
     monkeypatch.setattr(
         search_mod,
         "embed_texts_async",
-        _raise_from(httpx.ConnectError("refused"), EmbedderUnavailableError, "embedder call failed: HTTP 500"),
+        _raise_from(
+            httpx.ConnectError("refused"), EmbedderUnavailableError, "embedder call failed: HTTP 500", status_code=500
+        ),
     )
     with pytest.raises(EmbedderUnavailableError):
         await search_mod._embed_query("lighthouse")
@@ -445,7 +518,7 @@ async def test_a_recent_failed_query_embed_is_degraded_even_if_the_probe_passes(
     data = (await client.get("/api/system/health")).json()
 
     assert data["checks"]["embedder"].startswith("error: search's query embed failed"), data["checks"]["embedder"]
-    assert "HTTP 500" in data["checks"]["embedder"]
+    assert "EmbedderUnavailableError (HTTP 500)" in data["checks"]["embedder"]  # type and status only
     assert data["status"] == "degraded"
     assert not calls, "with search's fresh evidence in hand, no probe is needed"
 
@@ -549,7 +622,38 @@ async def test_kb_system_health_reports_the_embedder_verdict(mcp_admin):
     assert busy["notes"]["embedder"].startswith("busy")
 
 
-async def test_kb_system_health_never_waits_on_a_probe(mcp_admin, monkeypatch):
+async def test_kb_system_health_reads_a_dead_embedder_as_an_error_when_polled_rarely(mcp_admin, monkeypatch):
+    """The same stale-evidence wait as /system/health: a refused connection polled
+    every 90 s is an error on every call, not "checking"."""
+    import json
+
+    import httpx
+
+    from harbor_clerk import query_embed_health
+    from harbor_clerk.config import get_settings
+    from harbor_clerk.mcp_server import kb_system_health
+
+    base = get_settings().embedder_url
+    real_get = httpx.AsyncClient.get
+
+    async def _refused(self, url, *args, **kwargs):
+        if str(url) == f"{base}/health":
+            raise httpx.ConnectError("[Errno 61] Connection refused")
+        return await real_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _refused)
+    clock = [1000.0]
+    monkeypatch.setattr(query_embed_health, "_now", lambda: clock[0])
+    query_embed_health.record_failure("ConnectError: [Errno 61] Connection refused")
+
+    for poll in range(3):
+        clock[0] += 90
+        data = json.loads(await kb_system_health())
+        assert data["checks"]["embedder"].startswith("error"), f"poll {poll}: {data['checks']['embedder']}"
+        assert data["status"] == "degraded"
+
+
+async def test_kb_system_health_does_not_wait_for_the_first_probe(mcp_admin, monkeypatch):
     import json
     import time
 
@@ -974,8 +1078,20 @@ async def test_an_embed_being_retried_still_counts_as_waiting_on_the_embedder(
     assert "failing" not in (issue["title"] + issue["detail"]).lower()
 
 
-async def test_a_waiting_deferred_embed_still_says_the_service_is_failing(client, admin_user, admin_token, db_session):
-    """One retrying and one still waiting: the outage is not over."""
+@pytest.mark.parametrize("embedder_failing", [True, False], ids=["embedder-failing", "embedder-back"])
+async def test_a_waiting_deferred_embed_says_failing_only_while_the_embedder_is(
+    client, admin_user, admin_token, db_session, embedder_failing
+):
+    """It said "the embedding service is failing" whenever a deferred embed waited,
+    though a deferral outlives the outage that caused it. "Failing" now follows
+    the embedder's current verdict."""
+    from harbor_clerk import query_embed_health
+
+    if embedder_failing:
+        query_embed_health.record_failure("/embed returned HTTP 500")
+    else:
+        query_embed_health.record_success()
+    # One retrying and one still waiting.
     from harbor_clerk.worker.pipeline import EMBED_RETRY_REASON
 
     future = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
@@ -1004,7 +1120,11 @@ async def test_a_waiting_deferred_embed_still_says_the_service_is_failing(client
 
     issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "embedding_blocked")
     assert issue["count"] == 2
-    assert issue["title"] == "Embedding is paused: the embedding service is failing"
+    if embedder_failing:
+        assert issue["title"] == "Embedding is paused: the embedding service is failing", issue["title"]
+    else:
+        assert issue["title"] == "Embedding of 2 documents is being retried", issue["title"]
+        assert "failing" not in issue["detail"], issue["detail"]
     # The next retry is the waiting row's, not the running row's past retry_after.
     assert "The next retry is in about 5 minutes" in issue["detail"], issue["detail"]
 

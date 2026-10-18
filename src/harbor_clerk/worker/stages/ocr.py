@@ -4,6 +4,7 @@ import io as _io
 import logging
 import os
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -18,7 +19,7 @@ from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
 from harbor_clerk.worker.ocr_languages import get_ocr_languages_for_doc
 from harbor_clerk.worker.pipeline import (
-    check_pipeline_seq,
+    alarm_deferred,
     mark_stage_done,
     mark_stage_running,
     stage_run_is_current,
@@ -51,32 +52,6 @@ def _ocr_image_bytes(image_data: bytes, lang: str) -> tuple[str, float]:
 OCR_MARKER = "\n\n--- OCR ---\n\n"
 
 
-def _merge_ocr_text(existing: str | None, ocr_text: str, *, already_ocrd: bool) -> str:
-    """The page text with ``ocr_text`` merged in, the same however many times OCR runs.
-
-    A page with extracted text always gets OCR_MARKER after it, followed by the
-    OCR text, even when OCR found nothing: the marker is what tells a rerun
-    where the extracted text ends. A page with no extracted text holds the OCR
-    text alone ("" when OCR found nothing).
-
-    A rerun of the stage (a shutdown requeue, a retry) starts again from page 1
-    while pages already written carry the previous run's OCR: appending again
-    doubled it. So on a page already OCR'd, everything from the marker on is
-    replaced; with no marker the page had no extracted text, and is replaced
-    whole. An earlier version wrote no marker when OCR came back empty, so a
-    rerun took the extracted text for OCR and wiped it.
-    """
-    existing = existing or ""
-    if already_ocrd:
-        # Found without its trailing newlines, so a page whose text was trimmed
-        # still splits. No marker on an OCR'd page: it had no extracted text.
-        head, marker, _ = existing.partition(OCR_MARKER.rstrip())
-        existing = head if marker else ""
-    if existing:
-        return existing + OCR_MARKER + ocr_text
-    return ocr_text
-
-
 def _pdf_to_images(data: bytes) -> list[Image.Image]:
     """Convert PDF pages to PIL Images using pypdfium2."""
     pdf = pdfium.PdfDocument(data)
@@ -92,7 +67,19 @@ def _pdf_to_images(data: bytes) -> list[Image.Image]:
 
 
 def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
-    """Run OCR on pages that need it."""
+    """Run OCR on pages that need it.
+
+    The page writes are one transaction, committed once: a run stopped part way
+    (a cancel, a shutdown deadline, a crash) leaves every page as extract wrote
+    it, so a rerun appends its OCR to clean text and never twice. From that
+    commit to mark_stage_done the worker's alarm is held off, so a deadline
+    cannot land between them and rerun OCR over pages already written.
+    """
+    with ExitStack() as hold_alarm:
+        _run_ocr(doc_id, worker_seq, hold_alarm)
+
+
+def _run_ocr(doc_id: uuid.UUID, worker_seq: int | None, hold_alarm: ExitStack) -> None:
     if not mark_stage_running(doc_id, JobStage.ocr, worker_seq=worker_seq):
         return
 
@@ -144,11 +131,11 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
 
             text, confidence = _ocr_image_bytes(data, lang=ocr_lang)
 
-            # Race check before writing results
-            if not check_pipeline_seq(session, doc_id, worker_seq):
-                logger.info("ocr: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+            # Race check before writing results: the seq, a cancel, or a newer claim.
+            if not stage_run_is_current(session, doc_id, JobStage.ocr, worker_seq):
+                logger.info("ocr: run for %s cancelled, re-enqueued or superseded, aborting write", doc_id)
                 session.close()
-                mark_stage_done(doc_id, JobStage.ocr, worker_seq=worker_seq)  # declines: seq moved on
+                mark_stage_done(doc_id, JobStage.ocr, worker_seq=worker_seq)  # declines likewise
                 return
 
             page = session.execute(
@@ -164,6 +151,7 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             doc.ocr_languages_used = ocr_iso
 
             job.progress_current = 1
+            hold_alarm.enter_context(alarm_deferred())
             session.commit()
             publish_job_event(doc_id, "ocr", "running", progress=1, total=1)
 
@@ -209,13 +197,15 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                     len(images),
                 )
                 ocr_results = []
-            elif not check_pipeline_seq(session, doc_id, worker_seq):
-                logger.info("ocr: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+            elif not stage_run_is_current(session, doc_id, JobStage.ocr, worker_seq):
+                logger.info("ocr: run for %s cancelled, re-enqueued or superseded, aborting write", doc_id)
                 session.close()
-                mark_stage_done(doc_id, JobStage.ocr, worker_seq=worker_seq)  # declines: seq moved on
+                mark_stage_done(doc_id, JobStage.ocr, worker_seq=worker_seq)  # declines likewise
                 return
 
-            for i, (page_num, text, confidence) in enumerate(ocr_results):
+            # Every page in one transaction, committed once below: no page is
+            # written unless all of them are.
+            for page_num, text, confidence in ocr_results:
                 # Find or create page
                 page = None
                 for p in pages:
@@ -231,21 +221,23 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                     session.add(page)
                     session.flush()
 
-                # Merge OCR text with existing text
-                page.page_text = _merge_ocr_text(page.page_text, text, already_ocrd=bool(page.ocr_used))
+                # Merge OCR text with existing text (nothing to add when OCR found none)
+                if page.page_text and text:
+                    page.page_text = page.page_text + OCR_MARKER + text
+                elif text:
+                    page.page_text = text
 
                 page.ocr_used = True
                 page.ocr_confidence = confidence
                 total_chars += len(page.page_text)
 
-                job.progress_current = i + 1
-                session.commit()
-                publish_job_event(doc_id, "ocr", "running", progress=i + 1, total=len(images))
-
             if not stopped:
+                job.progress_current = len(ocr_results)
                 doc.extracted_chars = total_chars
                 doc.ocr_languages_used = ocr_iso
+                hold_alarm.enter_context(alarm_deferred())
                 session.commit()
+                publish_job_event(doc_id, "ocr", "running", progress=len(ocr_results), total=len(images))
         else:
             logger.warning("OCR requested for unsupported mime type: %s", mime)
 

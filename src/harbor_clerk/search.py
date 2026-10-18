@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.config import get_settings
 from harbor_clerk.embedder_client import embed_texts_async
 from harbor_clerk.embedding_coverage import search_scope_coverage
-from harbor_clerk.error_text import describe_error
 from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.passage_cap import cap_text, refuse_filter_past_cap
@@ -96,6 +95,12 @@ _PROCESSING_PIPELINE_STATUSES: tuple[PipelineStatus, ...] = (
 )
 
 
+def _embed_failure_summary(exc: BaseException) -> str:
+    """``EmbedderUnavailableError (HTTP 503)``: the failure's type and status, no message text."""
+    status = getattr(exc, "status_code", None)
+    return f"{type(exc).__name__} (HTTP {status})" if status else type(exc).__name__
+
+
 async def _embed_query(query: str) -> list[float]:
     """Embed a query string via the embedder service.
 
@@ -120,8 +125,11 @@ async def _embed_query(query: str) -> list[float]:
     except Exception as exc:
         # Passive evidence for /system/health (query_embed_health), which
         # otherwise has only its own probe to go on (#685). A timeout counts
-        # as busy and a 4xx as nothing; see classify_embed_error.
-        record_query_embed_outcome(exc, describe_error(exc))
+        # as busy and a 4xx as nothing; see classify_embed_error. Recorded as
+        # the type and status only: the verdict is published on the
+        # unauthenticated /system/health, and an error's text can carry the
+        # embedder's (or a proxy's) words, request text included.
+        record_query_embed_outcome(exc, _embed_failure_summary(exc))
         raise
     record_query_embed_outcome(None)
     return embeddings[0]

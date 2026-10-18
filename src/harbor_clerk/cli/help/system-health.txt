@@ -7,11 +7,14 @@ DESCRIPTION
   verify the system is reachable and operational before running a batch
   operation, or as a simple liveness probe from a script or CI step.
 
-  The embedder check never waits on the embedder. It reports the last
-  known verdict, from the server's own search queries and a background
-  probe (a real one-text embed). When that evidence is missing or older
-  than a minute, it reports "checking" and starts a fresh probe; ask again
-  a few seconds later for the result.
+  The embedder check reports the last known verdict, from the server's
+  own search queries and a background probe (a real one-text embed). When
+  there is no evidence yet, it reports "checking" at once and starts the
+  first probe; ask again a few seconds later. When the evidence is older
+  than a minute, it starts a fresh probe and waits for it up to about 3 s.
+  If the probe is still running after that, an old failure is still
+  reported as an error (notes.embedder gives its age), and only an old
+  "ok" is reported as "checking".
 
   This command is admin-only. API keys with read-only access will
   receive a 403 error.
@@ -38,7 +41,7 @@ RETURNS (JSON)
       "embedder": "ok" | "checking" | "error: <message>"
     },
     "notes": {                        // present only when there is something to say
-      "embedder": "busy: …" | "checking: …"
+      "embedder": "busy: …" | "checking: …" | "the last embedder evidence is Ns old; …"
     }
   }
 
@@ -48,11 +51,14 @@ RETURNS (JSON)
                 work (an ingest), and the note says for how long. That is
                 not a failure, however long it lasts: the embedder encodes
                 one batch at a time, and a heavy ingest keeps it busy.
-    "checking"  No current verdict yet (just started, or the last evidence
-                is over a minute old); a probe is running. notes.embedder
-                says why and, for old evidence, how old it is.
+    "checking"  No current verdict yet: just started, or the last
+                evidence was an "ok" over a minute old and the fresh probe
+                did not answer within about 3 s. notes.embedder says why
+                and, for old evidence, how old it is.
     "error: …"  Embeds fail: the service is unreachable, or returned a 5xx
-                or an empty vector. Timeouts alone never produce this.
+                or an empty vector. Timeouts alone never produce this. An
+                old failure stays an error until a probe says otherwise;
+                notes.embedder then gives its age.
 
   `status` is `"healthy"` when every check is `"ok"`, or `"checking"` for
   the embedder. Any `"error: …"` yields `"degraded"`. This now includes

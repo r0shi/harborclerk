@@ -163,10 +163,10 @@ async def ping() -> dict[str, str]:
 
 
 # How stale the embedder evidence may get before health starts a background
-# probe. /system/health is unauthenticated and polled (the Mac app every 2 s),
-# and it never waits on the embedder: it reports the last known verdict
-# (query_embed_health) and, past this age, starts one single-flight probe
-# that callers do not await. Defined beside the evidence it governs, with the
+# probe. /system/health is unauthenticated and polled (the Mac app every 2 s):
+# it reports the last known verdict (query_embed_health) and, past this age,
+# starts one single-flight probe. It waits on that probe, briefly, only once
+# the evidence is past the maximum age (see _embedder_check). Defined beside the evidence it governs, with the
 # maximum age a verdict may be reported at.
 EMBEDDER_PROBE_TTL_SECONDS = embedder_evidence.EMBEDDER_PROBE_TTL_SECONDS
 EMBEDDER_MAX_EVIDENCE_AGE_SECONDS = embedder_evidence.EMBEDDER_MAX_EVIDENCE_AGE_SECONDS
@@ -175,6 +175,13 @@ EMBEDDER_MAX_EVIDENCE_AGE_SECONDS = embedder_evidence.EMBEDDER_MAX_EVIDENCE_AGE_
 # an M4): a timeout here is busy evidence, not failure.
 EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS = 10.0
 EMBEDDER_CHECKING_NOTE = "checking: the first embedder probe is still running"
+# How long health waits for the fresh probe once the evidence is older than
+# EMBEDDER_MAX_EVIDENCE_AGE_SECONDS. A caller polling less than once a minute
+# always finds the evidence that old: without the wait, it was always told
+# "checking" (healthy), a dead embedder included. A refused connection or a 5xx
+# answers well inside this; a probe still running past it is an embedder busy
+# with an encode.
+EMBEDDER_STALE_PROBE_WAIT_SECONDS = 3.0
 
 # (loop, task) of the in-flight probe; a task belongs to the loop that made it.
 _embedder_probe: tuple[asyncio.AbstractEventLoop, asyncio.Task] | None = None
@@ -199,23 +206,38 @@ def _start_embedder_probe(embedder_url: str) -> None:
 
 
 async def _embedder_check(embedder_url: str) -> tuple[str, str | None]:
-    """The embedder's health as search sees it, (status, note), without waiting on it.
+    """The embedder's health as search sees it, (status, note).
 
     /health alone said 200 for the whole of #685 while every /embed returned
     500, so the app looked healthy while search ran keyword-only for hours. The
     verdict comes from the latest evidence (query_embed_health): search's own
-    query embeds and the background probe. Stale or missing evidence starts a
-    probe and returns at once: the last verdict while it is no older than
-    EMBEDDER_MAX_EVIDENCE_AGE_SECONDS, otherwise "checking" (with the age), as
-    before the first verdict. An hour-old "ok" said nothing about a dead embedder.
+    query embeds and the background probe (single-flight, shared by callers).
+
+    - No evidence yet: start the probe and answer "checking" at once.
+    - Evidence older than EMBEDDER_PROBE_TTL_SECONDS: start the probe and
+      serve the last verdict meanwhile.
+    - Evidence older than EMBEDDER_MAX_EVIDENCE_AGE_SECONDS: start the probe
+      and wait for it up to EMBEDDER_STALE_PROBE_WAIT_SECONDS. If it lands, its
+      verdict. If not, a failure is still an error, with its age in the note,
+      and only an "ok" becomes "checking": an hour-old "ok" says nothing about
+      a dead embedder, and an old failure must not read as healthy either.
     """
     evidence_age = embedder_evidence.age()
     if evidence_age is None or evidence_age >= EMBEDDER_PROBE_TTL_SECONDS:
         _start_embedder_probe(embedder_url)
+    if evidence_age is not None and evidence_age >= EMBEDDER_MAX_EVIDENCE_AGE_SECONDS:
+        probe = _embedder_probe_task()
+        if probe is not None and not probe.done():
+            # asyncio.wait never cancels the probe: past the bound it carries on.
+            await asyncio.wait({probe}, timeout=EMBEDDER_STALE_PROBE_WAIT_SECONDS)
+        evidence_age = embedder_evidence.age()
     known = embedder_evidence.verdict()
     if known is None:
         return "checking", EMBEDDER_CHECKING_NOTE
     if evidence_age is not None and evidence_age >= EMBEDDER_MAX_EVIDENCE_AGE_SECONDS:
+        status, _note = known
+        if status.startswith("error"):
+            return status, f"the last embedder evidence is {evidence_age:.0f}s old; a fresh probe is running"
         return "checking", f"checking: the last embedder evidence is {evidence_age:.0f}s old; a fresh probe is running"
     return known
 
@@ -294,7 +316,7 @@ async def health_check(
         logger.error("Tika health check failed: %s", describe_error(e))
         checks["tika"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
 
-    # Embedder: the last known verdict, never waited on (_embedder_check)
+    # Embedder: the last known verdict; old evidence waits briefly for a probe (_embedder_check)
     notes: dict[str, str] = {}
     checks["embedder"], embedder_note = await _embedder_check(settings.embedder_url)
     if embedder_note:
@@ -815,12 +837,24 @@ async def status_summary(
         embed_label = "document is" if blocked_embed_jobs == 1 else "documents are"
         when = _humanize_retry_at(next_embed_retry_at, datetime.now(UTC))
         retry_detail = f" The next retry is {when}." if when else ""
-        if waiting_embed_jobs:
+        # "Failing" only when the embedder's current verdict says so: a deferred
+        # embed outlives the outage that deferred it, and once the embedder is
+        # back the retry is just waiting for its time.
+        embedder_verdict = embedder_evidence.verdict()
+        embedder_failing = embedder_verdict is not None and embedder_verdict[0].startswith("error")
+        if waiting_embed_jobs and embedder_failing:
             title = "Embedding is paused: the embedding service is failing"
             detail = (
                 f"{blocked_embed_jobs} {embed_label} waiting for the embedding service. Until they are embedded, "
                 "search finds them by keyword only. Harbor Clerk will retry automatically with backoff."
                 f"{retry_detail}"
+            )
+        elif waiting_embed_jobs:
+            documents = "document" if blocked_embed_jobs == 1 else "documents"
+            title = f"Embedding of {blocked_embed_jobs} {documents} is being retried"
+            detail = (
+                f"{blocked_embed_jobs} {embed_label} waiting to be embedded again after an earlier embedder failure. "
+                f"Until they are embedded, search finds them by keyword only.{retry_detail}"
             )
         else:
             # Every deferred embed is being retried right now, and a retry of a

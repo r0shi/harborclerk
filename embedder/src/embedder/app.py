@@ -72,6 +72,12 @@ _model: SentenceTransformer | None = None
 _encode_slots: asyncio.Semaphore | None = None
 
 
+class _OwnWordsError(ValueError):
+    """A failure this module describes itself, in words that quote no input: its
+    message may go in the 500 detail. Every other exception's message stays in
+    the log."""
+
+
 class EmbedRequest(BaseModel):
     texts: list[str] = Field(..., min_length=1, max_length=256)
     task: str | None = Field(default=None, pattern="^(query|passage)$")
@@ -157,7 +163,7 @@ async def embed(request: EmbedRequest):
             # used to crash the JSON encoder after the handler returned, a bare
             # 500 with nothing in the log saying why.
             if not np.isfinite(embeddings).all():
-                raise ValueError("encode produced a non-finite value (NaN or infinity) in a vector")
+                raise _OwnWordsError("encode produced a non-finite value (NaN or infinity) in a vector")
             response = EmbedResponse(
                 embeddings=embeddings.tolist(),
                 model=MODEL_NAME,
@@ -174,8 +180,13 @@ async def embed(request: EmbedRequest):
             # out-of-memory failures once left nothing there, #619). A 5xx is
             # what the worker defers and retries; a 4xx it treats as final, so a
             # library bug must never be answered with one.
-            logger.exception("encode failed for %d texts: %s", len(texts), type(exc).__name__)
-            raise HTTPException(status_code=500, detail=f"encode failed: {type(exc).__name__}: {exc}"[:300]) from exc
+            # The detail names the type only. An exception's message can quote
+            # the input (chunk text), and the detail travels into
+            # documents.error, which API keys read, and into the health
+            # verdict. The full message and traceback stay in this log.
+            logger.exception("encode failed for %d texts: %s: %s", len(texts), type(exc).__name__, exc)
+            detail = str(exc) if isinstance(exc, _OwnWordsError) else f"encode failed: {type(exc).__name__}"
+            raise HTTPException(status_code=500, detail=detail) from exc
     return response
 
 

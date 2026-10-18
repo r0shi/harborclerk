@@ -10,7 +10,7 @@ from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.models import Chunk, Document, DocumentHeading, DocumentPage
 from harbor_clerk.models.enums import JobStage
-from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running, stage_run_is_current
 
 logger = logging.getLogger(__name__)
 
@@ -297,11 +297,14 @@ def run_chunk(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             code_fence_ranges=code_fence_ranges,
         )
 
-        # Race check before writing results
-        if not check_pipeline_seq(session, doc_id, worker_seq):
-            logger.info("chunk: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+        # Race check before deleting and rewriting the chunks: the seq, a cancel,
+        # and a newer claim of the row (cancel, Retry, re-claimed). A superseded
+        # run that checked only the seq replaced the new claim's embedded chunks
+        # with unembedded ones, and the document read ready with no vectors.
+        if not stage_run_is_current(session, doc_id, JobStage.chunk, worker_seq):
+            logger.info("chunk: run for %s cancelled, re-enqueued or superseded, aborting write", doc_id)
             session.close()
-            mark_stage_done(doc_id, JobStage.chunk, worker_seq=worker_seq)  # declines: seq moved on
+            mark_stage_done(doc_id, JobStage.chunk, worker_seq=worker_seq)  # declines likewise
             return
 
         ceiling = settings.max_chunks_per_document

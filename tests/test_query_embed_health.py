@@ -76,3 +76,23 @@ def test_every_failure_path_is_bounded():
 
     status, _ = query_embed_health.verdict()
     assert len(status) <= len("error: ") + HEALTH_DETAIL_LIMIT + 1
+
+
+async def test_searchs_failure_reaches_health_as_type_and_status_only(httpx_mock: HTTPXMock):
+    """search records a failed query embed on the unauthenticated /system/health.
+    It recorded the error's whole text, which carries the embedder's detail: an
+    exception message that can quote the request. Now the type and status only."""
+    import harbor_clerk.search as search_mod
+    from harbor_clerk.api.routes import system
+
+    secret = "Privileged: settlement figure 4.2M"
+    httpx_mock.add_response(
+        url=EMBED_URL, status_code=500, json={"detail": f"encode failed: RuntimeError: {secret}"}, is_reusable=True
+    )
+
+    with pytest.raises(EmbedderError):
+        await search_mod._embed_query("what was the settlement")
+
+    status, note = await system._embedder_check("http://embedder:8000")  # fresh evidence: no probe
+    assert status == "error: search's query embed failed: EmbedderUnavailableError (HTTP 500)", status
+    assert "Privileged" not in status and "settlement" not in status and not note

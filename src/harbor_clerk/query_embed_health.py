@@ -1,9 +1,10 @@
 """The API process's evidence about the embedder, and the verdict health reports.
 
 Two sources feed it: search's own query embeds (search._embed_query) and the
-background health probe (api/routes/system.py). `/system/health` never waits
-on the embedder; it reports `verdict()` and, when the evidence is stale,
-starts a probe in the background.
+background health probe (api/routes/system.py). `/system/health` reports
+`verdict()` and, when the evidence is stale, starts a probe; once the evidence
+is past EMBEDDER_MAX_EVIDENCE_AGE_SECONDS it waits for that probe, briefly
+(api/routes/system.py `_embedder_check`).
 
 Evidence is one of three kinds, and the latest event wins:
 

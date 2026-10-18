@@ -3191,8 +3191,9 @@ async def kb_system_health() -> str:
 
     Use when investigating system issues — "why are searches slow", "is the
     embedder up", "is storage reachable". Returns per-component status; the
-    embedder's is the last known verdict (with a note when it is busy or still
-    being checked), never a fresh probe.
+    embedder's is the last known verdict (with a note when it is busy, still
+    being checked, or old); evidence over a minute old waits up to about 3 s
+    for a fresh probe.
 
     Rarely useful during normal query flow — models should reach for this
     only when the user is troubleshooting infrastructure.
@@ -3219,9 +3220,9 @@ async def kb_system_health() -> str:
     except Exception as e:
         checks["storage"] = f"error: {describe_error(e)}"
 
-    # The same non-blocking verdict /system/health reports: search's and the
-    # background probe's evidence. Stale evidence starts a probe in the
-    # background; this call never waits on the embedder.
+    # The same verdict /system/health reports: search's and the background
+    # probe's evidence. Stale evidence starts a probe; evidence past the
+    # maximum age waits for it briefly (_embedder_check).
     from harbor_clerk.api.routes.system import _embedder_check
 
     notes: dict[str, str] = {}

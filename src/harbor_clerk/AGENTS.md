@@ -9,11 +9,11 @@ in `docs/architecture.md#ingestion-pipeline-stages`.
 - **Every stage is idempotent** and guarded by a row-level lock on
   `(doc_id, stage)` via `SELECT ... FOR UPDATE SKIP LOCKED`.
 - **Always call `mark_stage_done` on every exit path, including early returns.**
-  An early `return` on a seq race once left a row `running` for 20 minutes, and
-  re-enqueue is suppressed while a row is `running`. It declines a row a cancel
-  set to `error`. A cancel does not bump `pipeline_seq`: embed, OCR, entities and the
-  summarize map-reduce poll `stage_run_is_current` per unit; a new long loop must too.
-  It holds the worker's alarm off (`alarm_deferred`) until the pipeline advance has run.
+  An early `return` on a seq race once left a row `running` for 20 minutes; re-enqueue
+  is suppressed while a row is `running`. It declines a cancelled (`error`) row. A cancel
+  does not bump `pipeline_seq`: long loops poll `stage_run_is_current` per unit. It holds
+  the worker's alarm off (`alarm_deferred`) until the pipeline advance has run.
+- **A claimed run's writes check `stage_run_is_current` or its claim (`started_at`), never the seq alone.**
 - **Sequential prefix:** `extract` → `ocr` → `chunk`. Then `entities` and
   `embed` fan out and **gate `finalize`**. `summarize` is a **background** stage
   on the `llm` queue and does not gate `finalize` (see `worker/pipeline.py`).

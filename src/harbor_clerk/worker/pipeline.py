@@ -42,19 +42,10 @@ def _doc_filename(doc: Document) -> str:
 def check_pipeline_seq(session, doc_id: uuid.UUID, expected_seq: int) -> bool:
     """Return True if the doc's pipeline_seq still matches.
 
-    Workers call this at result-write time to detect a content-change race.
-    If the seq has been bumped (e.g., a watcher modify event arrived during
-    in-flight extract), the worker should abort writing its results — the
-    new ingestion is already queued and will run.
-
-    Usage pattern in stage modules:
-
-        worker_seq = session.query(Document.pipeline_seq).filter_by(doc_id=doc_id).scalar()
-        # ... do the work ...
-        if not check_pipeline_seq(session, doc_id, worker_seq):
-            logger.info("stage X: pipeline_seq bumped during processing for %s, aborting write", doc_id)
-            return  # or rollback / raise as appropriate
-        # ... write results ...
+    The seq alone answers only "has the content changed?". A stage's race
+    check before writing its results must not use it: a cancel, or a cancel
+    then Retry and a newer claim, leave the seq unchanged. Stages ask
+    ``stage_run_is_current`` instead, which checks the seq and those too.
     """
     current = session.execute(select(Document.pipeline_seq).where(Document.doc_id == doc_id)).scalar()
     return current == expected_seq

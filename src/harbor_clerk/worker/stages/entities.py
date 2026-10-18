@@ -11,7 +11,6 @@ from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.worker.ner import extract_entities_batch
 from harbor_clerk.worker.pipeline import (
-    check_pipeline_seq,
     mark_stage_done,
     mark_stage_running,
     stage_run_is_current,
@@ -59,8 +58,8 @@ def run_entities(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             batch = chunks[start : start + NER_BATCH_SIZE]
             batch_results.extend(extract_entities_batch([(c.chunk_text, c.language or "english") for c in batch]))
 
-        # Race check before writing results
-        if stopped or not check_pipeline_seq(session, doc_id, worker_seq):
+        # Race check before writing results: the seq, a cancel, or a newer claim.
+        if stopped or not stage_run_is_current(session, doc_id, JobStage.entities, worker_seq):
             logger.info("entities: run for %s cancelled or superseded; not writing", doc_id)
             session.close()
             mark_stage_done(doc_id, JobStage.entities, worker_seq=worker_seq, entity_count=0)

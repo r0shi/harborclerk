@@ -19,7 +19,6 @@ from harbor_clerk.models import ChatMessage, Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.models.research_state import ResearchState
 from harbor_clerk.worker.pipeline import (
-    check_pipeline_seq,
     mark_stage_done,
     mark_stage_running,
     stage_run_is_current,
@@ -183,11 +182,11 @@ def run_summarize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             except Exception:
                 logger.warning("Doc type classification failed for %s", doc_id, exc_info=True)
 
-            # Race check before writing results
-            if not check_pipeline_seq(session, doc_id, worker_seq):
-                logger.info("summarize: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+            # Race check before writing results: the seq, a cancel, or a newer claim.
+            if not stage_run_is_current(session, doc_id, JobStage.summarize, worker_seq):
+                logger.info("summarize: run for %s cancelled, re-enqueued or superseded, aborting write", doc_id)
                 session.close()
-                mark_stage_done(doc_id, JobStage.summarize, worker_seq=worker_seq)  # declines: seq moved on
+                mark_stage_done(doc_id, JobStage.summarize, worker_seq=worker_seq)  # declines likewise
                 return
 
             # Require visible content — not just truthiness — so a degraded
