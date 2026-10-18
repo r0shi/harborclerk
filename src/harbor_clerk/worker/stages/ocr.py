@@ -78,7 +78,9 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         # Read as the extract stage does: a document read in place from its watched
         # file (even with a stored original, #859), else storage, else source_path.
         in_place = in_place_path(session, doc)
-        if in_place is not None and os.path.exists(in_place):
+        if in_place is not None and not os.path.exists(in_place):
+            in_place = None
+        if in_place is not None:
             data = Path(in_place).read_bytes()
         elif doc.original_object_key:
             storage = get_storage()
@@ -89,7 +91,11 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         else:
             raise RuntimeError(f"No source for doc {doc_id}")
 
+        # The type of what was read: for a file read in place, the extract stage has
+        # already set doc.mime_type from the file (and its magic bytes), and the name
+        # is the file's, never a stored original's that may describe an older upload.
         mime = (doc.mime_type or "").lower()
+        name = (in_place or doc.original_object_key or doc.source_path or "").lower()
 
         # Resolve which Tesseract languages to use for this doc.
         # Honors the operator's enabled_languages preference, filtered to
@@ -136,7 +142,7 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             session.commit()
             publish_job_event(doc_id, "ocr", "running", progress=1, total=1)
 
-        elif mime == "application/pdf" or (doc.original_object_key or doc.source_path or "").endswith(".pdf"):
+        elif mime == "application/pdf" or name.endswith(".pdf"):
             # PDF → page images → OCR (using pypdfium2)
             images = _pdf_to_images(data)
             job.progress_total = len(images)

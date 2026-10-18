@@ -12,7 +12,7 @@ from sqlalchemy import select
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.error_text import describe_error
-from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS, sniff_mime
+from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS, guess_mime_type, sniff_mime
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
 from harbor_clerk.models import Document, DocumentHeading, DocumentLink, DocumentPage
 from harbor_clerk.models.enums import JobStage
@@ -262,8 +262,15 @@ def run_extract(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         else:
             raise RuntimeError(f"No source for doc {doc_id}: source_path and original_object_key both empty")
 
-        mime = (doc.mime_type or "").lower()
-        obj_key = (doc.original_object_key or doc.source_path or "").lower()
+        if in_place is not None:
+            # The bytes are the file's, so is the type: never the stored original's
+            # name or mime, which may describe an older upload (#859). Persisted
+            # here so the OCR stage, which reads doc.mime_type, agrees.
+            obj_key = in_place.lower()
+            mime = doc.mime_type = guess_mime_type(in_place)
+        else:
+            mime = (doc.mime_type or "").lower()
+            obj_key = (doc.original_object_key or doc.source_path or "").lower()
 
         # Sniff RTF content regardless of extension/MIME
         is_rtf = data[:5] == b"{\\rtf"

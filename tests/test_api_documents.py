@@ -508,10 +508,9 @@ async def test_download_returns_bytes_when_enabled(client, admin_user, admin_tok
     assert "doc.pdf" in resp.headers["content-disposition"]
 
 
-async def test_download_serves_a_watched_doc_from_disk_despite_a_stale_stored_original(
-    client, admin_user, admin_token, db_session, tmp_path
-):
-    """A watched document that also carries an older stored original (#859) downloads its file."""
+async def _download_watched_doc(client, admin_token, db_session, tmp_path, *, delete_file: bool):
+    """Download a watched doc.txt (b"edited on disk") that also carries an older
+    stored original, doc.pdf (b"stale stored", application/pdf)."""
     import io
 
     from harbor_clerk.config import get_settings
@@ -520,14 +519,15 @@ async def test_download_serves_a_watched_doc_from_disk_despite_a_stale_stored_or
 
     src = tmp_path / "doc.txt"
     src.write_bytes(b"edited on disk")
-    key = f"originals/docs/{uuid.uuid4()}/doc.txt"
-    get_storage().put_object("originals", key, io.BytesIO(b"stale stored"), len(b"stale stored"), "text/plain")
+    key = f"originals/docs/{uuid.uuid4()}/doc.pdf"
+    get_storage().put_object("originals", key, io.BytesIO(b"stale stored"), len(b"stale stored"), "application/pdf")
     doc = Document(
         title="Watched",
         status="active",
         source_path=str(src),
         original_bucket="originals",
         original_object_key=key,
+        mime_type="application/pdf",
         **_DOC_DEFAULTS,
     )
     db_session.add(doc)
@@ -545,18 +545,38 @@ async def test_download_serves_a_watched_doc_from_disk_despite_a_stale_stored_or
         )
     )
     await db_session.flush()
+    if delete_file:
+        src.unlink()
 
     s = get_settings()
     original = s.allow_source_download
     s.allow_source_download = True
     try:
-        resp = await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
+        return await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
     finally:
         s.allow_source_download = original
         get_storage().remove_object("originals", key)
 
+
+async def test_download_serves_a_watched_doc_from_disk_despite_a_stale_stored_original(
+    client, admin_user, admin_token, db_session, tmp_path
+):
+    """A watched document that also carries an older stored original (#859)
+    downloads its file, with the file's type."""
+    resp = await _download_watched_doc(client, admin_token, db_session, tmp_path, delete_file=False)
     assert resp.status_code == 200
     assert resp.content == b"edited on disk"
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert "doc.txt" in resp.headers["content-disposition"]
+
+
+async def test_download_serves_storage_when_the_watched_file_is_gone(
+    client, admin_user, admin_token, db_session, tmp_path
+):
+    resp = await _download_watched_doc(client, admin_token, db_session, tmp_path, delete_file=True)
+    assert resp.status_code == 200
+    assert resp.content == b"stale stored"
+    assert resp.headers["content-type"].startswith("application/pdf")
 
 
 async def test_download_403_fires_before_doc_existence_check(client, admin_user, admin_token):

@@ -1,5 +1,6 @@
 """The OCR stage reads a document's bytes as the extract stage does: a watched
-document from its file, even when it also carries an older stored original (#859)."""
+document from its file, even when it also carries an older stored original (#859),
+and from storage when that file is gone."""
 
 import hashlib
 import io
@@ -16,10 +17,9 @@ from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedF
 from harbor_clerk.storage import get_storage
 
 
-@pytest.mark.asyncio
-async def test_ocr_reads_a_watched_doc_from_disk_despite_a_stale_stored_original(
-    db_session, tmp_path: Path, monkeypatch
-):
+async def _ocr_watched_scan(db_session, tmp_path: Path, monkeypatch, *, delete_file: bool) -> tuple[list[bytes], str]:
+    """OCR a watched image whose file holds b"edited on disk" and whose stored
+    original holds b"stale stored". Returns (bytes OCR saw, page text)."""
     from harbor_clerk.worker.stages import ocr
 
     seen: list[bytes] = []
@@ -65,16 +65,33 @@ async def test_ocr_reads_a_watched_doc_from_disk_despite_a_stale_stored_original
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.ocr, status=JobStatus.queued))
     await db_session.commit()
     doc_id = doc.doc_id
+    if delete_file:
+        src.unlink()
 
     try:
         ocr.run_ocr(doc_id)
     finally:
         get_storage().remove_object("originals", key)
 
-    assert seen == [b"edited on disk"]
     sync_session = get_sync_session()
     try:
         page = sync_session.execute(select(DocumentPage).where(DocumentPage.doc_id == doc_id)).scalar_one()
+        return seen, page.page_text
     finally:
         sync_session.close()
-    assert page.page_text == "edited on disk"
+
+
+@pytest.mark.asyncio
+async def test_ocr_reads_a_watched_doc_from_disk_despite_a_stale_stored_original(
+    db_session, tmp_path: Path, monkeypatch
+):
+    seen, text = await _ocr_watched_scan(db_session, tmp_path, monkeypatch, delete_file=False)
+    assert seen == [b"edited on disk"]
+    assert text == "edited on disk"
+
+
+@pytest.mark.asyncio
+async def test_ocr_reads_storage_when_the_watched_file_is_gone(db_session, tmp_path: Path, monkeypatch):
+    seen, text = await _ocr_watched_scan(db_session, tmp_path, monkeypatch, delete_file=True)
+    assert seen == [b"stale stored"]
+    assert text == "stale stored"

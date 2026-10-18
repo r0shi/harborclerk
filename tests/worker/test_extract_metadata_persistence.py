@@ -5,6 +5,7 @@ file — no Tika call needed for plain-text files so the test stays hermetic."""
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -45,30 +46,37 @@ async def _extract_watched_doc(
     *,
     enabled: bool = True,
     status: WatchedFileStatus = WatchedFileStatus.active,
+    name: str = "0003_doc.txt",
+    disk: bytes = b"Edited on disk body text",
     stored: bytes | None = None,
-) -> tuple[dict | None, int | None, str]:
+    stored_name: str | None = None,
+    mime_type: str = "text/plain",
+    delete_file: bool = False,
+) -> SimpleNamespace:
     """Extract a watched document (its file and a sidecar on disk), optionally also
-    carrying a stored original with different bytes. Returns (metadata, chars, page text)."""
+    carrying a stored original under ``stored_name`` whose bytes, name and
+    ``mime_type`` describe an older upload. ``delete_file`` removes the file
+    (keeping the sidecar) before the extract. Returns metadata, chars, text, mime."""
     import io
     import uuid
 
     from harbor_clerk.models import DocumentPage
     from harbor_clerk.storage import get_storage
 
-    source = tmp_path / "0003_doc.txt"
-    source.write_text("Edited on disk body text")
-    (tmp_path / "0003_doc.json").write_text(json.dumps({"vendor": "Acme"}))
+    source = tmp_path / name
+    source.write_bytes(disk)
+    source.with_suffix(".json").write_text(json.dumps({"vendor": "Acme"}))
     key = None
     if stored is not None:
-        key = f"originals/docs/{uuid.uuid4()}/0003_doc.txt"
-        get_storage().put_object("originals", key, io.BytesIO(stored), len(stored), "text/plain")
+        key = f"originals/docs/{uuid.uuid4()}/{stored_name or name}"
+        get_storage().put_object("originals", key, io.BytesIO(stored), len(stored), mime_type)
     doc = Document(
-        title="0003_doc",
-        canonical_filename="0003_doc.txt",
+        title=source.stem,
+        canonical_filename=name,
         status="active",
-        sha256=hashlib.sha256(source.read_bytes()).digest(),
+        sha256=hashlib.sha256(disk).digest(),
         pipeline_status=PipelineStatus.queued,
-        mime_type="text/plain",
+        mime_type=mime_type,
         source_path=str(source),
         original_bucket="originals" if key else None,
         original_object_key=key,
@@ -79,6 +87,8 @@ async def _extract_watched_doc(
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
     await db_session.commit()
     doc_id = doc.doc_id
+    if delete_file:
+        source.unlink()
 
     from harbor_clerk.worker.stages.extract import run_extract
 
@@ -94,7 +104,12 @@ async def _extract_watched_doc(
         pages = (
             sync_session.execute(select(DocumentPage.page_text).where(DocumentPage.doc_id == doc_id)).scalars().all()
         )
-        return refreshed.doc_metadata, refreshed.extracted_chars, " ".join(pages)
+        return SimpleNamespace(
+            metadata=refreshed.doc_metadata or {},
+            chars=refreshed.extracted_chars,
+            text=" ".join(pages),
+            mime=refreshed.mime_type,
+        )
     finally:
         sync_session.close()
 
@@ -102,24 +117,91 @@ async def _extract_watched_doc(
 @pytest.mark.asyncio
 async def test_extract_stage_reads_the_sidecar_of_a_paused_folders_document(db_session, tmp_path: Path):
     """A disabled folder's documents are still read in place, sidecar included."""
-    metadata, _, _ = await _extract_watched_doc(db_session, tmp_path, enabled=False)
-    assert (metadata or {}).get("sidecar") == {"vendor": "Acme"}, f"expected the sidecar, got: {metadata}"
+    out = await _extract_watched_doc(db_session, tmp_path, enabled=False)
+    assert out.metadata.get("sidecar") == {"vendor": "Acme"}, f"expected the sidecar, got: {out.metadata}"
 
 
 @pytest.mark.asyncio
 async def test_extract_stage_reads_no_sidecar_for_a_removed_watched_file(db_session, tmp_path: Path):
-    metadata, _, _ = await _extract_watched_doc(db_session, tmp_path, status=WatchedFileStatus.removed)
-    assert "sidecar" not in (metadata or {}), f"no sidecar expected, got: {metadata}"
+    out = await _extract_watched_doc(db_session, tmp_path, status=WatchedFileStatus.removed)
+    assert "sidecar" not in out.metadata, f"no sidecar expected, got: {out.metadata}"
 
 
 @pytest.mark.asyncio
 async def test_extract_stage_reads_a_watched_doc_from_disk_despite_a_stale_stored_original(db_session, tmp_path: Path):
     """A watched document that also carries an older stored original (#859) is
     extracted from its file, so a disk edit reaches the index with its sidecar."""
-    metadata, chars, text = await _extract_watched_doc(db_session, tmp_path, stored=b"Stale stored body")
-    assert "Edited on disk" in text and "Stale" not in text, text
-    assert chars == len("Edited on disk body text")
-    assert (metadata or {}).get("sidecar") == {"vendor": "Acme"}
+    out = await _extract_watched_doc(db_session, tmp_path, stored=b"Stale stored body")
+    assert "Edited on disk" in out.text and "Stale" not in out.text, out.text
+    assert out.chars == len("Edited on disk body text")
+    assert out.metadata.get("sidecar") == {"vendor": "Acme"}
+
+
+@pytest.mark.asyncio
+async def test_extract_stage_reads_storage_when_the_watched_file_is_gone(db_session, tmp_path: Path):
+    """With its file missing, a watched document with a stored original is read
+    from storage, and no sidecar is read beside the missing file."""
+    out = await _extract_watched_doc(db_session, tmp_path, stored=b"Stored body text", delete_file=True)
+    assert "Stored body text" in out.text, out.text
+    assert "sidecar" not in out.metadata, f"no sidecar expected, got: {out.metadata}"
+
+
+@pytest.mark.asyncio
+async def test_extract_stage_routes_a_watched_pdf_by_its_file_not_a_stale_markdown_original(
+    db_session, tmp_path: Path, monkeypatch
+):
+    """The file is report.pdf; the stale stored original was report.md. The PDF goes
+    to the PDF extractor, not the markdown path, and its mime is corrected."""
+    from harbor_clerk.worker.stages import extract
+
+    calls: list[str] = []
+
+    def fake_tika(data, mime, **kwargs):
+        calls.append(mime)
+        return [(1, "Text of the real PDF")]
+
+    def no_markdown(data):
+        raise AssertionError("PDF bytes must not take the markdown path")
+
+    monkeypatch.setattr(extract, "_extract_via_tika", fake_tika)
+    monkeypatch.setattr(extract, "extract_markdown", no_markdown)
+    out = await _extract_watched_doc(
+        db_session,
+        tmp_path,
+        name="report.pdf",
+        disk=b"%PDF-1.4\n%fake pdf body\n",
+        stored=b"# Old markdown upload\n",
+        stored_name="report.md",
+        mime_type="text/markdown",
+    )
+    assert calls and calls[0] == "application/pdf", calls
+    assert out.text == "Text of the real PDF"
+    assert out.mime == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_extract_stage_reads_a_watched_text_file_despite_a_stale_pdf_original(
+    db_session, tmp_path: Path, monkeypatch
+):
+    """The file is notes.txt; the stale stored original was a PDF. It is decoded as
+    text, without Tika."""
+    from harbor_clerk.worker.stages import extract
+
+    def no_tika(data, mime, **kwargs):
+        raise AssertionError(f"a text file must not go to Tika (as {mime})")
+
+    monkeypatch.setattr(extract, "_extract_via_tika", no_tika)
+    out = await _extract_watched_doc(
+        db_session,
+        tmp_path,
+        name="notes.txt",
+        disk=b"Plain notes on disk",
+        stored=b"%PDF-1.4 old upload",
+        stored_name="notes.pdf",
+        mime_type="application/pdf",
+    )
+    assert out.text == "Plain notes on disk"
+    assert out.mime == "text/plain"
 
 
 @pytest.mark.asyncio
@@ -130,10 +212,10 @@ async def test_extract_stage_degrades_when_the_watched_file_lookup_fails(db_sess
     import harbor_clerk.watched_source as watched_source
 
     monkeypatch.setattr(watched_source, "watched_paths_query", lambda doc_id: text("SELECT * FROM no_such_table_603"))
-    metadata, chars, page_text = await _extract_watched_doc(db_session, tmp_path)
-    assert chars == len("Edited on disk body text"), "the extract must still commit"
-    assert "Edited on disk" in page_text
-    assert "sidecar" not in (metadata or {}), f"no sidecar expected, got: {metadata}"
+    out = await _extract_watched_doc(db_session, tmp_path)
+    assert out.chars == len("Edited on disk body text"), "the extract must still commit"
+    assert "Edited on disk" in out.text
+    assert "sidecar" not in out.metadata, f"no sidecar expected, got: {out.metadata}"
 
 
 @pytest.mark.asyncio
@@ -263,17 +345,19 @@ async def test_extract_stage_reads_no_sidecar_when_source_path_is_not_the_watche
 
 @pytest.mark.asyncio
 async def test_extract_stage_clears_stale_metadata_when_extractors_return_empty(db_session, tmp_path: Path):
-    """Re-ingesting a doc whose sidecar was deleted should drop the stale
+    """Re-ingesting a watched doc whose sidecar was deleted should drop the stale
     sidecar metadata, not keep it sticky. Same applies if Tika is unavailable
     and no other extractor produces results — doc_metadata should be {},
-    not the pre-extract value."""
+    not the pre-extract value. The first extract, with the sidecar present,
+    shows the document is read in place."""
     from unittest.mock import patch
 
     from harbor_clerk.worker.stages import extract
 
     source = tmp_path / "0001_invoice.txt"
     source.write_text("Body without any sidecar.")
-    # NOTE: deliberately NO sidecar file created.
+    sidecar = tmp_path / "0001_invoice.json"
+    sidecar.write_text(json.dumps({"vendor": "Acme"}))
 
     doc = Document(
         title="0001_invoice",
@@ -291,6 +375,7 @@ async def test_extract_stage_clears_stale_metadata_when_extractors_return_empty(
     )
     db_session.add(doc)
     await db_session.flush()
+    await _watch(db_session, doc, source)
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
     await db_session.commit()
     doc_id = doc.doc_id
@@ -298,6 +383,15 @@ async def test_extract_stage_clears_stale_metadata_when_extractors_return_empty(
     with patch.object(extract, "_extract_via_tika", return_value=[(1, "Body without any sidecar.")]):
         from harbor_clerk.worker.stages.extract import run_extract
 
+        run_extract(doc_id)
+        sync_session = get_sync_session()
+        try:
+            first = sync_session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one().doc_metadata
+        finally:
+            sync_session.close()
+        assert first.get("sidecar") == {"vendor": "Acme"}, f"the watched doc must read its sidecar first: {first}"
+
+        sidecar.unlink()
         run_extract(doc_id)
 
     sync_session = get_sync_session()

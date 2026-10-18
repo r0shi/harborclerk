@@ -851,14 +851,20 @@ async def download_document(
     import os
     from pathlib import Path
 
+    from harbor_clerk.file_types import guess_mime_type
     from harbor_clerk.watched_source import in_place_path_async
 
     # Read as the extract stage does: a document read in place from its watched file
     # (even with a stored original, #859), else storage, else source_path.
     in_place = await in_place_path_async(session, doc)
-    if in_place is not None and os.path.exists(in_place):
+    if in_place is not None and not os.path.exists(in_place):
+        in_place = None
+    content_type = doc.mime_type or "application/octet-stream"
+    if in_place is not None:
         file_bytes = Path(in_place).read_bytes()
         filename = posixpath.basename(in_place)
+        # The file's own type; doc.mime_type may describe an older stored upload (#859).
+        content_type = guess_mime_type(in_place)
     elif doc.original_object_key:
         storage = get_storage()
         obj = storage.get_object(doc.original_bucket, doc.original_object_key)
@@ -870,8 +876,6 @@ async def download_document(
         filename = posixpath.basename(doc.source_path)
     else:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file unavailable")
-
-    content_type = doc.mime_type or "application/octet-stream"
 
     from urllib.parse import quote
 
