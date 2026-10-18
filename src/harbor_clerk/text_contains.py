@@ -201,7 +201,7 @@ def text_contains_clause(
     prefix too, so a boundary at the cap is end of text and the character after it is never consulted:
     a word ending exactly at the cap counts as whole (``" foo "`` matches a chunk whose ``foobar`` is cut
     to ``foo`` by the cap). Deliberate: the answer depends on nothing the key cannot read.
-    A cap of 0 (or less) matches nothing but an all-whitespace value.
+    A cap of 0 (or less) matches nothing but a value that folds to whitespace.
     """
     folded_column = func.hc_fold_search_text(column)
     folded = fold_search_text(value)

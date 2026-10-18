@@ -374,8 +374,8 @@ def _text_contains_scope(text_contains: str | None, principal: Principal) -> dic
         return {}
     if cap == 0:
         note = (
-            "This API key's snippet cap is 0, so text_contains matches no text: only an all-whitespace "
-            "literal, which matches every passage, passes."
+            "This API key's snippet cap is 0, so text_contains matches no text: only a literal that folds "
+            "to whitespace (spaces, dashes, curly quotes), which matches every passage, passes."
         )
     else:
         note = (
@@ -1003,11 +1003,14 @@ async def kb_search(
       on chunk text. Use when the question names a literal phrase that
       must appear ("documents mentioning X"). Differences in whitespace
       are ignored: any run of spaces, tabs, line breaks or non-breaking
-      spaces matches a single space, and so does every typographic
-      dash, hyphen or minus sign (– — ‐ −) and curly double quote or
-      guillemet; the ASCII hyphen-minus "-" is literal, so
-      "first-refusal" does not match "first refusal". A typed apostrophe
-      matches a curly one ("Party's" finds "Party’s"). Leading or
+      spaces matches a single space. En, em and figure dashes, Unicode
+      hyphens, the minus sign, curly double quotes and guillemets also
+      match a space; a soft hyphen is ignored; the ASCII hyphen "-" is
+      literal ("first-refusal" does not match "first refusal"). A typed
+      apostrophe matches a curly one ("Party's" finds "Party’s"), but
+      straight double quotes do not match curly ones: leave quotation
+      marks out (Agreement, not "Agreement"). A literal made only of
+      such punctuation folds away and matches every passage. Leading or
       trailing whitespace asks
       for a word boundary on that side: " IP " matches "the IP clause"
       and "IP." but not "ship". Special chars (% _) are matched
@@ -1250,11 +1253,15 @@ async def kb_find_all(
       text_contains: optional case-insensitive literal substring on chunk
         text. A doc is eligible iff at least one of its chunks contains the
         substring. Differences in whitespace are ignored: any run of spaces,
-        tabs, line breaks or non-breaking spaces matches a single space, and
-        so does every typographic dash, hyphen or minus sign (– — ‐ −) and
-        curly double quote or guillemet; the ASCII hyphen-minus "-" is
-        literal, so "first-refusal" does not match "first refusal". A typed
-        apostrophe matches a curly one ("Party's" finds "Party’s").
+        tabs, line breaks or non-breaking spaces matches a single space. En,
+        em and figure dashes, Unicode hyphens, the minus sign, curly double
+        quotes and guillemets also match a space; a soft hyphen is ignored;
+        the ASCII hyphen "-" is literal ("first-refusal" does not match
+        "first refusal"). A typed apostrophe matches a curly one ("Party's"
+        finds "Party’s"), but straight double quotes do not match curly
+        ones: leave quotation marks out (Agreement, not "Agreement"). A
+        literal made only of such punctuation folds away and matches every
+        passage.
         Leading or trailing whitespace asks for a word boundary on that
         side: " IP " matches "the IP clause" and "IP." but not "ship".
         Special chars (% _) are matched literally. Under a key with a
