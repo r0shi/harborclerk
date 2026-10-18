@@ -186,6 +186,8 @@ def run_summarize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             # Race check before writing results
             if not check_pipeline_seq(session, doc_id, worker_seq):
                 logger.info("summarize: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+                session.close()
+                mark_stage_done(doc_id, JobStage.summarize, worker_seq=worker_seq)  # declines: seq moved on
                 return
 
             # Require visible content — not just truthiness — so a degraded

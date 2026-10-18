@@ -19,21 +19,12 @@ SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 class DocumentTooLargeError(RuntimeError):
-    """A watched-folder document would produce more chunks than allowed.
+    """A document would produce more chunks than max_chunks_per_document allows.
 
     Raised by the chunk stage so execute_job records it as the document's
     error, the way any stage failure is: one CUAD JSON dump of 57,180 chunks
     otherwise held the embedder for the whole 3600 s stage timeout (#619).
     """
-
-
-def _is_watched_folder_doc(doc: Document) -> bool:
-    """Read in place from a watched folder: a source path and no stored original.
-
-    Uploads and IMAP messages keep an original in storage
-    (``original_object_key``); only watched-folder documents have none.
-    """
-    return bool(doc.source_path) and not doc.original_object_key
 
 
 def _find_code_fence_ranges(text: str) -> list[tuple[int, int]]:
@@ -293,6 +284,8 @@ def run_chunk(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         # Race check before writing results
         if not check_pipeline_seq(session, doc_id, worker_seq):
             logger.info("chunk: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+            session.close()
+            mark_stage_done(doc_id, JobStage.chunk, worker_seq=worker_seq)  # declines: seq moved on
             return
 
         # Delete existing chunks (idempotency)
@@ -301,15 +294,17 @@ def run_chunk(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             session.delete(c)
         session.flush()
 
-        ceiling = settings.watched_max_chunks_per_document
-        if ceiling > 0 and _is_watched_folder_doc(doc) and len(chunk_ranges) > ceiling:
-            # The old chunks go too: they are the previous version's text, and
-            # the pages they cite were just replaced by extract.
+        ceiling = settings.max_chunks_per_document
+        if ceiling > 0 and len(chunk_ranges) > ceiling:
+            # Every source: uploads (200 MB is ~235k chunks) and IMAP
+            # attachments were as unbounded as watched folders. The old chunks
+            # go too: they are the previous version's text, and the pages they
+            # cite were just replaced by extract.
             session.commit()
             raise DocumentTooLargeError(
-                f"{len(chunk_ranges):,} chunks exceeds the watched-folder limit of {ceiling:,} "
-                f"(WATCHED_MAX_CHUNKS_PER_DOCUMENT). Raise the limit, or keep files like this, "
-                f"such as dataset or database dumps, out of the watched folder."
+                f"Document too large to index: it splits into {len(chunk_ranges):,} chunks, over the "
+                f"per-document limit of {ceiling:,} (setting MAX_CHUNKS_PER_DOCUMENT). Raise the limit and "
+                f"reprocess to index it, or leave files like this (dataset or database dumps) out of the library."
             )
 
         for i, (char_start, char_end) in enumerate(chunk_ranges):

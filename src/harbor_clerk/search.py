@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.embedder_client import embed_texts_async
-from harbor_clerk.embedding_coverage import corpus_embedding_coverage
+from harbor_clerk.embedding_coverage import search_scope_coverage
 from harbor_clerk.error_text import describe_error
 from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
@@ -577,12 +577,15 @@ async def hybrid_search(
         semantic_status = SEMANTIC_UNAVAILABLE
 
     # The vector leg ran, but it can only see embedded chunks: when much of
-    # the corpus has no vectors (#685: 29% after a failing night), some
-    # documents are findable by keyword only. Corpus-wide and cached
-    # (embedding_coverage), so this costs nothing per search.
+    # what the search can reach has no vectors (#685: 29% after a failing
+    # night), some documents are findable by keyword only. Which figure
+    # depends on the search's reach (search_scope_coverage): the cached corpus
+    # figure without a document filter, an exact one over a small filter, and
+    # nothing over a large filter, so a scoped key never sees the corpus's.
     semantic_coverage: float | None = None
     if semantic_status == SEMANTIC_OK:
-        semantic_coverage = await corpus_embedding_coverage(session)
+        scope_doc_ids = [doc_id] if doc_id is not None else doc_ids
+        semantic_coverage = await search_scope_coverage(session, scope_doc_ids)
         if semantic_coverage is not None and semantic_coverage < SEMANTIC_PARTIAL_COVERAGE:
             semantic_status = SEMANTIC_PARTIAL
 

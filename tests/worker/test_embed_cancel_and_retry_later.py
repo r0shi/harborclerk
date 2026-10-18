@@ -355,6 +355,122 @@ async def test_a_cancel_during_the_failing_call_is_not_turned_into_a_retry(db_se
     assert "retry_after" not in (job.metrics or {})
 
 
+def _rejected_after_cancel(doc_id):
+    def _fail(texts, *, task, timeout):
+        _cancel(doc_id)
+        raise EmbedderError("embedder rejected request: HTTP 422")
+
+    return _fail
+
+
+def _timed_out_after_cancel(doc_id):
+    def _fail(texts, *, task, timeout):
+        _cancel(doc_id)
+        raise TimeoutError("Stage embed timed out after 3600s")
+
+    return _fail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [_rejected_after_cancel, _timed_out_after_cancel], ids=["422", "stage-timeout"])
+async def test_a_cancel_survives_an_ordinary_failure_that_follows_it(db_session, monkeypatch, failure):
+    """The ordinary failure path wrote the failure over the cancel: cancel an embed,
+    then hit a 422 (or the stage timeout), and the row and document read
+    "EmbedderError … HTTP 422" instead of "Cancelled by user"."""
+    doc_id = await _make_doc(db_session, chunk_count=3, job_status=JobStatus.running)
+    monkeypatch.setattr("harbor_clerk.worker.stages.embed.embed_texts", failure(doc_id))
+
+    _execute_embed(doc_id)
+
+    job, doc, _ = _read(doc_id)
+    assert (job.status, job.error) == (JobStatus.error, "Cancelled by user"), job.error
+    assert (doc.pipeline_status, doc.error) == (PipelineStatus.error, "Cancelled by user"), doc.error
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_survives_an_apple_intelligence_failure_that_follows_it(db_session, monkeypatch):
+    """The summarize sibling: AFM unavailable after a cancel used to schedule a retry."""
+    from harbor_clerk.llm.summarize import AppleIntelligenceUnavailableError
+    from harbor_clerk.worker import entry as entry_mod
+
+    doc = Document(
+        title="afm-cancel",
+        canonical_filename="afm-cancel.txt",
+        status="active",
+        sha256=hashlib.sha256(b"afm-cancel").digest(),
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.running))
+    await db_session.commit()
+    doc_id = doc.doc_id
+
+    def _stage(doc_id_, *, worker_seq=None):
+        _cancel_stage(doc_id_)
+        raise AppleIntelligenceUnavailableError("Apple Intelligence summaries are enabled but unavailable")
+
+    monkeypatch.setitem(entry_mod.STAGE_FUNCTIONS, JobStage.summarize, _stage)
+
+    entry_mod.execute_job(doc_id, JobStage.summarize, 0)
+
+    session = get_sync_session()
+    try:
+        job = session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert (job.status, job.error) == (JobStatus.error, "Cancelled by user")
+        assert "retry_after" not in (job.metrics or {}), "a cancel was turned into a scheduled retry"
+    finally:
+        session.close()
+
+
+def _cancel_stage(doc_id):
+    from harbor_clerk.worker.pipeline import cancel_doc_jobs
+
+    assert cancel_doc_jobs(doc_id) >= 1
+
+
+@pytest.mark.asyncio
+async def test_unavailable_from_a_non_embed_stage_fails_it_rather_than_deferring_embed(db_session, monkeypatch):
+    """Only embed has the retry-later schedule. Another stage raising
+    EmbedderUnavailableError fails that stage; deferring would write the embed row
+    and leave the raising stage's own row running."""
+    from harbor_clerk.worker import entry as entry_mod
+
+    doc = Document(
+        title="chunk-unavailable",
+        canonical_filename="chunk-unavailable.txt",
+        status="active",
+        sha256=hashlib.sha256(b"chunk-unavailable").digest(),
+        pipeline_status=PipelineStatus.chunking,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.chunk, status=JobStatus.running))
+    db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.embed, status=JobStatus.queued))
+    await db_session.commit()
+    doc_id = doc.doc_id
+
+    def _stage(doc_id_, *, worker_seq=None):
+        raise EmbedderUnavailableError("embedder call failed after 7/7 attempts: HTTP 503")
+
+    monkeypatch.setitem(entry_mod.STAGE_FUNCTIONS, JobStage.chunk, _stage)
+
+    entry_mod.execute_job(doc_id, JobStage.chunk, 0)
+
+    session = get_sync_session()
+    try:
+        rows = {
+            j.stage: j for j in session.execute(select(IngestionJob).where(IngestionJob.doc_id == doc_id)).scalars()
+        }
+        assert rows[JobStage.chunk].status == JobStatus.error, rows[JobStage.chunk].status
+        assert rows[JobStage.embed].status == JobStatus.queued
+        assert "retry_after" not in (rows[JobStage.embed].metrics or {}), "the embed row was deferred instead"
+    finally:
+        session.close()
+
+
 @pytest.mark.asyncio
 async def test_re_enqueue_starts_the_retry_budget_afresh(db_session):
     future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()

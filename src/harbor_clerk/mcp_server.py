@@ -764,10 +764,11 @@ def _format_search_response(
     has_more = offset + k < result.total_candidates
 
     resp: dict = {
+        # First, so a cut from the end (chat's plain truncation) keeps it.
+        **_semantic_fields(result.semantic_status, result.semantic_coverage),
         "hits": hits,
         "total_candidates": result.total_candidates,
         "has_more": has_more,
-        **_semantic_fields(result.semantic_status, result.semantic_coverage),
     }
     if has_more:
         # Active continuation nudge in the response payload. `has_more: true`
@@ -1169,10 +1170,10 @@ async def kb_search(
             )
         doc_groups.sort(key=lambda g: g["top_score"], reverse=True)
         resp: dict = {
+            **_semantic_fields(result.semantic_status, result.semantic_coverage),
             "documents": doc_groups,
             "total_candidates": result.total_candidates,
             "has_more": base_resp["has_more"],
-            **_semantic_fields(result.semantic_status, result.semantic_coverage),
         }
         # Carry the continuation nudge into the faceted shape too — pagination
         # semantics are identical, just grouped by document.
@@ -1489,6 +1490,7 @@ async def kb_find_all(
         results.append(hit)
 
     resp: dict = {
+        **_semantic_fields(result.semantic_status, result.semantic_coverage),
         "results": results,
         "total_matches": result.total_matches,
         "returned": len(results),
@@ -1496,7 +1498,6 @@ async def kb_find_all(
         "truncated": result.truncated,
         "sort_by": result.sort_by,
         "presentation": result.presentation,
-        **_semantic_fields(result.semantic_status, result.semantic_coverage),
         **scope_note,
     }
     return json.dumps(resp, indent=2)
@@ -3186,10 +3187,12 @@ async def kb_documents_by_date(
 
 @mcp.tool()
 async def kb_system_health() -> str:
-    """Check HC's system health (PostgreSQL, storage, Tika, reranker). DIAGNOSTIC.
+    """Check HC's system health (PostgreSQL, storage, embedder). DIAGNOSTIC.
 
     Use when investigating system issues — "why are searches slow", "is the
-    embedder up", "is storage reachable". Returns per-component status.
+    embedder up", "is storage reachable". Returns per-component status; the
+    embedder's is the last known verdict (with a note when it is busy or still
+    being checked), never a fresh probe.
 
     Rarely useful during normal query flow — models should reach for this
     only when the user is troubleshooting infrastructure.
@@ -3216,14 +3219,21 @@ async def kb_system_health() -> str:
     except Exception as e:
         checks["storage"] = f"error: {describe_error(e)}"
 
-    overall = all(v == "ok" for v in checks.values())
-    return json.dumps(
-        {
-            "status": "healthy" if overall else "degraded",
-            "checks": checks,
-        },
-        indent=2,
-    )
+    # The same non-blocking verdict /system/health reports: search's and the
+    # background probe's evidence. Stale evidence starts a probe in the
+    # background; this call never waits on the embedder.
+    from harbor_clerk.api.routes.system import _embedder_check
+
+    notes: dict[str, str] = {}
+    checks["embedder"], embedder_note = await _embedder_check(get_settings().embedder_url)
+    if embedder_note:
+        notes["embedder"] = embedder_note
+
+    overall = all(v in ("ok", "checking") for v in checks.values())
+    payload: dict = {"status": "healthy" if overall else "degraded", "checks": checks}
+    if notes:
+        payload["notes"] = notes
+    return json.dumps(payload, indent=2)
 
 
 def create_mcp_app():

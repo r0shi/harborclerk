@@ -1,9 +1,10 @@
-"""#619: a watched-folder document has a chunk ceiling.
+"""#619: every document has a chunk ceiling, whatever its source.
 
-Uploads are bounded by max_file_size_mb; a watched folder had no bound, and
-the CUAD dataset's own 38 MB JSON dump became 57,180 chunks that held the
-embedder for the whole hour-long stage timeout. Past the ceiling the document
-fails at the chunk stage, with a message that says why and what to do.
+A watched folder had no bound, and the CUAD dataset's own 38 MB JSON dump became
+57,180 chunks that held the embedder for the whole hour-long stage timeout.
+max_file_size_mb does not bound uploads in chunks (200 MB of text is ~235k) or
+IMAP attachments at all. Past the ceiling the document fails at the chunk
+stage, with a message that names the cause and the setting.
 """
 
 import hashlib
@@ -16,17 +17,25 @@ from harbor_clerk.models import Chunk, Document, DocumentPage, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 
 # ~12 chunks at the default 1,000-character target with 150 of overlap.
-PAGE_TEXT = " ".join(f"Sentence number {i} of a long watched document." for i in range(220))
+PAGE_TEXT = " ".join(f"Sentence number {i} of a long document." for i in range(220))
+
+# source_path, original_object_key per kind of document.
+SOURCES = {
+    "watched": ("/watched/{name}.txt", None),
+    "upload": ("{name}.txt", "originals/x/{name}.txt"),
+    "imap": (None, "mail/x/{name}.eml"),
+}
 
 
-async def _make_doc(db_session, name: str, *, upload: bool = False):
+async def _make_doc(db_session, name: str, *, source: str = "watched"):
+    source_path, object_key = SOURCES[source]
     doc = Document(
         title=name,
         canonical_filename=f"{name}.txt",
         status="active",
         sha256=hashlib.sha256(name.encode()).digest(),
-        source_path=f"/watched/{name}.txt",
-        original_object_key=f"originals/x/{name}.txt" if upload else None,
+        source_path=source_path.format(name=name) if source_path else None,
+        original_object_key=object_key.format(name=name) if object_key else None,
         pipeline_status=PipelineStatus.chunking,
         mime_type="text/plain",
     )
@@ -62,24 +71,28 @@ def _run_chunk_job(doc_id, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_watched_document_over_the_ceiling_fails_with_a_clear_reason(db_session, monkeypatch):
-    monkeypatch.setenv("WATCHED_MAX_CHUNKS_PER_DOCUMENT", "5")
-    doc_id = await _make_doc(db_session, "dump")
+@pytest.mark.parametrize("source", list(SOURCES))
+async def test_a_document_over_the_ceiling_fails_with_a_clear_reason(db_session, monkeypatch, source):
+    """The recorded error names the cause and the setting, so an operator whose
+    existing large document goes to error on reprocess can see why."""
+    monkeypatch.setenv("MAX_CHUNKS_PER_DOCUMENT", "5")
+    doc_id = await _make_doc(db_session, f"dump-{source}", source=source)
 
     _run_chunk_job(doc_id, monkeypatch)
 
     job_status, job_error, pipeline_status, doc_error, chunks = _outcome(doc_id)
     assert job_status == JobStatus.error
     assert pipeline_status == PipelineStatus.error
-    assert "exceeds the watched-folder limit of 5" in doc_error, doc_error
-    assert "WATCHED_MAX_CHUNKS_PER_DOCUMENT" in doc_error
+    assert "Document too large to index" in doc_error, doc_error
+    assert "over the per-document limit of 5" in doc_error
+    assert "MAX_CHUNKS_PER_DOCUMENT" in doc_error
     assert job_error == doc_error
     assert chunks == 0, "no chunks may reach the embedder, and the previous version's must go"
 
 
 @pytest.mark.asyncio
-async def test_watched_document_under_the_ceiling_is_chunked(db_session, monkeypatch):
-    monkeypatch.setenv("WATCHED_MAX_CHUNKS_PER_DOCUMENT", "100")
+async def test_a_document_under_the_ceiling_is_chunked(db_session, monkeypatch):
+    monkeypatch.setenv("MAX_CHUNKS_PER_DOCUMENT", "100")
     doc_id = await _make_doc(db_session, "normal")
 
     _run_chunk_job(doc_id, monkeypatch)
@@ -90,21 +103,8 @@ async def test_watched_document_under_the_ceiling_is_chunked(db_session, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_the_ceiling_applies_to_watched_folders_only(db_session, monkeypatch):
-    """An upload is an explicit act, already bounded by max_file_size_mb."""
-    monkeypatch.setenv("WATCHED_MAX_CHUNKS_PER_DOCUMENT", "5")
-    doc_id = await _make_doc(db_session, "uploaded", upload=True)
-
-    _run_chunk_job(doc_id, monkeypatch)
-
-    job_status, job_error, _ps, _de, chunks = _outcome(doc_id)
-    assert job_status == JobStatus.done, job_error
-    assert chunks > 5
-
-
-@pytest.mark.asyncio
 async def test_a_ceiling_of_zero_disables_it(db_session, monkeypatch):
-    monkeypatch.setenv("WATCHED_MAX_CHUNKS_PER_DOCUMENT", "0")
+    monkeypatch.setenv("MAX_CHUNKS_PER_DOCUMENT", "0")
     doc_id = await _make_doc(db_session, "unbounded")
 
     _run_chunk_job(doc_id, monkeypatch)
@@ -120,4 +120,4 @@ def test_the_default_ceiling_lets_a_large_book_through():
 
     settings = Settings()
     new_chars_per_chunk = settings.chunk_target_size - settings.chunk_overlap
-    assert settings.watched_max_chunks_per_document * new_chars_per_chunk >= 5_000 * 3_000
+    assert settings.max_chunks_per_document * new_chars_per_chunk >= 5_000 * 3_000

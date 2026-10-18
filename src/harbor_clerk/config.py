@@ -81,10 +81,11 @@ class Settings(BaseSettings):
     # Chunking
     chunk_target_size: int = Field(default=1000)
     chunk_overlap: int = Field(default=150)
-    # Most chunks one watched-folder document may produce before it is failed
-    # as too large, instead of feeding the embedder for an hour (#619). Uploads
-    # are bounded by max_file_size_mb; a watched folder had no bound at all,
-    # and the CUAD dataset's own 38 MB JSON dump made 57,180 chunks. At the
+    # Most chunks one document may produce, whatever its source, before it is
+    # failed as too large instead of feeding the embedder for an hour (#619).
+    # A watched folder had no bound at all (the CUAD dataset's own 38 MB JSON
+    # dump made 57,180 chunks), and max_file_size_mb does not bound uploads in
+    # chunks (200 MB of text is ~235k) or IMAP attachments at all. At the
     # embed rate measured on the M4 mini after #691 (6,408 chunks in nine
     # minutes, ~12/s; ~18/s from the 3.5 s per 64-text batch), 20,000 chunks
     # embed in 18 to 28 minutes, inside the embed stage's 3600 s timeout with
@@ -92,7 +93,7 @@ class Settings(BaseSettings):
     # overlap covers ~850 new characters, so 20,000 is ~17 M characters: a
     # 5,000-page book at a dense 3,000 characters a page still passes.
     # 0 disables the ceiling.
-    watched_max_chunks_per_document: int = Field(default=20_000)
+    max_chunks_per_document: int = Field(default=20_000)
 
     # Synthetic page size for non-paginated formats (TXT, RTF, DOCX)
     synthetic_page_chars: int = Field(default=3000)

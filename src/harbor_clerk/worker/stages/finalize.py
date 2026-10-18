@@ -64,6 +64,8 @@ def run_finalize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         # Race check before writing results
         if not check_pipeline_seq(session, doc_id, worker_seq):
             logger.info("finalize: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+            session.close()
+            mark_stage_done(doc_id, JobStage.finalize, worker_seq=worker_seq)  # declines: seq moved on
             return
 
         doc.pipeline_status = PipelineStatus.ready

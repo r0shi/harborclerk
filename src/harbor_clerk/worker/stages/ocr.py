@@ -118,6 +118,8 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             # Race check before writing results
             if not check_pipeline_seq(session, doc_id, worker_seq):
                 logger.info("ocr: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+                session.close()
+                mark_stage_done(doc_id, JobStage.ocr, worker_seq=worker_seq)  # declines: seq moved on
                 return
 
             page = session.execute(
@@ -180,6 +182,8 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                 ocr_results = []
             elif not check_pipeline_seq(session, doc_id, worker_seq):
                 logger.info("ocr: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+                session.close()
+                mark_stage_done(doc_id, JobStage.ocr, worker_seq=worker_seq)  # declines: seq moved on
                 return
 
             for i, (page_num, text, confidence) in enumerate(ocr_results):

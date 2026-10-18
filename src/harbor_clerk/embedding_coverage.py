@@ -5,14 +5,17 @@ failing night left 29% of a corpus without one, and the only way to learn it
 was to query Postgres. One aggregate serves both readers:
 
 - `/system/stats` reports the counts (`embedding_coverage_counts`), uncached;
-- search reads the share (`corpus_embedding_coverage`) to mark a result
-  "partial", through a process-wide cache refreshed lazily at most once per
-  CORPUS_COVERAGE_TTL_SECONDS, never per search.
+- search marks a result "partial" from the figure for its reach
+  (`search_scope_coverage`): with no document filter, the corpus share
+  (`corpus_embedding_coverage`), through a process-wide cache refreshed lazily
+  at most once per CORPUS_COVERAGE_TTL_SECONDS. The aggregate is not free:
+  measured at 125 ms warm and 4.1 s cold on 300k chunks, paid by the one search
+  that finds the figure stale, once a minute per process.
 
-Corpus-wide on purpose. A per-query figure over the candidate documents was
-diluted by the vector leg itself (it only ever returns embedded chunks), so a
-corpus with a third of its documents unembedded could read fully covered, and
-it scanned every chunk of up to ~1,000 candidate documents per find_all.
+Not over a query's candidates. That figure was diluted by the vector leg itself
+(it only ever returns embedded chunks), so a corpus with a third of its
+documents unembedded could read fully covered, and it scanned every chunk of up
+to ~1,000 candidate documents per find_all.
 """
 
 from __future__ import annotations
@@ -31,6 +34,11 @@ logger = logging.getLogger(__name__)
 # Coverage moves as ingest embeds documents, minutes not seconds; one aggregate
 # a minute keeps the cost off the search path.
 CORPUS_COVERAGE_TTL_SECONDS = 60.0
+
+# A document filter this small gets an exact figure over just its documents:
+# one aggregate on chunks.doc_id (chunks_doc_idx), bounded by the filter. 50 is
+# the doc_ids cap REST and MCP already enforce on a caller's own filter.
+EXACT_COVERAGE_MAX_DOCS = 50
 
 _cache: tuple[float, float | None] | None = None  # (monotonic time, share)
 _refreshing = False
@@ -87,6 +95,40 @@ async def corpus_embedding_coverage(session: AsyncSession) -> float | None:
         return share
     finally:
         _refreshing = False
+
+
+async def documents_embedding_coverage(session: AsyncSession, doc_ids: list) -> float | None:
+    """The share of these active documents' chunks with a vector; None when they have none."""
+    total, embedded = (
+        await session.execute(
+            select(func.count(Chunk.chunk_id), func.count(Chunk.embedding))
+            .join(Document, Document.doc_id == Chunk.doc_id)
+            .where(Chunk.doc_id.in_(list(doc_ids)), Document.status == "active")
+        )
+    ).one()
+    return round(embedded / total, 3) if total else None
+
+
+async def search_scope_coverage(session: AsyncSession, scope_doc_ids: list | None) -> float | None:
+    """The vector coverage to report for a search reaching ``scope_doc_ids`` (None: no document filter).
+
+    - No document filter: the cached corpus figure. Date, language, MIME and
+      metadata filters do not narrow it; they are not document lists.
+    - At most EXACT_COVERAGE_MAX_DOCS documents: the exact figure over them. A
+      search limited to one fully embedded document must not warn because the
+      rest of the corpus is half embedded.
+    - More: nothing at all, no figure and so no "partial". That includes a
+      scoped API key whose visible set is that large, which must never be
+      handed the corpus figure (it describes documents outside its scope).
+
+    A missed warning on a large filtered search is the accepted error; a false
+    warning, or a figure from outside the caller's scope, is not.
+    """
+    if scope_doc_ids is None:
+        return await corpus_embedding_coverage(session)
+    if len(scope_doc_ids) <= EXACT_COVERAGE_MAX_DOCS:
+        return await documents_embedding_coverage(session, scope_doc_ids)
+    return None
 
 
 def reset() -> None:

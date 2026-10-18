@@ -433,7 +433,9 @@ def _record_afm_unavailable_job(
                 IngestionJob.stage == stage,
             )
         ).scalar_one_or_none()
-        if job is None or job.pipeline_seq != pipeline_seq:
+        if job is None or job.pipeline_seq != pipeline_seq or job.status == JobStatus.error:
+            # Gone, superseded, or cancelled while it ran: a cancel must not
+            # turn into a scheduled retry (or an AFM failure message).
             return None
 
         metrics = dict(job.metrics or {})
@@ -630,9 +632,19 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
     except AppleIntelligenceUnavailableError as e:
         error_msg = describe_error(e)
         disposition = _record_afm_unavailable_job(doc_id, stage, pipeline_seq, error_msg)
-        if disposition is None:
-            logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
-            publish_job_event(doc_id, stage.value, "error", error=error_msg, filename=filename)
+        if disposition is None and stage != JobStage.summarize:
+            # Only summarize has the AFM retry schedule; anything else fails
+            # the ordinary way (which also keeps a cancel a cancel).
+            _record_job_failure(doc_id, stage, pipeline_seq, error_msg, filename)
+        elif disposition is None:
+            # The row is gone, superseded or cancelled: nothing of ours to
+            # record, and a cancel's own event already went out.
+            logger.info(
+                "Job %s/%s: Apple Intelligence unavailable after a cancel or supersede: %s",
+                doc_id,
+                stage.value,
+                error_msg,
+            )
         elif disposition.disposition == "error":
             logger.error(
                 "Job %s/%s failed after %d Apple Intelligence retry attempts: %s",
@@ -690,9 +702,14 @@ def _record_job_failure(
     error_msg: str,
     filename: str | None,
 ) -> None:
-    """Record a stage failure on its job row and, for gating stages, the document."""
-    logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
+    """Record a stage failure on its job row and, for gating stages, the document.
 
+    A row already in `error` at this generation was cancelled (or queue-cleared)
+    while the stage ran, and a cancelled row stays cancelled, as in
+    mark_stage_done and _record_embed_unavailable_job: neither the job nor the
+    document is rewritten. Cancelling an embed and then hitting a 422 used to
+    end as "EmbedderError … HTTP 422" instead of "Cancelled by user".
+    """
     session = get_sync_session()
     try:
         job = session.execute(
@@ -701,6 +718,16 @@ def _record_job_failure(
                 IngestionJob.stage == stage,
             )
         ).scalar_one_or_none()
+        if job is not None and job.pipeline_seq == pipeline_seq and job.status == JobStatus.error:
+            logger.info(
+                "Job %s/%s failed after it was cancelled (%s); keeping the cancel. The failure: %s",
+                doc_id,
+                stage.value,
+                job.error,
+                error_msg,
+            )
+            return
+        logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
         if job and job.pipeline_seq == pipeline_seq:
             job.status = JobStatus.error
             job.error = error_msg

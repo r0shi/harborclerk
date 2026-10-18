@@ -128,3 +128,62 @@ async def test_a_cancel_stops_summarize_between_map_calls(db_session, monkeypatc
     assert not classified, "the classification LLM call ran for a cancelled document"
     assert doc.summary is None and doc.doc_type is None
     assert job.status == JobStatus.error and job.error == "Cancelled by user"
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_stops_entities_between_ner_batches(db_session, monkeypatch, tmp_path):
+    """Entities used to run NER over every chunk in one call, on the io queue, up to
+    its 900 s timeout, deaf to a cancel."""
+    from harbor_clerk.models.entity import Entity
+    from harbor_clerk.worker.ner import EntitySpan
+    from harbor_clerk.worker.stages import entities as entities_stage
+
+    chunks = entities_stage.NER_BATCH_SIZE * 2 + 1
+    doc_id = await _make_doc(db_session, JobStage.entities, tmp_path, chunks=chunks)
+    calls: list[int] = []
+
+    def _ner(batch):
+        calls.append(len(batch))
+        if len(calls) == 1:
+            assert cancel_doc_jobs(doc_id) == 1
+        return [[EntitySpan(text="Port", type="ORG", start_char=0, end_char=4)] for _ in batch]
+
+    monkeypatch.setattr(entities_stage, "extract_entities_batch", _ner)
+
+    entities_stage.run_entities(doc_id)
+
+    job, _doc, _ = _read(doc_id, JobStage.entities)
+    assert calls == [entities_stage.NER_BATCH_SIZE], f"NER kept running after the cancel: {calls}"
+    assert job.status == JobStatus.error and job.error == "Cancelled by user"
+    session = get_sync_session()
+    try:
+        written = session.execute(select(Entity).where(Entity.doc_id == doc_id)).scalars().all()
+        assert not written, "a cancelled run wrote entities"
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_an_uncancelled_entities_run_covers_every_batch(db_session, monkeypatch, tmp_path):
+    from harbor_clerk.models.entity import Entity
+    from harbor_clerk.worker.ner import EntitySpan
+    from harbor_clerk.worker.stages import entities as entities_stage
+
+    chunks = entities_stage.NER_BATCH_SIZE + 3
+    doc_id = await _make_doc(db_session, JobStage.entities, tmp_path, chunks=chunks)
+    monkeypatch.setattr(
+        entities_stage,
+        "extract_entities_batch",
+        lambda batch: [[EntitySpan(text="Port", type="ORG", start_char=0, end_char=4)] for _ in batch],
+    )
+    monkeypatch.setattr("harbor_clerk.worker.pipeline.advance_pipeline", lambda _doc_id: None)
+
+    entities_stage.run_entities(doc_id)
+
+    job, _doc, _ = _read(doc_id, JobStage.entities)
+    assert job.status == JobStatus.done
+    session = get_sync_session()
+    try:
+        assert len(session.execute(select(Entity).where(Entity.doc_id == doc_id)).scalars().all()) == chunks
+    finally:
+        session.close()

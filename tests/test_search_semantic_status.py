@@ -183,6 +183,148 @@ async def test_a_95_percent_embedded_corpus_reads_ok(db_session, corpus, monkeyp
     assert result.semantic_coverage == 0.95
 
 
+@pytest.fixture
+async def half_embedded_corpus(db_session: AsyncSession, corpus):
+    """2 chunks, 1 with a vector: the corpus reads 50%. The keeper contract is
+    fully embedded; the tide log is not."""
+    tide_log = await _add_doc(db_session, "Tide log", ["High water at noon."], embedded=False)
+    return corpus, tide_log
+
+
+async def test_no_document_filter_reads_the_corpus_figure(db_session, half_embedded_corpus, monkeypatch):
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_up)
+
+    result = await search_mod.hybrid_search(db_session, "lighthouse keeper")
+
+    assert (result.semantic_status, result.semantic_coverage) == ("partial", 0.5)
+
+
+async def test_a_date_filter_keeps_the_corpus_figure(db_session, half_embedded_corpus, monkeypatch):
+    from datetime import UTC, datetime
+
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_up)
+
+    result = await search_mod.hybrid_search(db_session, "lighthouse keeper", after=datetime(2000, 1, 1, tzinfo=UTC))
+
+    assert (result.semantic_status, result.semantic_coverage) == ("partial", 0.5)
+
+
+async def test_a_small_document_filter_reads_exact_coverage_over_its_documents(
+    db_session, half_embedded_corpus, monkeypatch
+):
+    """A search limited to one fully embedded document must not warn because the
+    rest of the corpus is half embedded; one limited to the unembedded one must."""
+    keeper, tide_log = half_embedded_corpus
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_up)
+
+    on_keeper = await search_mod.hybrid_search(db_session, "lighthouse keeper", doc_id=keeper.doc_id)
+    on_log = await search_mod.hybrid_search(db_session, "high water", doc_ids=[tide_log.doc_id])
+
+    assert (on_keeper.semantic_status, on_keeper.semantic_coverage) == ("ok", 1.0)
+    assert (on_log.semantic_status, on_log.semantic_coverage) == ("partial", 0.0)
+
+
+async def test_a_large_document_filter_reports_no_coverage(db_session, half_embedded_corpus, monkeypatch):
+    """Over EXACT_COVERAGE_MAX_DOCS the figure is not computed, and the corpus
+    figure (which describes documents outside the filter) is not substituted."""
+    from harbor_clerk.embedding_coverage import EXACT_COVERAGE_MAX_DOCS
+
+    keeper, _ = half_embedded_corpus
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_up)
+    many = [keeper.doc_id] + [uuid.uuid4() for _ in range(EXACT_COVERAGE_MAX_DOCS)]
+
+    result = await search_mod.hybrid_search(db_session, "lighthouse keeper", doc_ids=many)
+
+    assert result.hits
+    assert (result.semantic_status, result.semantic_coverage) == ("ok", None)
+
+
+async def _scoped_key(db_session, docs) -> str:
+    """A full-tier key scoped to one watched folder holding ``docs``; returns the raw key."""
+    from harbor_clerk.auth import generate_api_key, hash_api_key
+    from harbor_clerk.models import ApiKey
+    from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+
+    folder = WatchedFolder(path=f"/scoped-{uuid.uuid4().hex}", display_name="Scoped", auto_discovered=False)
+    db_session.add(folder)
+    await db_session.flush()
+    for n, doc in enumerate(docs):
+        db_session.add(
+            WatchedFile(
+                folder_id=folder.folder_id,
+                doc_id=doc.doc_id,
+                relative_path=f"doc-{n}.txt",
+                sha256=bytes([n % 256]) * 32,
+                bookmark_data=b"",
+                status=WatchedFileStatus.active,
+            )
+        )
+    raw = generate_api_key()
+    db_session.add(
+        ApiKey(
+            name="scoped-coverage",
+            key_hash=hash_api_key(raw),
+            permission_tier="full",
+            scope_folder_ids=[str(folder.folder_id)],
+        )
+    )
+    await db_session.commit()
+    return raw
+
+
+async def _kb_search_as(raw_key: str, query: str) -> dict:
+    from harbor_clerk.mcp_server import _mcp_principal, _resolve_principal, kb_search
+
+    principal = await _resolve_principal(raw_key)
+    token = _mcp_principal.set(principal)
+    try:
+        return json.loads(await kb_search(query=query))
+    finally:
+        _mcp_principal.reset(token)
+
+
+async def test_a_scoped_key_never_sees_the_corpus_figure(db_session, half_embedded_corpus, monkeypatch):
+    """The corpus is mostly unembedded. A key scoped to the fully embedded contract
+    gets the exact figure for its scope (no warning); a key whose scope is over
+    the exact-figure bound gets no figure at all, never the corpus's."""
+    from harbor_clerk.embedding_coverage import EXACT_COVERAGE_MAX_DOCS, corpus_embedding_coverage
+
+    keeper, _ = half_embedded_corpus
+    filler = [
+        await _add_doc(db_session, f"Filler {n}", [f"Lighthouse keeper filler {n}."], embedded=False)
+        for n in range(EXACT_COVERAGE_MAX_DOCS)
+    ]
+    small_key = await _scoped_key(db_session, [keeper])
+    large_key = await _scoped_key(db_session, [keeper, *filler])
+    assert await corpus_embedding_coverage(db_session) < 0.1, "premise: the corpus figure would warn"
+    # Bind the MCP tools to the test connection only now: the commits above end
+    # the session's transaction and with it the connection a factory would hold.
+    await _bind_mcp_to(db_session, monkeypatch)
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_up)
+
+    small = await _kb_search_as(small_key, "lighthouse keeper")
+    assert small["hits"], small
+    assert "semantic_status" not in small and "semantic_coverage" not in small, small
+
+    large = await _kb_search_as(large_key, "lighthouse keeper")
+    assert large["hits"], large
+    assert "semantic_coverage" not in large and large.get("semantic_status") != "partial", large
+
+
+async def _bind_mcp_to(db_session, monkeypatch):
+    conn = await db_session.connection()
+
+    @asynccontextmanager
+    async def _factory():
+        session = AsyncSession(bind=conn, expire_on_commit=False)
+        try:
+            yield session
+        finally:
+            await session.close()
+
+    monkeypatch.setattr("harbor_clerk.mcp_server.async_session_factory", _factory)
+
+
 async def test_an_unavailable_vector_leg_stays_unavailable_not_partial(db_session, corpus_at_70_percent, monkeypatch):
     monkeypatch.setattr(search_mod, "_embed_query", _embedder_down)
 
@@ -190,6 +332,30 @@ async def test_an_unavailable_vector_leg_stays_unavailable_not_partial(db_sessio
 
     assert result.semantic_status == "unavailable"
     assert result.semantic_coverage is None
+
+
+async def test_concurrent_stale_reads_run_one_corpus_aggregate(db_session, monkeypatch):
+    """The cold aggregate measured 4.1 s on 300k chunks: searches arriving while it
+    runs must use the previous figure, not start more of them."""
+    import asyncio
+
+    from harbor_clerk import embedding_coverage
+
+    aggregates: list[int] = []
+
+    async def _slow_counts(_session):
+        aggregates.append(1)
+        await asyncio.sleep(0.2)
+        return {"chunks_total": 10, "chunks_embedded": 7}
+
+    monkeypatch.setattr(embedding_coverage, "embedding_coverage_counts", _slow_counts)
+
+    shares = await asyncio.wait_for(
+        asyncio.gather(*(embedding_coverage.corpus_embedding_coverage(db_session) for _ in range(5))), timeout=10
+    )
+
+    assert len(aggregates) == 1, f"{len(aggregates)} concurrent aggregates"
+    assert 0.7 in shares and set(shares) <= {0.7, None}
 
 
 async def test_the_corpus_figure_is_cached_not_computed_per_search(db_session, corpus_at_70_percent, monkeypatch):
@@ -294,6 +460,30 @@ async def test_mcp_search_reports_semantic_unavailable(corpus, mcp_session, huma
     assert payload["semantic_status"] == "unavailable"
     assert "keyword" in payload["semantic_notice"], "the model must be told what the flag means"
     assert "error" not in payload, "a degraded result is still a result, not a failed call"
+
+
+@pytest.mark.parametrize(
+    "tool,kwargs,body_key",
+    [
+        ("kb_search", {"query": "lighthouse keeper"}, "hits"),
+        ("kb_search", {"query": "lighthouse keeper", "faceted": True}, "documents"),
+        ("kb_find_all", {"query": "lighthouse"}, "results"),
+    ],
+    ids=["kb_search", "faceted", "kb_find_all"],
+)
+async def test_the_semantic_notice_comes_before_the_results(
+    corpus, mcp_session, human, monkeypatch, tool, kwargs, body_key
+):
+    """Chat's plain truncation cuts from the end: the notice must survive it."""
+    import harbor_clerk.mcp_server as m
+
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_down)
+
+    raw = await getattr(m, tool)(**kwargs)
+
+    keys = list(json.loads(raw))
+    assert keys.index("semantic_notice") < keys.index(body_key), keys
+    assert raw.index('"semantic_notice"') < raw.index(f'"{body_key}"')
 
 
 async def test_mcp_batch_search_flags_each_query(corpus, mcp_session, human, monkeypatch):

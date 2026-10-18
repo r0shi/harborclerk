@@ -20,7 +20,8 @@ pytestmark = pytest.mark.acceptance
 
 LEASE_DOCS = ("lease-agreement.pdf", "lease-agreement-scan.pdf")
 # What /api/system/health itself counts as healthy (system.py health_check).
-HEALTHY_CHECK_STATES = {"ok", "disabled", "not_probed"}
+# "checking": the embedder's first background probe has not landed yet.
+HEALTHY_CHECK_STATES = {"ok", "disabled", "not_probed", "checking"}
 
 
 def _doc_ids(hits: list[dict]) -> set[str]:

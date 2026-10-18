@@ -407,7 +407,7 @@ surface, including `kb_find_all` via `harbor-clerk find-all`.
 | `kb_read_passages` | Read specific passages by chunk_id. |
 | `kb_reprocess` | Re-run the ingestion pipeline for a specific document. |
 | `kb_search` | Search the knowledge base by topic, keyword, or question. |
-| `kb_system_health` | Check HC's system health (PostgreSQL, storage, Tika, reranker). |
+| `kb_system_health` | Check HC's system health (PostgreSQL, storage, embedder). |
 | `kb_verify_identifier` | Verify a document identifier resolves to exactly one document. |
 <!-- END GENERATED: mcp-tools -->
 

@@ -717,19 +717,20 @@ def _keyword_only_note(keyword_only_queries: list[str], total_queries: int) -> s
 
 
 def _partial_coverage_note(partial_queries: list[str], total_queries: int) -> str:
-    """A line for the coverage notes when some searches had partial vector coverage, else "".
+    """A line for the coverage notes when some searches reported partial vector coverage, else "".
 
-    The query embedded, but many passages of the documents it found have no
-    vector yet (an embed pending, deferred or failed), so the semantic leg saw
-    only part of them: what is missing may be there under other wording.
+    "partial" is about the documents a search could reach, not the passages it
+    found: the vector leg ran, but under 90% of the reachable corpus (or of the
+    filtered documents) is embedded yet, so part of it can be found only by an
+    exact word. What is missing may be there under other wording.
     """
     if not partial_queries:
         return ""
     count = len(set(partial_queries))
     return (
         f"Note: for {count} of {total_queries} searches, some documents aren't searchable by meaning yet "
-        "(many of their passages are not embedded), so they were matched by keyword only. Passages that use "
-        "different wording may be missing from this coverage.\n"
+        "(part of the library is not embedded), so those documents could be found only by keyword. Passages "
+        "that use different wording may be missing from this coverage.\n"
     )
 
 

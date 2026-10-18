@@ -398,6 +398,67 @@ async def test_a_recent_successful_query_embed_skips_the_probe(client, monkeypat
     assert not calls, f"probed despite a fresh successful query embed: {calls}"
 
 
+@pytest.fixture
+async def mcp_admin(db_session, admin_user, monkeypatch):
+    """kb_system_health as the admin, on the test connection."""
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from harbor_clerk.api.deps import Principal
+    from harbor_clerk.mcp_server import _mcp_principal
+
+    conn = await db_session.connection()
+
+    @asynccontextmanager
+    async def _factory():
+        session = AsyncSession(bind=conn, expire_on_commit=False)
+        try:
+            yield session
+        finally:
+            await session.close()
+
+    monkeypatch.setattr("harbor_clerk.mcp_server.async_session_factory", _factory)
+    token = _mcp_principal.set(Principal(type="user", id=admin_user.user_id, role="admin"))
+    yield
+    _mcp_principal.reset(token)
+
+
+async def test_kb_system_health_reports_the_embedder_verdict(mcp_admin):
+    """It said it answers "is the embedder up" and checked only Postgres and storage."""
+    import json
+
+    from harbor_clerk import query_embed_health
+    from harbor_clerk.mcp_server import kb_system_health
+
+    query_embed_health.record_failure("/embed returned HTTP 500")
+    failing = json.loads(await kb_system_health())
+    assert failing["checks"]["embedder"] == "error: /embed returned HTTP 500"
+    assert failing["status"] == "degraded"
+
+    query_embed_health.record_busy()
+    busy = json.loads(await kb_system_health())
+    assert busy["checks"]["embedder"] == "ok"
+    assert busy["notes"]["embedder"].startswith("busy")
+
+
+async def test_kb_system_health_never_waits_on_a_probe(mcp_admin, monkeypatch):
+    import json
+    import time
+
+    from harbor_clerk.mcp_server import kb_system_health
+
+    _stub_embedder(monkeypatch, embed_delay=5.0)
+
+    started = time.monotonic()
+    data = json.loads(await kb_system_health())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, f"kb_system_health waited {elapsed:.2f}s on the embedder"
+    assert data["checks"]["embedder"] == "checking"
+    assert data["status"] == "healthy", "a probe still running is not a failure"
+
+
 async def test_a_success_after_a_failure_clears_the_failure(client, monkeypatch):
     import harbor_clerk.search as search_mod
 
