@@ -58,15 +58,20 @@ ones should match so a single admin view can serve them:
 
 `chunks.fts_en` and `chunks.fts_fr` are **generated stored** tsvector columns
 with GIN indexes — they are computed by PostgreSQL, so never write to them from
-application code. Since 0009 (#825) they are computed over
-`hc_fold_whitespace(chunk_text)`: under LC_CTYPE C (the Mac app) the parser
-reads an NBSP as a letter. Build every tsquery against them through
-`search.websearch_tsquery`, which folds the query the same way. The model's
-`Computed(...)` text is the migration's, verbatim (a test compares them).
+application code. Since 0011 (#828; 0009, #825, before it) they are computed
+over `hc_fold_search_text(chunk_text)`: under LC_CTYPE C (the Mac app) the
+parser reads every non-ASCII character, an NBSP or a curly apostrophe, as a
+letter. Build every tsquery against them through `search.websearch_tsquery`,
+which folds the query the same way (`text_contains.fold_search_text`, held to
+the SQL function by `tests/test_search_fold.py`). The model's `Computed(...)`
+text is the migration's, verbatim (a test compares them).
 
 Changing a stored generated expression (`ALTER COLUMN ... SET EXPRESSION`)
 rewrites `chunks` under ACCESS EXCLUSIVE and rebuilds **every** index on it,
-the HNSW index included (40,000 chunks: about 26 s, 16 s of it HNSW). A rewrite
+the HNSW index included (40,000 chunks: 0009 about 26 s, 16 s of it HNSW, when
+measured for #827; 0011 45 s against 0009's 37 s on the same machine on the
+same day, since its fold is costlier and runs once per column). The time of
+an expression in a generated column is paid once per column per row. A rewrite
 also rebuilds, and so validates, an INVALID index left by an interrupted
 concurrent build. Killing the alembic client does not stop its backend: the lock
 lasts for the whole rewrite unless the backend is cancelled. env.py names its
@@ -94,16 +99,23 @@ that transaction to end.
 
 ## Functions under an expression index are never redefined in place
 
-`ix_chunks_chunk_text_ws_trgm` indexes `hc_fold_whitespace(chunk_text)`
-(0008, #819), and `fts_en` / `fts_fr` store values computed with it (0009,
-#825). Both hold values computed with the function body of the day they were
-written; `CREATE OR REPLACE` on that function leaves every stored entry stale,
-and the planner keeps using the index, so `text_contains` and keyword search
-silently miss rows. A changed fold is a **new function name in a new
-migration** that builds a new index on it, resets the column expressions, and
-drops the old one. 0008 creates the function only if absent and raises if an
-existing one's body differs; 0009 runs the same check. `DROP FUNCTION ...
-CASCADE` on it drops both FTS columns.
+`ix_chunks_chunk_text_fold_trgm` indexes `hc_fold_search_text(chunk_text)`,
+and `fts_en` / `fts_fr` store values computed with it (0011, #828). Both hold
+values computed with the function body of the day they were written; `CREATE
+OR REPLACE` on that function leaves every stored entry stale, and the planner
+keeps using the index, so `text_contains` and keyword search silently miss
+rows. A changed fold is a **new function name in a new migration** that builds
+a new index on it, resets the column expressions, and drops the old ones, as
+0011 did to 0008's `hc_fold_whitespace`. Each fold migration creates its
+function only if absent and raises if an existing one's definition differs.
+`DROP FUNCTION ... CASCADE` on it drops both FTS columns.
+
+When the change rewrites `chunks` anyway, build the new index in the same
+transaction, not concurrently (0011): ACCESS EXCLUSIVE is already held, a
+concurrent build would be rebuilt by the rewrite, and an interrupted run rolls
+back whole with no INVALID leftover. Drop the old index before the rewrite so
+it is not rebuilt only to be dropped. Expression-index statistics come only
+from an `ANALYZE` with no column list.
 
 ## Concurrent index builds must survive an interrupted attempt
 

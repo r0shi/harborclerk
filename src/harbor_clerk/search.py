@@ -18,7 +18,7 @@ from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.passage_cap import cap_text, refuse_filter_past_cap
 from harbor_clerk.search_rerank import rerank_hits
 from harbor_clerk.search_types import ConflictSource, FindAllHit, FindAllResult, SearchHit, SearchResult
-from harbor_clerk.text_contains import fold_whitespace, text_contains_clause
+from harbor_clerk.text_contains import fold_search_text, fold_search_text_spans, text_contains_clause
 
 # Re-export for backward compatibility — callers that do
 # `from harbor_clerk.search import SearchHit` continue to work.
@@ -384,16 +384,18 @@ def _apply_document_state_filters(
 
 
 def websearch_tsquery(config: str, query: str):
-    """``websearch_to_tsquery(config, query)`` over the whitespace-folded query.
+    """``websearch_to_tsquery(config, query)`` over the folded query (``fold_search_text``).
 
-    ``fts_en`` / ``fts_fr`` index ``hc_fold_whitespace(chunk_text)`` (migration 0009, #825): under
-    LC_CTYPE C the parser reads an NBSP as a letter, so a query pasted from a PDF with
-    "first<NBSP>refusal" would be one lexeme and match nothing the folded columns hold. Every
-    tsquery against those columns is built here. A pasted query now parses like the same query
-    typed: in "Article 4<NBSP>- Durée" the hyphen after the folded space is negation, as it is in
-    "Article 4 - Durée".
+    ``fts_en`` / ``fts_fr`` index ``hc_fold_search_text(chunk_text)`` (migration 0011, #828; 0009,
+    #825, folded whitespace only): under LC_CTYPE C the parser reads every non-ASCII character as a
+    letter, so a query pasted from a PDF with "first<NBSP>refusal" or "Party’s" would be one lexeme
+    and match nothing the folded columns hold. Every tsquery against those columns is built here.
+    A pasted query parses like the same query typed: in "Article 4<NBSP>- Durée" the hyphen after
+    the folded space is negation, as it is in "Article 4 - Durée"; curly double quotes and
+    guillemets fold to ``"`` and so quote a phrase. A dash folds to a space, so a spaced em dash
+    ("termination — notice") is never negation.
     """
-    return func.websearch_to_tsquery(config, fold_whitespace(query))
+    return func.websearch_to_tsquery(config, fold_search_text(query))
 
 
 async def hybrid_search(
@@ -439,8 +441,8 @@ async def hybrid_search(
     if language is not None:
         scope_filters.append(Chunk.language == language)
     if text_contains is not None:
-        # Whitespace-folded on both sides so a phrase matches across NBSPs and line breaks (#819);
-        # the helper's left side is what ix_chunks_chunk_text_ws_trgm indexes.
+        # Folded on both sides so a phrase matches across NBSPs and line breaks (#819) and typographic
+        # punctuation (#828); the helper's left side is what ix_chunks_chunk_text_fold_trgm indexes.
         scope_filters.append(text_contains_clause(Chunk.chunk_text, text_contains, prefix_chars=key_snippet_cap))
 
     # Document-level filters — subquery on doc_ids
@@ -687,11 +689,25 @@ def _prefix_snippet(chunk_text: str, max_chars: int) -> str:
     return _lead_excerpt(head, max_chars)
 
 
+def _folded_match(text: str, text_contains: str) -> tuple[int, int] | None:
+    """The span of ``text`` holding the first case-insensitive occurrence of ``text_contains``, both
+    folded as the filter folds them (``fold_search_text``: a typed apostrophe finds a curly one), or
+    None. Edge spaces are dropped, as the filter's substring match drops them."""
+    needle = fold_search_text(text_contains).strip(" ")
+    if not needle:
+        return None
+    folded, spans = fold_search_text_spans(text)
+    match = re.search(re.escape(needle), folded, re.IGNORECASE)
+    if match is None:
+        return None
+    return spans[match.start()][0], spans[match.end() - 1][1]
+
+
 def _brief_snippet(chunk_text: str, text_contains: str | None, max_chars: int = _FIND_ALL_SNIPPET_MAX_CHARS) -> str:
     """Trim a chunk to a one-line excerpt of at most ``max_chars`` characters.
 
     Centred on the first case-insensitive occurrence of ``text_contains`` when
-    the chunk has one (whitespace runs count as one space on both sides);
+    the chunk has one (both sides folded as the filter folds them, ``_folded_match``);
     otherwise the leading sentence or two. Cuts fall on word boundaries where
     that does not cut into the match, and each trimmed end carries an ellipsis
     (counted in ``max_chars``).
@@ -702,17 +718,12 @@ def _brief_snippet(chunk_text: str, text_contains: str | None, max_chars: int = 
     if max_chars < 3:  # no room for an ellipsis and a character of text
         return text[: max(0, max_chars)]
 
-    match = None
-    if text_contains:
-        words = text_contains.split()
-        if words:
-            match = re.search(" ".join(re.escape(w) for w in words), text, re.IGNORECASE)
-
+    match = _folded_match(text, text_contains) if text_contains else None
     if match is None:
         return _lead_excerpt(text, max_chars)
 
     budget = max_chars - 2  # an ellipsis at each end
-    m_start, m_end = match.span()
+    m_start, m_end = match
     if m_end - m_start >= budget:
         start, end = m_start, m_start + budget
     else:

@@ -43,7 +43,7 @@ fetched and stored, because there is no file on disk to reference.
 ## Retrieval
 
 - Full-text search is **bilingual**: query `fts_en` and `fts_fr`, each through
-  `search.websearch_tsquery`, which folds whitespace as the columns do (#825).
+  `search.websearch_tsquery`, which folds as the columns do (`fold_search_text`, #828).
 - The reranker is on by default (`reranker_enabled`) and **degrades gracefully**
   — if it is unreachable, the merged FTS+vector score is the final ordering.
   Never let a reranker failure fail a search.

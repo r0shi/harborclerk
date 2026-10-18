@@ -83,13 +83,20 @@ def _chunk_index_names(engine) -> set[str]:
     return {ix["name"] for ix in inspect(engine).get_indexes("chunks")}
 
 
+# The revision before 0011 (#828), which replaces 0008's function and index and resets 0009's columns:
+# the 0008 and 0009 tests observe their own work there.
+PRE_0011 = "0010_chat_message_seq"
+HEAD_FOLD_INDEX = "ix_chunks_chunk_text_fold_trgm"
+
+
 def _fold_function_exists(engine) -> bool:
     with engine.connect() as conn:
         return conn.execute(text("SELECT to_regprocedure('public.hc_fold_whitespace(text)') IS NOT NULL")).scalar()
 
 
 def test_chunk_text_ws_fold_migration_round_trips(alembic_cfg, sync_engine):
-    """0008 (#819) goes down to the plain trigram index and back up to the folded one."""
+    """0008 (#819) goes down to the plain trigram index and back up to the folded one (which 0011
+    then replaces: observed at the revision before it)."""
     command.upgrade(alembic_cfg, "head")
     try:
         command.downgrade(alembic_cfg, "0007_ingestion_job_pipeline_seq")
@@ -97,12 +104,13 @@ def test_chunk_text_ws_fold_migration_round_trips(alembic_cfg, sync_engine):
         assert "ix_chunks_chunk_text_trgm" in names
         assert "ix_chunks_chunk_text_ws_trgm" not in names
         assert not _fold_function_exists(sync_engine)
+        command.upgrade(alembic_cfg, PRE_0011)
+        names = _chunk_index_names(sync_engine)
+        assert "ix_chunks_chunk_text_ws_trgm" in names
+        assert "ix_chunks_chunk_text_trgm" not in names
+        assert _fold_function_exists(sync_engine)
     finally:
         command.upgrade(alembic_cfg, "head")
-    names = _chunk_index_names(sync_engine)
-    assert "ix_chunks_chunk_text_ws_trgm" in names
-    assert "ix_chunks_chunk_text_trgm" not in names
-    assert _fold_function_exists(sync_engine)
 
 
 def _load_0008():
@@ -111,6 +119,17 @@ def _load_0008():
 
     path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0008_chunk_text_ws_fold.py"
     spec = importlib.util.spec_from_file_location("_mig_0008_rt", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_0011():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0011_punctuation_fold.py"
+    spec = importlib.util.spec_from_file_location("_mig_0011_rt", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -157,7 +176,7 @@ def test_0008_upgrade_rebuilds_an_invalid_leftover_index(alembic_cfg, sync_engin
         _seed_invalid_index(sync_engine, mig.FOLD_INDEX)
         assert _index_state(sync_engine, mig.FOLD_INDEX)[0] is False
 
-        command.upgrade(alembic_cfg, "head")
+        command.upgrade(alembic_cfg, PRE_0011)
 
         valid, indexdef = _index_state(sync_engine, mig.FOLD_INDEX)
         assert valid is True
@@ -245,7 +264,8 @@ def test_0008_refuses_a_fold_function_with_a_different_definition(alembic_cfg, s
             conn.execute(text("DROP FUNCTION IF EXISTS public.hc_fold_whitespace(text) CASCADE"))
         command.stamp(alembic_cfg, "0007_ingestion_job_pipeline_seq")
         command.upgrade(alembic_cfg, "head")
-    assert _fold_function_exists(sync_engine)
+    # Healthy head: 0011 replaced 0008's function and index with its own.
+    assert _index_state(sync_engine, HEAD_FOLD_INDEX)[0] is True
 
 
 def _occupy_name(engine, name: str) -> None:
@@ -271,7 +291,7 @@ def _restore_head(alembic_cfg, engine) -> None:
     _free_name(engine, mig.PLAIN_INDEX)
     _drop_invalid_leftovers(engine, mig.FOLD_INDEX, mig.PLAIN_INDEX)
     command.upgrade(alembic_cfg, "head")
-    if _index_state(engine, mig.FOLD_INDEX) is None:
+    if _index_state(engine, HEAD_FOLD_INDEX) is None:
         command.stamp(alembic_cfg, "0007_ingestion_job_pipeline_seq")
         command.upgrade(alembic_cfg, "head")
 
@@ -362,7 +382,8 @@ def _fts_expressions(engine) -> dict[str, str]:
 
 
 def test_fts_over_folded_text_migration_round_trips(alembic_cfg, sync_engine):
-    """0009 (#825) goes down to the unfolded expressions of 0001 and back up to the folded ones."""
+    """0009 (#825) goes down to the unfolded expressions of 0001 and back up to the folded ones (which
+    0011 then resets: observed at the revision before it)."""
     command.upgrade(alembic_cfg, "head")
     try:
         command.downgrade(alembic_cfg, "0008_chunk_text_ws_fold")
@@ -370,14 +391,22 @@ def test_fts_over_folded_text_migration_round_trips(alembic_cfg, sync_engine):
             "fts_en": "to_tsvector('english'::regconfig, COALESCE(chunk_text, ''::text))",
             "fts_fr": "to_tsvector('french'::regconfig, COALESCE(chunk_text, ''::text))",
         }
+        command.upgrade(alembic_cfg, PRE_0011)
+        assert _fts_expressions(sync_engine) == WS_FOLD_EXPRESSIONS
+        names = _chunk_index_names(sync_engine)
+        assert {"chunks_fts_en_idx", "chunks_fts_fr_idx"} <= names
     finally:
         command.upgrade(alembic_cfg, "head")
-    assert _fts_expressions(sync_engine) == {
-        "fts_en": "to_tsvector('english'::regconfig, hc_fold_whitespace(COALESCE(chunk_text, ''::text)))",
-        "fts_fr": "to_tsvector('french'::regconfig, hc_fold_whitespace(COALESCE(chunk_text, ''::text)))",
-    }
-    names = _chunk_index_names(sync_engine)
-    assert {"chunks_fts_en_idx", "chunks_fts_fr_idx"} <= names
+
+
+WS_FOLD_EXPRESSIONS = {
+    "fts_en": "to_tsvector('english'::regconfig, hc_fold_whitespace(COALESCE(chunk_text, ''::text)))",
+    "fts_fr": "to_tsvector('french'::regconfig, hc_fold_whitespace(COALESCE(chunk_text, ''::text)))",
+}
+SEARCH_FOLD_EXPRESSIONS = {
+    "fts_en": "to_tsvector('english'::regconfig, hc_fold_search_text(COALESCE(chunk_text, ''::text)))",
+    "fts_fr": "to_tsvector('french'::regconfig, hc_fold_search_text(COALESCE(chunk_text, ''::text)))",
+}
 
 
 def test_0009_refuses_a_fold_function_with_a_different_definition(alembic_cfg, sync_engine):
@@ -405,33 +434,40 @@ def test_0009_refuses_a_fold_function_with_a_different_definition(alembic_cfg, s
             )
             conn.execute(text(f"REINDEX INDEX public.{mig.FOLD_INDEX}"))
         command.upgrade(alembic_cfg, "head")
-    assert "hc_fold_whitespace" in _fts_expressions(sync_engine)["fts_en"]
+    assert _fts_expressions(sync_engine) == SEARCH_FOLD_EXPRESSIONS
 
 
-def test_0008_guard_passes_twice_on_one_asyncpg_connection(alembic_cfg, sync_engine):
+@pytest.mark.parametrize(("migration", "revision"), [("0008", PRE_0011), ("0011", "head")])
+def test_fold_guard_passes_twice_on_one_asyncpg_connection(alembic_cfg, sync_engine, migration, revision):
     """The guard resolves both functions when its statement runs: asyncpg caches prepared
     statements per connection, and a '...'::regprocedure literal resolved at prepare time made the
     second check compare against the dropped first twin and refuse an identical function. The
-    function must already exist, or the first call creates it and never compares."""
+    function must already exist, or the first call creates it and never compares: 0008's exists
+    up to 0010, 0011's from 0011."""
     import asyncio
 
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    mig = _load_0008()
+    mig = _load_0008() if migration == "0008" else _load_0011()
     command.upgrade(alembic_cfg, "head")
-    assert _fold_function_exists(sync_engine)
+    try:
+        if revision != "head":
+            command.downgrade(alembic_cfg, revision)
+        assert _function_exists(sync_engine, mig.FOLD_FUNCTION.removeprefix("public."))
 
-    async def _twice():
-        engine = create_async_engine(os.environ["DATABASE_URL"])
-        try:
-            async with engine.connect() as conn:
-                for _ in range(2):
-                    await conn.run_sync(mig._create_fold_function)
-                await conn.rollback()
-        finally:
-            await engine.dispose()
+        async def _twice():
+            engine = create_async_engine(os.environ["DATABASE_URL"])
+            try:
+                async with engine.connect() as conn:
+                    for _ in range(2):
+                        await conn.run_sync(mig._create_fold_function)
+                    await conn.rollback()
+            finally:
+                await engine.dispose()
 
-    asyncio.run(_twice())
+        asyncio.run(_twice())
+    finally:
+        command.upgrade(alembic_cfg, "head")
 
 
 def test_upgrade_from_0007_with_the_fold_function_already_present(alembic_cfg, sync_engine):
@@ -446,8 +482,8 @@ def test_upgrade_from_0007_with_the_fold_function_already_present(alembic_cfg, s
         command.upgrade(alembic_cfg, "head")
     finally:
         _restore_head(alembic_cfg, sync_engine)
-    assert "hc_fold_whitespace" in _fts_expressions(sync_engine)["fts_en"]
-    assert _index_state(sync_engine, mig.FOLD_INDEX)[0] is True
+    assert _fts_expressions(sync_engine) == SEARCH_FOLD_EXPRESSIONS
+    assert _index_state(sync_engine, HEAD_FOLD_INDEX)[0] is True
 
 
 def _activity(engine, name: str) -> tuple | None:
@@ -541,9 +577,9 @@ def test_concurrent_runs_are_serialised_and_rewrite_once(alembic_cfg, sync_engin
                 text("SELECT count(*) FROM hc_test_rewrites WHERE relid = 'public.chunks'::regclass")
             ).scalar()
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert rewrites == 1
-        assert version == "0010_chat_message_seq"
-        assert _index_state(sync_engine, "ix_chunks_chunk_text_ws_trgm")[0] is True
+        assert rewrites == 2  # 0009 and 0011, once each
+        assert version == "0011_punctuation_fold"
+        assert _index_state(sync_engine, HEAD_FOLD_INDEX)[0] is True
         # The second run polled: idle between tries (no open transaction), no lock wait, no snapshot.
         state, wait_type, _, _, xmin = second_while_waiting
         assert state == "idle" and wait_type != "Lock" and xmin is None, second_while_waiting
@@ -596,7 +632,7 @@ def test_0009_fails_fast_when_chunks_is_held(alembic_cfg, sync_engine):
             blocker_tx.rollback()
         blocker.close()
         command.upgrade(alembic_cfg, "head")
-    assert "hc_fold_whitespace" in _fts_expressions(sync_engine)["fts_en"]
+    assert _fts_expressions(sync_engine) == SEARCH_FOLD_EXPRESSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -805,3 +841,151 @@ def test_0010_fails_fast_when_chat_messages_is_held(alembic_cfg, sync_engine):
         blocker.close()
         command.upgrade(alembic_cfg, "head")
     assert "seq" in _chat_columns(sync_engine)
+
+
+# ---------------------------------------------------------------------------
+# 0011: the punctuation fold (#828)
+# ---------------------------------------------------------------------------
+
+_FOLD_DOC = "00000000-0000-0000-0000-000000000828"
+# A zero-width space glues the words in every locale before 0011 (en_US.UTF-8 included), so the
+# round trip below observes the recompute wherever the suite's database runs.
+_FOLD_CHUNKS = [f"first{chr(0x200B)}refusal", f"the Party{chr(0x2019)}s obligations", "plain words"]
+
+
+def _seed_fold_rows(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO documents (doc_id, title, sha256, pipeline_status, status) "
+                "VALUES (:d, '0011 fold', '\\x0828'::bytea, 'ready', 'active')"
+            ),
+            {"d": _FOLD_DOC},
+        )
+        for n, chunk in enumerate(_FOLD_CHUNKS):
+            conn.execute(
+                text("INSERT INTO chunks (doc_id, chunk_num, chunk_text) VALUES (:d, :n, :t)"),
+                {"d": _FOLD_DOC, "n": n, "t": chunk},
+            )
+
+
+def _delete_fold_rows(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM documents WHERE doc_id = :d"), {"d": _FOLD_DOC})
+
+
+def _fold_rows(engine, fold: str) -> list[tuple]:
+    """(chunk_num, fts_en::text, whether fts_en / fts_fr are what ``fold`` computes now) per seeded chunk."""
+    with engine.connect() as conn:
+        return [
+            tuple(r)
+            for r in conn.execute(
+                text(
+                    f"SELECT chunk_num, fts_en::text, "
+                    f"fts_en = to_tsvector('english', public.{fold}(chunk_text)) "
+                    f"AND fts_fr = to_tsvector('french', public.{fold}(chunk_text)) "
+                    "FROM chunks WHERE doc_id = :d ORDER BY chunk_num"
+                ),
+                {"d": _FOLD_DOC},
+            )
+        ]
+
+
+def _function_exists(engine, name: str) -> bool:
+    with engine.connect() as conn:
+        return conn.execute(text("SELECT to_regprocedure(:f) IS NOT NULL"), {"f": f"public.{name}(text)"}).scalar()
+
+
+def test_0011_round_trips_with_rows(alembic_cfg, sync_engine):
+    """Down to 0010 and back up with rows present: each direction recomputes the stored columns of the
+    rows already there, swaps the trigram index and the fold function, and keeps every row."""
+    command.upgrade(alembic_cfg, "head")
+    try:
+        _seed_fold_rows(sync_engine)
+        at_head = _fold_rows(sync_engine, "hc_fold_search_text")
+        assert [r[2] for r in at_head] == [True] * 3
+        assert "'refus'" in at_head[0][1] and "'parti'" in at_head[1][1], at_head
+
+        command.downgrade(alembic_cfg, PRE_0011)
+
+        assert _fts_expressions(sync_engine) == WS_FOLD_EXPRESSIONS
+        at_0010 = _fold_rows(sync_engine, "hc_fold_whitespace")
+        assert [r[2] for r in at_0010] == [True] * 3
+        assert "'refus'" not in at_0010[0][1], at_0010
+        assert _index_state(sync_engine, "ix_chunks_chunk_text_ws_trgm")[0] is True
+        assert _index_state(sync_engine, HEAD_FOLD_INDEX) is None
+        assert _function_exists(sync_engine, "hc_fold_whitespace")
+        assert not _function_exists(sync_engine, "hc_fold_search_text")
+
+        command.upgrade(alembic_cfg, "head")
+
+        assert _fts_expressions(sync_engine) == SEARCH_FOLD_EXPRESSIONS
+        assert _fold_rows(sync_engine, "hc_fold_search_text") == at_head
+        valid, indexdef = _index_state(sync_engine, HEAD_FOLD_INDEX)
+        assert valid is True and "hc_fold_search_text(chunk_text) gin_trgm_ops" in indexdef, indexdef
+        assert _index_state(sync_engine, "ix_chunks_chunk_text_ws_trgm") is None
+        assert not _function_exists(sync_engine, "hc_fold_whitespace")
+        assert _function_exists(sync_engine, "hc_fold_search_text")
+    finally:
+        _delete_fold_rows(sync_engine)
+        command.upgrade(alembic_cfg, "head")
+
+
+def test_0011_refuses_a_fold_function_with_a_different_definition(alembic_cfg, sync_engine):
+    """0008's guard, for the new name: an existing hc_fold_search_text with another body is never built on."""
+    command.upgrade(alembic_cfg, "head")
+    try:
+        command.downgrade(alembic_cfg, PRE_0011)
+        with sync_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE FUNCTION public.hc_fold_search_text(text) RETURNS text "
+                    "LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE RETURN lower($1)"
+                )
+            )
+        with pytest.raises(RuntimeError, match="different definition"):
+            command.upgrade(alembic_cfg, "head")
+        assert _fts_expressions(sync_engine) == WS_FOLD_EXPRESSIONS
+    finally:
+        with sync_engine.connect() as conn:
+            version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+        if version == PRE_0011:
+            with sync_engine.begin() as conn:
+                conn.execute(text("DROP FUNCTION IF EXISTS public.hc_fold_search_text(text)"))
+        command.upgrade(alembic_cfg, "head")
+    assert _fts_expressions(sync_engine) == SEARCH_FOLD_EXPRESSIONS
+
+
+def test_0011_fails_fast_when_chunks_is_held(alembic_cfg, sync_engine):
+    """On a live API another transaction may hold chunks; 0011 waits at most 10 s for its lock
+    (lock_timeout) rather than queueing every search behind it, says so, and leaves 0010 stamped."""
+    import subprocess
+
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, PRE_0011)
+    blocker = sync_engine.connect()
+    blocker_tx = blocker.begin()
+    try:
+        blocker.execute(text("LOCK TABLE public.chunks IN ACCESS SHARE MODE"))
+        started = time.monotonic()
+        # A subprocess with a bound: without the lock_timeout the upgrade would wait for the blocker forever.
+        run = subprocess.run(
+            ["alembic", "upgrade", "head"], env=dict(os.environ), capture_output=True, text=True, timeout=60
+        )
+        elapsed = time.monotonic() - started
+        assert run.returncode != 0
+        assert "0011 could not lock public.chunks within 10s: another transaction holds it" in run.stderr, run.stderr[
+            -800:
+        ]
+        blocker_tx.rollback()
+        with sync_engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == PRE_0011
+        assert _fts_expressions(sync_engine) == WS_FOLD_EXPRESSIONS
+        assert not _function_exists(sync_engine, "hc_fold_search_text"), "the transaction did not roll back whole"
+        assert 9 < elapsed < 30, elapsed
+    finally:
+        if blocker_tx.is_active:
+            blocker_tx.rollback()
+        blocker.close()
+        command.upgrade(alembic_cfg, "head")
+    assert _fts_expressions(sync_engine) == SEARCH_FOLD_EXPRESSIONS

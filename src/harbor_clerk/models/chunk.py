@@ -44,16 +44,17 @@ class Chunk(Base):
     )
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # Dual tsvector columns for bilingual FTS (read-only, generated), over whitespace-folded text:
-    # under LC_CTYPE C the parser reads an NBSP as a letter, so "first<NBSP>refusal" was one
-    # lexeme (#825). Migration 0009 sets these exact expressions; a test holds the two together.
+    # Dual tsvector columns for bilingual FTS (read-only, generated), over folded text: under
+    # LC_CTYPE C the parser reads every non-ASCII character as a letter, so "first<NBSP>refusal"
+    # (#825) and "Party’s" (#828) were one lexeme. Migration 0011 sets these exact expressions; a
+    # test holds the two together.
     fts_en: Mapped[str | None] = mapped_column(
         TSVECTOR,
-        Computed("to_tsvector('english', public.hc_fold_whitespace(coalesce(chunk_text, '')))", persisted=True),
+        Computed("to_tsvector('english', public.hc_fold_search_text(coalesce(chunk_text, '')))", persisted=True),
     )
     fts_fr: Mapped[str | None] = mapped_column(
         TSVECTOR,
-        Computed("to_tsvector('french', public.hc_fold_whitespace(coalesce(chunk_text, '')))", persisted=True),
+        Computed("to_tsvector('french', public.hc_fold_search_text(coalesce(chunk_text, '')))", persisted=True),
     )
 
     # pgvector embedding

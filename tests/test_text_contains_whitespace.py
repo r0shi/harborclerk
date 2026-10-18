@@ -2,11 +2,9 @@
 
 PDF extraction leaves non-breaking spaces and line breaks inside phrases, so a literal
 ``ILIKE '%first refusal%'`` missed ``first\\u00a0refusal`` and ``first\\nopportunity``. Both sides are
-now folded: every run of Unicode whitespace becomes one ASCII space.
+now folded: every run of Unicode whitespace becomes one ASCII space (``fold_search_text``, which
+also folds typographic punctuation since #828: tests/test_fts_punctuation_fold.py).
 """
-
-import importlib.util
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select, text
@@ -17,11 +15,9 @@ from harbor_clerk.search import find_all, hybrid_search
 from harbor_clerk.text_contains import (
     WHITESPACE_RANGES,
     escape_are,
-    fold_whitespace,
+    fold_search_text,
     text_contains_clause,
 )
-
-_MIGRATION = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0008_chunk_text_ws_fold.py"
 
 # Each chunk sits in its own document; every chunk shares the word "covenant" so a query for it
 # makes every document a candidate, and the filter alone decides what survives.
@@ -85,8 +81,8 @@ async def _seed(db_session, texts: dict[str, str]) -> dict[str, str]:
         ("First Refusal", "First Refusal"),  # case is ILIKE's business, not the fold's
     ],
 )
-def test_fold_whitespace(raw, folded):
-    assert fold_whitespace(raw) == folded
+def test_fold_search_text_folds_whitespace(raw, folded):
+    assert fold_search_text(raw) == folded
 
 
 def test_whitespace_set_is_unicode_white_space():
@@ -95,34 +91,22 @@ def test_whitespace_set_is_unicode_white_space():
     assert _whitespace_code_points() == expected
 
 
-async def test_live_function_carries_the_migration_pattern(db_session):
-    """The function the database runs is 0008's, pattern and all (Python against SQL is the
-    character-by-character test below)."""
-    spec = importlib.util.spec_from_file_location("_mig_0008", _MIGRATION)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    body = (
-        await db_session.execute(
-            text("SELECT pg_get_function_sqlbody('public.hc_fold_whitespace(text)'::regprocedure)")
-        )
-    ).scalar()
-    assert f"'{module.WHITESPACE_RUN_PATTERN}'" in body
-
-
 # ---------------------------------------------------------------------------
 # The SQL function and its index
 # ---------------------------------------------------------------------------
 
 
-async def test_sql_function_folds_exactly_the_python_set(db_session):
-    """Every code point Python folds, Postgres folds, and nothing else among the near misses."""
+async def test_sql_function_folds_every_whitespace_run(db_session):
+    """Every White_Space code point folds to one space in Postgres as in Python; the information
+    separators do not (the whole fold is held to Python in tests/test_search_fold.py)."""
     for cp in sorted(_whitespace_code_points()):
-        got = (await db_session.execute(text("SELECT hc_fold_whitespace(:v)"), {"v": f"a{chr(cp)}{chr(cp)}b"})).scalar()
-        assert got == "a b", f"U+{cp:04X} not folded by hc_fold_whitespace"
-    for cp in (0x1C, 0x1F, 0x200B, 0x2060, 0xFEFF, ord("-"), ord("_")):
+        value = f"a{chr(cp)}{chr(cp)}b"
+        got = (await db_session.execute(text("SELECT hc_fold_search_text(:v)"), {"v": value})).scalar()
+        assert got == "a b" == fold_search_text(value), f"U+{cp:04X} not folded on both sides"
+    for cp in (0x1C, 0x1F, ord("-"), ord("_")):
         value = f"a{chr(cp)}b"
-        got = (await db_session.execute(text("SELECT hc_fold_whitespace(:v)"), {"v": value})).scalar()
-        assert got == value == fold_whitespace(value), f"U+{cp:04X} folded on one side"
+        got = (await db_session.execute(text("SELECT hc_fold_search_text(:v)"), {"v": value})).scalar()
+        assert got == value == fold_search_text(value), f"U+{cp:04X} folded on one side"
 
 
 @pytest.mark.parametrize("value", ["first refusal", " first refusal\n"])
@@ -139,7 +123,7 @@ async def test_helper_predicate_can_use_the_fold_index(db_session, value):
     await db_session.execute(text("SET LOCAL enable_seqscan = off"))
     raw = (await conn.get_raw_connection()).driver_connection
     plan = "\n".join(r[0] for r in await raw.fetch("EXPLAIN " + str(compiled), *params))
-    assert "ix_chunks_chunk_text_ws_trgm" in plan, plan
+    assert "ix_chunks_chunk_text_fold_trgm" in plan, plan
     # The index must serve the folded ILIKE itself, not some other conjunct.
     index_conds = [line for line in plan.splitlines() if "Index Cond" in line]
     assert any("~~*" in line and "regexp_replace" in line for line in index_conds), plan

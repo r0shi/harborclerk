@@ -1,22 +1,40 @@
-"""The ``text_contains`` filter: a case-insensitive literal substring of chunk text, whitespace-folded.
+"""The ``text_contains`` filter, and the fold that it and keyword search share.
 
 Every surface that takes ``text_contains`` (REST search and find-all, the ``kb_search`` and
 ``kb_find_all`` MCP tools, the chat ``find_all_documents`` tool, the CLI) reaches
 ``search.hybrid_search``, which builds its predicate here and nowhere else.
 
-The stored text keeps whatever whitespace extraction produced: PDF text puts non-breaking spaces
-and line breaks inside phrases, so "right of first refusal" was stored as
-``right\\u00a0of\\u00a0first\\u00a0refusal`` and ``first\\nopportunity``, and a plain ``ILIKE`` on
-the phrase never matched them (#819). So both sides are folded the same way: every run of
-whitespace becomes one ASCII space. The column side is the SQL function
-``public.hc_fold_whitespace(text)`` (migration ``0008_chunk_text_ws_fold``), which a GIN trigram
-expression index covers, so the match stays an index scan. The argument side is
-``fold_whitespace`` below. Case is left to ``ILIKE``; punctuation and hyphens are not touched.
+The stored text keeps whatever extraction produced. PDF text puts non-breaking spaces and line
+breaks inside phrases (``right\\u00a0of\\u00a0first\\u00a0refusal``, ``first\\nopportunity``,
+#819), and word processors write typographic apostrophes, quotes and dashes (``the Party\\u2019s``,
+``l\\u2019accord``, ``first\\u2013refusal``, #828). So text is compared folded, the same way on both
+sides: ``fold_search_text`` below, and its SQL twin ``public.hc_fold_search_text(text)`` (migration
+``0011_punctuation_fold``). A GIN trigram expression index covers the SQL function, so a
+``text_contains`` match stays an index scan; ``chunks.fts_en`` / ``fts_fr`` are computed over it,
+and ``search.websearch_tsquery`` folds the query with ``fold_search_text``, so keyword search reads
+the same folded text on both sides. Case is left to ``ILIKE``.
 
-Whitespace means the Unicode ``White_Space`` property: Python's ``str.isspace`` minus U+001C..U+001F
-(the information separators, which Python counts and Unicode does not). The SQL function's
-character class is frozen in the migration; ``tests/test_text_contains_whitespace.py`` holds it to
-``WHITESPACE_RANGES`` against the live function, character by character.
+The fold, in this order:
+
+1. ``FOLD_MAP``: typographic apostrophes and single quotes become ``'``, double quotes and
+   guillemets ``"``, the hyphen, the non-breaking hyphen and the minus sign ``-``, the ellipsis
+   ``...``; the invisible in-word format characters (soft hyphen, zero-width non-joiner and
+   joiner, word joiner, BOM) are deleted.
+2. Every run of ``RUN_RANGES`` becomes one ASCII space: the Unicode ``White_Space`` property
+   (``WHITESPACE_RANGES``: Python's ``str.isspace`` minus U+001C..U+001F, the information
+   separators, which Python counts and Unicode does not) and ``SEPARATOR_RANGES``, the characters
+   that separate words without being White_Space (the zero-width space; the figure, en and em
+   dashes and the horizontal bar).
+
+Why: under LC_CTYPE C (the Mac app's cluster, ``initdb --locale=C``) the text search parser reads
+every non-ASCII character as a letter, so each of these glued its neighbours into one lexeme
+("party\\u2019", "first\\u2013refus"), and ``text_contains`` needed the same character typed. The
+dashes fold to a space, not to ``-``: libc en_US.UTF-8 (Docker) parses them as separators, and a
+``-`` would change search there (``2019\\u20132020`` would index ``-2020`` instead of ``2020``, and a
+spaced em dash in a query would become websearch negation).
+
+The SQL function is frozen in the migration; ``tests/test_search_fold.py`` holds it to the tables
+here, against the live function, character by character.
 """
 
 from __future__ import annotations
@@ -41,21 +59,91 @@ WHITESPACE_RANGES: tuple[tuple[int, int], ...] = (
     (0x3000, 0x3000),  # ideographic space
 )
 
+# Word separators that are not White_Space, folded with it.
+SEPARATOR_RANGES: tuple[tuple[int, int], ...] = (
+    (0x200B, 0x200B),  # zero-width space: a word boundary (UAX #29), unlike the joiners below
+    (0x2012, 0x2015),  # figure dash, en dash, em dash, horizontal bar
+)
 
-def _whitespace_run_pattern() -> str:
-    parts = [f"\\u{lo:04x}" if lo == hi else f"\\u{lo:04x}-\\u{hi:04x}" for lo, hi in WHITESPACE_RANGES]
-    return "[" + "".join(parts) + "]+"
+RUN_RANGES: tuple[tuple[int, int], ...] = WHITESPACE_RANGES + SEPARATOR_RANGES
+
+# Step 1: each character becomes the string it maps to ("" deletes it).
+FOLD_MAP: dict[str, str] = {
+    "\u2018": "'",  # left single quotation mark
+    "\u2019": "'",  # right single quotation mark, the typographic apostrophe
+    "\u201a": "'",  # single low-9 quotation mark
+    "\u201b": "'",  # single high-reversed-9 quotation mark
+    "\u02bc": "'",  # modifier letter apostrophe
+    "\u2039": "'",  # single left-pointing angle quotation mark
+    "\u203a": "'",  # single right-pointing angle quotation mark
+    "\u201c": '"',  # left double quotation mark
+    "\u201d": '"',  # right double quotation mark
+    "\u201e": '"',  # double low-9 quotation mark
+    "\u201f": '"',  # double high-reversed-9 quotation mark
+    "\u00ab": '"',  # left-pointing double angle quotation mark (guillemet)
+    "\u00bb": '"',  # right-pointing double angle quotation mark (guillemet)
+    "\u2010": "-",  # hyphen
+    "\u2011": "-",  # non-breaking hyphen
+    "\u2212": "-",  # minus sign
+    "\u2026": "...",  # horizontal ellipsis
+    "\u00ad": "",  # soft hyphen
+    "\u200c": "",  # zero-width non-joiner
+    "\u200d": "",  # zero-width joiner
+    "\u2060": "",  # word joiner
+    "\ufeff": "",  # zero-width no-break space (byte order mark)
+}
 
 
-# One run of whitespace, spelled with \uXXXX escapes, which Python's ``re`` and Postgres AREs both
-# read the same way: the migration's function body uses this exact string.
-WHITESPACE_RUN_PATTERN = _whitespace_run_pattern()
-_WHITESPACE_RUN_RE = re.compile(WHITESPACE_RUN_PATTERN)
+def _bracket_expression(ranges: tuple[tuple[int, int], ...]) -> str:
+    """``ranges`` as one bracket expression, adjacent ranges merged, spelled with \\uXXXX escapes,
+    which Python's ``re`` and Postgres AREs read the same way."""
+    merged: list[list[int]] = []
+    for lo, hi in sorted(ranges):
+        if merged and lo <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+    return "[" + "".join(f"\\u{lo:04x}" if lo == hi else f"\\u{lo:04x}-\\u{hi:04x}" for lo, hi in merged) + "]"
 
 
-def fold_whitespace(value: str) -> str:
-    """Replace every run of Unicode whitespace in ``value`` with one ASCII space."""
-    return _WHITESPACE_RUN_RE.sub(" ", value)
+# The SQL function's arguments, which 0011 freezes verbatim: translate() maps each character of
+# FOLD_TRANSLATE_FROM to the one at the same position in FOLD_TRANSLATE_TO and deletes those past
+# its end, replace() makes each FOLD_EXPANSIONS key its value, and regexp_replace() folds the runs.
+FOLD_TRANSLATE_FROM = "".join(k for k, v in FOLD_MAP.items() if len(v) == 1) + "".join(
+    k for k, v in FOLD_MAP.items() if not v
+)
+FOLD_TRANSLATE_TO = "".join(v for v in FOLD_MAP.values() if len(v) == 1)
+FOLD_EXPANSIONS: dict[str, str] = {k: v for k, v in FOLD_MAP.items() if len(v) > 1}
+FOLD_RUN_PATTERN = _bracket_expression(RUN_RANGES) + "+"
+
+_FOLD_TABLE = str.maketrans(FOLD_MAP)
+_RUN_RE = re.compile(FOLD_RUN_PATTERN)
+_RUN_CHARS = frozenset(chr(cp) for lo, hi in RUN_RANGES for cp in range(lo, hi + 1))
+
+
+def fold_search_text(value: str) -> str:
+    """``value`` folded as ``public.hc_fold_search_text`` folds it (the module docstring's two steps)."""
+    return _RUN_RE.sub(" ", value.translate(_FOLD_TABLE))
+
+
+def fold_search_text_spans(value: str) -> tuple[str, list[tuple[int, int]]]:
+    """``fold_search_text(value)``, and for each folded character the span of ``value`` it came from.
+
+    Built one character at a time, so a match found in the folded text can be shown in the original
+    (``search._brief_snippet``); a test holds the folded string to ``fold_search_text``'s.
+    """
+    mapped = [(out, i) for i, ch in enumerate(value) for out in FOLD_MAP.get(ch, ch)]  # step 1
+    folded: list[str] = []
+    spans: list[tuple[int, int]] = []
+    for out, i in mapped:  # step 2; step 1 never produces a space, so a folded space is a run's
+        if out in _RUN_CHARS:
+            if folded and folded[-1] == " ":
+                spans[-1] = (spans[-1][0], i + 1)
+                continue
+            out = " "
+        folded.append(out)
+        spans.append((i, i + 1))
+    return "".join(folded), spans
 
 
 # Postgres ARE: a backslash before a non-alphanumeric character means that character, and before
@@ -95,35 +183,36 @@ def escape_are(value: str) -> str:
 def text_contains_clause(
     column: ColumnElement[str], value: str, *, prefix_chars: int | None = None
 ) -> ColumnElement[bool]:
-    """``column`` contains ``value`` as a literal, case-insensitive, whitespace-folded substring.
+    """``column`` contains ``value`` as a literal, case-insensitive substring, both folded.
 
-    Inner whitespace matches any run of whitespace. Leading or trailing whitespace asks for a word
+    Both sides go through the fold (``fold_search_text``): inner whitespace matches any run of
+    whitespace, a typed apostrophe a curly one, and so on. Leading or trailing whitespace asks for a word
     boundary on that side: ``" IP "`` matches "the IP clause" and "IP." but not "ship", and a
     trailing newline from the CLI asks only for a word end. The boundary is a regex recheck ANDed
     to the substring match, which stays the indexed predicate.
 
-    The left side must stay exactly ``hc_fold_whitespace(<column>)`` for the planner to use
-    ``ix_chunks_chunk_text_ws_trgm``; ``%``, ``_`` and ``\\`` in ``value`` match literally. An
-    all-whitespace value folds to "" and matches every chunk.
+    The left side must stay exactly ``hc_fold_search_text(<column>)`` for the planner to use
+    ``ix_chunks_chunk_text_fold_trgm``; ``%``, ``_`` and ``\\`` in ``value`` match literally. A value
+    that folds to nothing but spaces (all whitespace, a lone dash) matches every chunk.
 
     ``prefix_chars`` is a capped API key's snippet cap (``passage_cap.snippet_cap``, #831): the value
     must then occur within the column's first ``prefix_chars`` characters, the text the key can
     already read, so the filter answers nothing about text past the cap. The indexed substring match
-    over the whole column stays as the prefilter, and the prefix recheck (``hc_fold_whitespace`` over
+    over the whole column stays as the prefilter, and the prefix recheck (``hc_fold_search_text`` over
     ``left(column, n)``, the raw prefix folded) is ANDed to it; the word-boundary recheck runs on the
     prefix too, so a boundary at the cap is end of text and the character after it is never consulted:
     a word ending exactly at the cap counts as whole (``" foo "`` matches a chunk whose ``foobar`` is cut
     to ``foo`` by the cap). Deliberate: the answer depends on nothing the key cannot read.
     A cap of 0 (or less) matches nothing but an all-whitespace value.
     """
-    folded_column = func.hc_fold_whitespace(column)
-    folded = fold_whitespace(value)
+    folded_column = func.hc_fold_search_text(column)
+    folded = fold_search_text(value)
     core = folded.strip(" ")
     pattern_ilike = f"%{escape_ilike(core)}%"
     clause = folded_column.ilike(pattern_ilike, escape="\\")
     checked = folded_column  # what the boundary recheck reads
     if prefix_chars is not None:
-        checked = func.hc_fold_whitespace(func.left(column, max(0, prefix_chars)))
+        checked = func.hc_fold_search_text(func.left(column, max(0, prefix_chars)))
         if core:
             clause = and_(clause, checked.ilike(pattern_ilike, escape="\\"))
     if not core:

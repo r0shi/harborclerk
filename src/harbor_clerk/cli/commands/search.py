@@ -47,7 +47,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--text-contains",
         help=(
-            "Require a substring in the chunk text (case and whitespace differences ignored; "
+            "Require a substring in the chunk text (case, whitespace and typographic punctuation differences ignored; "
             "leading or trailing whitespace requires a word boundary on that side)"
         ),
     )

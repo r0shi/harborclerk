@@ -4,7 +4,9 @@ Under LC_CTYPE C (the Mac app's cluster) the text search parser reads a non-brea
 narrow no-break space and the other non-ASCII spaces as letters: "right of first refusal" joined by
 NBSPs was one lexeme, ``websearch_to_tsquery('first refusal')`` never matched it, and the chunk
 reached hybrid search only through the vector leg. ``fts_en`` / ``fts_fr`` now index
-``hc_fold_whitespace(chunk_text)``, and every tsquery against them is built over the folded query.
+``hc_fold_whitespace(chunk_text)`` (since 0011, #828, ``hc_fold_search_text``, which also folds
+typographic punctuation: tests/test_fts_punctuation_fold.py), and every tsquery against them is
+built over the folded query.
 
 The locale tests run on private databases built with #824's helper
 (``tests/test_text_contains_locales.py``): libc LC_CTYPE C, the builtin C.UTF-8 provider (which
@@ -247,8 +249,8 @@ def test_migration_sets_the_model_expressions_verbatim():
     import importlib.util
     from pathlib import Path
 
-    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0009_fts_over_folded_text.py"
-    spec = importlib.util.spec_from_file_location("_mig_0009", path)
+    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0011_punctuation_fold.py"
+    spec = importlib.util.spec_from_file_location("_mig_0011", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     from_migration = dict(module.FOLDED_EXPRESSIONS)
@@ -278,4 +280,4 @@ async def test_live_generation_expressions_match_the_model(db_session):
         live = found[("chunks", column)]
         model = found[("hc_model_chunks", column)]
         assert live == model, column
-        assert live[0] == "s" and "hc_fold_whitespace(COALESCE(chunk_text" in live[1], live
+        assert live[0] == "s" and "hc_fold_search_text(COALESCE(chunk_text" in live[1], live
