@@ -223,3 +223,17 @@ def test_a_copied_env_file_does_not_make_a_source_run_compose(monkeypatch, tmp_p
     assert settings.llm_model_id == "qwen35-9b"
     model = get_model("qwen35-4b")
     assert effective_context(model, False, ram_bytes=64 * GIB) == max_context(model, 64 * GIB)
+
+
+def test_the_summarizer_says_to_download_the_compose_model_not_to_activate(
+    compose_env: Path, monkeypatch, caplog
+) -> None:
+    from harbor_clerk.llm import summarize
+
+    monkeypatch.setattr(summarize, "_apple_intelligence_summary", lambda *a, **k: None)
+    config._settings = None
+    with caplog.at_level(logging.WARNING, logger="harbor_clerk.llm.summarize"):
+        _, used = summarize.generate_summary(["A short invoice from Acme for three widgets."])
+    assert used == "extractive"
+    assert f"Download {MODEL_FILE} in Settings" in caplog.text
+    assert "Activate a model" not in caplog.text
