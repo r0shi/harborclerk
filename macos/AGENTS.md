@@ -42,9 +42,13 @@ a variable a worker needs, check whether the Compose side needs it too.
 **Nothing a launched process runs may write into the bundle.** Any file added
 under `Contents/` breaks the signature seal (`codesign --verify --deep
 --strict`). numba did, caching JIT output beside umap's sources in the venv
-(#846). Caches go under `~/Library/Caches/Harbor Clerk/` via
-`ServiceManager.runtimeCacheEnvironment`, which both the services' dict and
-Alembic's merge last; `docs/releasing.md` checks the seal after a smoke run.
+(#846). Caches go under "Harbor Clerk" in the user's Caches folder
+(`~/Library/Caches/` for an unsandboxed app) via
+`ServiceManager.runtimeCacheEnvironment`, which each launch path applies last,
+over everything else: `PythonService.launchEnvironment()` and
+`MigrationRunner.environment`. A directory that cannot be created or written
+falls back to one under the temporary directory, because numba's own fallback
+is the bundle. `docs/releasing.md` checks the seal after a smoke run.
 
 ## Networking
 

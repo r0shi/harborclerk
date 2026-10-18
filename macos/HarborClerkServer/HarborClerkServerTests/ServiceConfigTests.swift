@@ -345,34 +345,72 @@ final class ServiceConfigTests: XCTestCase {
         "XDG_CACHE_HOME", "MPLCONFIGDIR", "TORCH_HOME", "NLTK_DATA", "PYTHONPYCACHEPREFIX",
     ]
 
-    /// Every environment a Python process the server launches is given: the
-    /// services' shared dict (API, embedder, reranker, workers, watcher) and
-    /// Alembic's own. Built from scratch settings and a dummy key, so the test
-    /// reads neither the live config.json nor the Keychain.
-    private func launchedPythonEnvironments(cachesDir: URL, scratch: URL) -> [(who: String, env: [String: String])] {
+    private static var bundleRoot: String { Bundle.main.bundleURL.standardizedFileURL.path + "/" }
+
+    /// A scratch folder for one test, removed afterwards (made writable first,
+    /// since the fallback tests take write permission away).
+    private func makeScratch() -> URL {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-env-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        addTeardownBlock {
+            let fm = FileManager.default
+            // 0o500 directories can still be listed, so every one is reached.
+            let dirs = (fm.enumerator(atPath: scratch.path)?.allObjects as? [String] ?? [])
+                .map { scratch.appendingPathComponent($0).path } + [scratch.path]
+            for dir in dirs {
+                try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
+            }
+            try? fm.removeItem(at: scratch)
+        }
+        return scratch
+    }
+
+    /// Points the app's Caches folder at `dir` for this test only, so the
+    /// launch paths run with their production defaults and write nothing
+    /// into the user's Caches.
+    private func overrideCachesDir(_ dir: URL) {
+        AppSettings.cachesDirOverride = dir
+        addTeardownBlock { AppSettings.cachesDirOverride = nil }
+    }
+
+    /// Every environment a Python process the server launches is given, built
+    /// by the launch paths themselves: each service's `launchEnvironment()`
+    /// over the shared dict (scratch settings and a dummy key, so neither the
+    /// live config.json nor the Keychain is read), and Alembic's. The
+    /// override service sets every cache variable to a bundle path in both
+    /// its base dict and its own overrides, which the launch must beat.
+    private func launchedPythonEnvironments(scratch: URL) -> [(who: String, env: [String: String])] {
         let settings = AppSettings(configURL: scratch.appendingPathComponent("config.json"))
         let resources = Bundle.main.resourceURL!
-        return [
-            ("Python services", ServiceManager.pythonEnvironment(
-                settings: settings, bundle: resources, masterKeyB64: "dGVzdA==", cachesDir: cachesDir)),
-            ("Alembic", MigrationRunner.environment(settings: settings, bundle: resources, cachesDir: cachesDir)),
+        let shared = ServiceManager.pythonEnvironment(settings: settings, bundle: resources, masterKeyB64: "dGVzdA==")
+        let services: [PythonService] = [
+            APIService(), WorkerService(queue: "io", index: 0), WatcherService(), BundleCacheOverrideService(),
         ]
+        var envs: [(who: String, env: [String: String])] = services.map { svc in
+            svc.baseEnvironment = shared
+            if svc is BundleCacheOverrideService {
+                svc.baseEnvironment.merge(BundleCacheOverrideService.bundleCaches) { _, bundle in bundle }
+            }
+            return (svc.name, svc.launchEnvironment())
+        }
+        envs.append(("Alembic", MigrationRunner.environment(settings: settings, bundle: resources)))
+        return envs
     }
 
     func testEveryLaunchedPythonProcessKeepsItsCachesOutOfTheBundle() throws {
-        let scratch = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cache-env-\(UUID().uuidString)", isDirectory: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: scratch) }
+        let scratch = makeScratch()
         let cachesDir = scratch.appendingPathComponent("Caches/Harbor Clerk", isDirectory: true)
-        let bundleRoot = Bundle.main.bundleURL.standardizedFileURL.path + "/"
+        overrideCachesDir(cachesDir)
+        let expected = cachesDir.appendingPathComponent("numba").path
 
-        for (who, env) in launchedPythonEnvironments(cachesDir: cachesDir, scratch: scratch) {
+        for (who, env) in launchedPythonEnvironments(scratch: scratch) {
             XCTAssertEqual(env["PYTHONDONTWRITEBYTECODE"], "1", "\(who): bytecode would be written beside the bundled sources")
 
             let numba = try XCTUnwrap(
                 env["NUMBA_CACHE_DIR"],
                 "\(who): without NUMBA_CACHE_DIR numba caches into venv/.../__pycache__ inside the signed bundle")
-            XCTAssertTrue(numba.hasPrefix(cachesDir.path + "/"), "\(who): NUMBA_CACHE_DIR is \(numba), not under \(cachesDir.path)")
+            XCTAssertEqual(numba, expected, "\(who): the launch path must use AppSettings.cachesDir")
             var isDir: ObjCBool = false
             XCTAssertTrue(
                 FileManager.default.fileExists(atPath: numba, isDirectory: &isDir) && isDir.boolValue,
@@ -381,9 +419,58 @@ final class ServiceConfigTests: XCTestCase {
             for key in Self.cacheVariables {
                 guard let value = env[key] else { continue }
                 let path = URL(fileURLWithPath: value).standardizedFileURL.path + "/"
-                XCTAssertFalse(path.hasPrefix(bundleRoot), "\(who): \(key)=\(value) is inside the app bundle")
+                XCTAssertFalse(path.hasPrefix(Self.bundleRoot), "\(who): \(key)=\(value) is inside the app bundle")
             }
         }
+    }
+
+    // MARK: An unusable cache directory falls back outside the bundle
+
+    /// numba falls back to the source's `__pycache__`, in the bundle, when its
+    /// directory fails a test write; the app must hand it a writable one.
+    func testACacheDirectoryThatCannotBeCreatedFallsBack() throws {
+        let scratch = makeScratch()
+        let locked = scratch.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        let fallback = scratch.appendingPathComponent("fallback", isDirectory: true)
+
+        let env = ServiceManager.runtimeCacheEnvironment(
+            cachesDir: locked.appendingPathComponent("Caches/Harbor Clerk"), fallbackDir: fallback)
+
+        XCTAssertEqual(env["NUMBA_CACHE_DIR"], fallback.path)
+        XCTAssertTrue(FileManager.default.isWritableFile(atPath: fallback.path), "the fallback is created and writable")
+    }
+
+    func testACacheDirectoryThatExistsButCannotBeWrittenFallsBack() throws {
+        let scratch = makeScratch()
+        let caches = scratch.appendingPathComponent("Caches/Harbor Clerk", isDirectory: true)
+        let numba = caches.appendingPathComponent("numba", isDirectory: true)
+        try FileManager.default.createDirectory(at: numba, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: numba.path)
+        let fallback = scratch.appendingPathComponent("fallback", isDirectory: true)
+
+        let env = ServiceManager.runtimeCacheEnvironment(cachesDir: caches, fallbackDir: fallback)
+
+        XCTAssertEqual(env["NUMBA_CACHE_DIR"], fallback.path, "exists is not enough: numba's probe write would fail there")
+    }
+
+    func testAWritableCacheDirectoryIsUsedAndLeftClean() throws {
+        let scratch = makeScratch()
+        let caches = scratch.appendingPathComponent("Caches/Harbor Clerk", isDirectory: true)
+        let fallback = scratch.appendingPathComponent("fallback", isDirectory: true)
+
+        let env = ServiceManager.runtimeCacheEnvironment(cachesDir: caches, fallbackDir: fallback)
+
+        let numba = caches.appendingPathComponent("numba")
+        XCTAssertEqual(env["NUMBA_CACHE_DIR"], numba.path)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: numba.path), [], "the write probe is removed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fallback.path))
+    }
+
+    func testTheProductionFallbackIsOutsideTheBundle() {
+        let fallback = ServiceManager.runtimeCacheFallbackDir.standardizedFileURL.path + "/"
+        XCTAssertFalse(fallback.hasPrefix(Self.bundleRoot), "\(fallback) is inside \(Self.bundleRoot)")
     }
 
     func testTheCachesDirectoryIsNotInsideTheBundle() {
@@ -392,4 +479,18 @@ final class ServiceConfigTests: XCTestCase {
         XCTAssertFalse(caches.hasPrefix(bundleRoot), "\(caches) is inside \(bundleRoot)")
         XCTAssertTrue(caches.contains("/Library/Caches/"), "expected the user's Caches folder, got \(caches)")
     }
+}
+
+/// A service whose base dict and own overrides both point every cache
+/// variable into the bundle: the launch environment must still not (#846).
+final class BundleCacheOverrideService: PythonService {
+    static let bundleCaches: [String: String] = {
+        let venv = Bundle.main.resourceURL!.appendingPathComponent("venv/lib/python3.12/site-packages").path
+        return ["NUMBA_CACHE_DIR": venv, "PYTHONDONTWRITEBYTECODE": "0"]
+    }()
+
+    init() { super.init(name: "BundleCacheOverride") }
+
+    override var executableName: String { "harbor-clerk-none" }
+    override var extraEnvironment: [String: String] { Self.bundleCaches }
 }

@@ -96,11 +96,13 @@ and depending on the macOS version and quarantine state that surfaces as a
 Gatekeeper or App Management prompt, or as the write being blocked. numba did it
 (#846), caching JIT output into `venv/.../{umap,pynndescent}/__pycache__/`
 when the API warmed up its topic pool, until `ServiceManager.runtimeCacheEnvironment`
-pointed `NUMBA_CACHE_DIR` at `~/Library/Caches/Harbor Clerk/numba`.
+pointed `NUMBA_CACHE_DIR` at `Harbor Clerk/numba` in the user's Caches folder
+(`~/Library/Caches/` for an unsandboxed app), falling back to a directory under
+the temporary directory if that one cannot be written.
 
 So the check in step 5 runs after a smoke run, on the installed copy. A failure
 there is a release blocker: find the writer from the `file added:` lines, point
-its cache at `~/Library/Caches/Harbor Clerk/` in `runtimeCacheEnvironment`, and
+its cache at the Caches folder in `runtimeCacheEnvironment`, and
 rebuild. `release.sh` does not run this check itself: the bundle it publishes
 from is the one that must never have been launched.
 

@@ -36,12 +36,7 @@ class PythonService: ManagedService {
         proc.executableURL = executable
         proc.arguments = arguments
 
-        // Merge base Python env with service-specific overrides
-        var env = baseEnvironment
-        for (k, v) in extraEnvironment {
-            env[k] = v
-        }
-        proc.environment = env
+        proc.environment = launchEnvironment()
 
         let category = name.lowercased()
         let pipe = Log.createPipe(category: category)
@@ -68,6 +63,18 @@ class PythonService: ManagedService {
 
         try proc.runAsProcessGroupLeader()
         process = proc
+    }
+
+    /// The environment the process is launched with: the shared base dict,
+    /// then this service's overrides, then the runtime cache variables, last,
+    /// so neither of the others can point a cache back into the signed bundle
+    /// (#846).
+    func launchEnvironment() -> [String: String] {
+        var env = baseEnvironment
+        for (k, v) in extraEnvironment {
+            env[k] = v
+        }
+        return env.merging(ServiceManager.runtimeCacheEnvironment()) { _, cache in cache }
     }
 
     /// Reset the restart counter. Called by ServiceManager after health check passes.

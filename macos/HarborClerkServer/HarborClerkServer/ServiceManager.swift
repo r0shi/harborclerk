@@ -1356,14 +1356,59 @@ class ServiceManager: ObservableObject {
     /// NLTK and tiktoken are not in the venv. Bytecode is the one other
     /// writer, and `PYTHONDONTWRITEBYTECODE` has covered it for every process.
     ///
-    /// Creates the directories, so the first process to start finds them.
-    nonisolated static func runtimeCacheEnvironment(cachesDir: URL) -> [String: String] {
-        let numba = cachesDir.appendingPathComponent("numba")
-        try? FileManager.default.createDirectory(at: numba, withIntermediateDirectories: true)
-        return [
+    /// Applied last, over everything else, by each launch path: a Python
+    /// service's `launchEnvironment()` and Alembic's `MigrationRunner.environment`.
+    nonisolated static func runtimeCacheEnvironment(
+        cachesDir: URL = AppSettings.cachesDir,
+        fallbackDir: URL = runtimeCacheFallbackDir
+    ) -> [String: String] {
+        [
             "PYTHONDONTWRITEBYTECODE": "1",
-            "NUMBA_CACHE_DIR": numba.path,
+            "NUMBA_CACHE_DIR": usableCacheDirectory(
+                cachesDir.appendingPathComponent("numba"),
+                fallback: fallbackDir
+            ).path,
         ]
+    }
+
+    /// Where the numba cache goes when the Caches folder cannot take it.
+    nonisolated static let runtimeCacheFallbackDir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("harbor-clerk-numba", isDirectory: true)
+
+    /// `preferred` if it can be created and written, otherwise `fallback`.
+    ///
+    /// An unusable directory is not harmless: numba probes its cache directory
+    /// with a test write, and when that fails it falls back to the source's
+    /// own `__pycache__` — inside the bundle, the very thing this is for. So
+    /// a failure is logged and another directory outside the bundle is used.
+    /// If that one fails as well it is still returned: never nothing, and
+    /// never the bundle.
+    nonisolated static func usableCacheDirectory(_ preferred: URL, fallback: URL) -> URL {
+        if let problem = cacheDirectoryProblem(preferred) {
+            Log.logger("lifecycle").error(
+                "Cache directory \(preferred.path, privacy: .public) unusable (\(problem, privacy: .public)); using \(fallback.path, privacy: .public)")
+            if let again = cacheDirectoryProblem(fallback) {
+                Log.logger("lifecycle").error(
+                    "Fallback cache directory \(fallback.path, privacy: .public) unusable too (\(again, privacy: .public))")
+            }
+            return fallback
+        }
+        return preferred
+    }
+
+    /// Why `dir` cannot serve as a cache directory, or nil if it can: it is
+    /// created if missing, then probed with a write the way numba probes it.
+    private nonisolated static func cacheDirectoryProblem(_ dir: URL) -> String? {
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let probe = dir.appendingPathComponent(".write-probe-\(UUID().uuidString)")
+            try Data().write(to: probe)
+            try? fm.removeItem(at: probe)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     /// Build the full environment dict for Python services.
@@ -1377,18 +1422,18 @@ class ServiceManager: ObservableObject {
         return pythonEnvironment(
             settings: AppSettings.shared,
             bundle: Bundle.main.resourceURL!,
-            masterKeyB64: MasterKeyManager.production.base64Encoded(key: masterKey),
-            cachesDir: AppSettings.cachesDir
+            masterKeyB64: MasterKeyManager.production.base64Encoded(key: masterKey)
         )
     }
 
     /// The environment for Python services from explicit inputs, so a test can
     /// build it without the live settings, the Keychain or the app bundle.
+    /// The cache variables are not here: `PythonService.launchEnvironment()`
+    /// applies them last, over this dict and the service's own overrides.
     nonisolated static func pythonEnvironment(
         settings: AppSettings,
         bundle: URL,
-        masterKeyB64: String,
-        cachesDir: URL
+        masterKeyB64: String
     ) -> [String: String] {
         let hashFile = bundle.appendingPathComponent("venv/build-hash.txt")
         let buildHash = (try? String(contentsOf: hashFile, encoding: .utf8))?
@@ -1402,7 +1447,7 @@ class ServiceManager: ObservableObject {
         let buildVersion = (try? String(contentsOf: versionFile, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        let env: [String: String] = [
+        return [
             "BUILD_HASH": buildHash,
             "BUILD_VERSION": buildVersion,
             "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
@@ -1439,7 +1484,5 @@ class ServiceManager: ObservableObject {
             // in api/routes/system.py.
             "BUNDLE_RESOURCES": bundle.path,
         ]
-        // Last, so nothing above can point a cache back into the bundle.
-        return env.merging(runtimeCacheEnvironment(cachesDir: cachesDir)) { _, cache in cache }
     }
 }
