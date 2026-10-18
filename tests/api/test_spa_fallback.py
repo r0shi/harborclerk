@@ -1,5 +1,6 @@
-"""The SPA fallback serves only files inside the static directory, and unknown
-API paths return a JSON 404 (#603).
+"""The SPA fallback serves only files inside the static directory, and a GET to an
+unknown API path returns a JSON 404 (#603). Other methods on an unknown path keep
+the JSON 405 they got before: the fallback is a GET route.
 
 Requests go straight to the ASGI app with a hand-built scope, decoded the way
 uvicorn decodes a request target (``urllib.parse.unquote`` of the raw path, no
@@ -182,7 +183,7 @@ async def test_client_route_serves_the_index(app, raw_path):
         "/.well-known/openid-configuration",
     ],
 )
-async def test_unknown_api_path_is_a_json_404(app, raw_path):
+async def test_get_of_an_unknown_api_path_is_a_json_404(app, raw_path):
     status, headers, body = await _get(app, raw_path)
     assert status == 404
     assert headers["content-type"] == "application/json"
