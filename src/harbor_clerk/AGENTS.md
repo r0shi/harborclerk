@@ -36,17 +36,9 @@ Tika. Don't invent a fourth.
 All storage access goes through the `StorageBackend` ABC — never touch MinIO or
 the filesystem directly. `STORAGE_BACKEND` selects the implementation.
 
-Watched-folder documents are read in place from `source_path` and are never
-written to. IMAP messages and attachments are the one case where content is
-fetched and stored, because there is no file on disk to reference.
-`source_path` is the path the watcher saw, so under Compose every service that
-reads it (`app`, and the workers whose `QUEUE_STAGES` claim extract or OCR)
-mounts the watcher's host directory at the same container path, fixed at
-`/data/watch`; `WATCH_ROOT` is the discovery path and must be that directory or
-one under it (#871, `watch_root_problem` logs an ERROR otherwise). Every bind of
-the watch directory, the watcher's too, is `:ro` (#869;
-`tests/test_docker_compose_watch_mount.py`). A new stage that reads document
-bytes goes in that test's `BYTE_READING_STAGES`.
+Watched-folder documents are read in place from `source_path` and never written to; IMAP is the one case where content is fetched and stored (no file to reference).
+Under Compose every reader of `source_path` (`app`, and the workers whose `QUEUE_STAGES` claim extract or OCR) mounts the watch directory read-only at the fixed `/data/watch`,
+the watcher too; `WATCH_ROOT` must be that directory or below it (#869, #871). A new byte-reading stage goes in `BYTE_READING_STAGES` (`tests/test_docker_compose_watch_mount.py`).
 
 ## Retrieval
 
