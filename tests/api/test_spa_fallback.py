@@ -127,15 +127,17 @@ async def test_symlink_out_of_static_dir_is_not_served(app, raw_path):
 
 async def test_lookup_error_is_a_404_not_a_500(app, monkeypatch):
     """An OSError from the file lookup (a name too long, on Python 3.12) is a 404."""
+    import os
+
     long_segment = "x" * 300
-    real_is_file = Path.is_file
+    real_isfile = os.path.isfile
 
-    def is_file(self, *args, **kwargs):
-        if long_segment in self.name:
-            raise OSError(errno.ENAMETOOLONG, "File name too long", str(self))
-        return real_is_file(self, *args, **kwargs)
+    def isfile(path):
+        if long_segment in str(path):
+            raise OSError(errno.ENAMETOOLONG, "File name too long", str(path))
+        return real_isfile(path)
 
-    monkeypatch.setattr(Path, "is_file", is_file)
+    monkeypatch.setattr(os.path, "isfile", isfile)
     status, headers, body = await _get(app, "/" + long_segment)
     assert status == 404
     assert json.loads(body) == {"detail": "Not Found"}

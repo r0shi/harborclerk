@@ -422,7 +422,7 @@ def _is_api_path(full_path: str) -> bool:
     return full_path.split("/", 1)[0] in _API_PREFIXES
 
 
-def _static_file(static_root: Path, full_path: str) -> Path | object | None:
+def _static_file(static_root: Path, full_path: str) -> str | object | None:
     """The file inside ``static_root`` that ``full_path`` names.
 
     ``static_root`` is already resolved; ``full_path`` is the URL path after its
@@ -439,10 +439,11 @@ def _static_file(static_root: Path, full_path: str) -> Path | object | None:
     if segments[0] == "" or ".." in segments:
         return _OUTSIDE
     try:
-        resolved = (static_root / full_path).resolve()
-        if not resolved.is_relative_to(static_root):
+        root = os.path.realpath(static_root)
+        candidate = os.path.realpath(os.path.join(root, full_path))
+        if not (candidate == root or candidate.startswith(root + os.sep)):
             return _OUTSIDE
-        return resolved if resolved.is_file() else None
+        return candidate if os.path.isfile(candidate) else None
     except (OSError, RuntimeError, ValueError):
         return _OUTSIDE
 

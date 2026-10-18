@@ -47,7 +47,7 @@ def _script_session(_engine, monkeypatch):
 
 async def test_reextract_reads_stored_original_and_no_sidecar_for_an_upload(db_session, tmp_path: Path):
     """An upload is read from storage, not from the file its source_path names."""
-    from scripts.reextract_metadata import reextract_all
+    import scripts.reextract_metadata as script
 
     stored = _md("Stored")
     labelled = tmp_path / "note.md"
@@ -72,7 +72,7 @@ async def test_reextract_reads_stored_original_and_no_sidecar_for_an_upload(db_s
     doc_id = doc.doc_id
 
     try:
-        await reextract_all()
+        await script.reextract_all()
     finally:
         get_storage().remove_object("originals", key)
 
@@ -83,7 +83,7 @@ async def test_reextract_reads_stored_original_and_no_sidecar_for_an_upload(db_s
 
 
 async def test_reextract_reads_a_watched_doc_in_place_with_its_sidecar(db_session, tmp_path: Path):
-    from scripts.reextract_metadata import reextract_all
+    import scripts.reextract_metadata as script
 
     source = tmp_path / "watched.md"
     source.write_bytes(_md("OnDisk"))
@@ -115,7 +115,7 @@ async def test_reextract_reads_a_watched_doc_in_place_with_its_sidecar(db_sessio
     await db_session.commit()
     doc_id = doc.doc_id
 
-    await reextract_all()
+    await script.reextract_all()
 
     db_session.expire_all()
     refreshed = (await db_session.execute(select(Document).where(Document.doc_id == doc_id))).scalar_one()
