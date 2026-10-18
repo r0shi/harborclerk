@@ -324,9 +324,9 @@ def test_scan_folder_skips_sidecar_json_without_counting_it(factory, tmp_path, m
         dispatched: list[str] = []
         real_on_event = daemon._on_event
 
-        def _recording_on_event(event):
+        def _recording_on_event(event, **kwargs):
             dispatched.append(event.relative_path)
-            real_on_event(event)
+            return real_on_event(event, **kwargs)
 
         daemon._on_event = _recording_on_event
         daemon._reconcile_folder(folder_id, str(tmp_path))

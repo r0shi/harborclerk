@@ -863,3 +863,48 @@ async def test_rename_onto_a_retired_path_keeps_the_moved_document(client, admin
     rows = (await db_session.execute(select(WatchedFile).where(WatchedFile.folder_id == folder_id))).scalars().all()
     assert [(r.relative_path, r.doc_id, r.status) for r in rows] == [("report.txt", doc_id, WatchedFileStatus.active)]
     assert await db_session.get(Document, old_doc_id) is None
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "source", "detail"),
+    [
+        ("/etc/passwd", "b.txt", "b.txt", "old_relative_path must be a plain path"),
+        ("../a.txt", "b.txt", "b.txt", "old_relative_path must be a plain path"),
+        ("a.txt", "../b.txt", "b.txt", "new_relative_path must be a plain path"),
+        ("a.txt", "/tmp/b.txt", "b.txt", "new_relative_path must be a plain path"),
+        ("a.txt", "sub/./b.txt", "sub/b.txt", "new_relative_path must be a plain path"),
+        ("a.txt", "", "b.txt", "new_relative_path must be a plain path"),
+        ("a.txt", "link/b.txt", "b.txt", "new_relative_path is outside the watched folder"),
+        ("a.txt", "b.txt", "other.txt", "source_path and new_relative_path name different files"),
+    ],
+    ids=[
+        "old-absolute",
+        "old-dotdot",
+        "new-dotdot",
+        "new-absolute",
+        "new-not-normal",
+        "new-empty",
+        "new-symlink-out",
+        "new-not-source",
+    ],
+)
+async def test_rename_refuses_paths_outside_the_folder_before_touching_the_disk(
+    client, admin_token, db_session, tmp_path, old, new, source, detail
+):
+    """CodeQL py/path-injection: every path the route hands the filesystem is
+    contained in the folder's realpath, and the new one is the file source_path names."""
+    watched = tmp_path / "watched"
+    watched.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (watched / "link").symlink_to(outside, target_is_directory=True)
+    folder = await _folder(db_session, watched)
+    wf, _doc = await _seed_watched(db_session, folder, "a.txt")
+    body = _rename_body(folder, watched, old, new)
+    body["source_path"] = str(watched / source)
+
+    resp = await client.post("/api/watch/rename", headers=auth_header(admin_token), json=body)
+    assert resp.status_code == 400
+    assert detail in resp.json()["detail"]
+    await db_session.refresh(wf)
+    assert wf.relative_path == "a.txt"

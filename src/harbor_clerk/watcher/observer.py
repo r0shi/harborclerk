@@ -62,6 +62,9 @@ class _Handler(FileSystemEventHandler):
         self.sink = sink
         self.on_root_lost = on_root_lost
         self._roots = _root_spellings(root)
+        # Whether the directory at the root is still the one this observer
+        # attached to; set by FolderObserver. Events are dropped while it is not.
+        self.attached: Callable[[], bool] | None = None
 
     def _relative(self, path: str | bytes) -> str | None:
         """``path`` relative to the root with "/" separators, or None when it is outside (or is) the root.
@@ -85,7 +88,7 @@ class _Handler(FileSystemEventHandler):
         rel = self._relative(src_path)
         if rel is None:
             return
-        self.sink(
+        self._deliver(
             FileEvent(
                 kind=kind,
                 folder_id=self.folder_id,
@@ -94,6 +97,25 @@ class _Handler(FileSystemEventHandler):
                 is_directory=is_directory,
             )
         )
+
+    def _deliver(self, event: FileEvent) -> None:
+        """Hand an event on, unless the root is missing or is no longer the directory attached to.
+
+        inotify keeps a watch on a root moved aside and reports what happens in
+        it under the old paths (watchdog never updates the path on
+        IN_MOVE_SELF), so a delete in the moved-aside directory would retire
+        documents, a whole subtree for a directory. FSEvents can deliver a
+        batch after the root went. A missing root is left alone; the
+        reconciliation after re-attach decides.
+        """
+        if self.attached is not None and not self.attached():
+            logger.debug(
+                "watcher: dropped %s %s: the root is not the directory attached to",
+                event.kind.value,
+                event.relative_path,
+            )
+            return
+        self.sink(event)
 
     def _root_lost(self) -> None:
         # Never restart the observer from here: this runs on its own thread,
@@ -149,7 +171,7 @@ class _Handler(FileSystemEventHandler):
         if src_rel is None:
             self._emit(EventKind.created, event.dest_path)
             return
-        self.sink(
+        self._deliver(
             FileEvent(
                 kind=EventKind.moved,
                 folder_id=self.folder_id,
@@ -182,8 +204,15 @@ class FolderObserver:
         self._root_lost = threading.Event()
         self._on_root_lost = on_root_lost
         self._handler = _Handler(folder_id, root, sink, self._note_root_lost)
+        self._handler.attached = self._root_is_attached
         self._observer: Observer | PollingObserver | None = None
         self._root_id: tuple[int, int] | None = None
+
+    def _root_is_attached(self) -> bool:
+        """One stat: is the directory at the root the one attached to? True before any attach."""
+        if self._root_id is None:
+            return True
+        return _root_identity(self.root) == self._root_id
 
     def _note_root_lost(self) -> None:
         self._root_lost.set()

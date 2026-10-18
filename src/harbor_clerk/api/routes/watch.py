@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import posixpath
 import uuid
 from pathlib import Path, PurePosixPath
 
@@ -124,6 +125,28 @@ def _parse_base64(value: str, field: str = "bookmark_data") -> bytes:
         return base64.b64decode(value)
     except Exception:
         raise HTTPException(status_code=400, detail=f"Invalid base64 for {field}")
+
+
+def _contained_path(real_root: str, relative_path: str, field: str) -> str:
+    """The realpath of ``relative_path`` under ``real_root`` (the folder's realpath), or a 400.
+
+    Checked before any filesystem call: a relative path that is empty, absolute
+    (``os.path.join`` would discard the root), has a ``..`` component or is not
+    already normal (``a/./b``, ``a//b``) is refused; so is one whose realpath (a
+    symlink inside the folder pointing elsewhere) leaves the folder.
+    """
+    if (
+        not relative_path
+        or "\0" in relative_path
+        or os.path.isabs(relative_path)
+        or ".." in relative_path.split("/")
+        or posixpath.normpath(relative_path) != relative_path
+    ):
+        raise HTTPException(status_code=400, detail=f"{field} must be a plain path inside the watched folder")
+    candidate = os.path.realpath(os.path.join(real_root, relative_path))
+    if not candidate.startswith(real_root + os.sep):
+        raise HTTPException(status_code=400, detail=f"{field} is outside the watched folder")
+    return candidate
 
 
 def _validate_source_path(source_path: str, folder_path: str) -> str:
@@ -684,7 +707,22 @@ async def rename_file(
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
 
-    _validate_source_path(body.source_path, folder.path)
+    # Every path is validated before any filesystem call (CodeQL py/path-injection):
+    # both relative paths must stay inside the folder, and the new one must be the
+    # file source_path names.
+    real_root = os.path.realpath(folder.path)
+    real_old = _contained_path(real_root, body.old_relative_path, "old_relative_path")
+    real_new = _contained_path(real_root, body.new_relative_path, "new_relative_path")
+    real_source = _validate_source_path(body.source_path, folder.path)
+    if real_new != real_source:
+        try:
+            same = os.path.samefile(real_new, real_source)
+        except OSError:
+            same = False
+        if not same:
+            raise HTTPException(status_code=400, detail="source_path and new_relative_path name different files")
+    old_rel = real_old[len(real_root) + 1 :]
+    new_rel = real_new[len(real_root) + 1 :]
 
     result = await session.execute(
         select(WatchedFile).where(
@@ -734,7 +772,7 @@ async def rename_file(
             await session.flush()
 
     doc = await session.get(Document, wf.doc_id) if wf.doc_id else None
-    reextract = move_needs_reextract(body.old_relative_path, body.new_relative_path, doc, body.source_path)
+    reextract = move_needs_reextract(old_rel, new_rel, doc, real_new)
     apply_move(wf, doc, body.new_relative_path, body.source_path)
     wf.bookmark_data = bookmark
     if doc is not None and reextract:

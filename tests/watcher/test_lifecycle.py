@@ -1083,7 +1083,197 @@ def test_a_metadata_only_change_is_not_hashed_again(factory, tmp_path, monkeypat
     os.chmod(root / "a.txt", 0o600)
     dispatched = []
     real_on_event = daemon._on_event
-    daemon._on_event = lambda event: dispatched.append(event.relative_path) or real_on_event(event)
+    daemon._on_event = lambda event, **kw: dispatched.append(event.relative_path) or real_on_event(event, **kw)
 
     daemon._reconcile_folder(folder_id, str(root))
     assert dispatched == []
+
+
+# ---------------------------------------------------------------------------
+# Sixth review of #860: what used to run once now runs every pass
+# ---------------------------------------------------------------------------
+
+
+def test_a_pass_folds_each_name_a_bounded_number_of_times(factory, tmp_path, monkeypatch):
+    """The sidecar check builds one index per directory: folds grow with the
+    number of files, not with its square (4,000 pairs used to cost 32 million)."""
+    import harbor_clerk.watcher.events as ev
+
+    root = _root(tmp_path)
+    pairs = 150
+    for i in range(pairs):
+        (root / f"INV-{i:04d}.pdf").write_bytes(b"%PDF-1.4 " + str(i).encode())
+        (root / f"INV-{i:04d}.json").write_text('{"vendor": "Acme"}')
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    daemon._reconcile_folder(folder_id, str(root))
+
+    folds = []
+    real_fold = ev._fold
+    monkeypatch.setattr(ev, "_fold", lambda name: folds.append(name) or real_fold(name))
+    daemon._reconcile_folder(folder_id, str(root))
+    files = 2 * pairs
+    assert len(folds) <= 2 * files, f"{len(folds)} folds for {files} files"
+    assert len(_state(factory, folder_id)) == pairs, "the sidecars are still sidecars"
+
+
+def _outage() -> Exception:
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError("SELECT 1", {}, Exception("server closed the connection unexpectedly"))
+
+
+def test_a_database_outage_mid_pass_ends_it_with_one_log_line(factory, tmp_path, monkeypatch, caplog):
+    import logging
+
+    root = _root(tmp_path)
+    for i in range(40):
+        (root / f"f{i:02d}.txt").write_text(f"file {i}")
+    folder_id = _add_folder(factory, root)
+    calls = []
+    real_handle_event = watcher_main.handle_event
+
+    def failing_after_three(session, event):
+        calls.append(event.relative_path)
+        if len(calls) > 3:
+            raise _outage()
+        return real_handle_event(session, event)
+
+    monkeypatch.setattr(watcher_main, "handle_event", failing_after_three)
+    daemon = WatcherDaemon(factory)
+    with caplog.at_level(logging.DEBUG, logger="harbor_clerk.watcher"):
+        daemon._reconcile_folder(folder_id, str(root))
+
+    assert len(calls) == 4, "the pass stopped at the first unreachable-database error"
+    loud = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(loud) == 1 and "unreachable" in loud[0].getMessage(), [r.getMessage() for r in loud]
+    assert not daemon._event_failures, "an outage is not a per-file failure"
+    assert _last_scan_at(factory, folder_id) is None, "an aborted pass compared nothing"
+
+    monkeypatch.setattr(watcher_main, "handle_event", real_handle_event)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="harbor_clerk.watcher"):
+        daemon._reconcile_folder(folder_id, str(root))
+    assert len(_state(factory, folder_id)) == 40
+    assert _last_scan_at(factory, folder_id) is not None
+    assert any("reachable again" in r.getMessage() for r in caplog.records)
+
+
+def test_a_database_outage_at_pass_start_is_logged_and_retried(factory, tmp_path, monkeypatch, caplog):
+    import logging
+
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    real_active_paths = daemon._active_paths
+
+    def unreachable(_folder_id):
+        raise _outage()
+
+    daemon._active_paths = unreachable
+    with caplog.at_level(logging.WARNING, logger="harbor_clerk.watcher"):
+        daemon._reconcile_folder(folder_id, str(root))  # must not raise into the worker thread
+        daemon._reconcile_folder(folder_id, str(root))
+    loud = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(loud) == 1 and "unreachable" in loud[0].getMessage()
+
+    daemon._active_paths = real_active_paths
+    daemon._reconcile_folder(folder_id, str(root))
+    assert _last_scan_at(factory, folder_id) is not None
+    assert list(_state(factory, folder_id)) == ["a.txt"]
+
+
+def test_failure_streaks_are_pruned_for_vanished_paths_and_removed_folders(factory, tmp_path):
+    root = _root(tmp_path)
+    locked = root / "locked.txt"
+    locked.write_text("secret")
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    locked.chmod(0)
+    try:
+        if os.access(locked, os.R_OK):
+            pytest.skip("running with privileges that read a mode-0 file")
+        daemon._reconcile_folder(folder_id, str(root))
+        assert list(daemon._event_failures) == [(folder_id, "locked.txt")]
+    finally:
+        locked.chmod(0o644)
+    locked.unlink()
+    (root / "other.txt").write_text("keeps the root from looking empty")
+    daemon._reconcile_folder(folder_id, str(root))
+    assert daemon._event_failures == {}, "a streak for a path the pass no longer found is dropped"
+
+    daemon._event_failures[(folder_id, "x.txt")] = watcher_main.FailureStreak()
+    other = uuid.uuid4()
+    daemon._event_failures[(other, "y.txt")] = watcher_main.FailureStreak()
+
+    class Stub:
+        def stop(self):
+            pass
+
+    daemon._observers[folder_id] = Stub()
+    sess = factory()
+    try:
+        sess.query(WatchedFolder).filter_by(folder_id=folder_id).one().enabled = False
+        sess.commit()
+    finally:
+        sess.close()
+    daemon._sync_observers()
+    assert list(daemon._event_failures) == [(other, "y.txt")], "a removed folder's streaks go with it"
+
+
+def test_deleting_a_folder_mid_pass_ends_the_pass_quietly(factory, tmp_path, monkeypatch, caplog):
+    import logging
+
+    root = _root(tmp_path)
+    for i in range(20):
+        (root / f"f{i:02d}.txt").write_text(f"file {i}")
+    folder_id = _add_folder(factory, root)
+    calls = []
+    real_handle_event = watcher_main.handle_event
+
+    def deleting_the_folder(session, event):
+        calls.append(event.relative_path)
+        if len(calls) == 2:
+            other = factory()
+            try:
+                other.query(WatchedFolder).filter_by(folder_id=folder_id).delete()
+                other.commit()
+            finally:
+                other.close()
+        return real_handle_event(session, event)
+
+    monkeypatch.setattr(watcher_main, "handle_event", deleting_the_folder)
+    with caplog.at_level(logging.WARNING, logger="harbor_clerk.watcher"):
+        WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    assert len(calls) == 2, "the first foreign-key violation for the vanished folder ends the pass"
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+def test_disabling_a_folder_mid_pass_stops_the_walk_at_the_next_directory(factory, tmp_path, monkeypatch):
+    monkeypatch.setattr(watcher_main, "FOLDER_CHECK_INTERVAL_SECS", 0.0)
+    root = _root(tmp_path)
+    for d in ("d1", "d2", "d3"):
+        (root / d).mkdir()
+        for i in range(3):
+            (root / d / f"f{i}.txt").write_text(f"{d} {i}")
+    folder_id = _add_folder(factory, root)
+    calls = []
+    real_handle_event = watcher_main.handle_event
+
+    def disabling_the_folder(session, event):
+        calls.append(event.relative_path)
+        if len(calls) == 1:
+            other = factory()
+            try:
+                other.query(WatchedFolder).filter_by(folder_id=folder_id).one().enabled = False
+                other.commit()
+            finally:
+                other.close()
+        return real_handle_event(session, event)
+
+    monkeypatch.setattr(watcher_main, "handle_event", disabling_the_folder)
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    dirs = {rel.split("/")[0] for rel in calls}
+    assert len(dirs) == 1, f"the walk stopped after the directory it was in: {calls}"
+    assert _last_scan_at(factory, folder_id) is None

@@ -1,5 +1,6 @@
 import uuid
 
+import pytest
 from watchdog.events import (
     DirDeletedEvent,
     DirMovedEvent,
@@ -152,5 +153,33 @@ def test_a_lost_root_reads_detached_even_while_its_emitter_still_runs(tmp_path):
         assert obs.health() is RootState.detached
         obs.restart()
         assert obs.health() is RootState.ok, "a fresh attach clears the flag"
+    finally:
+        obs.stop()
+
+
+@pytest.mark.parametrize("how", ["moved-aside", "replaced"])
+def test_events_are_dropped_while_the_root_is_not_the_directory_attached_to(tmp_path, how):
+    """inotify keeps watching a root moved aside and reports its contents under
+    the old paths; a delete there must not retire documents (or a subtree)."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "sub").mkdir()
+    captured = []
+    obs = FolderObserver(uuid.uuid4(), str(root), captured.append)
+    obs.start()
+    try:
+        root.rename(tmp_path / "aside")
+        if how == "replaced":
+            root.mkdir()
+        obs._handler.on_deleted(FileDeletedEvent(str(root / "a.txt")))
+        obs._handler.on_deleted(DirDeletedEvent(str(root / "sub")))
+        obs._handler.on_moved(FileMovedEvent(str(root / "b.txt"), str(tmp_path / "elsewhere.txt")))
+        obs._handler.on_created(FileCreatedEvent(str(root / "c.txt")))
+        assert captured == []
+
+        if how == "moved-aside":
+            (tmp_path / "aside").rename(root)  # back, same inode: events flow again
+            obs._handler.on_deleted(FileDeletedEvent(str(root / "a.txt")))
+            assert [(e.kind, e.relative_path) for e in captured] == [(EventKind.deleted, "a.txt")]
     finally:
         obs.stop()

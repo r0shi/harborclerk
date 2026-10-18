@@ -22,6 +22,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import case, null, update
+from sqlalchemy.exc import DBAPIError, IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from harbor_clerk.config import get_settings
@@ -42,6 +43,7 @@ from harbor_clerk.watcher.discovery import scan_watch_root
 from harbor_clerk.watcher.events import (
     EventKind,
     FileEvent,
+    SiblingIndex,
     SkipReason,
     classify_skip,
     handle_event,
@@ -69,8 +71,25 @@ LISTENER_HEALTHY_SECS = 120.0
 ROOT_CHECK_INTERVAL_SECS = 5.0
 # A failing re-attach is retried with backoff, at least once every this many checks plus one (~5 min).
 REATTACH_MAX_SKIPPED_CHECKS = 59
+# How often, at most, a pass re-checks that its folder still exists and is enabled (once per directory).
+FOLDER_CHECK_INTERVAL_SECS = 1.0
 
 StatKey = tuple[int, int, int, int]
+
+
+class _DatabaseUnavailable(Exception):
+    """Raised inside a pass when the database cannot be reached: the pass ends, the next one retries."""
+
+
+class _FolderGone(Exception):
+    """Raised inside a pass when its folder was deleted or disabled meanwhile."""
+
+
+def _is_db_unreachable(exc: BaseException) -> bool:
+    """A connectivity failure, not this file's: an outage, a dropped or invalidated connection."""
+    if isinstance(exc, (OperationalError, InterfaceError)):
+        return True
+    return isinstance(exc, DBAPIError) and bool(exc.connection_invalidated)
 
 
 def _fold(relative_path: str) -> str:
@@ -142,6 +161,9 @@ class WatcherDaemon:
         self._reasons: dict[uuid.UUID, str] = {}
         # Per (folder, path) whose events keep failing: one traceback per streak.
         self._event_failures: dict[tuple[uuid.UUID, str], FailureStreak] = {}
+        # The database unreachable is one failure for the daemon, not one per file.
+        self._db_streak = FailureStreak()
+        self._db_streak_lock = threading.Lock()
         # Per folder whose observer failed to attach: [consecutive failures, root checks still to skip].
         self._reattach_failures: dict[uuid.UUID, list[int]] = {}
         self._stop = threading.Event()
@@ -156,12 +178,18 @@ class WatcherDaemon:
         with self._folder_locks_guard:
             return self._folder_locks.setdefault(folder_id, threading.Lock())
 
-    def _on_event(self, event: FileEvent) -> bool:
+    def _on_event(self, event: FileEvent, *, in_pass: bool = False) -> bool:
         """Apply one event in its own transaction. Returns False when it failed (logged).
 
         A file that fails the same way on every pass (unreadable: mode 000, or
         TCC-protected) logs its traceback once per failure streak, then at
         debug, with #593's FailureStreak; a success ends the streak.
+
+        Two failures are not the file's. The database being unreachable is
+        logged once per outage (one daemon-wide streak), and inside a
+        reconciliation (``in_pass``) ends the pass rather than hashing on. A
+        foreign-key violation because the folder was deleted meanwhile is
+        quiet, and also ends the pass.
         """
         key = (event.folder_id, event.relative_path)
         with self._folder_lock(event.folder_id):
@@ -171,6 +199,16 @@ class WatcherDaemon:
                 sess.commit()
             except Exception as exc:
                 sess.rollback()
+                if _is_db_unreachable(exc):
+                    self._note_db_failure(exc)
+                    if in_pass:
+                        raise _DatabaseUnavailable from exc
+                    return False
+                if isinstance(exc, IntegrityError) and self._folder_gone(event.folder_id):
+                    logger.debug("watcher: folder %s is gone; dropped the event for %s", event.folder_id, key[1])
+                    if in_pass:
+                        raise _FolderGone from exc
+                    return False
                 streak = self._event_failures.setdefault(key, FailureStreak())
                 loudness = streak.record(exc)
                 if loudness == "first":
@@ -194,6 +232,7 @@ class WatcherDaemon:
                 return False
             finally:
                 sess.close()
+        self._note_db_ok()
         streak = self._event_failures.pop(key, None)
         if streak is not None:
             logger.info("watcher: %s handled after %d failed attempt(s)", event.relative_path, streak.failures)
@@ -221,9 +260,12 @@ class WatcherDaemon:
             )
             sess.commit()
             self._reasons.pop(event.folder_id, None)
-        except Exception:
+        except Exception as exc:
             sess.rollback()
-            logger.exception("watcher: failed to clear root_empty for %s", event.folder_id)
+            if _is_db_unreachable(exc):
+                self._note_db_failure(exc)
+            else:
+                logger.exception("watcher: failed to clear root_empty for %s", event.folder_id)
         finally:
             sess.close()
 
@@ -245,6 +287,7 @@ class WatcherDaemon:
                     self._missing_roots.discard(fid)
                     self._reattach_failures.pop(fid, None)
                     self._reasons.pop(fid, None)
+                    self._prune_event_failures(fid, keep=frozenset())
                     logger.info("watcher: stopped observer for folder %s", fid)
 
             # Start new observers. One that cannot start (its root is missing)
@@ -356,6 +399,26 @@ class WatcherDaemon:
                 self._reconcile_again.discard(folder_id)
 
     def _reconcile_folder(self, folder_id: uuid.UUID, root: str) -> None:
+        """Run one reconciliation pass (`_reconcile_pass`), ending it cleanly when it cannot go on.
+
+        The database unreachable (at the start or midway) ends the pass with
+        one log line per outage; the next pass retries. A folder deleted or
+        disabled while its pass runs ends it quietly. Nothing escapes to the
+        worker thread unlogged.
+        """
+        try:
+            self._reconcile_pass(folder_id, root)
+        except _DatabaseUnavailable as exc:
+            logger.debug("watcher: reconcile of %s ended: the database is unreachable (%s)", root, exc.__cause__)
+        except _FolderGone:
+            logger.info("watcher: reconcile of %s stopped: the folder was removed or disabled", root)
+        except Exception as exc:
+            if _is_db_unreachable(exc):
+                self._note_db_failure(exc)
+            else:
+                logger.exception("watcher: reconcile of %s failed", root)
+
+    def _reconcile_pass(self, folder_id: uuid.UUID, root: str) -> None:
         """Compare a folder on disk with the index, both ways (#847, #739).
 
         Every admitted file is dispatched as a `created` event (the sha
@@ -402,81 +465,86 @@ class WatcherDaemon:
         walk_errors: list[OSError] = []
         seen = self._seen_stats.setdefault(folder_id, {})
         active = self._active_paths(folder_id)
+        last_alive_check = float("-inf")
         active_by_fold: dict[str, list[str]] = {}
         for path in sorted(active):
             active_by_fold.setdefault(_fold(path), []).append(path)
         respelled: list[tuple[str, str]] = []
-        try:
-            for dirpath, dirnames, filenames in os.walk(root, onerror=walk_errors.append):
-                # Prune dotfile / __MACOSX directories so we don't recurse
-                # into them — both for speed and to avoid the cost of
-                # invoking _on_event for every file in a .git tree.
-                dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "__MACOSX"]
-                for fname in filenames:
-                    if self._stop.is_set():
-                        # Early stop: nothing is removed and last_scan_at is
-                        # not stamped; the next start runs the whole walk.
-                        return
-                    abs_path = os.path.join(dirpath, fname)
-                    rel_path = os.path.relpath(abs_path, root).replace(os.sep, "/")
-                    present.add(rel_path)
+        for dirpath, dirnames, filenames in os.walk(root, onerror=walk_errors.append):
+            # Prune dotfile / __MACOSX directories so we don't recurse
+            # into them — both for speed and to avoid the cost of
+            # invoking _on_event for every file in a .git tree.
+            dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "__MACOSX"]
+            # A folder deleted or disabled meanwhile ends the pass, checked
+            # per directory and at most every FOLDER_CHECK_INTERVAL_SECS.
+            if time.monotonic() - last_alive_check >= FOLDER_CHECK_INTERVAL_SECS:
+                last_alive_check = time.monotonic()
+                if not self._folder_alive(folder_id):
+                    raise _FolderGone
+            # One index per directory: each `.json` looks its siblings up
+            # instead of folding the whole listing (quadratic, every pass).
+            siblings = SiblingIndex(filenames)
+            for fname in filenames:
+                if self._stop.is_set():
+                    # Early stop: nothing is removed and last_scan_at is
+                    # not stamped; the next start runs the whole walk.
+                    return
+                abs_path = os.path.join(dirpath, fname)
+                rel_path = os.path.relpath(abs_path, root).replace(os.sep, "/")
+                present.add(rel_path)
 
-                    # Classify BEFORE handing off to _on_event so we can
-                    # tally UNSUPPORTED_EXTENSION skips without going
-                    # through the event-handler path twice.
-                    # `filenames` is this directory's listing already; passing it spares
-                    # a scandir per .json (quadratic in a flat folder of annotated files).
-                    reason = classify_skip(rel_path, abs_path, sibling_names=filenames)
-                    if reason is SkipReason.UNSUPPORTED_EXTENSION:
-                        skipped_count += 1
-                        suffix = os.path.splitext(rel_path)[1].lower()
-                        # Extension-less files (README, LICENSE, …) are
-                        # legitimately UNSUPPORTED but `splitext` returns
-                        # ""; track them under a sentinel so they show up
-                        # in the per-folder UI summary instead of leaving
-                        # the user wondering why the count went up but
-                        # no new extension appeared.
-                        skipped_exts.add(suffix if suffix else "(no extension)")
-                        # Don't dispatch the event — handle_event would
-                        # ignore it anyway, but skipping the call saves
-                        # the SHA computation and DB roundtrip.
-                        continue
-                    if reason is SkipReason.SIDECAR and rel_path in active:
-                        # A sidecar still indexed as a document (by an earlier
-                        # build, or a missed event before its sibling landed) is
-                        # retired here, by its own visit: the sibling's visit
-                        # also retires it, but an unchanged sibling is skipped
-                        # by the stat cache.
-                        self._on_event(FileEvent(EventKind.created, folder_id, rel_path, abs_path))
-                        continue
-                    if reason is not None:
-                        # NOISE and SIDECAR are intentional; don't tally and
-                        # don't dispatch.
-                        continue
+                # Classify BEFORE handing off to _on_event so we can
+                # tally UNSUPPORTED_EXTENSION skips without going
+                # through the event-handler path twice.
+                reason = classify_skip(rel_path, abs_path, sibling_names=siblings)
+                if reason is SkipReason.UNSUPPORTED_EXTENSION:
+                    skipped_count += 1
+                    suffix = os.path.splitext(rel_path)[1].lower()
+                    # Extension-less files (README, LICENSE, …) are
+                    # legitimately UNSUPPORTED but `splitext` returns
+                    # ""; track them under a sentinel so they show up
+                    # in the per-folder UI summary instead of leaving
+                    # the user wondering why the count went up but
+                    # no new extension appeared.
+                    skipped_exts.add(suffix if suffix else "(no extension)")
+                    # Don't dispatch the event — handle_event would
+                    # ignore it anyway, but skipping the call saves
+                    # the SHA computation and DB roundtrip.
+                    continue
+                if reason is SkipReason.SIDECAR and rel_path in active:
+                    # A sidecar still indexed as a document (by an earlier
+                    # build, or a missed event before its sibling landed) is
+                    # retired here, by its own visit: the sibling's visit
+                    # also retires it, but an unchanged sibling is skipped
+                    # by the stat cache.
+                    self._on_event(FileEvent(EventKind.created, folder_id, rel_path, abs_path), in_pass=True)
+                    continue
+                if reason is not None:
+                    # NOISE and SIDECAR are intentional; don't tally and
+                    # don't dispatch.
+                    continue
 
-                    admitted += 1
-                    stat = _stat_key(abs_path)
-                    if stat is not None and rel_path in active and seen.get(rel_path) == stat:
-                        continue
-                    if rel_path not in active and any(p != rel_path for p in active_by_fold.get(_fold(rel_path), [])):
-                        # Decided after the walk, once it is known whether the
-                        # other spelling is still on disk too.
-                        respelled.append((rel_path, abs_path))
-                        continue
-                    handled = self._on_event(
-                        FileEvent(
-                            kind=EventKind.created,
-                            folder_id=folder_id,
-                            relative_path=rel_path,
-                            absolute_path=abs_path,
-                        )
-                    )
-                    if handled and stat is not None:
-                        seen[rel_path] = stat
-                    count += 1
-        except Exception:
-            logger.exception("watcher: reconcile of %s failed", root)
-            return
+                admitted += 1
+                stat = _stat_key(abs_path)
+                if stat is not None and rel_path in active and seen.get(rel_path) == stat:
+                    continue
+                if rel_path not in active and any(p != rel_path for p in active_by_fold.get(_fold(rel_path), [])):
+                    # Decided after the walk, once it is known whether the
+                    # other spelling is still on disk too.
+                    respelled.append((rel_path, abs_path))
+                    continue
+                handled = self._on_event(
+                    FileEvent(
+                        kind=EventKind.created,
+                        folder_id=folder_id,
+                        relative_path=rel_path,
+                        absolute_path=abs_path,
+                    ),
+                    in_pass=True,
+                )
+                if handled and stat is not None:
+                    seen[rel_path] = stat
+                count += 1
 
         unlisted = _unlisted_dirs(root, walk_errors)
         if unlisted is None:
@@ -516,7 +584,7 @@ class WatcherDaemon:
                     dest_relative_path=rel_path,
                     dest_absolute_path=abs_path,
                 )
-            self._on_event(event)
+            self._on_event(event, in_pass=True)
             count += 1
 
         missing = sorted(p for p in active - present - moved_from if not _under(p, unlisted))
@@ -538,10 +606,13 @@ class WatcherDaemon:
                         folder_id=folder_id,
                         relative_path=rel_path,
                         absolute_path=os.path.join(root, rel_path),
-                    )
+                    ),
+                    in_pass=True,
                 )
                 removed += 1
 
+        # A streak for a path this pass no longer found (deleted, renamed) can never end.
+        self._prune_event_failures(folder_id, keep=present)
         self._record_pass(
             folder_id,
             unavailable=ROOT_EMPTY if empty else None,
@@ -605,9 +676,13 @@ class WatcherDaemon:
                 self._reasons[folder_id] = stored
             else:
                 self._reasons.pop(folder_id, None)
-        except Exception:
+            self._note_db_ok()
+        except Exception as exc:
             sess.rollback()
-            logger.exception("watcher: failed to update last_scan_at for %s", folder_id)
+            if _is_db_unreachable(exc):
+                self._note_db_failure(exc)
+            else:
+                logger.exception("watcher: failed to update last_scan_at for %s", folder_id)
         finally:
             sess.close()
 
@@ -634,6 +709,55 @@ class WatcherDaemon:
             return sha256_of(new_abs) == row_sha
         except OSError:
             return False
+
+    def _folder_alive(self, folder_id: uuid.UUID) -> bool:
+        """Whether the folder still exists and is enabled. A database error propagates."""
+        sess = self._session_factory()
+        try:
+            enabled = sess.query(WatchedFolder.enabled).filter_by(folder_id=folder_id).scalar()
+        finally:
+            sess.close()
+        return bool(enabled)
+
+    def _folder_gone(self, folder_id: uuid.UUID) -> bool:
+        """Like `not _folder_alive`, for an error path: a failing check answers no, never raises."""
+        try:
+            return not self._folder_alive(folder_id)
+        except Exception:
+            return False
+
+    def _prune_event_failures(self, folder_id: uuid.UUID, keep: "frozenset[str] | set[str]") -> None:
+        """Drop the folder's failure streaks for paths not in ``keep`` (all of them, for an empty set)."""
+        for key in [k for k in list(self._event_failures) if k[0] == folder_id and k[1] not in keep]:
+            self._event_failures.pop(key, None)
+
+    def _note_db_failure(self, exc: BaseException) -> None:
+        """Log an unreachable database once per outage (#593's FailureStreak), not once per file."""
+        with self._db_streak_lock:
+            loudness = self._db_streak.record(exc)
+            failures = self._db_streak.failures
+        if loudness == "first":
+            logger.error(
+                "watcher: the database is unreachable; passes end and retry: %s", describe_error(exc), exc_info=exc
+            )
+        elif loudness is not None:
+            logger.warning(
+                "watcher: the database is still unreachable (failure %d, %s): %s",
+                failures,
+                "error changed" if loudness == "changed" else "same error",
+                describe_error(exc),
+                exc_info=exc if loudness == "changed" else None,
+            )
+        else:
+            logger.debug("watcher: the database is unreachable (failure %d): %s", failures, describe_error(exc))
+
+    def _note_db_ok(self) -> None:
+        if not self._db_streak.failures:
+            return
+        with self._db_streak_lock:
+            failures = self._db_streak.reset()
+        if failures:
+            logger.info("watcher: the database is reachable again after %d failed attempt(s)", failures)
 
     def _active_paths(self, folder_id: uuid.UUID) -> set[str]:
         sess = self._session_factory()

@@ -45,7 +45,7 @@ a sidecar is the file `with_suffix(".json")` opens on disk (`samefile`), not a n
 A reconcile removes nothing for a missing, unlistable or empty root (noise files
 don't count), nor under an unlistable dir, and says so in `unavailable_reason`
 (`root_*`: shown, never blocking; only discovery's `unmounted` makes a folder
-unusable, `folder_is_unavailable`). A lost root re-attaches, never hits `handle_event`.
+unusable, `folder_is_unavailable`). A lost or replaced root's events are dropped (dev/ino).
 
 ## Retrieval
 

@@ -98,7 +98,7 @@ def classify_skip(
     relative_path: str,
     absolute_path: str | None = None,
     *,
-    sibling_names: Iterable[str] | None = None,
+    sibling_names: "Iterable[str] | SiblingIndex | None" = None,
 ) -> SkipReason | None:
     """Classify why ``relative_path`` would be skipped by the watcher.
 
@@ -131,12 +131,12 @@ def classify_skip(
     return None
 
 
-def is_sidecar(absolute_path: str, sibling_names: Iterable[str] | None = None) -> bool:
+def is_sidecar(absolute_path: str, sibling_names: "Iterable[str] | SiblingIndex | None" = None) -> bool:
     """True when ``absolute_path`` is a ``.json`` the extract stage would attach to a sibling document."""
     return bool(sidecar_owner_names(absolute_path, sibling_names))
 
 
-def sidecar_owner_names(absolute_path: str, sibling_names: Iterable[str] | None = None) -> list[str]:
+def sidecar_owner_names(absolute_path: str, sibling_names: "Iterable[str] | SiblingIndex | None" = None) -> list[str]:
     """Names of the documents beside ``absolute_path`` that it is the sidecar of; empty when it is not one.
 
     Two conditions, the same two ``SidecarExtractor`` applies from the other
@@ -165,7 +165,7 @@ def sidecar_owner_names(absolute_path: str, sibling_names: Iterable[str] | None 
     return owners
 
 
-def _admitted_sibling_names(path: Path, names: Iterable[str] | None = None) -> list[str]:
+def _admitted_sibling_names(path: Path, names: "Iterable[str] | SiblingIndex | None" = None) -> list[str]:
     """Files beside ``path`` the watcher would admit whose extractor-side sidecar is ``path``.
 
     The exact name always counts (``INV-001.pdf`` reads ``INV-001.json``,
@@ -181,14 +181,13 @@ def _admitted_sibling_names(path: Path, names: Iterable[str] | None = None) -> l
                 names = [entry.name for entry in entries if entry.is_file()]
         except OSError:
             return []
+    index = names if isinstance(names, SiblingIndex) else SiblingIndex(names)
     exists: bool | None = None
     admitted = []
-    for name in names:
+    for name in index.candidates(path.stem):
         if name == path.name:
             continue
         sibling = Path(name)
-        if sibling.suffix.lower() == SIDECAR_SUFFIX or _fold(sibling.stem) != _fold(path.stem):
-            continue
         if classify_skip(name) is not None:
             continue
         if sibling.stem == path.stem and path.suffix == SIDECAR_SUFFIX:
@@ -204,6 +203,30 @@ def _admitted_sibling_names(path: Path, names: Iterable[str] | None = None) -> l
 def _fold(name: str) -> str:
     """A name as a case- and normalisation-insensitive volume compares it."""
     return unicodedata.normalize("NFC", name).casefold()
+
+
+class SiblingIndex:
+    """One directory's non-``.json`` file names, by folded stem: built once, looked up per ``.json``.
+
+    A reconcile classifies every file on every pass; scanning the whole
+    listing for each ``.json`` made a directory of 4,000 document/sidecar
+    pairs cost 32 million folds and some 40 s per pass. Building this is one
+    fold per name, and each lookup returns only the names whose stem folds the
+    same, which the ownership rule then checks exactly as before.
+    """
+
+    __slots__ = ("_by_stem",)
+
+    def __init__(self, names: Iterable[str]):
+        self._by_stem: dict[str, list[str]] = {}
+        for name in names:
+            sibling = Path(name)
+            if sibling.suffix.lower() == SIDECAR_SUFFIX:
+                continue
+            self._by_stem.setdefault(_fold(sibling.stem), []).append(name)
+
+    def candidates(self, stem: str) -> list[str]:
+        return self._by_stem.get(_fold(stem), [])
 
 
 def _same_file(a: Path | str, b: Path | str) -> bool:
