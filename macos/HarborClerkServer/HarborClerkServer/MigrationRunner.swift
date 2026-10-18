@@ -6,12 +6,25 @@ import os
 struct MigrationRunner {
     private let maxAttempts = 3
     private let retryDelay: UInt64 = 3_000_000_000 // 3 seconds
+    private let settings: AppSettings
+    private let launch: (Process) async throws -> Int32
+
+    /// Both default to the real thing. A test passes scratch settings and a
+    /// `launch` that captures the process (and the environment `run()` gave
+    /// it) and returns an exit code without spawning anything.
+    init(
+        settings: AppSettings = .shared,
+        launch: @escaping (Process) async throws -> Int32 = { try await $0.runAndAwait() }
+    ) {
+        self.settings = settings
+        self.launch = launch
+    }
 
     func run() async throws {
         let bundle = Bundle.main.resourceURL!
         let python = bundle.appendingPathComponent("venv/bin/python")
 
-        let env = Self.environment(settings: AppSettings.shared, bundle: bundle)
+        let env = Self.environment(settings: settings, bundle: bundle)
 
         var lastError: Error?
 
@@ -61,7 +74,7 @@ struct MigrationRunner {
         // runs for seconds, so the short-lived-child race that hung
         // launchctl in the wild doesn't apply here, but use the same
         // helper everywhere so we have one wait pattern to reason about.
-        let exitCode = try await proc.runAndAwait()
+        let exitCode = try await launch(proc)
 
         if exitCode != 0 {
             throw ServiceError.startFailed("Alembic", "exit code \(exitCode)")

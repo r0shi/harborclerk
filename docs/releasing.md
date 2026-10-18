@@ -97,10 +97,11 @@ Gatekeeper or App Management prompt, or as the write being blocked. numba did it
 (#846), caching JIT output into `venv/.../{umap,pynndescent}/__pycache__/`
 when the API warmed up its topic pool, until `ServiceManager.runtimeCacheEnvironment`
 pointed `NUMBA_CACHE_DIR` at `Harbor Clerk/numba` in the user's Caches folder
-(`~/Library/Caches/` for an unsandboxed app), falling back to a directory under
-the temporary directory if that one cannot be written, and limited numba to
-that directory (`NUMBA_CACHE_LOCATOR_CLASSES`); with neither writable the JIT
-is turned off instead.
+(`~/Library/Caches/` for an unsandboxed app), falling back to Application
+Support, `$TMPDIR` and a fresh directory under `/tmp` if that one cannot be
+written, and limited numba to that directory (`NUMBA_CACHE_LOCATOR_CLASSES`).
+With none writable, numba refuses to cache and topic computation fails (logged)
+rather than write into the bundle.
 
 So the check in step 5 runs after a smoke run, on the installed copy. A failure
 there is a release blocker: find the writer from the `file added:` lines, point

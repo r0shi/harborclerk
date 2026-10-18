@@ -34,7 +34,7 @@ final class APIService: PythonService {
         // unavailability (model-switch churn, a brief synchronous spike)
         // without false-tripping.
         guard process?.isRunning == true else { return false }
-        let port = AppSettings.shared.apiPort
+        let port = settings.apiPort
         guard let url = URL(string: "http://127.0.0.1:\(port)/api/system/ping") else { return false }
         return await httpProbeOK(url)
     }

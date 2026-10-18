@@ -471,17 +471,24 @@ final class ServiceConfigTests: XCTestCase {
 
     // MARK: An unusable cache directory falls back outside the bundle
 
+    /// A directory under `scratch` that cannot be written (0o500).
+    private func lockedDir(in scratch: URL) throws -> URL {
+        let locked = scratch.appendingPathComponent("locked-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        return locked
+    }
+
     /// numba falls back to the source's `__pycache__`, in the bundle, when its
     /// directory fails a test write; the app must hand it a writable one.
     func testACacheDirectoryThatCannotBeCreatedFallsBack() throws {
         let scratch = makeScratch()
-        let locked = scratch.appendingPathComponent("locked", isDirectory: true)
-        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
-        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        let locked = try lockedDir(in: scratch)
         let fallback = scratch.appendingPathComponent("fallback", isDirectory: true)
 
         let env = ServiceManager.runtimeCacheEnvironment(
-            cachesDir: locked.appendingPathComponent("Caches/Harbor Clerk"), fallbackDir: fallback)
+            cachesDir: locked.appendingPathComponent("Caches/Harbor Clerk"),
+            fallbackDirs: [fallback], makeTemporaryDir: { nil })
 
         XCTAssertEqual(env["NUMBA_CACHE_DIR"], fallback.path)
         XCTAssertTrue(FileManager.default.isWritableFile(atPath: fallback.path), "the fallback is created and writable")
@@ -495,28 +502,68 @@ final class ServiceConfigTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: numba.path)
         let fallback = scratch.appendingPathComponent("fallback", isDirectory: true)
 
-        let env = ServiceManager.runtimeCacheEnvironment(cachesDir: caches, fallbackDir: fallback)
+        let env = ServiceManager.runtimeCacheEnvironment(cachesDir: caches, fallbackDirs: [fallback], makeTemporaryDir: { nil })
 
         XCTAssertEqual(env["NUMBA_CACHE_DIR"], fallback.path, "exists is not enough: numba's probe write would fail there")
     }
 
-    /// Neither directory usable: numba is not handed one it would fail to
-    /// write (it would raise at import with only the user-provided locator
-    /// allowed), and the JIT is turned off instead, so nothing is cached and
-    /// the in-tree locator is still never consulted.
-    func testWithNoUsableDirectoryTheJITIsTurnedOff() throws {
+    /// The candidates are tried in order, and the fresh temporary directory
+    /// is made only when every one of them has failed.
+    func testTheCandidatesAreTriedInOrderThenAFreshTemporaryDirectory() throws {
         let scratch = makeScratch()
-        let locked = scratch.appendingPathComponent("locked", isDirectory: true)
-        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
-        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+        let locked = try lockedDir(in: scratch)
+        let second = scratch.appendingPathComponent("second", isDirectory: true)
+        var made = 0
+
+        let env = ServiceManager.runtimeCacheEnvironment(
+            cachesDir: locked.appendingPathComponent("caches"),
+            fallbackDirs: [locked.appendingPathComponent("first"), second],
+            makeTemporaryDir: { made += 1; return nil })
+        XCTAssertEqual(env["NUMBA_CACHE_DIR"], second.path, "the first usable candidate wins")
+        XCTAssertEqual(made, 0, "no temporary directory while a candidate works")
+
+        let fresh = scratch.appendingPathComponent("fresh", isDirectory: true)
+        let last = ServiceManager.runtimeCacheEnvironment(
+            cachesDir: locked.appendingPathComponent("caches"),
+            fallbackDirs: [locked.appendingPathComponent("first"), locked.appendingPathComponent("second")],
+            makeTemporaryDir: { fresh })
+        XCTAssertEqual(last["NUMBA_CACHE_DIR"], fresh.path)
+    }
+
+    /// The production order: Application Support (the app's own data folder)
+    /// before `$TMPDIR`, both outside the bundle, and a fresh directory
+    /// under /tmp after them.
+    func testTheProductionFallbacksAreAppSupportThenTMPDIRThenAFreshDirectory() throws {
+        let dirs = ServiceManager.runtimeCacheFallbackDirs
+        XCTAssertEqual(dirs.count, 2)
+        XCTAssertTrue(dirs[0].path.hasPrefix(AppSettings.dataDir.path + "/"), "\(dirs[0].path) is not in Application Support")
+        XCTAssertTrue(dirs[1].path.hasPrefix(FileManager.default.temporaryDirectory.path), "\(dirs[1].path) is not in $TMPDIR")
+        for dir in dirs {
+            XCTAssertFalse(ServiceManager.isPath(dir.path, inside: Bundle.main.bundleURL), "\(dir.path) is inside the bundle")
+        }
+        let fresh = try XCTUnwrap(ServiceManager.makeFreshTemporaryDir())
+        addTeardownBlock { try? FileManager.default.removeItem(at: fresh) }
+        XCTAssertTrue(fresh.path.hasPrefix("/private/tmp/harbor-clerk-numba."))
+        XCTAssertTrue(FileManager.default.isWritableFile(atPath: fresh.path))
+    }
+
+    /// Nothing usable anywhere: numba is not handed a directory, and stays
+    /// held to the user-provided locator, so it refuses to cache (and umap
+    /// does not import) rather than write into the bundle. The JIT is left
+    /// alone: turning it off does not stop numba caching `@vectorize`
+    /// functions, so it would not let umap import either.
+    func testWithNoUsableDirectoryNumbaIsLeftWithoutOne() throws {
+        let scratch = makeScratch()
+        let locked = try lockedDir(in: scratch)
 
         let env = ServiceManager.runtimeCacheEnvironment(
             cachesDir: locked.appendingPathComponent("Caches/Harbor Clerk"),
-            fallbackDir: locked.appendingPathComponent("fallback"))
+            fallbackDirs: [locked.appendingPathComponent("support"), locked.appendingPathComponent("tmp")],
+            makeTemporaryDir: { locked.appendingPathComponent("fresh") })
 
         XCTAssertNil(env["NUMBA_CACHE_DIR"])
-        XCTAssertEqual(env["NUMBA_DISABLE_JIT"], "1")
-        XCTAssertEqual(env["NUMBA_CACHE_LOCATOR_CLASSES"], "UserProvidedCacheLocator")
+        XCTAssertNil(env["NUMBA_DISABLE_JIT"])
+        XCTAssertEqual(env["NUMBA_CACHE_LOCATOR_CLASSES"], "UserProvidedCacheLocator", "never the in-tree locator")
         XCTAssertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
     }
 
@@ -525,7 +572,7 @@ final class ServiceConfigTests: XCTestCase {
         let caches = scratch.appendingPathComponent("Caches/Harbor Clerk", isDirectory: true)
         let fallback = scratch.appendingPathComponent("fallback", isDirectory: true)
 
-        let env = ServiceManager.runtimeCacheEnvironment(cachesDir: caches, fallbackDir: fallback)
+        let env = ServiceManager.runtimeCacheEnvironment(cachesDir: caches, fallbackDirs: [fallback], makeTemporaryDir: { nil })
 
         let numba = caches.appendingPathComponent("numba")
         XCTAssertEqual(env["NUMBA_CACHE_DIR"], numba.path)
@@ -534,9 +581,67 @@ final class ServiceConfigTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fallback.path))
     }
 
-    func testTheProductionFallbackIsOutsideTheBundle() {
-        let fallback = Self.canonical(ServiceManager.runtimeCacheFallbackDir.path)
-        XCTAssertFalse(fallback.hasPrefix(Self.bundleRoot), "\(fallback) is inside \(Self.bundleRoot)")
+    // MARK: The launch call sites use the launch environment
+
+    /// `start()` itself, with the process captured instead of spawned: the
+    /// environment it hands the process is the launch environment, not one
+    /// it builds on its own.
+    func testPythonServiceStartLaunchesWithTheLaunchEnvironment() throws {
+        let scratch = makeScratch()
+        let cachesDir = scratch.appendingPathComponent("Caches/Harbor Clerk", isDirectory: true)
+        overrideCachesDir(cachesDir)
+        let svc = WorkerService(queue: "io", index: 0)
+        svc.baseEnvironment = ["NUMBA_CACHE_DIR": Bundle.main.resourceURL!.appendingPathComponent("venv").path, "KEEP": "1"]
+        var launched: [String: String]?
+        svc.launcher = { proc in launched = proc.environment }
+
+        try awaitStart(svc)
+
+        let env = try XCTUnwrap(launched, "start() did not reach the launcher")
+        XCTAssertEqual(env["NUMBA_CACHE_DIR"], cachesDir.appendingPathComponent("numba").path)
+        XCTAssertEqual(env["NUMBA_CACHE_LOCATOR_CLASSES"], "UserProvidedCacheLocator")
+        XCTAssertEqual(env["KEEP"], "1")
+    }
+
+    /// `PythonService.start()` is async; run it to completion with a bound.
+    private func awaitStart(_ svc: PythonService) throws {
+        let done = expectation(description: "start() returned")
+        var failure: Error?
+        Task {
+            do { try await svc.start() } catch { failure = error }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        if let failure { throw failure }
+    }
+
+    /// `MigrationRunner.run()` itself, with the process captured: Alembic gets
+    /// the cache rules too.
+    func testMigrationRunnerRunLaunchesWithTheCacheRules() throws {
+        let scratch = makeScratch()
+        let cachesDir = scratch.appendingPathComponent("Caches/Harbor Clerk", isDirectory: true)
+        overrideCachesDir(cachesDir)
+        let settings = AppSettings(configURL: scratch.appendingPathComponent("config.json"))
+        var launched: [String: String]?
+        let runner = MigrationRunner(settings: settings) { proc in
+            launched = proc.environment
+            return 0
+        }
+
+        let done = expectation(description: "run() returned")
+        var failure: Error?
+        Task {
+            do { try await runner.run() } catch { failure = error }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        XCTAssertNil(failure)
+
+        let env = try XCTUnwrap(launched, "run() did not reach the launcher")
+        XCTAssertEqual(env["NUMBA_CACHE_DIR"], cachesDir.appendingPathComponent("numba").path)
+        XCTAssertEqual(env["NUMBA_CACHE_LOCATOR_CLASSES"], "UserProvidedCacheLocator")
+        XCTAssertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+        XCTAssertNotNil(env["DATABASE_URL"])
     }
 
     func testTheCachesDirectoryIsNotInsideTheBundle() {

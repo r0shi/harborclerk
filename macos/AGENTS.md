@@ -49,9 +49,14 @@ last, over everything else (`PythonService.launchEnvironment()` and
 `MigrationRunner.environment`). It drops any cache variable that points into
 the bundle, sets `NUMBA_CACHE_DIR`, and limits numba to that directory
 (`NUMBA_CACHE_LOCATOR_CLASSES=UserProvidedCacheLocator`), because numba's own
-fallback is the bundle. A Caches directory that cannot be written falls back to
-one under the temporary directory; if neither can, the JIT is turned off
-(`NUMBA_DISABLE_JIT=1`) instead. `docs/releasing.md` checks the seal after a
+fallback is the bundle. If the Caches directory cannot be written, the next
+writable one of Application Support, `$TMPDIR` and a fresh `mkdtemp` directory
+under `/tmp` is used. If none can be, numba gets no directory: it refuses to
+cache, `import umap` raises, and topic computation fails, which is logged.
+That is deliberate. With the locked numba 0.64 no locator or variable
+(`NUMBA_DISABLE_JIT` included) imports umap without a writable directory, and
+the alternative is the bundle. `tests/test_numba_cache_env.py` runs the real
+import under this environment. `docs/releasing.md` checks the seal after a
 smoke run.
 
 ## Networking

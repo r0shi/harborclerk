@@ -1364,24 +1364,35 @@ class ServiceManager: ObservableObject {
     /// `NUMBA_CACHE_LOCATOR_CLASSES`: only its user-provided locator, so the
     /// in-tree one (the source's `__pycache__`, in the bundle) is never
     /// consulted, even if that directory later fails numba's own probe.
-    /// numba raises at import when no listed locator is usable, so when
-    /// neither the Caches folder nor the fallback can be written, the JIT is
-    /// turned off (`NUMBA_DISABLE_JIT`): umap and pynndescent then run as
-    /// plain Python, slowly, and nothing is cached anywhere.
+    ///
+    /// The directory is the first of these that can be created and written:
+    /// the Caches folder, the app's Application Support folder (which it
+    /// already writes: Postgres's data is there), `$TMPDIR`, and a fresh
+    /// `mkdtemp` directory under `/tmp`. If none can, `NUMBA_CACHE_DIR` is
+    /// left unset and the error logged: numba then refuses to cache, and
+    /// because umap and pynndescent declare `cache=True` functions,
+    /// `import umap` raises "cannot cache function ...: no locator
+    /// available", so topic computation fails rather than writing into the
+    /// bundle. Measured with the locked numba 0.64.0, pynndescent 0.6.0 and
+    /// umap 0.5.11: no other locator or variable (the zip and IPython
+    /// locators, `NUMBA_DISABLE_JIT`, which still caches `@vectorize`
+    /// functions) lets umap import without a writable directory.
     nonisolated static func runtimeCacheEnvironment(
         cachesDir: URL = AppSettings.cachesDir,
-        fallbackDir: URL = runtimeCacheFallbackDir
+        fallbackDirs: [URL] = runtimeCacheFallbackDirs,
+        makeTemporaryDir: () -> URL? = makeFreshTemporaryDir
     ) -> [String: String] {
         var env = [
             "PYTHONDONTWRITEBYTECODE": "1",
             "NUMBA_CACHE_LOCATOR_CLASSES": "UserProvidedCacheLocator",
         ]
-        if let dir = usableCacheDirectory(cachesDir.appendingPathComponent("numba"), fallback: fallbackDir) {
+        if let dir = usableCacheDirectory(
+            [cachesDir.appendingPathComponent("numba")] + fallbackDirs, makeTemporaryDir: makeTemporaryDir
+        ) {
             env["NUMBA_CACHE_DIR"] = dir.path
         } else {
             Log.logger("lifecycle").error(
-                "No writable numba cache directory; JIT disabled (NUMBA_DISABLE_JIT=1), so topic computation runs slowly")
-            env["NUMBA_DISABLE_JIT"] = "1"
+                "No writable numba cache directory anywhere; numba will refuse to cache, so umap cannot be imported and topic computation will fail (the bundle is not written)")
         }
         return env
     }
@@ -1442,23 +1453,41 @@ class ServiceManager: ObservableObject {
         }
     }
 
-    /// Where the numba cache goes when the Caches folder cannot take it.
-    nonisolated static let runtimeCacheFallbackDir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("harbor-clerk-numba", isDirectory: true)
+    /// Where the numba cache goes, in order, when the Caches folder cannot
+    /// take it: the app's Application Support folder, then `$TMPDIR`.
+    nonisolated static let runtimeCacheFallbackDirs = [
+        AppSettings.dataDir.appendingPathComponent("caches/numba", isDirectory: true),
+        FileManager.default.temporaryDirectory.appendingPathComponent("harbor-clerk-numba", isDirectory: true),
+    ]
 
-    /// `preferred` if it can be created and written, otherwise `fallback` if
-    /// that can, otherwise nil. Probed with a write, as numba probes it: a
-    /// directory that exists but cannot be written is unusable too.
-    nonisolated static func usableCacheDirectory(_ preferred: URL, fallback: URL) -> URL? {
-        guard let problem = cacheDirectoryProblem(preferred) else { return preferred }
-        Log.logger("lifecycle").error(
-            "Cache directory \(preferred.path, privacy: .public) unusable (\(problem, privacy: .public)); trying \(fallback.path, privacy: .public)")
-        if let again = cacheDirectoryProblem(fallback) {
+    /// The last candidate: a fresh directory under `/tmp` (not `$TMPDIR`), or
+    /// nil if even that cannot be made.
+    nonisolated static func makeFreshTemporaryDir() -> URL? {
+        var template = Array("/private/tmp/harbor-clerk-numba.XXXXXX".utf8CString)
+        guard let made = mkdtemp(&template) else { return nil }
+        return URL(fileURLWithPath: String(cString: made), isDirectory: true)
+    }
+
+    /// The first of `candidates` that can be created and written, then a
+    /// directory from `makeTemporaryDir` if that one can, otherwise nil.
+    /// Probed with a write, as numba probes it: a directory that exists but
+    /// cannot be written is unusable too. Every miss is logged.
+    nonisolated static func usableCacheDirectory(_ candidates: [URL], makeTemporaryDir: () -> URL?) -> URL? {
+        for dir in candidates {
+            guard let problem = cacheDirectoryProblem(dir) else { return dir }
             Log.logger("lifecycle").error(
-                "Fallback cache directory \(fallback.path, privacy: .public) unusable too (\(again, privacy: .public))")
+                "Cache directory \(dir.path, privacy: .public) unusable (\(problem, privacy: .public)); trying the next")
+        }
+        guard let fresh = makeTemporaryDir() else {
+            Log.logger("lifecycle").error("Could not make a temporary cache directory either")
             return nil
         }
-        return fallback
+        if let problem = cacheDirectoryProblem(fresh) {
+            Log.logger("lifecycle").error(
+                "Temporary cache directory \(fresh.path, privacy: .public) unusable too (\(problem, privacy: .public))")
+            return nil
+        }
+        return fresh
     }
 
     /// Why `dir` cannot serve as a cache directory, or nil if it can: it is

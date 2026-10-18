@@ -12,6 +12,9 @@ class PythonService: ManagedService {
     /// points it at a config file of its own; the default is the live app's.
     var settingsOverride: AppSettings?
     var settings: AppSettings { settingsOverride ?? AppSettings.shared }
+    /// Spawns the configured process. A test replaces it to capture the
+    /// process `start()` built (its environment above all) without spawning.
+    var launcher: (Process) throws -> Void = { try $0.runAsProcessGroupLeader() }
 
     /// Seconds to wait after SIGTERM before sending SIGKILL.
     /// API server needs more time when mid-research (SSE streams, agent threads, DB sessions).
@@ -65,7 +68,7 @@ class PythonService: ManagedService {
             }
         }
 
-        try proc.runAsProcessGroupLeader()
+        try launcher(proc)
         process = proc
     }
 
