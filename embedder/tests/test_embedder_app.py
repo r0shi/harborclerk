@@ -316,14 +316,14 @@ def test_release_runs_on_the_worker_thread_not_the_event_loop(stub_model):
 # --------------------------------------------------------------------------
 
 
-def test_encode_failure_is_a_logged_503_with_retry_after(stub_model, caplog):
+def test_encode_failure_is_a_logged_500(stub_model, caplog):
     """A night of MPS out-of-memory failures left nothing in embedder.log.
 
     The traceback went to uvicorn's own logger, which does not propagate to the
     root logger where main() attaches the file handler. The failure must be
     logged on a logger that reaches the root (caplog's handler sits there, so a
-    record it captures is one embedder.log would get), and it must be a 503
-    with Retry-After: the request was valid, the service could not serve it.
+    record it captures is one embedder.log would get), and it must be a 5xx,
+    which the worker defers and retries.
     """
     import logging
     from unittest.mock import patch
@@ -340,8 +340,7 @@ def test_encode_failure_is_a_logged_503_with_retry_after(stub_model, caplog):
         with TestClient(app, raise_server_exceptions=False) as c:
             r = c.post("/embed", json={"texts": ["a", "b"]})
 
-    assert r.status_code == 503, f"expected 503, got {r.status_code}"
-    assert r.headers.get("retry-after"), "a 503 must say when to come back"
+    assert r.status_code == 500, f"expected 500, got {r.status_code}"
     assert "RuntimeError" in r.json()["detail"]
 
     records = [rec for rec in caplog.records if rec.name == "embedder.app" and rec.levelno >= logging.ERROR]
@@ -358,10 +357,13 @@ class OutOfMemoryError(RuntimeError):
     """Stands in for torch.OutOfMemoryError, a RuntimeError subclass."""
 
 
-def _post_with_encode_raising(stub_model, exc):
+def _post(stub_model, texts, *, encode_raises=None, encode_returns=None):
     from unittest.mock import patch
 
-    stub_model.encode.side_effect = exc
+    if encode_raises is not None:
+        stub_model.encode.side_effect = encode_raises
+    if encode_returns is not None:
+        stub_model.encode.side_effect = lambda texts, normalize_embeddings=True: encode_returns
     with (
         patch("embedder.app.SentenceTransformer", return_value=stub_model),
         patch("embedder.app.release_gpu_cache"),
@@ -369,39 +371,67 @@ def _post_with_encode_raising(stub_model, exc):
         from embedder.app import app
 
         with TestClient(app, raise_server_exceptions=False) as c:
-            return c.post("/embed", json={"texts": ["a"]})
+            return c.post("/embed", json={"texts": texts})
 
 
 @pytest.mark.parametrize(
     "exc",
-    [ValueError("text input must be of type str"), TypeError("TextEncodeInput must be Union"), PanicException("x")],
-    ids=["ValueError", "TypeError", "tokenizers-panic"],
+    [
+        ValueError("text input must be of type str"),
+        TypeError("TextEncodeInput must be Union"),
+        PanicException("x"),
+        RuntimeError("MPS backend out of memory"),
+        OutOfMemoryError("CUDA out of memory"),
+    ],
+    ids=["ValueError", "TypeError", "tokenizers-panic", "RuntimeError", "OutOfMemoryError"],
 )
-def test_an_input_error_is_a_422_not_a_retry_later(stub_model, exc):
-    """A batch that always fails must not be told "retry later": the worker would
-    defer it for an hour, ~49 encodes, before giving up. The client treats a 4xx as
-    final."""
-    r = _post_with_encode_raising(stub_model, exc)
+def test_any_exception_from_encode_is_a_500_never_a_422(stub_model, exc):
+    """Classifying by exception type made a library bug's TypeError (a #685-style
+    version skew) a 422, which the worker treats as final: every document would
+    fail for good. Only input the embedder itself rejects is a 422."""
+    r = _post(stub_model, ["a"], encode_raises=exc)
 
-    assert r.status_code == 422, f"{type(exc).__name__} -> {r.status_code}"
-    assert "retry-after" not in r.headers
+    assert r.status_code == 500, f"{type(exc).__name__} -> {r.status_code}"
 
 
 @pytest.mark.parametrize(
-    "exc",
-    [RuntimeError("MPS backend out of memory"), OutOfMemoryError("CUDA out of memory")],
-    ids=["RuntimeError", "OutOfMemoryError"],
+    "texts,reason",
+    [(["fine", ""], "empty"), (["   \n"], "empty"), (["x" * 200_001], "over the")],
+    ids=["empty", "whitespace", "oversized"],
 )
-def test_a_resource_failure_is_a_503_retry_later(stub_model, exc):
-    r = _post_with_encode_raising(stub_model, exc)
+def test_input_the_embedder_rejects_itself_is_a_422_without_an_encode(stub_model, texts, reason):
+    r = _post(stub_model, texts)
 
-    assert r.status_code == 503
-    assert r.headers.get("retry-after")
+    assert r.status_code == 422, r.status_code
+    assert reason in r.json()["detail"]
+    stub_model.encode.assert_not_called()
 
 
-def test_cancellation_propagates_rather_than_becoming_a_503(stub_model):
+def test_wrong_types_in_the_request_are_a_422(stub_model):
+    r = _post(stub_model, [1, 2])
+
+    assert r.status_code == 422
+
+
+def test_a_non_finite_vector_is_a_500_with_a_clear_message(stub_model, caplog):
+    """Serialized inside the error handling: a NaN used to crash the JSON encoder
+    after the handler returned, a bare 500 with nothing logged saying why."""
+    import logging
+
+    bad = np.stack([np.full(768, 0.1, dtype=np.float32)])
+    bad[0, 3] = np.nan
+
+    with caplog.at_level(logging.ERROR):
+        r = _post(stub_model, ["a"], encode_returns=bad)
+
+    assert r.status_code == 500
+    assert "non-finite" in r.json()["detail"], r.json()
+    assert any(rec.name == "embedder.app" and rec.exc_info for rec in caplog.records)
+
+
+def test_cancellation_propagates_rather_than_becoming_a_500(stub_model):
     """The handler catches BaseException to see a tokenizers panic, so it must hand
-    cancellation (and other non-Exception BaseExceptions) back untouched: a 503
+    cancellation back untouched: a 500
     there would answer a request whose task is being torn down, as "retry later"."""
     import asyncio
 

@@ -11,10 +11,11 @@ Evidence is one of three kinds, and the latest event wins:
 - **failure**: a connection failure, a 5xx, or an invalid vector. Degraded.
 - **busy**: a timeout. The embedder serves one encode at a time, so during an
   ingest a probe or a query can queue behind 64-text batches; that is the
-  embedder working, so busy reads "ok" with a note. A busy streak with no
-  success or failure in between that has lasted EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS
-  across consecutive events is no longer busy but wedged: degraded, "not
-  answering".
+  embedder working, so busy reads "ok", with a note saying for how long.
+  Timeouts alone never make the verdict an error, however long they last:
+  telling a wedged slot from a saturated one by timing broke twice (phantom
+  streaks, then a real three-worker ingest read as "not answering" while
+  every batch succeeded). Only failures do, which is the #685 case.
 
 A 4xx (the input was rejected) says nothing about the service and is not
 recorded. In-process and best-effort: a restart forgets it, and the probe
@@ -30,18 +31,13 @@ import httpx
 
 from harbor_clerk.error_text import HEALTH_DETAIL_LIMIT
 
-# A busy streak this long (from its first event to its latest) is a wedged
-# embedder, not a busy one. Two minutes is many 64-text batches (~3.5 s each
-# on an M4) and several probe timeouts in a row: an ingest queue drains
-# between them, a wedged encode slot does not.
-EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS = 120.0
-
 # How stale the evidence may get before /system/health starts a background
 # probe (api/routes/system.py reads it from here).
 EMBEDDER_PROBE_TTL_SECONDS = 30.0
 
-# Busy events further apart than this are not one streak. Twice the probe TTL:
-# while the embedder is being watched, consecutive probes land within it.
+# Busy events further apart than this are not one streak (the "busy for N s"
+# in the note). Twice the probe TTL: while the embedder is being watched,
+# consecutive probes land within it.
 BUSY_STREAK_MAX_GAP_SECONDS = 2 * EMBEDDER_PROBE_TTL_SECONDS
 
 # Past this age a verdict is not reported at all: health says "checking" (with
@@ -84,7 +80,7 @@ def record_busy() -> None:
     now = _now()
     # A streak is consecutive busy evidence. A gap longer than
     # BUSY_STREAK_MAX_GAP_SECONDS since the previous event starts a new one:
-    # two isolated timeouts an hour apart are not an hour of "not answering".
+    # two isolated timeouts an hour apart are not an hour of being busy.
     gap = now - _evidence.at if _evidence.at is not None else None
     if (
         _evidence.kind != "busy"
@@ -139,10 +135,10 @@ def verdict() -> tuple[str, str | None] | None:
         return "ok", None
     if kind == "failure":
         return f"error: {_evidence.detail}", None
+    # Busy is healthy however long it lasts; the note says for how long.
     streak = (_evidence.at or 0.0) - (_evidence.busy_since or 0.0)
-    if streak >= EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS:
-        note = f"not answering: every embed has timed out for {streak:.0f}s"
-        return f"error: embedder not answering (timed out for {streak:.0f}s)", note
+    if streak >= 1:
+        return "ok", f"{BUSY_NOTE}; busy for {streak:.0f}s"
     return "ok", BUSY_NOTE
 
 

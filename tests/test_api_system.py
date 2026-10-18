@@ -251,38 +251,72 @@ async def test_a_busy_embedder_is_ok_not_degraded(client, monkeypatch, caplog):
     assert not embedder_errors, f"a busy embedder was logged as a failure: {embedder_errors}"
 
 
-async def test_busy_for_longer_than_the_threshold_is_degraded(client, monkeypatch):
-    """A busy streak across consecutive probes that outlasts the threshold is a
-    wedged encode slot, not an ingest: "embedder not answering"."""
+async def test_a_saturated_single_slot_embedder_never_reads_as_down(monkeypatch):
+    """The sixth review's repro, in fake time: a one-slot embedder (like
+    embedder/app.py's Semaphore(1)) kept saturated by three ingest workers, polled
+    by health for 300 s. Every probe queues behind batches and times out, while
+    every batch succeeds. That is an embedder at work: the verdict must stay "ok"
+    with a busy note throughout, never an error. Escalating timeouts to "not
+    answering" made exactly this ingest read as an outage."""
+    import asyncio
+
+    import httpx
+
     from harbor_clerk import query_embed_health
+    from harbor_clerk.api.routes import system
+    from harbor_clerk.config import get_settings
 
-    monkeypatch.setattr("harbor_clerk.api.routes.system.EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS", 0.2)
-    _stub_embedder(monkeypatch, embed_delay=3.0)
-    clock = [1000.0]
+    base = get_settings().embedder_url
+    slot = asyncio.Semaphore(1)  # one encode at a time
+    batches_ok = 0
+    clock = [10_000.0]
     monkeypatch.setattr(query_embed_health, "_now", lambda: clock[0])
+    monkeypatch.setattr(system, "EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS", 0.05)
+    real_get = httpx.AsyncClient.get
 
-    first = await _settled_health(client)
-    assert first["checks"]["embedder"] == "ok" and first["notes"]["embedder"].startswith("busy")
+    async def _get(self, url, *args, **kwargs):
+        if str(url) == f"{base}/health":  # served on the loop, never blocked by encodes
+            return httpx.Response(200, json={"status": "ok"}, request=httpx.Request("GET", str(url)))
+        return await real_get(self, url, *args, **kwargs)
 
-    # Consecutive probes, each due (past the TTL) and inside the streak gap.
-    step = query_embed_health.EMBEDDER_PROBE_TTL_SECONDS + 15
-    assert step < query_embed_health.BUSY_STREAK_MAX_GAP_SECONDS
-    elapsed = 0.0
-    while elapsed < query_embed_health.EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS:
-        clock[0] += step
-        elapsed += step
-        await client.get("/api/system/health")  # stale: starts the next probe
-        await _await_probe()
-    data = (await client.get("/api/system/health")).json()
+    async def _post(self, url, *args, json=None, **kwargs):
+        async with slot:  # the probe's one text waits here behind the batches
+            await asyncio.sleep(0.02)
+        return httpx.Response(200, json={"embeddings": [[0.1] * 4]}, request=httpx.Request("POST", str(url)))
 
-    assert data["checks"]["embedder"].startswith("error: embedder not answering"), data["checks"]["embedder"]
-    assert data["notes"]["embedder"].startswith("not answering")
-    assert data["status"] == "degraded"
+    monkeypatch.setattr(httpx.AsyncClient, "get", _get)
+    monkeypatch.setattr(httpx.AsyncClient, "post", _post)
+
+    async def _ingest_worker():
+        nonlocal batches_ok
+        while True:
+            async with slot:
+                await asyncio.sleep(0.02)  # a 64-text batch
+            batches_ok += 1
+
+    workers = [asyncio.create_task(_ingest_worker()) for _ in range(3)]
+    verdicts: list[tuple[str, str | None]] = []
+    try:
+        for _ in range(150):  # 300 s of fake time, health polled every 2 s
+            clock[0] += 2
+            verdicts.append(await system._embedder_check(base))
+            task = system._embedder_probe_task()
+            if task is not None and not task.done():
+                await asyncio.wait_for(asyncio.shield(task), timeout=5)
+    finally:
+        for w in workers:
+            w.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+
+    assert batches_ok > 0, "premise: the ingest kept the embedder busy and succeeding"
+    assert not [v for v in verdicts if v[0].startswith("error")], [v for v in verdicts if v[0].startswith("error")][:3]
+    busy = [note for status, note in verdicts if status == "ok" and note and note.startswith("busy")]
+    assert busy, "the probe never timed out behind the batches: the scenario did not saturate"
+    assert "busy for" in busy[-1], f"the note should say for how long: {busy[-1]}"
 
 
-def test_isolated_busy_events_are_not_a_streak(monkeypatch):
-    """Two timeouts an hour apart, with nothing between, read "not answering
-    (timed out for 3600s)" when the streak never restarted."""
+def test_isolated_busy_events_are_not_one_busy_spell(monkeypatch):
+    """Two timeouts an hour apart, with nothing between, are not an hour of being busy."""
     from harbor_clerk import query_embed_health
 
     clock = [1000.0]
@@ -295,7 +329,7 @@ def test_isolated_busy_events_are_not_a_streak(monkeypatch):
     assert query_embed_health.verdict() == ("ok", query_embed_health.BUSY_NOTE)
 
 
-def test_busy_events_inside_the_gap_build_a_streak(monkeypatch):
+def test_busy_events_inside_the_gap_say_for_how_long_and_stay_ok(monkeypatch):
     from harbor_clerk import query_embed_health
 
     clock = [1000.0]
@@ -303,12 +337,13 @@ def test_busy_events_inside_the_gap_build_a_streak(monkeypatch):
     gap = query_embed_health.BUSY_STREAK_MAX_GAP_SECONDS
 
     query_embed_health.record_busy()
-    while clock[0] - 1000.0 < query_embed_health.EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS:
+    for _ in range(10):  # ten minutes of consecutive timeouts
         clock[0] += gap - 1
         query_embed_health.record_busy()
 
-    status, _ = query_embed_health.verdict()
-    assert status.startswith("error: embedder not answering"), status
+    status, note = query_embed_health.verdict()
+    assert status == "ok", status
+    assert note == f"{query_embed_health.BUSY_NOTE}; busy for {10 * (gap - 1):.0f}s", note
 
 
 async def test_an_old_verdict_is_not_served_as_current(client, monkeypatch):
@@ -934,6 +969,44 @@ async def test_an_embed_being_retried_still_counts_as_waiting_on_the_embedder(
     assert data["counts"]["blocked_embed_jobs"] == 1
     issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "embedding_blocked")
     assert "next retry" not in issue["detail"].lower(), "a running retry has no next retry time to show"
+    # Every deferred row is running: a retry in progress, which may be succeeding.
+    assert issue["title"] == "Embedding is retrying after an embedder outage", issue["title"]
+    assert "failing" not in (issue["title"] + issue["detail"]).lower()
+
+
+async def test_a_waiting_deferred_embed_still_says_the_service_is_failing(client, admin_user, admin_token, db_session):
+    """One retrying and one still waiting: the outage is not over."""
+    from harbor_clerk.worker.pipeline import EMBED_RETRY_REASON
+
+    future = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+    past = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    for n, (status, retry_after) in enumerate([(JobStatus.running, past), (JobStatus.queued, future)]):
+        doc = Document(
+            title=f"Deferred {n}",
+            status="active",
+            sha256=bytes([n + 40]) * 32,
+            pipeline_status=PipelineStatus.embedding,
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        db_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.embed,
+                status=status,
+                heartbeat_at=datetime.now(UTC),
+                metrics={"reason": EMBED_RETRY_REASON, "retry_attempts": 2, "retry_after": retry_after},
+            )
+        )
+    await db_session.flush()
+
+    data = (await client.get("/api/system/status-summary", headers=auth_header(admin_token))).json()
+
+    issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "embedding_blocked")
+    assert issue["count"] == 2
+    assert issue["title"] == "Embedding is paused: the embedding service is failing"
+    # The next retry is the waiting row's, not the running row's past retry_after.
+    assert "The next retry is in about 5 minutes" in issue["detail"], issue["detail"]
 
 
 def test_retry_times_read_as_durations():

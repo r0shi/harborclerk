@@ -19,8 +19,8 @@ interface HealthCheck {
     reranker?: string
     local_https_gateway?: string
   }
-  // Context for a check, e.g. an embedder that is busy, still being checked,
-  // or not answering. Present only when there is something to say.
+  // Context for a check, e.g. an embedder that is busy (and for how long) or
+  // still being checked. Present only when there is something to say.
   notes?: Record<string, string>
 }
 
@@ -261,9 +261,12 @@ export default function SystemStatusPage() {
     if (!embedderChecking || checkingPolls >= HEALTH_CHECKING_MAX_POLLS) return
     const timer = setTimeout(() => {
       get<HealthCheck>('/api/system/health')
-        .then((data) => setHealth(data))
-        .catch(() => undefined)
-        .finally(() => setCheckingPolls((n) => n + 1))
+        .then((data) => {
+          setHealth(data)
+          // A settled result ends this episode; a later "checking" gets the full schedule again.
+          setCheckingPolls((n) => (data.checks.embedder === 'checking' ? n + 1 : 0))
+        })
+        .catch(() => setCheckingPolls((n) => n + 1))
     }, HEALTH_CHECKING_POLL_MS)
     return () => clearTimeout(timer)
   }, [embedderChecking, checkingPolls])
@@ -271,6 +274,7 @@ export default function SystemStatusPage() {
   function handleRefresh() {
     setError('')
     setActionResult('')
+    setCheckingPolls(0) // a manual refresh restarts the re-poll schedule
     setLoading(true)
     void reloadStatusData()
     setRefreshKey((k) => k + 1)

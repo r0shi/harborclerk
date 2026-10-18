@@ -18,7 +18,7 @@ from typing import NamedTuple
 
 import psycopg2
 import psycopg2.extensions
-from sqlalchemy import and_, case, or_, select, update
+from sqlalchemy import and_, case, or_, select, text, update
 
 from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
@@ -682,7 +682,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
         else:
             _defer_unavailable_embed(doc_id, pipeline_seq, describe_error(e), filename)
     except _ShutdownDeadline:
-        _requeue_after_shutdown(doc_id, stage, pipeline_seq)
+        _requeue_after_shutdown(doc_id, stage, pipeline_seq, filename)
     except Exception as e:
         _record_job_failure(doc_id, stage, pipeline_seq, describe_error(e), filename)
     finally:
@@ -785,13 +785,16 @@ def _defer_unavailable_embed(doc_id: uuid.UUID, pipeline_seq: int, error_msg: st
     )
 
 
-def _requeue_after_shutdown(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int) -> None:
+def _requeue_after_shutdown(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, filename: str | None = None) -> None:
     """Hand a job abandoned at the shutdown deadline back to the queue.
 
     Interrupted, not failed: the next worker runs it again. Stages are
     idempotent, and embed keeps the batches it stored. A row no longer
     `running` at our generation (cancelled meanwhile, or superseded) is left
-    as it is.
+    as it is. Announced the way enqueue_stage announces a job: a pg_notify on
+    the stage's queue channel, so a waiting worker claims it now rather than at
+    its 30 s idle poll, and a "queued" job event, so the UI stops showing it
+    running.
     """
     session = get_sync_session()
     try:
@@ -814,8 +817,17 @@ def _requeue_after_shutdown(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: in
             # Not deferred for an outage: no stale "waiting on the embedder".
             job.metrics = without_embed_retry_schedule(job.metrics, stage)
         session.commit()
+        if requeued:
+            queue_name = STAGE_CONFIG[stage][0]
+            session.execute(
+                text("SELECT pg_notify(:channel, :payload)"),
+                {"channel": f"job_enqueued_{queue_name}", "payload": str(doc_id)},
+            )
+            session.commit()
     finally:
         session.close()
+    if requeued:
+        publish_job_event(doc_id, stage.value, "queued", filename=filename)
     logger.warning(
         "Shutdown deadline: abandoned %s for doc %s after %ds%s",
         stage.value,

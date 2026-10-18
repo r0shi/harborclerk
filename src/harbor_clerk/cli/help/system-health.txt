@@ -38,20 +38,21 @@ RETURNS (JSON)
       "embedder": "ok" | "checking" | "error: <message>"
     },
     "notes": {                        // present only when there is something to say
-      "embedder": "busy: …" | "checking: …" | "not answering: …"
+      "embedder": "busy: …" | "checking: …"
     }
   }
 
   Embedder states:
     "ok"        Embeds work. With notes.embedder "busy: …", the last probe
                 or query timed out because the embedder was serving other
-                work (an ingest); that is not a failure.
+                work (an ingest), and the note says for how long. That is
+                not a failure, however long it lasts: the embedder encodes
+                one batch at a time, and a heavy ingest keeps it busy.
     "checking"  No current verdict yet (just started, or the last evidence
                 is over a minute old); a probe is running. notes.embedder
                 says why and, for old evidence, how old it is.
-    "error: …"  Embeds fail: the service is unreachable, returned a 5xx or
-                an empty vector, or has timed out on every request for over
-                two minutes ("error: embedder not answering …").
+    "error: …"  Embeds fail: the service is unreachable, or returned a 5xx
+                or an empty vector. Timeouts alone never produce this.
 
   `status` is `"healthy"` when every check is `"ok"`, or `"checking"` for
   the embedder. Any `"error: …"` yields `"degraded"`. This now includes

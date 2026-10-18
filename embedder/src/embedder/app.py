@@ -11,6 +11,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -40,23 +41,30 @@ TASK_PREFIXES = {"query": "query: ", "passage": "passage: "}
 # `self.to(device)`) on every call. Measure before trusting it.
 MAX_CONCURRENCY = _positive_int_env("EMBED_MAX_CONCURRENCY", 1)
 
-# Retry-After on a failed encode. The memory-pressure episodes behind #619
-# cleared in seconds to minutes once the cache drained or the service restarted
-# (~14 s measured for a restart). A hint only: the worker's own backoff governs.
-ENCODE_FAILURE_RETRY_AFTER_SECONDS = 30
 
+class InputError(ValueError):
+    """The request's texts are unusable, as detected by _validate_input before any encode.
 
-def _is_input_error(exc: BaseException) -> bool:
-    """Whether an encode failure is the input's fault (answer 422), not the service's (503).
-
-    ValueError and TypeError are what the tokenizer and SentenceTransformer
-    raise for text they cannot take. A Rust panic in `tokenizers` surfaces as
-    pyo3's PanicException, a BaseException subclass with no importable home,
-    hence the name check; it too is input-driven. Out-of-memory errors are
-    RuntimeError subclasses (torch.OutOfMemoryError, MPS's RuntimeError), so
-    they stay on the 503 side.
+    The only failure answered 422. Classifying encode exceptions by type
+    instead turned a TypeError from a library bug (a #685-style version skew)
+    into a 422, which the worker treats as final, failing every document
+    permanently. Wrong types are refused earlier still, by the request model.
     """
-    return isinstance(exc, (ValueError, TypeError)) or type(exc).__name__ == "PanicException"
+
+
+# Longest single text accepted. Chunks are ~1,000 characters (a code fence can
+# stretch one) and queries are short; the model truncates at its own sequence
+# length anyway, so anything this long is a caller bug, not a document.
+MAX_TEXT_CHARS = 200_000
+
+
+def _validate_input(texts: list[str]) -> None:
+    """Raise InputError for texts the embedder will not encode: empty or oversized."""
+    for i, text in enumerate(texts):
+        if not text.strip():
+            raise InputError(f"text {i} is empty")
+        if len(text) > MAX_TEXT_CHARS:
+            raise InputError(f"text {i} is {len(text):,} characters, over the {MAX_TEXT_CHARS:,} limit")
 
 
 _model: SentenceTransformer | None = None
@@ -137,37 +145,40 @@ async def embed(request: EmbedRequest):
         finally:
             release_gpu_cache()
 
+    # The one 422: input this service checks for itself, before any encode.
+    try:
+        _validate_input(texts)
+    except InputError as exc:
+        logger.warning("embed rejected %d texts: %s", len(texts), exc)
+        raise HTTPException(status_code=422, detail=f"input rejected: {exc}") from exc
+
     async with slots:
         try:
             embeddings = await asyncio.to_thread(_encode_and_release)
+            # Serialization inside the handling too: a NaN or infinite vector
+            # used to crash the JSON encoder after the handler returned, a bare
+            # 500 with nothing in the log saying why.
+            if not np.isfinite(embeddings).all():
+                raise ValueError("encode produced a non-finite value (NaN or infinity) in a vector")
+            response = EmbedResponse(
+                embeddings=embeddings.tolist(),
+                model=MODEL_NAME,
+                dimensions=embeddings.shape[1],
+            )
         except BaseException as exc:
-            # An encode failure used to be a bare 500 whose traceback went only
-            # to uvicorn's stderr: the "uvicorn.error" logger does not propagate
-            # to the root logger, where main() attaches embedder.log, so a night
-            # of MPS out-of-memory failures left nothing in the service's own
-            # log (#619). Log it on this module's logger, which does reach the
-            # file, and say whose fault it was.
-            if _is_input_error(exc):
-                # The texts themselves: retrying them later fails the same way,
-                # and a 503 would have the worker defer the batch for an hour.
-                logger.warning("encode rejected %d texts: %s", len(texts), type(exc).__name__, exc_info=exc)
-                raise HTTPException(status_code=422, detail=f"encode rejected the input: {type(exc).__name__}") from exc
-            if not isinstance(exc, Exception):
-                raise  # cancellation, KeyboardInterrupt, SystemExit: not ours to translate
-            # Resource or runtime (MPS/CUDA out of memory, a RuntimeError in the
-            # model): the request is fine, the service cannot serve it now.
+            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise  # not a failure of the encode; not ours to translate
+            # BaseException, not Exception: a Rust panic in `tokenizers` arrives
+            # as pyo3's PanicException, a BaseException subclass.
+            # Every other failure is the service's: 500, logged on this module's
+            # logger, which reaches embedder.log (uvicorn's own "uvicorn.error"
+            # does not propagate to the root logger, so a night of MPS
+            # out-of-memory failures once left nothing there, #619). A 5xx is
+            # what the worker defers and retries; a 4xx it treats as final, so a
+            # library bug must never be answered with one.
             logger.exception("encode failed for %d texts: %s", len(texts), type(exc).__name__)
-            raise HTTPException(
-                status_code=503,
-                detail=f"encode failed: {type(exc).__name__}",
-                headers={"Retry-After": str(ENCODE_FAILURE_RETRY_AFTER_SECONDS)},
-            ) from exc
-
-    return EmbedResponse(
-        embeddings=embeddings.tolist(),
-        model=MODEL_NAME,
-        dimensions=embeddings.shape[1],
-    )
+            raise HTTPException(status_code=500, detail=f"encode failed: {type(exc).__name__}: {exc}"[:300]) from exc
+    return response
 
 
 def main():

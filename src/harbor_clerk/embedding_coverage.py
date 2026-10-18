@@ -181,17 +181,24 @@ async def documents_embedding_coverage(session: AsyncSession, doc_ids: list) -> 
 async def search_scope_coverage(session: AsyncSession, scope_doc_ids: list | None) -> float | None:
     """The vector coverage to report for a search reaching ``scope_doc_ids`` (None: no document filter).
 
-    - No document filter: the cached corpus figure. Date, language, MIME and
-      metadata filters do not narrow it; they are not document lists.
-    - At most EXACT_COVERAGE_MAX_DOCS documents: the exact figure over them. A
-      search limited to one fully embedded document must not warn because the
-      rest of the corpus is half embedded.
-    - More: nothing at all, no figure and so no "partial". That includes a
-      scoped API key whose visible set is that large, which must never be
-      handed the corpus figure (it describes documents outside its scope).
+    - No document filter: the cached corpus figure. That includes searches
+      with only other filters (date, language, MIME, metadata, pipeline or job
+      state): they are not document lists, and they deliberately get the
+      corpus figure, so they may over-warn (a date range of fully embedded
+      documents in a half-embedded corpus says "partial"). By design: an
+      exact figure for them would cost a scan of their matches per search.
+    - A document filter of at most EXACT_COVERAGE_MAX_DOCS documents: the
+      exact figure over them. A search limited to one fully embedded document
+      must not warn because the rest of the corpus is half embedded.
+    - A larger document filter: nothing at all, no figure and so no
+      "partial". That includes a scoped API key whose visible set is that
+      large, which must never be handed the corpus figure (it describes
+      documents outside its scope).
 
-    A missed warning on a large filtered search is the accepted error; a false
-    warning, or a figure from outside the caller's scope, is not.
+    The rule for document filters (doc_id, doc_ids, a scope's visible set):
+    never a false warning and never a figure from outside the caller's scope;
+    a missed warning on a large one is the accepted error. Other filters use
+    the corpus figure and may over-warn.
     """
     if scope_doc_ids is None:
         return await corpus_embedding_coverage(session)

@@ -545,6 +545,52 @@ async def test_sigterm_abandons_and_requeues_the_running_job_after_the_grace(db_
     assert job.metrics["retry_attempts"] == 2, "an interruption is not progress"
 
 
+@pytest.mark.asyncio
+async def test_the_shutdown_requeue_announces_the_job_like_an_enqueue(db_session, monkeypatch):
+    """It published no event and no pg_notify: the UI kept showing the job running,
+    and other workers found it only at their 30 s idle poll."""
+    import select as select_mod
+    import signal
+
+    from harbor_clerk.worker import entry as entry_mod
+
+    doc_id = await _make_doc(db_session, chunk_count=1, job_status=JobStatus.running)
+    monkeypatch.setattr(entry_mod, "SHUTDOWN_GRACE_SECONDS", 1)
+    monkeypatch.setattr(entry_mod, "_shutdown", False)
+    monkeypatch.setitem(
+        entry_mod.STAGE_FUNCTIONS,
+        JobStage.embed,
+        _stubborn_stage(on_start=lambda: entry_mod._handle_signal(signal.SIGTERM, None)),
+    )
+    events: list[tuple] = []
+    real_publish = entry_mod.publish_job_event
+
+    def _capture(doc, stage, status, **fields):
+        events.append((doc, stage, status))
+        return real_publish(doc, stage, status, **fields)
+
+    monkeypatch.setattr(entry_mod, "publish_job_event", _capture)
+
+    listen = entry_mod._get_listen_connection()
+    try:
+        with listen.cursor() as cur:
+            cur.execute("LISTEN job_enqueued_cpu")
+
+        entry_mod.execute_job(doc_id, JobStage.embed, 0)
+
+        payloads: list[str] = []
+        if select_mod.select([listen], [], [], 5) != ([], [], []):
+            listen.poll()
+            payloads = [n.payload for n in listen.notifies]
+    finally:
+        listen.close()
+
+    job, _doc, _ = _read(doc_id)
+    assert job.status == JobStatus.queued
+    assert str(doc_id) in payloads, f"no pg_notify on the embed stage's queue: {payloads}"
+    assert (doc_id, "embed", "queued") in events, f"no queued job event: {events}"
+
+
 def test_a_stage_timeout_due_within_the_grace_is_left_to_fire(monkeypatch):
     """When the stage's own timeout comes sooner than the grace, SIGTERM leaves it
     alone: re-arming to the grace would extend the stage past its own deadline."""

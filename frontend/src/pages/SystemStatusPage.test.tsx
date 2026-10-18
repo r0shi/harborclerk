@@ -277,6 +277,44 @@ describe('SystemStatusPage', () => {
       for (let i = 0; i < 4; i += 1) await nextPoll()
       expect(calls.health).toBe(1 + 6)
     })
+
+    it('a manual refresh restarts the re-poll schedule after it ran out', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const calls = countHealthCalls(() => CHECKING)
+
+      renderStatusPage()
+
+      expect(await screen.findByText('Checking')).toBeInTheDocument()
+      for (let poll = 1; poll <= 6; poll += 1) {
+        await nextPoll()
+        await waitFor(() => expect(calls.health).toBe(1 + poll))
+      }
+
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+      await waitFor(() => expect(calls.health).toBe(8))
+      await nextPoll()
+      await waitFor(() => expect(calls.health).toBe(9), { timeout: 2000 })
+    })
+
+    it('after settling, a refresh that returns checking gets the full schedule again', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      // checking, checking, ok (polls reset), then checking again from a refresh, for good
+      const calls = countHealthCalls((n) => (n < 3 ? CHECKING : n === 3 ? HEALTHY : CHECKING))
+
+      renderStatusPage()
+
+      expect(await screen.findByText('Checking')).toBeInTheDocument()
+      await nextPoll()
+      await waitFor(() => expect(calls.health).toBe(2))
+      await nextPoll()
+      await waitFor(() => expect(calls.health).toBe(3))
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+      await waitFor(() => expect(calls.health).toBe(4))
+      for (let poll = 1; poll <= 6; poll += 1) {
+        await nextPoll()
+        await waitFor(() => expect(calls.health).toBe(4 + poll))
+      }
+    })
   })
 
   it('treats a still-checking embedder as not failed', async () => {
@@ -296,21 +334,37 @@ describe('SystemStatusPage', () => {
     expect(screen.queryByText('Search services need attention')).not.toBeInTheDocument()
   })
 
-  it('raises a service issue when the embedder is not answering', async () => {
+  it('raises a service issue when embeds fail', async () => {
     mockRequests(
       { ...SUMMARY, needs_attention: [] },
       {
         ...HEALTHY,
         status: 'degraded',
-        checks: { ...HEALTHY.checks, embedder: 'error: embedder not answering (timed out for 150s)' },
-        notes: { embedder: 'not answering: every embed has timed out for 150s' },
+        checks: { ...HEALTHY.checks, embedder: 'error: /embed returned HTTP 500' },
       },
     )
 
     renderStatusPage()
 
     expect(await screen.findByText('Search services need attention')).toBeInTheDocument()
-    expect(screen.getByText(/not answering: every embed has timed out/)).toBeInTheDocument()
+    expect(screen.getAllByText(/\/embed returned HTTP 500/).length).toBeGreaterThan(0)
+  })
+
+  it('shows a long busy spell as a note on a healthy embedder', async () => {
+    mockRequests(
+      { ...SUMMARY, needs_attention: [] },
+      {
+        ...HEALTHY,
+        notes: {
+          embedder: 'busy: the embedder did not answer in time (it is serving other work); busy for 300s',
+        },
+      },
+    )
+
+    renderStatusPage()
+
+    expect(await screen.findByText(/busy for 300s/)).toBeInTheDocument()
+    expect(screen.queryByText('Search services need attention')).not.toBeInTheDocument()
   })
 
   it('runs the reaper action from a stuck-job issue', async () => {

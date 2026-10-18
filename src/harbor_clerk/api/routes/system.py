@@ -591,6 +591,7 @@ async def status_summary(
                 # The next retry among those still waiting: a running row's
                 # retry_after is the past one that let it be claimed.
                 func.min(IngestionJob.metrics["retry_after"].astext).filter(IngestionJob.status == JobStatus.queued),
+                func.count(func.distinct(IngestionJob.doc_id)).filter(IngestionJob.status == JobStatus.queued),
             )
             .join(Document, Document.doc_id == IngestionJob.doc_id)
             .where(
@@ -607,6 +608,7 @@ async def status_summary(
     ).one()
     blocked_embed_jobs = int(blocked_embed_row[0] or 0)
     next_embed_retry_at = blocked_embed_row[1]
+    waiting_embed_jobs = int(blocked_embed_row[2] or 0)
 
     now = datetime.now(UTC)
     running_jobs = (
@@ -813,16 +815,28 @@ async def status_summary(
         embed_label = "document is" if blocked_embed_jobs == 1 else "documents are"
         when = _humanize_retry_at(next_embed_retry_at, datetime.now(UTC))
         retry_detail = f" The next retry is {when}." if when else ""
+        if waiting_embed_jobs:
+            title = "Embedding is paused: the embedding service is failing"
+            detail = (
+                f"{blocked_embed_jobs} {embed_label} waiting for the embedding service. Until they are embedded, "
+                "search finds them by keyword only. Harbor Clerk will retry automatically with backoff."
+                f"{retry_detail}"
+            )
+        else:
+            # Every deferred embed is being retried right now, and a retry of a
+            # large document can run for many minutes while it succeeds: say
+            # what is happening, without claiming the service is failing.
+            title = "Embedding is retrying after an embedder outage"
+            detail = (
+                f"{blocked_embed_jobs} {embed_label} being embedded again after an earlier embedder outage. "
+                "Until they finish, search finds them by keyword only."
+            )
         needs_attention.append(
             {
                 "kind": "embedding_blocked",
                 "severity": "warning",
-                "title": "Embedding is paused: the embedding service is failing",
-                "detail": (
-                    f"{blocked_embed_jobs} {embed_label} waiting for the embedding service. Until they are embedded, "
-                    "search finds them by keyword only. Harbor Clerk will retry automatically with backoff."
-                    f"{retry_detail}"
-                ),
+                "title": title,
+                "detail": detail,
                 "count": blocked_embed_jobs,
                 "action_label": "Open diagnostics",
                 "action_href": "/settings/diagnostics",
