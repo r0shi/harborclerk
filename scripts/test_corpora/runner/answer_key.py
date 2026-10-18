@@ -15,32 +15,32 @@ Agreement (doc_id `ebbbd23d-...`)" and never the filename stem the key holds; be
 four such lists at 0 named). The citations themselves are still not counted: the map is a dictionary for the ids
 the answer wrote out, nothing more.
 
-A list answer's labels are read before its items are counted (#814, #816), and nothing else is. A heading (`#` line)
-or bold lead-in (`**...**` opening a line) that rejects takes its section out, to the next heading of its level or
-higher (a lead-in's to the next lead-in or heading); the answer's first section is never dropped
-(`without_excluded_sections`). A line or bullet that opens with a rejecting label naming no item ("- **Excluded
-near-misses:** ... `0050` ...", "Not counted: X") loses what follows the label, to the next semicolon or sentence
-end on the line, and a line that is only a rejecting label ("Excluded:") loses the list items under it. A label
-rejects when it opens with a reject phrase ("excluded", "exclusions", "not counted", "not included", "not a match",
-"non-match", "near-miss", "false positive", "rejected", "ruled out", "does not qualify", and the French), or when
-its leading clause, the words before the first parenthesis, comma, colon, semicolon or dash, ends with one after
-nothing but words for the items and framing ("Reviewed and excluded", "Context on what was excluded"; not "Punitive
-damages excluded"). It does not when what follows the label is only "none" or the like ("Exclusions: none; ...",
-never "None of these ..."), or in the narrower cases `rejecting_label` lists.
+A list answer's section labels are read before its items are counted (#814, #816), and nothing else is. A heading
+(`#` line) or a bold lead-in (`**...**` at the start of a line, judged on its whole label up to a colon) that
+rejects takes its section out, to the next heading of its level or higher (a lead-in's to the next lead-in or
+heading); the answer's first section is never dropped (`without_excluded_sections`). A label rejects when it opens
+with a reject phrase ("excluded", "not counted", "not included", "not a match", "non-match", "near-miss", "false
+positive", "rejected", "ruled out", "does not qualify", and the French), or when its leading clause, the words
+before the first parenthesis, comma, colon, semicolon or dash, ends with one after nothing but words for the items
+and framing ("Reviewed and excluded", "Context on what was excluded"; not "Punitive damages excluded"). It does not
+when what follows the label is only "none" or the like ("## Exclusions: none", never "None of these ..."), when it
+goes on to say the item qualifies ("Not counted above, but qualifies"), or in the narrower cases `rejecting_label`
+lists.
 
 Why so little: a false drop silently lowers recall on a right answer, while a false keep lowers only precision,
 which the reports already read as a floor for a narrating model. Rules that read negation in headings, verdicts in
-prose, or a denial of the question's category ("Not a non-disparagement clause") each dropped true matches on
-plausible answers: the clauses asked for are prohibitions ("Irrevocable licenses (may not be revoked)"), a clause's
-description uses a verdict's words ("if the offer is rejected, STAAR may sell"), and a denial names a subtype as
-readily as the category ("Not a New York law contract", "Not a post-termination non-disparagement clause"). So none
-of those is read, a reject word after a label's leading clause does nothing, and hedges count ("Borderline /
-related": #814 read "borderline" as a reject and dropped three CUAD positives from
-bench-20261015-2259-cuad-fable-rerun's cuad-key-16). The costs, accepted and pinned in the tests: an item rejected
-in prose ("so I'll exclude it"), by a denial ("Not a non-disparagement clause"), or under a label whose reject word
-comes late ("One additional keyword match, not counted above") is counted; a hedged section the answer itself does
-not count is counted (the rerun's "Borderline / special case"); and a lead-in followed by `###` items excludes
-nothing but itself, because a heading ends a lead-in's section.
+prose, a denial of the question's category ("Not a non-disparagement clause"), or a label opening a line or bullet
+each dropped true matches on plausible answers: the clauses asked for are prohibitions ("Irrevocable licenses (may
+not be revoked)"), a clause's description uses a verdict's words ("if the offer is rejected, STAAR may sell",
+"Exclusions: Papa John's policy excludes punitive damages"), and a denial names a subtype as readily as the category
+("Not a New York law contract"). So none of those is read, a reject word after a label's leading clause does
+nothing, and hedges count ("Borderline / related": #814 read "borderline" as a reject and dropped three CUAD
+positives from bench-20261015-2259-cuad-fable-rerun's cuad-key-16). The costs, accepted and pinned in the tests: an
+item rejected in prose ("so I'll exclude it"), by a denial, by a bulleted or indented label ("- **Excluded
+near-misses:** ... 0050"), or under a label whose reject word comes late ("One additional keyword match, not counted
+above") is counted; a hedged section the answer itself does not count is counted (the rerun's "Borderline / special
+case"); and a lead-in followed by `###` items excludes nothing but itself, because a heading ends a lead-in's
+section.
 
 The fact matcher accepts negation ("New York law, not Delaware" finds "Delaware"); a key is one phrase, so this has
 not mattered yet, and is stated so that a score of 1.0 is read as "the phrase is present", nothing more. The one
@@ -226,40 +226,42 @@ def company(title: str) -> str:
     return normalize(title.split("_")[0])
 
 
-# A markdown heading: one to six `#`, then its text. A bold lead-in: `**...**` opening a line. A numbered item written
-# bold ("**1. Staar – Distributor** (doc_id ...)") opens its line bold and so is a lead-in of its own, which is
-# benign: its section is itself, to the next lead-in or heading, and its own text is a name, not a marker. A
-# bulleted one ("- **Staar**") is not a lead-in, and nor is an indented one: "   **Exclusions:**" under item 1 of a
-# numbered list continues that item (review of #816), and its sub-list is read as a label line's (`_LABEL_ONLY`).
+# A markdown heading: one to six `#`, then its text. A bold lead-in: `**...**` opening a line at the margin, judged on
+# its whole label, the bold text and any words after it up to a colon ("**Excluded** from the cap: ..." is the label
+# "Excluded from the cap"). A bold span followed by running words with no colon ("**Rejected** offers revert to the
+# licensor under Staar, s4.", "**1. Staar – Distributor** (doc_id ...)") is a sentence, not a label. A bulleted bold
+# line ("- **Staar**") is not a lead-in, and nor is an indented one: "   **Excluded:**" inside a list item continues
+# that item, and read as a lead-in it would take the rest of the answer's section with it.
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t#]*$")
-_BOLD_LEAD = re.compile(r"^\*\*([^*\r\n]+?)\*\*")
+_BOLD_LEAD = re.compile(r"^\*\*([^*\r\n]+?)\*\*(.*)$")
 _LEAD_IN_LEVEL = 7  # below any heading: a heading's section takes its lead-ins with it, not the other way round
 
 # What a label says about the items it heads, read in its own words, lower-cased and accents folded (`_label_view`).
-# A reject phrase is one of these, in English or French ("exclusions" plural: "Exclusion clauses" is a clause type),
-# never the first half of a compound ("Rejected-offer matching rights"). None names a category: "Not a
+# A reject phrase is one of these, in English or French, never the first half of a compound ("Rejected-offer
+# matching rights"). "Exclusions" is not one: a policy's or a cap's exclusions are ordinary content.
+# None names a category: "Not a
 # non-disparagement clause" is not read, because "Not a New York law contract" and "Not a post-termination
 # non-disparagement clause" use the same words to deny a subtype the question does not ask about.
 _REJECT_PHRASE = (
-    r"(?:excluded|exclusions|not counted|not included|not (?:an? )?match(?:es)?|non[- ]?match(?:es)?"
+    r"(?:excluded|not counted|not included|not (?:an? )?match(?:es)?|non[- ]?match(?:es)?"
     r"|near[- ]?miss(?:es)?|false positives?|rejected|ruled out|(?:does|do) not qualify|(?:doesn|don)'t qualify"
     r"|exclue?s?|ecartee?s?|rejetee?s?|non retenue?s?|faux positifs?|ne correspond(?:ent)? pas)(?![-\w])"
 )
 _OPENS = re.compile(_REJECT_PHRASE)
 _CLOSES = re.compile(rf"\b{_REJECT_PHRASE}$")
-# An opening participle or "Exclusions" before a noun ("Rejected offers go to third parties", "Excluded Products
-# carve-out") describes the clause; before one of these, or before nothing, it is a verdict ("Excluded near-misses").
+# An opening participle before a noun ("Rejected offers go to third parties", "Excluded Products carve-out")
+# describes the clause; before one of these, or before nothing, it is a verdict ("Excluded near-misses").
 _ITEM_NOUN = frozenset((
     "candidates", "contracts", "documents", "items", "matches", "hits", "invoices", "campaigns", "briefs",
     "agreements", "results", "entries", "ones", "near-misses", "near-miss", "after", "because", "as", "since",
     "here", "above", "below", "entirely", "outright", "also", "too", "due", "following", "per", "pending", "given",
     "contrats", "documents", "factures", "candidats", "campagnes", "car", "faute", "parce",
 ))  # fmt: skip
-_PARTICIPLE = re.compile(r"(?:excluded|exclusions|rejected|included|counted|exclue?s?|ecartee?s?|rejetee?s?)$")
+_PARTICIPLE = re.compile(r"(?:excluded|rejected|included|counted|exclue?s?|ecartee?s?|rejetee?s?)$")
 _PREPOSITIONS = frozenset(("from", "by", "under", "in", "for", "on", "of", "toward", "towards", "du", "de", "par"))
 # "Excluded from the cap: ..." describes the clause; "Excluded from the (final) list / consideration: ..." is a verdict.
 _DESCRIBES = re.compile(
-    r"\s+(?:from|by|under|in|for|on|of|toward|towards|du|de|par)\s+(?!(?:the |my |this |la |le |les )?(?:\w+ )?"
+    r"\s+\(?(?:from|by|under|in|for|on|of|toward|towards|du|de|par)\s+(?!(?:the |my |this |la |le |les )?(?:\w+ )?"
     r"(?:list|count|answer|results?|matches|table|tally|total|consideration|scope|review|liste|decompte)\b)"
 )
 # A leading clause that ends with a reject phrase rejects only when every word before the phrase is one of these:
@@ -284,7 +286,7 @@ _CLAUSE_END = re.compile(r"[(,;:—–]")
 # NOT Qualify".
 _CONTRAST = re.compile(r"\b(?:but|however|though|although|yet|mais)\b")
 _QUALIFIES = re.compile(r"\b(?:qualif(?:y|ies)|counts?|match(?:es)?|applies|apply|included)\b")
-_NEGATED = re.compile(r"\b(?:not|no|never|neither|nor|pas)\b|n't\b")
+_NEGATED = re.compile(r"\b(?:not|no|none|nothing|never|neither|nor|pas)\b|n't\b")
 
 
 def _label_view(label: str) -> str:
@@ -333,6 +335,20 @@ def _says_nothing(after: str) -> bool:
     return bool(_EMPTY.match(fold(after)))
 
 
+def _lead_in(line: str) -> tuple[str, str] | None:
+    """(label, what follows its colon) for a bold lead-in line, or None (see `_BOLD_LEAD`)."""
+    bold = _BOLD_LEAD.match(line)
+    if not bold:
+        return None
+    label, rest = bold.group(1), bold.group(2)
+    if label.rstrip().endswith(":") or not rest.strip():
+        return label, rest
+    if ":" in rest:
+        before, after = rest.split(":", 1)
+        return label + before, after
+    return None
+
+
 def without_excluded_sections(text: str) -> str:
     """`text` without the sections its headings or bold lead-ins mark as rejected (`rejecting_label`): the marked
     line and everything to the next heading of the same or a higher level (for a heading) or to the next lead-in or
@@ -345,13 +361,12 @@ def without_excluded_sections(text: str) -> str:
     dropping: int | None = None  # the level of the section being dropped
     first = True  # nothing kept yet: the section about to open is the answer's first
     for n, line in enumerate(lines):
-        heading, lead = _HEADING.match(line), _BOLD_LEAD.match(line)
+        heading, lead = _HEADING.match(line), _lead_in(line)
         if heading or lead:
             level = len(heading.group(1)) if heading else _LEAD_IN_LEVEL
-            label = heading.group(2) if heading else lead.group(1)
+            label, after = (heading.group(2), next((x for x in lines[n + 1 :] if x.strip()), "")) if heading else lead
             if dropping is not None and level <= dropping:
                 dropping = None
-            after = line[lead.end() :] if lead else next((x for x in lines[n + 1 :] if x.strip()), "")
             own = label.split(":", 1)[1] if ":" in label else ""
             if (
                 dropping is None
@@ -366,39 +381,6 @@ def without_excluded_sections(text: str) -> str:
         if dropping is None:
             kept.append(line)
     return "\n".join(kept)
-
-
-# A line label: a line or bullet that opens with bold text, or with a short colon-terminated label that is a single
-# clause (no comma, semicolon or dash before its colon: "Excluded contracts aside, the matches are: X" is a
-# sentence), before its items ("- **Excluded near-misses:** ... `0050` ...", "Not counted: X"). A label that rejects
-# and names no item takes out what follows it on the line, to the next semicolon or sentence end ("Not counted:
-# eDiets; counted: Staar", "Excluded: eDiets. Matches: Staar"). A full stop after an abbreviation or an initial
-# ("Inc.", "Jan.", "U.S.") does not end a sentence, and a colon inside the reach ("doc_id:", "Skylight: targets
-# Northwind") does not end it either.
-_LINE_LABEL = re.compile(
-    r"^[ \t]*(?:(?:[-*•+]|\d+[.)])[ \t]+)?(?:\*\*(?P<bold>[^*\n]+)\*\*|__(?P<under>[^_\n]+)__"
-    r"|(?P<plain>(?:(?! - )[^:*,;—–\n]){1,80}):(?=\s|$))"
-)
-_ABBREVIATIONS = (
-    "inc", "ltd", "corp", "co", "llc", "lp", "jr", "sr", "no", "st", "jan", "feb", "mar", "apr", "jun", "jul", "aug",
-    "sep", "sept", "oct", "nov", "dec",
-)  # fmt: skip
-_REACH_END = re.compile(
-    r";|" + "".join(rf"(?<!\b{a})" for a in _ABBREVIATIONS) + r"(?<!\b[a-z])[.!?](?=\s|$)", re.IGNORECASE
-)
-# A label of more words than this is a sentence, not a label. Twelve takes "Notable Contracts That Were Close But
-# Do NOT Qualify:" (nine), a stored heading, and "Excluded because they target Northwind and Polestar instead:".
-_LABEL_MAX_WORDS = 12
-# A line that is nothing but a label ending with a colon, bulleted or not ("- **Excluded near-misses:**",
-# "Excluded:"): when it rejects, it takes out the list items under it, to a blank line, a heading, another such line,
-# a line that is not a list item, an item indented less than the label (so an indented "Exclusions:" under one
-# contract's bullet ends at the next contract), or, under a bulleted label, an item at the label's indentation.
-_LABEL_ONLY = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<bullet>(?:[-*•+]|\d+[.)])[ \t]+)?"
-    r"(?:\*\*(?P<bold>[^*\n]+?)(?::\*\*|\*\*:)|__(?P<under>[^_\n]+?)(?::__|__:)"
-    r"|(?P<plain>(?:(?! - )[^:*_,;—–\n]){1,80}):)[ \t]*$"
-)
-_LIST_ITEM = re.compile(r"^(?P<indent>[ \t]*)(?:[-*•+]|\d+[.)])[ \t]+")
 
 
 def _found(text: str, universe: list[str], aliases: dict[str, list[str]] | None, doc_ids: dict[str, str] | None) -> set:
@@ -430,11 +412,9 @@ def named_contracts(
     as a number the answer states, to the value ("$1,200.80" does not state 20080; review of #812), or if its
     document id appears and `doc_ids` maps that id to its title. The synthetic key names an invoice by its file
     stem and aliases it by its invoice number and its total, where unique in the corpus; `corpora/synthetic_key.py`
-    says which. The answer's labels are read first: a section whose heading or lead-in rejects is not read
-    (`without_excluded_sections`), nor what follows a rejecting line label on its line, to the next semicolon or
-    sentence end (`_LINE_LABEL`), unless the label is followed by "none" ("Exclusions: none; ..."), nor the
-    list items under a line that is only a rejecting label (`_LABEL_ONLY`). Prose is not read for rejection at all.
-    It misses an item referred to only by paraphrase ("the Papa John's deal").
+    says which. A section whose heading or lead-in rejects is not read (`without_excluded_sections`); nothing else
+    in the answer is read for rejection, neither a label opening a line nor prose. It misses an item referred to only
+    by paraphrase ("the Papa John's deal").
 
     `doc_ids` is document id -> title, built by the scoring site from the citations the answer's tools returned
     (`titles_by_doc_id` for a phase-4 response; a baseline's `cited_doc_ids` zipped with its `cited_doc_titles`).
@@ -448,36 +428,7 @@ def named_contracts(
     list answer here), not what the answer refers to. Counting them would score search volume, and an answer
     saying "none" after one search would score like one that listed the hits (review of #697). The map only
     resolves ids the answer itself wrote out."""
-    kept = []
-    # The least indentation an item under the rejecting label line being read may have: the label's own, or one more
-    # under a bulleted label, whose list items sit inside it.
-    heading_list: int | None = None
-    for line in without_excluded_sections(text).splitlines():
-        if heading_list is not None:
-            item = _LIST_ITEM.match(line)
-            if item and not _LABEL_ONLY.match(line) and len(item.group("indent").expandtabs(4)) >= heading_list:
-                continue
-            heading_list = None
-        only = _LABEL_ONLY.match(line)
-        only_words = only and (only.group("bold") or only.group("under") or only.group("plain"))
-        if only_words and len(only_words.split()) <= _LABEL_MAX_WORDS and rejecting_label(only_words):
-            heading_list = len(only.group("indent").expandtabs(4)) + (1 if only.group("bullet") else 0)
-            kept.append(line)
-            continue
-        label = _LINE_LABEL.match(line)
-        words = label and (label.group("bold") or label.group("under") or label.group("plain"))
-        if (
-            words
-            and len(words.split()) <= _LABEL_MAX_WORDS
-            and rejecting_label(words)
-            and not _found(words, universe, aliases, doc_ids)
-            and not _says_nothing(line[label.end() :])
-        ):
-            rest = line[label.end() :]
-            reach = _REACH_END.search(rest)
-            line = line[: label.end()] + (rest[reach.start() :] if reach else "")
-        kept.append(line)
-    return _found("\n".join(kept), universe, aliases, doc_ids)
+    return _found(without_excluded_sections(text), universe, aliases, doc_ids)
 
 
 def _named_by_id(squeezed: str, universe: list[str], doc_ids: dict[str, str] | None) -> set[str]:

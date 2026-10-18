@@ -1,8 +1,9 @@
-"""#816: what a list answer's labels say about the items under them. A heading, lead-in or line label that opens
-with a reject phrase, or whose leading clause ends with one, takes its items out; nothing else does, and prose is not
-read for rejection at all. A false drop silently lowers recall on a right answer and a false keep only lowers
-precision, so where the two pull apart these pin the keep. The three answers the issue names are fixtures, copied
-from the stored runs, and so are the probes of both reviews of earlier versions of this rule (marked "review")."""
+"""#816: what a list answer's section labels say about the items under them. A heading or margin lead-in that opens
+with a reject phrase, or whose leading clause ends with one after only framing words, takes its section out; nothing
+else does: not a label opening a line or bullet, not a denial of the category, not prose. A false drop silently
+lowers recall on a right answer and a false keep only lowers precision, so where the two pull apart these pin the
+keep. The three answers the issue names are fixtures, copied from the stored runs, and so are the probes of every
+review of the earlier versions of this rule (marked "review"), each with its outcome under this one."""
 
 from __future__ import annotations
 
@@ -61,7 +62,6 @@ def contracts(text: str) -> set[str]:
         "Rejected",  # not observed
         "Ruled out",  # not observed
         "Does not qualify",  # not observed
-        "Exclusions",  # not observed
         "Excluded from the list",  # not observed
         "Faux positifs",  # not observed, French
         "Non retenus",  # not observed, French
@@ -186,6 +186,8 @@ def test_a_label_that_opens_with_or_whose_leading_clause_ends_with_a_reject_phra
         "Not a non-disparagement clause (word appears only incidentally)",
         # Not a reject phrase at all.
         "Excluding duplicates",  # review 1
+        "Exclusions",  # a policy's or a cap's exclusions are ordinary content (review 7)
+        "Exclusions (uncapped)",  # review 7
         "Clear matches",  # review 1
         "Disparagement as a termination trigger only — no affirmative covenant (1)",
         "Matches (no duplicates)",
@@ -301,26 +303,25 @@ def test_a_hedged_or_prohibiting_section_counts_and_a_rejecting_one_does_not():
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
+        # Probes of the line-label and label-only-line rules of earlier versions of #816, which are no longer
+        # read: each outcome is what headings and margin lead-ins alone give, so most items are counted.
         (
             "Harbour Lights targets Acme Corp.\n- **Excluded near-misses:** Skylight (Jan 3), Northstar (Jan 9).",
-            {HARBOUR},
+            {HARBOUR, NORTHSTAR, SKYLIGHT},
         ),
-        ("Harbour Lights targets Acme Corp.\nExcluded: Skylight, Northstar.", {HARBOUR}),
-        ("Harbour Lights targets Acme Corp.\n- Not counted: Skylight.", {HARBOUR}),
-        ("Harbour Lights targets Acme Corp.\n- **Rejected** Skylight, Northstar.", {HARBOUR}),
+        ("Harbour Lights targets Acme Corp.\nExcluded: Skylight, Northstar.", {HARBOUR, NORTHSTAR, SKYLIGHT}),
+        ("Harbour Lights targets Acme Corp.\n- Not counted: Skylight.", {HARBOUR, SKYLIGHT}),
+        ("Harbour Lights targets Acme Corp.\n- **Rejected** Skylight, Northstar.", {HARBOUR, NORTHSTAR, SKYLIGHT}),
         (f"Staar (`{SID}`) has one.\n**Not a match:** `{EID}`", {STAAR}),
-        # The label covers its own line only.
         (
             "Harbour Lights targets Acme Corp.\nExcluded: Skylight.\nNorthstar also targets Acme Corp.",
-            {HARBOUR, NORTHSTAR},
+            {HARBOUR, NORTHSTAR, SKYLIGHT},
         ),
-        # A label that names its item is not a label over the line: the line is kept.
         ("Harbour Lights targets Acme Corp.\nSkylight - excluded: it targets Northwind.", {HARBOUR, SKYLIGHT}),
         (
             f"Staar (`{SID}`) has one.\neDiets (`{EID}`) — excluded: the word appears only in a warranty.",
             {STAAR, EDIETS},
         ),
-        # Labels that keep their line.
         ("Nothing was excluded: Skylight, Northstar.", {SKYLIGHT, NORTHSTAR}),  # review 1
         (f"No contracts were excluded: `{SID}`, `{PID}`.", {STAAR, PAPA}),  # review 2
         (f"Nothing has been excluded: `{SID}`, `{PID}`.", {STAAR, PAPA}),  # review 2
@@ -334,8 +335,8 @@ def test_a_hedged_or_prohibiting_section_counts_and_a_rejecting_one_does_not():
         (f"I found three.\n\n- `{EID}`: $1M CGL.\n- Amounts not listed: `{SID}`, `{PID}`.\n", {STAAR, EDIETS, PAPA}),
         (f"I found two.\n\n**Licensee not selected by the Licensor:**\n- `{SID}`\n- `{PID}`\n", {STAAR, PAPA}),
         ("Skylight: targets Acme Corp.", {SKYLIGHT}),
-        ("Harbour Lights targets Acme Corp.\n- __Excluded:__ Skylight, Northstar.", {HARBOUR}),
-        (f"Two.\n- `{EID}`\n- Excluded from consideration: `{SID}`", {EDIETS}),  # review 3
+        ("Harbour Lights targets Acme Corp.\n- __Excluded:__ Skylight, Northstar.", {HARBOUR, NORTHSTAR, SKYLIGHT}),
+        (f"Two.\n- `{EID}`\n- Excluded from consideration: `{SID}`", {EDIETS, STAAR}),  # review 3
         (
             f"Three.\n- `{EID}`\n- Seller may sell after the offer is rejected: `{SID}`, `{PID}`",
             set(CONTRACTS),
@@ -343,21 +344,18 @@ def test_a_hedged_or_prohibiting_section_counts_and_a_rejecting_one_does_not():
         (f"Three.\n- `{EID}`\n- **Rejected-offer matching right:** Staar (`{SID}`)", {EDIETS, STAAR}),  # review 3
         (
             f"Two.\n\n- **Staar** (`{SID}`)\n  - Excluded: punitive damages, `{PID}` cross-reference",
-            {STAAR},
+            {PAPA, STAAR},
         ),  # review 3
-        # A label longer than a label is not one: the line is kept.
         (
             "Harbour Lights.\nExcluded because they target Northwind and Polestar Industries rather than Acme Corp instead: Skylight.",
             {HARBOUR, SKYLIGHT},
         ),
-        ("Harbour Lights.\nExcluded because they target Northwind: Skylight.", {HARBOUR}),
-        # A label that names its own item and rejects keeps the line, so the items after its colon still count (and
-        # the named one is counted too: the label text stays).
+        ("Harbour Lights.\nExcluded because they target Northwind: Skylight.", {HARBOUR, SKYLIGHT}),
         ("Skylight was excluded: only Harbour Lights targets Acme Corp.", {SKYLIGHT, HARBOUR}),
         (f"Two.\n- Not counted — Staar (`{SID}`): Papa John's (`{PID}`) qualifies.", {STAAR, PAPA}),
     ],
 )
-def test_a_line_label_that_rejects_and_names_no_item_takes_the_rest_of_its_line(text, expected):
+def test_line_label_probes(text, expected):
     assert named_contracts(text, CAMPAIGNS + CONTRACTS, CAMPAIGN_ALIASES, IDS) == expected
 
 
@@ -476,7 +474,7 @@ def test_a_rejecting_label_followed_by_none_rejects_nothing(text):
         f"One.\n\n## Matches\n- Staar (`{SID}`)\n\n## Near-misses\n\nNo operative clause; recitals only:\n"
         f"- eDiets (`{EID}`)\n- Papa (`{PID}`)\n",
         f"One.\n\n## Matches\n- Staar (`{SID}`)\n\n## Excluded\n\n### Nominal mentions\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n",
-        f"One.\n- Staar (`{SID}`)\n- Excluded: nothing in eDiets (`{EID}`) or Papa (`{PID}`) is a covenant.\n",
+        f"One.\n- Staar (`{SID}`)\n\n**Excluded:** nothing in eDiets (`{EID}`) or Papa (`{PID}`) is a covenant.\n",
     ],
 )
 def test_none_of_and_a_bare_no_are_not_the_escape(text):
@@ -484,7 +482,7 @@ def test_none_of_and_a_bare_no_are_not_the_escape(text):
 
 
 def test_a_rejecting_label_not_followed_by_none_still_rejects():
-    assert contracts(f"Two.\n- **Exclusions:** Staar (`{SID}`)\n- Papa John's (`{PID}`)") == {PAPA}
+    assert contracts(f"Two.\n\n- Papa John's (`{PID}`)\n\n**Excluded:** Staar (`{SID}`), warranty only.") == {PAPA}
     assert contracts(f"Two.\n\n## False positives\n\nStaar (`{SID}`).\n\n## Matches\n\nPapa (`{PID}`)") == {PAPA}
 
 
@@ -538,16 +536,17 @@ KEY8_ALIASES = {  # the committed synthetic key's aliases for these invoices (qu
 }
 
 
-def test_fable_synthetic_key_8_does_not_count_the_invoices_it_excludes():
+def test_fable_synthetic_key_8_counts_the_invoice_its_bulleted_label_excludes():
     """bench-20261015-0032-synthetic-fable: twelve February invoices, then "- **Excluded near-misses:** ... `0050`
-    (GS-2025-00847, Jan 3) ... were not included". 0050 is named by its unique invoice number; a bulleted bold
-    label is not a lead-in, so #814's rule kept it and the answer scored 0.96. ("0048 is a July 2025 invoice —
-    excluded", the line the issue quotes, names 0048 by no form the key holds.)"""
+    (GS-2025-00847, Jan 3) ... were not included". 0050 is named by its unique invoice number. A bulleted bold label
+    is not a lead-in and line labels are not read, so 0050 is counted and the answer scores 0.96, as on main: an
+    accepted false keep. ("0048 is a July 2025 invoice — excluded", the line the issue quotes, names 0048 by no form
+    the key holds.)"""
     answer = _fixture("fable-synthetic-key-8.md")
     universe = sorted(KEY8_ALIASES)
     entry = {"kind": "list", "positives": KEY8_POSITIVES, "universe": universe, "aliases": KEY8_ALIASES}
-    assert named_contracts(answer, universe, KEY8_ALIASES) == set(KEY8_POSITIVES)
-    assert score(entry, answer)["score"] == 1.0
+    assert named_contracts(answer, universe, KEY8_ALIASES) == set(KEY8_POSITIVES) | {"0050_invoice"}
+    assert score(entry, answer)["score"] == pytest.approx(24 / 25)
     # The cost, stated: named by its stem, the line the issue quotes is prose, which is not read, so it is counted.
     rejected = answer.replace("0048 is a July", "0048_invoice is a July")
     assert "0048_invoice" in named_contracts(rejected, universe, KEY8_ALIASES)
@@ -622,33 +621,31 @@ def test_the_rerun_cuad_key_16_reads_the_same_with_its_table_written_as_bullets(
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # review 4: a line that is only a rejecting label takes out the list under it.
+        # Probes of the line-label and label-only-line rules of earlier versions of #816, which are no longer
+        # read: each outcome is what headings and margin lead-ins alone give, so most items are counted.
         (
             f"One.\n\n- Staar (`{SID}`)\n- **Excluded near-misses:**\n  - eDiets (`{EID}`)\n  - Papa (`{PID}`)\n",
-            {STAAR},
+            {EDIETS, PAPA, STAAR},
         ),
-        (f"One.\n\n- Staar (`{SID}`)\n\nExcluded:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {STAAR}),
-        (f"One.\n\n- Staar (`{SID}`)\n\n__Rejected:__\n1. eDiets (`{EID}`)\n2. Papa (`{PID}`)\n", {STAAR}),
+        (f"One.\n\n- Staar (`{SID}`)\n\nExcluded:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {EDIETS, PAPA, STAAR}),
+        (
+            f"One.\n\n- Staar (`{SID}`)\n\n__Rejected:__\n1. eDiets (`{EID}`)\n2. Papa (`{PID}`)\n",
+            {EDIETS, PAPA, STAAR},
+        ),
         (f"One.\n\n- Staar (`{SID}`)\n\n**Not counted**:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {STAAR}),
-        # Its list ends at a blank line, a heading, another label line, a line that is not an item, or (under a
-        # bulleted label) an item back at the label's indentation.
-        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\n\n- Papa (`{PID}`)\n", {PAPA}),
-        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\n## Matches\n- Papa (`{PID}`)\n", {PAPA}),
-        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nMatches:\n- Papa (`{PID}`)\n", {PAPA}),
-        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\n- **Matches:**\n  - Papa (`{PID}`)\n", {PAPA}),
-        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nAnd one more that qualifies:\n- Papa (`{PID}`)\n", {PAPA}),
-        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nPapa (`{PID}`) qualifies.\n", {PAPA}),
-        (f"Two.\n\n- **Excluded near-misses:**\n  - eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {PAPA}),
-        (f"Two.\n\n  - **Excluded:**\n    - eDiets (`{EID}`)\n  - Papa (`{PID}`)\n", {PAPA}),
-        # A plain label's list runs at any indentation.
-        (f"One.\n\nExcluded:\n- eDiets (`{EID}`)\n  - Papa (`{PID}`)\n- Staar (`{SID}`)\n", set()),
-        # A label line that keeps, or is not only a label, takes nothing.
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\n\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\n## Matches\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nMatches:\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\n- **Matches:**\n  - Papa (`{PID}`)\n", {EDIETS, PAPA}),
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nAnd one more that qualifies:\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nPapa (`{PID}`) qualifies.\n", {EDIETS, PAPA}),
+        (f"Two.\n\n- **Excluded near-misses:**\n  - eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
+        (f"Two.\n\n  - **Excluded:**\n    - eDiets (`{EID}`)\n  - Papa (`{PID}`)\n", {EDIETS, PAPA}),
+        (f"One.\n\nExcluded:\n- eDiets (`{EID}`)\n  - Papa (`{PID}`)\n- Staar (`{SID}`)\n", {EDIETS, PAPA, STAAR}),
         (f"Three.\n\nMatches:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n- Staar (`{SID}`)\n", {STAAR, EDIETS, PAPA}),
         (f"Three.\n\nExcluded from the cap:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
         (f"Three.\n\nExcluded: none.\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
-        # "no" is not an escape word: the label still takes its line.
-        (f"One.\n- Staar (`{SID}`)\n- Excluded: no covenant in eDiets (`{EID}`), only a warranty.\n", {STAAR}),
-        # review 4: a descriptive closing phrase on a line label takes nothing.
+        (f"One.\n- Staar (`{SID}`)\n- Excluded: no covenant in eDiets (`{EID}`), only a warranty.\n", {EDIETS, STAAR}),
         (
             f"Two.\n\n- Staar (`{SID}`): $5M CGL\n- Punitive damages excluded: Papa John's (`{PID}`) must carry $2M CGL\n",
             {STAAR, PAPA},
@@ -657,7 +654,6 @@ def test_the_rerun_cuad_key_16_reads_the_same_with_its_table_written_as_bullets(
             f"Two.\n\n- Staar (`{SID}`)\n\n### Employee solicitation not included\n\n- Papa John's (`{PID}`)\n",
             {STAAR, PAPA},
         ),
-        # review 4: a denial of one alternative keeps its section.
         (
             f"Two.\n\n## Rights of first refusal\n\n- Staar (`{SID}`)\n\n"
             f"## Not a right of first refusal (right of first negotiation only)\n\n- Papa John's (`{PID}`), s7\n",
@@ -665,14 +661,15 @@ def test_the_rerun_cuad_key_16_reads_the_same_with_its_table_written_as_bullets(
         ),
     ],
 )
-def test_review_4_shapes(text, expected):
+def test_review_4_label_line_probes(text, expected):
     assert contracts(text) == expected
 
 
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # review 5: a heading or lead-in that says "none" after its own colon rejects nothing.
+        # Probes of the line-label and label-only-line rules of earlier versions of #816, which are no longer
+        # read: each outcome is what headings and margin lead-ins alone give, so most items are counted.
         (
             f"Found two.\n\n## Matches\n\n- `{SID}`\n\n## Exclusions: none\n\n- `{PID}` also qualifies (§9)\n",
             {STAAR, PAPA},
@@ -681,31 +678,23 @@ def test_review_4_shapes(text, expected):
             f"Found two.\n\n## Matches\n\n- `{SID}`\n\n**Exclusions:** none\n\n- `{PID}` also qualifies (§9)\n",
             {STAAR, PAPA},
         ),
-        (f"Found two.\n\n## Matches\n\n- `{SID}`\n\n## Exclusions: eDiets\n\n- `{EID}`\n", {STAAR}),
-        # review 5: a plain label is a single clause, and a rejecting label reaches to the next semicolon, sentence
-        # end or label on its line.
-        (f"Not counted: `{EID}`; counted: `{SID}`\n", {STAAR}),
+        (f"Found two.\n\n## Matches\n\n- `{SID}`\n\n## Exclusions: eDiets\n\n- `{EID}`\n", {EDIETS, STAAR}),
+        (f"Not counted: `{EID}`; counted: `{SID}`\n", {EDIETS, STAAR}),
         (f"Excluded contracts aside, the matches are: `{SID}`, `{PID}`\n", {STAAR, PAPA}),
-        (f"Excluded: `{EID}`. Matches: `{SID}`.\n", {STAAR}),
-        # A label after no semicolon or full stop does not end the reach: an accepted false drop, for the colon in
-        # "doc_id:" or "Skylight: targets Northwind" does not either (review 6).
-        (f"Excluded: `{EID}` Matches: `{SID}`\n", set()),
-        (f"Excluded: `{EID}`. `{SID}` qualifies.\n", {STAAR}),
+        (f"Excluded: `{EID}`. Matches: `{SID}`.\n", {EDIETS, STAAR}),
+        (f"Excluded: `{EID}` Matches: `{SID}`\n", {EDIETS, STAAR}),
+        (f"Excluded: `{EID}`. `{SID}` qualifies.\n", {EDIETS, STAAR}),
         (f"- **Not counted — Staar (`{SID}`)**: Papa John's (`{PID}`) qualifies.\n", {STAAR, PAPA}),
-        # A label of more than twelve words is a sentence (this one is fourteen, under eighty characters).
         (f"Excluded as all of them were for other firms and not Acme at all: `{EID}`\n", {EDIETS}),
-        (f"Excluded as all of them were for other firms: `{EID}`\n", set()),
-        (f"- **Excluded:** `{EID}`; `{SID}` qualifies.\n", {STAAR}),
-        (f"- **Excluded:** `{EID}`, `{PID}` (warranties only).\n", set()),
+        (f"Excluded as all of them were for other firms: `{EID}`\n", {EDIETS}),
+        (f"- **Excluded:** `{EID}`; `{SID}` qualifies.\n", {EDIETS, STAAR}),
+        (f"- **Excluded:** `{EID}`, `{PID}` (warranties only).\n", {EDIETS, PAPA}),
         (f"Excluded - see below: `{EID}`\n", {EDIETS}),
-        # A setext heading ("Excluded" over a row of dashes) is not read as a heading: an accepted false keep.
         (f"Found.\n\nMatches\n-------\n\n- `{SID}`\n\nExcluded\n--------\n\n- `{EID}`\n", {STAAR, EDIETS}),
-        # A label-only line must be a single clause too.
         (f"Two.\n\n- `{SID}`\n\nExcluded contracts aside, these remain:\n- `{EID}`\n", {STAAR, EDIETS}),
-        # review 5: a nine-word label-only line takes its list (the cap is twelve words).
         (
             f"Two.\n\n- `{SID}`\n\nNotable Contracts That Were Close But Do NOT Qualify:\n- `{EID}`\n- `{PID}`\n",
-            {STAAR},
+            {EDIETS, PAPA, STAAR},
         ),
         (
             f"Two.\n\n- `{SID}`\n\nThese contracts were reviewed carefully by me in full but in the end were also excluded:\n- `{EID}`\n",
@@ -713,7 +702,7 @@ def test_review_4_shapes(text, expected):
         ),
     ],
 )
-def test_review_5_shapes(text, expected):
+def test_review_5_probes(text, expected):
     assert contracts(text) == expected
 
 
@@ -723,7 +712,8 @@ STAAR_LINE = f"**Staar** (`{SID}`): $5M product liability."
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # review 6: an indented label under one contract's bullet takes its own sub-list, not the contracts after it.
+        # Probes of the line-label and label-only-line rules of earlier versions of #816, which are no longer
+        # read: each outcome is what headings and margin lead-ins alone give, so most items are counted.
         (
             f"Three.\n\n- {STAAR_LINE}\n  Exclusions:\n  - punitive damages\n- **eDiets** (`{EID}`): $1M CGL.\n"
             f"- **Papa John's** (`{PID}`): $2M CGL.\n",
@@ -745,47 +735,48 @@ STAAR_LINE = f"**Staar** (`{SID}`): $5M product liability."
             {STAAR, EDIETS, PAPA},
         ),
         (f"Found.\n\n2. Papa `{PID}`\n   Exclusions:\n   - consequential damages\n3. eDiets `{EID}`\n", {PAPA, EDIETS}),
-        # ...while its sub-list, at or past its indentation, is taken.
-        (f"Two.\n\n- Staar (`{SID}`)\n  Excluded:\n  - eDiets (`{EID}`)\n    - Papa John's (`{PID}`)\n", {STAAR}),
-        # review 6: a twelve-word cap on a label-only line that rejects on its own.
+        (
+            f"Two.\n\n- Staar (`{SID}`)\n  Excluded:\n  - eDiets (`{EID}`)\n    - Papa John's (`{PID}`)\n",
+            {EDIETS, PAPA, STAAR},
+        ),
         (
             f"Three.\n\nExcluded because all of these were for other firms and not for Acme at all:\n"
             f"- `{EID}`\n- `{PID}`\n- `{SID}`\n",
             {STAAR, EDIETS, PAPA},
         ),
-        (f"Three.\n\nExcluded because all of these were for other firms:\n- `{EID}`\n- `{PID}`\n- `{SID}`\n", set()),
-        # review 6: a contrast that affirms qualification does not reject.
+        (
+            f"Three.\n\nExcluded because all of these were for other firms:\n- `{EID}`\n- `{PID}`\n- `{SID}`\n",
+            {EDIETS, PAPA, STAAR},
+        ),
         (
             f"Found two.\n\n## Matches\n\n- `{SID}`\n- **Not included above but also qualifies:** `{PID}`\n",
             {STAAR, PAPA},
         ),
         (f"Found two.\n\n- `{SID}`\n\n**Not counted above, but qualifies:** `{PID}`\n", {STAAR, PAPA}),
-        (f"Found two.\n\n- `{SID}`\n- **Not included above but does not qualify:** `{PID}`\n", {STAAR}),
-        # review 6: abbreviations and inner colons do not end a rejecting label's reach.
-        (f"One: `{SID}`.\n- **Excluded:** eDiets, doc_id: `{EID}` (warranty only)\n", {STAAR}),
-        (f"One: `{SID}`.\n- **Excluded:** eDiets — Doc ID: `{EID}`\n", {STAAR}),
+        (f"Found two.\n\n- `{SID}`\n- **Not included above but does not qualify:** `{PID}`\n", {PAPA, STAAR}),
+        (f"One: `{SID}`.\n- **Excluded:** eDiets, doc_id: `{EID}` (warranty only)\n", {EDIETS, STAAR}),
+        (f"One: `{SID}`.\n- **Excluded:** eDiets — Doc ID: `{EID}`\n", {EDIETS, STAAR}),
         (
             f"One: `{SID}`.\n- **Not counted:** Papa John's International, Inc. and eDiets.com, Inc. (`{EID}`)\n",
-            {STAAR},
+            {EDIETS, PAPA, STAAR},
         ),
-        (f"One: `{SID}`.\n- **Excluded:** the U.S. affiliate of eDiets (`{EID}`)\n", {STAAR}),
-        (f"One: `{SID}`.\n- **Excluded:** Agreement No. 7, eDiets (`{EID}`)\n", {STAAR}),
-        (f"Two.\n- **Excluded:** `{EID}` (doc 2: warranty only); `{SID}` qualifies.\n", {STAAR}),
-        (f"Two.\n- **Excluded near-misses:** eDiets (reviewed: warranty only) and `{PID}`\n", set()),
-        # review 6: "Zero-rated" and "Nil-rated" are not "none".
+        (f"One: `{SID}`.\n- **Excluded:** the U.S. affiliate of eDiets (`{EID}`)\n", {EDIETS, STAAR}),
+        (f"One: `{SID}`.\n- **Excluded:** Agreement No. 7, eDiets (`{EID}`)\n", {EDIETS, STAAR}),
+        (f"Two.\n- **Excluded:** `{EID}` (doc 2: warranty only); `{SID}` qualifies.\n", {EDIETS, STAAR}),
+        (f"Two.\n- **Excluded near-misses:** eDiets (reviewed: warranty only) and `{PID}`\n", {PAPA}),
         (f"Found two.\n\n## Matches\n\n- `{SID}`\n\n## Excluded\n\nZero-rated: `{EID}`\n", {STAAR}),
         (f"Found two.\n\n- `{SID}`\n\n## Excluded\n\nNil-rated contracts are out of scope: `{EID}`\n", {STAAR}),
         (f"Found two.\n\n- `{SID}`\n\n## Excluded\n\nNone — `{EID}` qualifies too.\n", {STAAR, EDIETS}),
     ],
 )
-def test_review_6_shapes(text, expected):
+def test_review_6_probes(text, expected):
     assert contracts(text) == expected
 
 
 def test_review_6_campaign_shapes():
-    assert named("Harbour Lights.\nExcluded: Skylight: targets Northwind.") == {HARBOUR}
-    assert named("Harbour Lights.\nExcluded: Skylight (Jan. 3) and Northstar (Jan. 9).") == {HARBOUR}
-    assert named("Harbour Lights.\nExcluded: Skylight (jan. 3). Northstar targets Acme.") == {HARBOUR, NORTHSTAR}
+    assert named("Harbour Lights.\nExcluded: Skylight: targets Northwind.") == {HARBOUR, SKYLIGHT}
+    assert named("Harbour Lights.\nExcluded: Skylight (Jan. 3) and Northstar (Jan. 9).") == set(CAMPAIGNS)
+    assert named("Harbour Lights.\n\n**Excluded:** Skylight (Jan. 3) and Northstar (Jan. 9).") == {HARBOUR}
 
 
 @pytest.mark.parametrize(
@@ -805,3 +796,86 @@ def test_review_6_campaign_shapes():
 )
 def test_a_contrast_that_affirms_qualification_does_not_reject(label, rejects):
     assert rejecting_label(label) is rejects
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # review 7: a lead-in is judged on its whole label, the bold words and any words after them up to a colon.
+        (f"Three.\n\n- `{EID}`\n\n**Excluded** from the cap: indemnity claims under Staar (`{SID}`).", {EDIETS, STAAR}),
+        (f"Two.\n\n- `{EID}`\n\n**Not counted** above, but qualifies: Staar (`{SID}`)", {EDIETS, STAAR}),
+        (
+            f"Two.\n\n- `{EID}`\n\n**Not included** in my first pass, but it qualifies: Staar (`{SID}`).",
+            {EDIETS, STAAR},
+        ),
+        (
+            f"Two.\n\n## Matches\n- `{EID}`\n\n**Excluded** from the cap under Staar (`{SID}`): indemnity.\n- `{PID}`\n",
+            {EDIETS, STAAR, PAPA},
+        ),
+        (f"Two.\n\n- `{EID}`\n\n**Excluded** from the list: Staar (`{SID}`).", {EDIETS}),
+        (f"Two.\n\n- `{EID}`\n\n**Excluded**\n\nStaar (`{SID}`)", {EDIETS}),
+        # A bold span followed by running words with no colon is a sentence, not a lead-in.
+        (f"Three.\n\n- `{EID}`\n\n**Rejected** offers go to third parties under Staar (`{SID}`).", {EDIETS, STAAR}),
+        (
+            f"Two.\n\n- `{EID}`\n\n**Excluded** territories aside, Staar (`{SID}`) bars soliciting customers.",
+            {EDIETS, STAAR},
+        ),
+        (
+            f"Three.\n\n## Matches\n- `{EID}`\n\n**Rejected** offers revert to the licensor under Staar (`{SID}`), s4.\n"
+            f"- `{PID}` also qualifies\n",
+            {EDIETS, STAAR, PAPA},
+        ),
+        (
+            f"Three.\n\n## Matches\n- `{EID}`\n\n**Rejected offers revert to the licensor:** Staar (`{SID}`), s4.\n"
+            f"- `{PID}` also qualifies\n",
+            {EDIETS, STAAR, PAPA},
+        ),
+        # The same shapes in bullets are not lead-ins, and line labels are not read.
+        (f"Three.\n- `{EID}`\n- **Excluded** from the cap: indemnity claims under Staar (`{SID}`).", {EDIETS, STAAR}),
+        (f"Three.\n- `{EID}`\n- **Rejected** offers go to third parties under Staar (`{SID}`).", {EDIETS, STAAR}),
+        (f"Two.\n- `{EID}`\n- **Not counted** above, but qualifies: Staar (`{SID}`)", {EDIETS, STAAR}),
+        (
+            f"Two.\n- `{EID}`\n- **Excluded** territories aside, Staar (`{SID}`) bars soliciting customers.",
+            {EDIETS, STAAR},
+        ),
+        # review 7: "Exclusions" is ordinary content, in a line or a lead-in.
+        (
+            f"Three.\n\n1. Staar (`{SID}`): $5M CGL.\n2. eDiets (`{EID}`): $1M.\n"
+            f"Exclusions: Papa John's (`{PID}`) policy excludes punitive damages.\n",
+            {STAAR, EDIETS, PAPA},
+        ),
+        (
+            f"Three.\n\n- Staar (`{SID}`)\n- eDiets (`{EID}`)\n- Exclusions (uncapped): Papa John's (`{PID}`) indemnity.\n",
+            {STAAR, EDIETS, PAPA},
+        ),
+        (
+            f"Three.\n\n- Staar (`{SID}`)\n- eDiets (`{EID}`)\n\n**Exclusions:** Papa John's (`{PID}`) policy excludes punitive damages.\n",
+            {STAAR, EDIETS, PAPA},
+        ),
+        (
+            f"Found.\n\n- Staar (`{SID}`)\n- Not included: Canada and Mexico, per Papa John's (`{PID}`) s2.\n",
+            {STAAR, PAPA},
+        ),
+        # review 7: an indented bold lead-in over a paragraph is not read (an accepted false keep: read, an indented
+        # "**Excluded:**" inside a list item would take the rest of the section).
+        (f"One.\n\n- `{SID}`\n\n  **Not counted:**\n  eDiets (`{EID}`) warranty only.\n", {STAAR, EDIETS}),
+        # review 7: the rest.
+        (
+            f"Two.\n\n| Contract | Note |\n|---|---|\n| Staar (`{SID}`) | ok |\n| Excluded: | `{EID}` |\n",
+            {STAAR, EDIETS},
+        ),
+        (f"One.\n\n## Matches\n- `{SID}`\n\n## Excluded\n\nNone, but eDiets (`{EID}`) was close.\n", {STAAR, EDIETS}),
+        (f"Two.\n\n- `{SID}`\n\n## Excluded (keyword hits, but none count)\n- `{EID}`\n", {STAAR}),
+        (f"Two.\n\n- `{SID}`\n\n## Excluded (from the cap)\n- `{EID}`\n", {STAAR, EDIETS}),
+        (f"Two.\n\n1. **Matches**\n   - `{SID}`\n2. **Excluded**\n   - `{EID}`\n", {STAAR, EDIETS}),
+        (f"One: `{SID}`.\n- Excluded: Rand, eDiets, etc. Papa (`{PID}`) qualifies.\n", {STAAR, PAPA}),
+        (f"Excluded:\n- `{EID}`\n\nMatches:\n- `{SID}`\n", {STAAR, EDIETS}),
+        (f"Two.\n- `{SID}`\n- **Excluded per the question's scope (employees only):** `{EID}`", {STAAR, EDIETS}),
+        (f"Two.\n- `{SID}`\n- Excluded as additional insureds: Papa John's affiliates (`{PID}`)", {STAAR, PAPA}),
+        (f"Two.\n- `{SID}`\n- Excluded per s4.2: consequential damages, Papa John's (`{PID}`)", {STAAR, PAPA}),
+        (f"Two.\n- `{SID}`\n* Rejected: `{EID}`", {STAAR, EDIETS}),
+        (f"Two.\n\t- `{SID}`\n\tExcluded:\n\t- `{EID}`\n- `{PID}`", {STAAR, EDIETS, PAPA}),
+    ],
+)
+def test_review_7_probes(text, expected):
+    assert contracts(text) == expected
