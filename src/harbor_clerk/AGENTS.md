@@ -34,11 +34,18 @@ Tika. Don't invent a fourth.
 ## Storage
 
 All storage access goes through the `StorageBackend` ABC — never touch MinIO or
-the filesystem directly. `STORAGE_BACKEND` selects the implementation.
+the filesystem directly. `STORAGE_BACKEND` selects the implementation. Legacy
+uploads store originals at `originals/<doc_id>/<original_filename>` in the
+`originals` bucket; watched-folder and IMAP documents do **not** use it.
 
 Watched-folder documents are read in place from `source_path` and are never
 written to. IMAP messages and attachments are the one case where content is
-fetched and stored, because there is no file on disk to reference.
+fetched and stored (via the normal document path), as there is no file on disk.
+Read a document's bytes only through `watched_source` (`read_document_bytes`,
+`in_place_path*`): read in place means an active `WatchedFile` whose computed path
+the `source_path` is exactly. Never read an unverified `source_path`, never fall
+back to a stored original for a document read in place, and refuse `new_version`
+of one (409).
 
 ## Retrieval
 
@@ -191,10 +198,3 @@ whose extract stage failed on a path-quoting OSError.
   endpoint blocks the event loop — wrap it in `run_in_executor`.
 - SQLAlchemy enum members must be **lowercase** to match Postgres values: both
   `postgresql.ENUM` and `sa.Enum` send `.name`, not `.value`.
-
-## Legacy upload storage
-
-The legacy upload path stores originals in the `originals` bucket under
-`originals/<doc_id>/<original_filename>`. Watched-folder and IMAP documents do
-**not** use it — watched files are read in place from `source_path`, and mail
-content is stored via the normal document path.
