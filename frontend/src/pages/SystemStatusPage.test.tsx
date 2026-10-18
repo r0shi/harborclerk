@@ -175,6 +175,18 @@ describe('SystemStatusPage', () => {
     expect(screen.getByText('Still embedding')).toBeInTheDocument()
   })
 
+  it('shows watcher folder notes as information on a healthy Watched folders check', async () => {
+    mockRequests({
+      ...SUMMARY,
+      counts: { ...SUMMARY.counts, watched_folders: 2, folder_notes: { root_missing: 1, root_empty: 1 } },
+    } as typeof SUMMARY)
+
+    renderStatusPage()
+
+    expect(await screen.findByText('2 folders watching · 1 empty · 1 not found')).toBeInTheDocument()
+    expect(screen.queryByText('Folder unmounted')).not.toBeInTheDocument()
+  })
+
   it('renders service and worker diagnostics', async () => {
     mockRequests()
 

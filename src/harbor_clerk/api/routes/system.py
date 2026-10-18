@@ -36,7 +36,7 @@ from harbor_clerk.models import (
     User,
 )
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
-from harbor_clerk.models.watched import WatchedFolder
+from harbor_clerk.models.watched import WatchedFolder, folder_is_unavailable
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -406,16 +406,20 @@ async def status_summary(
     ).scalar() or 0
     ready_documents = stored_ready_documents + int(completed_status_stale_documents)
 
-    folder_rows = (
+    # Only an unmounted Docker mount is an access failure (`folder_is_unavailable`); the watcher's
+    # reasons (root missing, unreadable or empty) are reported per reason as informational notes.
+    folder_reason_rows = (
         await session.execute(
-            select(
-                func.count(WatchedFolder.folder_id),
-                func.count(WatchedFolder.folder_id).filter(WatchedFolder.unavailable_reason.is_not(None)),
+            select(WatchedFolder.unavailable_reason, func.count(WatchedFolder.folder_id)).group_by(
+                WatchedFolder.unavailable_reason
             )
         )
-    ).one()
-    watched_folders = int(folder_rows[0] or 0)
-    unavailable_folders = int(folder_rows[1] or 0)
+    ).all()
+    watched_folders = sum(int(n) for _reason, n in folder_reason_rows)
+    unavailable_folders = sum(int(n) for reason, n in folder_reason_rows if folder_is_unavailable(reason))
+    folder_notes = {
+        reason: int(n) for reason, n in folder_reason_rows if reason is not None and not folder_is_unavailable(reason)
+    }
 
     ner_skipped_documents = (
         await session.execute(
@@ -589,7 +593,10 @@ async def status_summary(
                 "kind": "folder_access",
                 "severity": "error",
                 "title": "Folder access needs repair",
-                "detail": f"{unavailable_folders} watched folder{'s' if unavailable_folders != 1 else ''} are unavailable.",
+                "detail": (
+                    f"{unavailable_folders} watched folder{'s are' if unavailable_folders != 1 else ' is'} "
+                    "unmounted: the mount under WATCH_ROOT is gone."
+                ),
                 "count": unavailable_folders,
                 "action_label": "Open Folders",
                 "action_href": "/folders",
@@ -713,6 +720,9 @@ async def status_summary(
             "failed_jobs": job_counts.get(JobStatus.error.value, 0),
             "watched_folders": watched_folders,
             "unavailable_folders": unavailable_folders,
+            # Informational, never in needs_attention: {reason: count} for the watcher's reasons
+            # (root_missing, root_unreadable, root_empty). The folder's documents stay searchable.
+            "folder_notes": folder_notes,
             "ner_skipped_documents": int(ner_skipped_documents),
             "failed_summarize_jobs": int(failed_summarize_jobs),
             "blocked_summarize_jobs": blocked_summarize_jobs,

@@ -377,8 +377,9 @@ def test_scan_folder_retires_sidecar_rows_an_earlier_build_indexed(factory, tmp_
             daemon._reconcile_folder(folder_id, str(tmp_path))
         assert _watched_file_paths(factory, folder_id, WatchedFileStatus.active) == ["INV-001.json", "INV-001.pdf"]
 
-        # The upgrade is a restart: a new process, which has compared nothing yet.
-        WatcherDaemon(factory)._reconcile_folder(folder_id, str(tmp_path))
+        # The same daemon: its stat cache skips the unchanged PDF, so the sidecar's
+        # own visit must retire it (a missed event leaves the same state).
+        daemon._reconcile_folder(folder_id, str(tmp_path))
 
         assert _watched_file_paths(factory, folder_id, WatchedFileStatus.active) == ["INV-001.pdf"]
         assert _watched_file_paths(factory, folder_id, WatchedFileStatus.removed) == ["INV-001.json"]

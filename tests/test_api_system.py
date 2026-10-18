@@ -277,7 +277,7 @@ async def test_status_summary_surfaces_recovery_attention(client, admin_user, ad
             ),
         ]
     )
-    db_session.add(WatchedFolder(path="/missing", unavailable_reason="permission denied"))
+    db_session.add(WatchedFolder(path="/missing", unavailable_reason="unmounted"))
     await db_session.flush()
 
     resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
@@ -309,6 +309,44 @@ async def test_status_summary_surfaces_recovery_attention(client, admin_user, ad
     assert data["recent_processing_documents"][0]["title"] == "Still embedding"
     assert data["recent_processing_documents"][0]["processing_stage"] == "embed"
     assert data["recent_processing_documents"][0]["job_status"] == "running"
+
+
+@pytest.mark.parametrize(
+    ("reason", "is_access_failure"),
+    [
+        ("unmounted", True),
+        ("root_missing", False),
+        ("root_unreadable", False),
+        ("root_empty", False),
+        ("a legacy value", False),
+    ],
+)
+async def test_status_summary_counts_only_unmounted_as_a_folder_access_failure(
+    client, admin_user, admin_token, db_session, reason, is_access_failure
+):
+    """An unplugged drive (root_missing) or an emptied folder (root_empty) keeps its
+    documents searchable: it is a note on the folder, never an app-wide error.
+    Only discovery's "unmounted" is a folder access failure (`folder_is_unavailable`)."""
+    db_session.add_all([WatchedFolder(path="/ok"), WatchedFolder(path="/noted", unavailable_reason=reason)])
+    await db_session.flush()
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["counts"]["watched_folders"] == 2
+    folder_issues = [issue for issue in data["needs_attention"] if issue["kind"] == "folder_access"]
+    if is_access_failure:
+        assert data["counts"]["unavailable_folders"] == 1
+        assert data["counts"]["folder_notes"] == {}
+        assert [(i["severity"], i["count"]) for i in folder_issues] == [("error", 1)]
+        assert "unmounted" in folder_issues[0]["detail"]
+        assert data["state"] == "needs_attention"
+    else:
+        assert data["counts"]["unavailable_folders"] == 0
+        assert data["counts"]["folder_notes"] == {reason: 1}
+        assert folder_issues == []
+        assert data["needs_attention"] == [], "a note on a folder raises no attention item at all"
+        assert data["state"] == "ready"
 
 
 async def test_status_summary_surfaces_failed_summarize_jobs(client, admin_user, admin_token, db_session):

@@ -33,3 +33,22 @@ export function unavailableReasonLabel(reason: string | null | undefined): strin
   if (reason === UNMOUNTED) return 'unmounted'
   return WATCHER_REASON_LABELS[reason] ?? 'unavailable'
 }
+
+// How a count of folders with each note reads in a summary line ("1 not found").
+const NOTE_COUNT_LABELS: Record<string, string> = {
+  root_missing: 'not found',
+  root_unreadable: 'not readable',
+  root_empty: 'empty',
+}
+
+/**
+ * The status summary's informational folder notes as one line, e.g. "1 not found · 2 empty",
+ * or null when there are none. Never an error: these folders' documents stay searchable.
+ */
+export function folderNotesSummary(notes: Record<string, number> | null | undefined): string | null {
+  const parts = Object.entries(notes ?? {})
+    .filter(([, count]) => count > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([reason, count]) => `${count} ${NOTE_COUNT_LABELS[reason] ?? 'with a note'}`)
+  return parts.length ? parts.join(' · ') : null
+}

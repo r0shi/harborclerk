@@ -59,6 +59,8 @@ LISTENER_HEALTHY_SECS = 120.0
 # How often each watched root is stat'ed to notice it was replaced (#739). An
 # observer that sees its root go wakes the check at once; this is the backstop.
 ROOT_CHECK_INTERVAL_SECS = 5.0
+# A failing re-attach is retried with backoff, at least once every this many checks plus one (~5 min).
+REATTACH_MAX_SKIPPED_CHECKS = 59
 
 StatKey = tuple[int, int, int, int, int]
 
@@ -123,6 +125,8 @@ class WatcherDaemon:
         # The watcher reason each folder's last pass recorded (`_record_pass`), so `_check_roots` can
         # notice a root that is back without waiting for the periodic pass.
         self._reasons: dict[uuid.UUID, str] = {}
+        # Per folder whose observer failed to attach: [consecutive failures, root checks still to skip].
+        self._reattach_failures: dict[uuid.UUID, list[int]] = {}
         self._stop = threading.Event()
         # Set by an observer that lost its root, so the monitor checks now.
         self._wake = threading.Event()
@@ -166,6 +170,8 @@ class WatcherDaemon:
                     del self._observers[fid]
                     self._seen_stats.pop(fid, None)
                     self._missing_roots.discard(fid)
+                    self._reattach_failures.pop(fid, None)
+                    self._reasons.pop(fid, None)
                     logger.info("watcher: stopped observer for folder %s", fid)
 
             # Start new observers. One that cannot start (its root is missing)
@@ -178,8 +184,11 @@ class WatcherDaemon:
                 try:
                     obs.start()
                 except Exception:
+                    # Still run the pass below: it stamps last_scan_at and records
+                    # why (root missing or unreadable), so the folder does not read
+                    # "scanning" for good. `_check_roots` retries the attach.
                     logger.exception("watcher: failed to start observer for %s (%s)", fid, path)
-                    continue
+                    self._reattach_failures[fid] = [1, 0]
                 # Reconcile in a daemon thread so the sync loop doesn't block
                 # on it. The observer is already registered, so a file added
                 # during the walk is caught by both; the sha comparison makes
@@ -211,6 +220,10 @@ class WatcherDaemon:
                 if self._reasons.get(fid) in (ROOT_MISSING, ROOT_UNREADABLE) and _listable(obs.root):
                     self._request_reconcile(fid)
                 continue
+            backoff = self._reattach_failures.get(fid)
+            if backoff is not None and backoff[1] > 0:
+                backoff[1] -= 1  # backing off after repeated failures
+                continue
             with self._observers_lock:
                 if self._observers.get(fid) is not obs:
                     continue
@@ -218,8 +231,25 @@ class WatcherDaemon:
                 try:
                     obs.restart()
                 except Exception:
-                    logger.exception("watcher: failed to re-attach observer for %s", obs.root)
+                    failures = backoff[0] + 1 if backoff is not None else 1
+                    # Retry after 0, 1, 3, 7 ... checks, at most every REATTACH_MAX_SKIPPED_CHECKS + 1.
+                    self._reattach_failures[fid] = [
+                        failures,
+                        min(2 ** (failures - 1), REATTACH_MAX_SKIPPED_CHECKS + 1) - 1,
+                    ]
+                    if backoff is None:
+                        logger.exception(
+                            "watcher: failed to re-attach observer for %s; retrying with backoff", obs.root
+                        )
+                        # A pass still runs, so the folder records why (root unreadable) and
+                        # its last_scan_at, instead of reading "scanning" while this retries.
+                        self._request_reconcile(fid)
+                    else:
+                        logger.debug("watcher: re-attach of %s failed again (%d attempts)", obs.root, failures)
                     continue
+                if backoff is not None:
+                    logger.info("watcher: re-attached observer for %s after %d failed attempts", obs.root, backoff[0])
+                self._reattach_failures.pop(fid, None)
                 self._seen_stats.pop(fid, None)
             self._request_reconcile(fid)
 
@@ -338,11 +368,17 @@ class WatcherDaemon:
                         # ignore it anyway, but skipping the call saves
                         # the SHA computation and DB roundtrip.
                         continue
+                    if reason is SkipReason.SIDECAR and rel_path in active:
+                        # A sidecar still indexed as a document (by an earlier
+                        # build, or a missed event before its sibling landed) is
+                        # retired here, by its own visit: the sibling's visit
+                        # also retires it, but an unchanged sibling is skipped
+                        # by the stat cache.
+                        self._on_event(FileEvent(EventKind.created, folder_id, rel_path, abs_path))
+                        continue
                     if reason is not None:
                         # NOISE and SIDECAR are intentional; don't tally and
-                        # don't dispatch. A sidecar indexed as a document by
-                        # an earlier build is retired when the scan reaches
-                        # its sibling (handle_event), so it needs no visit.
+                        # don't dispatch.
                         continue
 
                     admitted += 1

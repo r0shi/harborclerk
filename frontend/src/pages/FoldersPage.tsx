@@ -8,7 +8,7 @@ import { Card } from '../components/Card'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
 import EmailSection from '../components/EmailSection'
-import { folderDeleteProtected, unavailableReasonLabel } from '../utils/watchedFolders'
+import { folderDeleteProtected, folderIsUnavailable, unavailableReasonLabel } from '../utils/watchedFolders'
 
 interface FolderInfo {
   folder_id: string
@@ -54,8 +54,10 @@ function errorMessage(e: unknown, fallback: string): string {
 // Precedence: a disabled folder shouldn't show "scanning" or "processing" even
 // if a stale scan is in flight or jobs are still draining.
 function mapFolderStatusToPillState(f: FolderInfo, p?: ProgressInfo): PillState {
-  if (f.unavailable_reason) return 'error'
+  if (folderIsUnavailable(f.unavailable_reason)) return 'error'
   if (!f.enabled) return 'idle'
+  // A watcher note (root missing, unreadable or empty) is informational: never red.
+  if (f.unavailable_reason) return 'pending'
   if (p?.scan_status === 'scanning' || p?.ingest_status === 'processing') return 'running'
   return 'active'
 }

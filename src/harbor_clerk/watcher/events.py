@@ -212,12 +212,8 @@ def _sha256_of(path: str) -> bytes:
     return h.digest()
 
 
-def _listed_name(directory: str, name: str) -> str | None:
-    """The entry of ``directory`` that is ``name`` exactly, compared NFC-normalised; None when there is none."""
-    try:
-        names = os.listdir(directory)
-    except OSError:
-        return None
+def _listed_name(names: list[str], name: str) -> str | None:
+    """The entry of ``names`` that is ``name`` exactly, compared NFC-normalised; None when there is none."""
     if name in names:
         return name
     wanted = unicodedata.normalize("NFC", name)
@@ -240,12 +236,21 @@ def file_exists_exact(base: str, relative_path: str) -> bool:
     listings settle only the case-insensitive ambiguity, and listing a 20,000
     entry directory per deleted file made ``rm *.pdf`` cost minutes of serial
     work under the folder lock.
+
+    A path that resolves under a directory that cannot be listed (search
+    permission without read, mode 0311) cannot be settled; it is answered
+    from the resolved path, since guessing a deletion would retire a live
+    document.
     """
     if not os.path.lexists(os.path.join(base, relative_path)):
         return False
     current = base
     for part in relative_path.split("/"):
-        name = _listed_name(current, part)
+        try:
+            names = os.listdir(current)
+        except OSError:
+            return os.path.isfile(os.path.join(base, relative_path))
+        name = _listed_name(names, part)
         if name is None:
             return False
         current = os.path.join(current, name)

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { folderDeleteProtected, folderIsUnavailable, unavailableReasonLabel } from './watchedFolders'
+import {
+  folderDeleteProtected,
+  folderIsUnavailable,
+  folderNotesSummary,
+  unavailableReasonLabel,
+} from './watchedFolders'
 
 describe('folderIsUnavailable', () => {
   it('is true only for an unmounted Docker mount', () => {
@@ -20,6 +25,18 @@ describe('folderDeleteProtected', () => {
     expect(folderDeleteProtected(mount('root_empty'))).toBe(true)
     expect(folderDeleteProtected(mount('unmounted'))).toBe(false)
     expect(folderDeleteProtected({ auto_discovered: false, unavailable_reason: null })).toBe(false)
+  })
+})
+
+describe('folderNotesSummary', () => {
+  it('reads the watcher notes as one line, and nothing when there are none', () => {
+    expect(folderNotesSummary(undefined)).toBeNull()
+    expect(folderNotesSummary({})).toBeNull()
+    expect(folderNotesSummary({ root_missing: 0 })).toBeNull()
+    expect(folderNotesSummary({ root_missing: 1 })).toBe('1 not found')
+    expect(folderNotesSummary({ root_unreadable: 1, root_empty: 2, root_missing: 3 })).toBe(
+      '2 empty · 3 not found · 1 not readable',
+    )
   })
 })
 

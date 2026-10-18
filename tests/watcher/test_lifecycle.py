@@ -784,12 +784,66 @@ def test_a_failed_reattach_is_retried_and_reconciles_only_once_attached(factory,
     daemon._request_reconcile = requested.append
 
     daemon._check_roots()
-    assert (obs.restarts, requested) == (1, []), "no pass over a root the observer is not watching"
-    assert folder_id in daemon._seen_stats
+    assert (obs.restarts, requested) == (1, [folder_id]), "a failed attach still gets a pass, to record why"
+    assert folder_id in daemon._seen_stats, "the stat cache is kept until an attach succeeds"
 
     daemon._check_roots()
-    assert (obs.restarts, requested) == (2, [folder_id])
+    assert (obs.restarts, requested) == (2, [folder_id, folder_id])
     assert folder_id not in daemon._seen_stats, "a new attachment compares every file again"
+    assert folder_id not in daemon._reattach_failures
 
     daemon._check_roots()
-    assert (obs.restarts, requested) == (2, [folder_id]), "a healthy observer is left alone"
+    assert (obs.restarts, requested) == (2, [folder_id, folder_id]), "a healthy observer is left alone"
+
+
+def test_an_observer_that_cannot_attach_still_records_a_pass_and_backs_off(factory, tmp_path, monkeypatch, caplog):
+    """On Linux, inotify and then polling can both refuse an unlistable root at
+    start(). The folder must still be stamped and say why, and the retries must
+    back off and log one traceback, not two every 5 s."""
+    import logging
+
+    from harbor_clerk.watcher.observer import FolderObserver
+
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _add_folder(factory, root)
+    real_start = FolderObserver.start
+    attempts = []
+
+    def refusing_start(self):
+        attempts.append(self.root)
+        raise PermissionError(13, "Permission denied", self.root)
+
+    monkeypatch.setattr(FolderObserver, "start", refusing_start)
+    root.chmod(0o300)  # searchable, not listable
+    daemon = WatcherDaemon(factory)
+    try:
+        if os.access(root, os.R_OK):
+            pytest.skip("running with privileges that read a write-only directory")
+        daemon._sync_observers()
+        _wait_for(
+            "the pass to stamp the folder and record why",
+            lambda: (row := _folder_row(factory, folder_id))[0] is not None and row[1] == watcher_main.ROOT_UNREADABLE,
+        )
+        assert attempts == [str(root)]
+
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="harbor_clerk.watcher"):
+            for _ in range(10):
+                daemon._check_roots()
+        # Retries after 0, 1, 3 skipped checks: the 1st, 3rd and 7th of ten.
+        assert len(attempts) == 4
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert errors == [], "the start failure was logged once; retries are not"
+
+        root.chmod(0o755)
+        monkeypatch.setattr(FolderObserver, "start", real_start)
+        for _ in range(16):  # the longest wait the backoff has reached is 7 checks
+            daemon._check_roots()
+            if folder_id not in daemon._reattach_failures:
+                break
+        assert folder_id not in daemon._reattach_failures, "the attach succeeded once the root was readable"
+        _wait_for("the reason to clear", lambda: _folder_row(factory, folder_id)[1] is None)
+    finally:
+        root.chmod(0o755)
+        daemon.stop()

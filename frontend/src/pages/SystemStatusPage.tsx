@@ -8,6 +8,7 @@ import { Card } from '../components/Card'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { useLLMStatusContext } from '../components/LLMStatusBanner'
 import type { LLMStatus } from '../hooks/useLLMStatus'
+import { folderNotesSummary } from '../utils/watchedFolders'
 
 interface HealthCheck {
   status: string
@@ -77,6 +78,8 @@ interface StatusSummary {
     failed_jobs: number
     watched_folders: number
     unavailable_folders: number
+    // Informational watcher notes per reason (root_missing, root_unreadable, root_empty): never an error.
+    folder_notes?: Record<string, number>
     ner_skipped_documents: number
     stuck_jobs: number
   }
@@ -515,9 +518,14 @@ function ReadinessChecklist({
         state={foldersReady ? 'active' : summary?.counts.unavailable_folders ? 'error' : 'idle'}
         detail={
           foldersReady
-            ? `${summary?.counts.watched_folders ?? 0} folder${summary?.counts.watched_folders === 1 ? '' : 's'} watching`
+            ? [
+                `${summary?.counts.watched_folders ?? 0} folder${summary?.counts.watched_folders === 1 ? '' : 's'} watching`,
+                folderNotesSummary(summary?.counts.folder_notes),
+              ]
+                .filter(Boolean)
+                .join(' · ')
             : summary?.counts.unavailable_folders
-              ? 'Folder access issue'
+              ? 'Folder unmounted'
               : 'No folders configured'
         }
       />

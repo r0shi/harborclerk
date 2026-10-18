@@ -1561,6 +1561,40 @@ def test_a_missing_file_is_answered_without_listing_its_directory(tmp_path, monk
     assert len(calls) == 2, "a path that resolves is checked component by component"
 
 
+def test_a_resolving_path_under_an_unlistable_directory_is_not_guessed_deleted(tmp_path, monkeypatch):
+    (tmp_path / "locked").mkdir()
+    (tmp_path / "locked" / "doc.txt").write_text("x")
+    real_listdir = os.listdir
+
+    def refusing_listdir(path="."):
+        if os.path.basename(str(path)) == "locked":
+            raise PermissionError(13, "Permission denied", path)
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", refusing_listdir)
+    assert file_exists_exact(str(tmp_path), "locked/doc.txt")
+    assert not file_exists_exact(str(tmp_path), "locked/gone.txt"), "a path that does not resolve is still gone"
+
+
+def test_delete_under_a_search_only_directory_keeps_the_live_document(sync_session, folder, tmp_path):
+    """Mode 0311: the file can be reached but its directory cannot be listed.
+    A delete event for a file that is there must not retire it."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    f = locked / "doc.txt"
+    f.write_text("body")
+    wf, doc = _index(sync_session, folder, f, "locked/doc.txt")
+    locked.chmod(0o311)
+    try:
+        if os.access(locked, os.R_OK):
+            pytest.skip("running with privileges that list a search-only directory")
+        handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "locked/doc.txt", str(f)))
+        sync_session.commit()
+    finally:
+        locked.chmod(0o755)
+    assert (wf.status, doc.status) == (WatchedFileStatus.active, "active")
+
+
 def test_file_exists_exact_requires_a_regular_file(tmp_path):
     (tmp_path / "sub").mkdir()
     assert not file_exists_exact(str(tmp_path), "sub")
