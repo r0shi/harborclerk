@@ -325,3 +325,65 @@ def test_the_stage_holds_one_budget_for_the_summary_and_the_type(monkeypatch) ->
     monkeypatch.setattr(stage, "classify_doc_type", record)
     assert stage._summary_and_type(uuid.uuid4(), CHUNKS, PDF) == ("text", "model", "Invoice")
     assert seen[0] is not None and seen[0] is seen[1], "the summary and the type waited on separate budgets"
+
+
+class OomOnPrompt(Server):
+    """A model that loads but dies on its first prompt: READY, then every request kills it, and it comes
+    back through 3 s with nothing listening and 27 s of loading. It is READY again and again, so the
+    failing flag never trips; only the document's budget bounds the waiting."""
+
+    def __init__(self, clock: Clock) -> None:
+        super().__init__(clock)
+        self.crashed_at: float | None = None
+
+    def state(self) -> int | None:
+        if self.crashed_at is None:
+            return 200
+        since = self.clock.now - self.crashed_at
+        return None if since < 3 else 503 if since < 30 else 200
+
+    def post(self, url, **kwargs):
+        code = self.state()
+        if code == 200:
+            self.crashed_at = self.clock.now  # the prompt kills it
+        if code in (200, None):
+            raise httpx.ConnectError("refused", request=httpx.Request("POST", url))
+        return httpx.Response(503, request=httpx.Request("POST", url))
+
+
+def test_a_server_that_dies_on_every_prompt_costs_a_long_document_one_budget(compose, clock, monkeypatch) -> None:
+    # Every call site waits for READY and gets it, then the request kills the server again: with a budget
+    # per call site a 400-chunk document would wait 30 s per call, far past the stage timeout.
+    server = OomOnPrompt(clock)
+    monkeypatch.setattr(health.httpx, "get", server)
+    monkeypatch.setattr(summarize.httpx, "post", server.post)
+    chunks = ["A long contract clause about termination, notice and the obligations that survive it. " * 12] * 400
+    started = clock.now
+    _, model_used, _ = _document(chunks)
+    assert model_used == "extractive"
+    assert clock.now - started <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS < STAGE_TIMEOUT_SECONDS
+
+
+def test_a_document_that_saw_the_server_ready_does_not_flag_it(compose, clock, monkeypatch) -> None:
+    # Ready when the document starts, gone for the rest of it: the server was not failing to load, so the
+    # next document still waits for it, and gets the model when it is back.
+    server = Server(clock, up_at=clock.now)
+    monkeypatch.setattr(health.httpx, "get", server)
+    gone = [True]
+
+    def post(url, **kwargs):
+        if gone[0]:
+            server.up_at = float("inf")
+            raise httpx.ConnectError("refused", request=httpx.Request("POST", url))
+        return _completion(json.dumps({"summary": SUMMARY}))
+
+    monkeypatch.setattr(summarize.httpx, "post", post)
+    assert _document()[1] == "extractive"
+    assert health._server_failing is False
+    clock.now += 600
+    server.up_at = clock.now + 5  # back after a short restart
+    gone[0] = False
+    clock.slept.clear()
+    text, model_used, _ = _document()
+    assert (text, model_used) == (SUMMARY, "qwen35-4b")
+    assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS
