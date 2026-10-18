@@ -374,6 +374,7 @@ def test_a_hedged_or_prohibiting_section_counts_and_a_rejecting_one_does_not():
         # A label that names its own item and rejects keeps the line, so the items after its colon still count (and
         # the named one is counted too: the label text stays).
         ("Skylight was excluded: only Harbour Lights targets Acme Corp.", {SKYLIGHT, HARBOUR}),
+        (f"Two.\n- Not counted — Staar (`{SID}`): Papa John's (`{PID}`) qualifies.", {STAAR, PAPA}),
     ],
 )
 def test_a_line_label_that_rejects_and_names_no_item_takes_the_rest_of_its_line(text, expected):
