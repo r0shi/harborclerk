@@ -58,6 +58,41 @@ def check_pipeline_seq(session, doc_id: uuid.UUID, expected_seq: int) -> bool:
     return current == expected_seq
 
 
+def stage_run_is_current(session, doc_id: uuid.UUID, stage: JobStage, worker_seq: int) -> bool:
+    """Return True while this worker's run of ``stage`` is still wanted.
+
+    ``check_pipeline_seq`` answers only "has the content changed?". Cancelling
+    a document (``cancel_doc_jobs``) and the queue clear (``/system/clear-queue``)
+    change neither the content nor the seq: they set the job row to ``error``.
+    A loop that checked only the seq kept calling the embedder for a cancelled
+    document until the stage timed out, while every counter said idle (#620).
+    Polling the job row catches both, and any future stop that writes ``error``,
+    without giving cancellation a second meaning of "new generation".
+
+    The checks are ``mark_stage_running``'s, re-asked mid-run: the document
+    exists at ``worker_seq`` and its job row for ``stage`` exists at that
+    generation and has not been set to ``error``. Column reads, not ORM
+    objects, so the session's identity map cannot hand back a stale status.
+    """
+    row = session.execute(
+        select(Document.pipeline_seq, IngestionJob.pipeline_seq, IngestionJob.status)
+        .select_from(Document)
+        .outerjoin(
+            IngestionJob,
+            (IngestionJob.doc_id == Document.doc_id) & (IngestionJob.stage == stage),
+        )
+        .where(Document.doc_id == doc_id)
+    ).first()
+    if row is None:
+        return False
+    doc_seq, job_seq, job_status = row
+    if (doc_seq or 0) != worker_seq:
+        return False
+    if job_status is None or job_seq != worker_seq:
+        return False
+    return job_status != JobStatus.error
+
+
 # stage → (queue_name, timeout_seconds, pipeline_status_while_running)
 STAGE_CONFIG: dict[JobStage, tuple[str, int, PipelineStatus]] = {
     JobStage.extract: ("io", 600, PipelineStatus.extracting),
@@ -69,6 +104,21 @@ STAGE_CONFIG: dict[JobStage, tuple[str, int, PipelineStatus]] = {
     JobStage.summarize: ("llm", 900, PipelineStatus.summarizing),
     JobStage.finalize: ("io", 600, PipelineStatus.finalizing),
 }
+
+# Retry-later for the embed stage (#619). The embedder client's own retries
+# (embedder_client.py, ~12-24 s) are sized to outlast a restart; the memory
+# pressure that failed 32 documents in #619 lasted minutes. When those retries
+# run out on a service failure (EmbedderUnavailableError), the job goes back to
+# `queued` with a `retry_after` instead of `error`, and claim_next_job skips it
+# until then. The delays sum to ~63 minutes, past every outage measured there;
+# a document still failing after the last one is broken, or the embedder is,
+# and it ends `error` with the reason. Attempts count consecutive deferrals
+# without progress: an attempt that embedded a batch starts the count over,
+# since the chunks it stored are kept and a slow, progressing document is not
+# a broken one.
+EMBED_RETRY_REASON = "embedder_unavailable"
+EMBED_RETRY_DELAYS_SECONDS = (60, 120, 300, 600, 900, 1800)
+EMBED_RETRY_MAX_ATTEMPTS = len(EMBED_RETRY_DELAYS_SECONDS) + 1
 
 # Ordered pipeline stages (documentation; actual execution uses fan-out after chunk)
 STAGE_ORDER = [
@@ -322,6 +372,11 @@ def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> N
             # period when it was actually `done`.
             existing.created_at = datetime.now(UTC)
             existing.priority = priority
+            if stage == JobStage.embed:
+                # The embed row's metrics hold only its retry-later state
+                # (worker/entry.py). A fresh cycle starts that budget afresh and
+                # must not inherit a retry_after that would hold the claim back.
+                existing.metrics = {}
         else:
             job = IngestionJob(
                 doc_id=doc_id,
@@ -613,6 +668,18 @@ def mark_stage_done(
                 stage.value,
                 worker_seq,
                 job.pipeline_seq,
+            )
+            return
+        if job.status == JobStatus.error:
+            # Cancelled (or queue-cleared) while running. A stage that stops on
+            # a cancel still calls this on its way out, per the every-exit-path
+            # rule; marking the row done here would overwrite "Cancelled by
+            # user" and advance the pipeline the user just stopped (#620).
+            logger.info(
+                "mark_stage_done: %s for doc %s was cancelled while running (%s), leaving it",
+                stage.value,
+                doc_id,
+                job.error,
             )
             return
         job.status = JobStatus.done

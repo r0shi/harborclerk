@@ -18,6 +18,24 @@ logger = logging.getLogger(__name__)
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
 
+class DocumentTooLargeError(RuntimeError):
+    """A watched-folder document would produce more chunks than allowed.
+
+    Raised by the chunk stage so execute_job records it as the document's
+    error, the way any stage failure is: one CUAD JSON dump of 57,180 chunks
+    otherwise held the embedder for the whole 3600 s stage timeout (#619).
+    """
+
+
+def _is_watched_folder_doc(doc: Document) -> bool:
+    """Read in place from a watched folder: a source path and no stored original.
+
+    Uploads and IMAP messages keep an original in storage
+    (``original_object_key``); only watched-folder documents have none.
+    """
+    return bool(doc.source_path) and not doc.original_object_key
+
+
 def _find_code_fence_ranges(text: str) -> list[tuple[int, int]]:
     """Return char ranges covering each fenced code block in ``text``.
 
@@ -282,6 +300,17 @@ def run_chunk(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         for c in existing:
             session.delete(c)
         session.flush()
+
+        ceiling = settings.watched_max_chunks_per_document
+        if ceiling > 0 and _is_watched_folder_doc(doc) and len(chunk_ranges) > ceiling:
+            # The old chunks go too: they are the previous version's text, and
+            # the pages they cite were just replaced by extract.
+            session.commit()
+            raise DocumentTooLargeError(
+                f"{len(chunk_ranges):,} chunks exceeds the watched-folder limit of {ceiling:,} "
+                f"(WATCHED_MAX_CHUNKS_PER_DOCUMENT). Raise the limit, or keep files like this, "
+                f"such as dataset or database dumps, out of the watched folder."
+            )
 
         for i, (char_start, char_end) in enumerate(chunk_ranges):
             chunk_text = full_text[char_start:char_end]

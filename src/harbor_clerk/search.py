@@ -17,7 +17,15 @@ from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.passage_cap import cap_text, refuse_filter_past_cap
 from harbor_clerk.search_rerank import rerank_hits
-from harbor_clerk.search_types import ConflictSource, FindAllHit, FindAllResult, SearchHit, SearchResult
+from harbor_clerk.search_types import (
+    SEMANTIC_OK,
+    SEMANTIC_UNAVAILABLE,
+    ConflictSource,
+    FindAllHit,
+    FindAllResult,
+    SearchHit,
+    SearchResult,
+)
 from harbor_clerk.text_contains import fold_search_text, fold_search_text_spans, text_contains_clause
 
 # Re-export for backward compatibility — callers that do
@@ -518,6 +526,7 @@ async def hybrid_search(
 
     # --- 2. Semantic candidates (vector) ---
     vector_scores: dict[uuid.UUID, float] = {}
+    semantic_status = SEMANTIC_OK
     try:
         query_embedding = await _embed_query(query)
         # pgvector post-filters an HNSW scan: the index yields hnsw.ef_search
@@ -546,7 +555,13 @@ async def hybrid_search(
         for row in result:
             vector_scores[row.chunk_id] = 1.0 - float(row.distance)
     except Exception:
+        # Lexical-only is the right answer for one request, and a silent one
+        # was wrong for hundreds (#685): every result now says so, so the
+        # caller (a person, an agent, research) can tell keyword-only from
+        # complete. The empty return below carries it too, since "nothing
+        # found" is exactly the result a missing vector leg falsifies.
         logger.warning("Embedder unavailable, falling back to lexical-only search")
+        semantic_status = SEMANTIC_UNAVAILABLE
 
     # --- 3. Normalize & merge ---
     norm_fts = _normalize_scores(fts_scores)
@@ -554,7 +569,7 @@ async def hybrid_search(
 
     all_chunk_ids = set(norm_fts) | set(norm_vec)
     if not all_chunk_ids:
-        return SearchResult(hits=[])
+        return SearchResult(hits=[], semantic_status=semantic_status)
 
     combined: dict[uuid.UUID, float] = {}
     for cid in all_chunk_ids:
@@ -655,6 +670,7 @@ async def hybrid_search(
         possible_conflict=possible_conflict,
         conflict_sources=conflict_sources,
         reranker_status=reranker_status,
+        semantic_status=semantic_status,
     )
 
 
@@ -932,4 +948,5 @@ async def find_all(
         truncated=total_matches > offset + len(hits),
         sort_by=sort_by,
         presentation=presentation,
+        semantic_status=inner.semantic_status,
     )

@@ -3,6 +3,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -160,6 +161,52 @@ async def ping() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# How long an embedder probe result stands. The probe runs a real encode, and
+# /system/health is fetched on every app boot and Status page load and by the
+# macOS client's backend detector: cached, a burst of loads costs one encode.
+# Short enough that an outage, or the recovery from one, shows within it.
+EMBEDDER_PROBE_TTL_SECONDS = 30.0
+_embedder_probe_cache: tuple[float, str, str] | None = None  # (monotonic time, embedder_url, result)
+
+
+async def _embedder_check(embedder_url: str) -> str:
+    """Probe the embedder the way search uses it: /health, then POST /embed of one text.
+
+    /health alone said 200 for the whole of #685 while every /embed returned
+    500, so the app looked healthy while search ran keyword-only for hours.
+    """
+    global _embedder_probe_cache
+    now = time.monotonic()
+    cached = _embedder_probe_cache
+    if cached is not None and cached[1] == embedder_url and now - cached[0] < EMBEDDER_PROBE_TTL_SECONDS:
+        return cached[2]
+
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{embedder_url}/health", timeout=5)
+            if r.status_code != 200:
+                result = f"error: HTTP {r.status_code}"
+            else:
+                r = await client.post(
+                    f"{embedder_url}/embed",
+                    json={"texts": ["health check"], "task": "query"},
+                    timeout=10,
+                )
+                if r.status_code != 200:
+                    result = f"error: /embed returned HTTP {r.status_code}"
+                else:
+                    embeddings = r.json().get("embeddings")
+                    ok = isinstance(embeddings, list) and len(embeddings) == 1 and bool(embeddings[0])
+                    result = "ok" if ok else "error: /embed returned no vector"
+    except Exception as e:
+        result = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
+    if result != "ok":
+        logger.error("Embedder health check failed: %s", result)
+
+    _embedder_probe_cache = (now, embedder_url, result)
+    return result
+
+
 @router.get("/system/health")
 async def health_check(
     session: AsyncSession = Depends(get_session),
@@ -196,14 +243,8 @@ async def health_check(
         logger.error("Tika health check failed: %s", describe_error(e))
         checks["tika"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
 
-    # Embedder
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(f"{settings.embedder_url}/health", timeout=5)
-            checks["embedder"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
-    except Exception as e:
-        logger.error("Embedder health check failed: %s", describe_error(e))
-        checks["embedder"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
+    # Embedder: liveness, then a real one-text embed (cached, see _embedder_check)
+    checks["embedder"] = await _embedder_check(settings.embedder_url)
 
     # Reranker — only probed when enabled; disabled is not a degraded state
     if settings.reranker_enabled:
@@ -459,6 +500,29 @@ async def status_summary(
     ).one()
     blocked_summarize_jobs = int(blocked_summarize_row[0] or 0)
     next_summarize_retry_at = blocked_summarize_row[1]
+    # Embeds deferred because the embedder could not serve them (worker/entry.py,
+    # #619): queued, so they would otherwise count only as "processing" while
+    # the embedder is down.
+    from harbor_clerk.worker.pipeline import EMBED_RETRY_REASON
+
+    blocked_embed_row = (
+        await session.execute(
+            select(
+                func.count(func.distinct(IngestionJob.doc_id)),
+                func.min(IngestionJob.metrics["retry_after"].astext),
+            )
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.stage == JobStage.embed,
+                IngestionJob.status == JobStatus.queued,
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+                IngestionJob.metrics["reason"].astext == EMBED_RETRY_REASON,
+            )
+        )
+    ).one()
+    blocked_embed_jobs = int(blocked_embed_row[0] or 0)
+    next_embed_retry_at = blocked_embed_row[1]
 
     now = datetime.now(UTC)
     running_jobs = (
@@ -661,6 +725,24 @@ async def status_summary(
                 "action_href": "/settings/models",
             }
         )
+    if blocked_embed_jobs:
+        embed_label = "document is" if blocked_embed_jobs == 1 else "documents are"
+        retry_detail = f" Next retry is scheduled around {next_embed_retry_at}." if next_embed_retry_at else ""
+        needs_attention.append(
+            {
+                "kind": "embedding_blocked",
+                "severity": "warning",
+                "title": "Embedding is paused: the embedding service is failing",
+                "detail": (
+                    f"{blocked_embed_jobs} {embed_label} waiting for the embedding service. Until they are embedded, "
+                    "search finds them by keyword only. Harbor Clerk will retry automatically with backoff."
+                    f"{retry_detail}"
+                ),
+                "count": blocked_embed_jobs,
+                "action_label": "Open diagnostics",
+                "action_href": "/settings/diagnostics",
+            }
+        )
     if ner_skipped_documents:
         needs_attention.append(
             {
@@ -716,6 +798,7 @@ async def status_summary(
             "ner_skipped_documents": int(ner_skipped_documents),
             "failed_summarize_jobs": int(failed_summarize_jobs),
             "blocked_summarize_jobs": blocked_summarize_jobs,
+            "blocked_embed_jobs": blocked_embed_jobs,
             "stuck_jobs": len(stuck_jobs),
         },
         "needs_attention": needs_attention,
@@ -765,6 +848,35 @@ async def system_stats(
     except Exception as e:
         logger.error("Failed to collect Postgres stats: %s", describe_error(e))
         result["postgres"] = {"error": describe_error(e)}
+
+    # ── Embedding coverage (active documents) ──
+    # Chunks without a vector are invisible to semantic search. After #685 the
+    # only way to learn that 29% of a corpus had none was to query Postgres.
+    try:
+        row = (
+            await session.execute(
+                select(
+                    func.count(Chunk.chunk_id),
+                    func.count(Chunk.embedding),
+                    func.count(func.distinct(Chunk.doc_id)),
+                    func.count(func.distinct(Chunk.doc_id)).filter(Chunk.embedding.is_(None)),
+                )
+                .join(Document, Document.doc_id == Chunk.doc_id)
+                .where(Document.status == "active")
+            )
+        ).one()
+        chunks_total, chunks_embedded, docs_with_chunks, docs_missing = (int(v or 0) for v in row)
+        result["embeddings"] = {
+            "chunks_total": chunks_total,
+            "chunks_embedded": chunks_embedded,
+            "chunks_missing": chunks_total - chunks_embedded,
+            "documents_with_chunks": docs_with_chunks,
+            "documents_fully_embedded": docs_with_chunks - docs_missing,
+            "documents_missing_embeddings": docs_missing,
+        }
+    except Exception as e:
+        logger.error("Failed to collect embedding coverage: %s", describe_error(e))
+        result["embeddings"] = {"error": describe_error(e)}
 
     # ── Queue stats (from ingestion_jobs table) ──
     try:

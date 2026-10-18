@@ -905,16 +905,32 @@ async def execute_tool(
             _mcp_principal.reset(token)
 
 
+_KEYWORD_ONLY_SUFFIX = " (keyword-only: semantic search unavailable)"
+
+
+def _semantic_unavailable(data: dict) -> bool:
+    """Whether a search payload, or any query in a batch, ran without its vector leg."""
+    if data.get("semantic_status") == "unavailable":
+        return True
+    results = data.get("results")
+    return isinstance(results, list) and any(
+        isinstance(r, dict) and r.get("semantic_status") == "unavailable" for r in results
+    )
+
+
 def summarize_tool_result(result_str: str) -> str:
     """Create a short human-readable summary of a tool result."""
     try:
         data = json.loads(result_str)
         if "error" in data:
             return f"Error: {data['error']}"
+        # The person watching the chip learns what the model is told in the
+        # payload: these results are keyword-only (#685).
+        degraded = _KEYWORD_ONLY_SUFFIX if _semantic_unavailable(data) else ""
         if "hits" in data:
-            return f"Found {len(data['hits'])} results"
+            return f"Found {len(data['hits'])} results{degraded}"
         if "results" in data:
-            return f"Found {data.get('count', len(data['results']))} results"
+            return f"Found {data.get('count', len(data['results']))} results{degraded}"
         if "passages" in data:
             return f"Read {len(data['passages'])} passages"
         if "chunks" in data:

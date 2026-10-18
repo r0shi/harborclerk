@@ -35,6 +35,7 @@ from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.research_state import ResearchState
+from harbor_clerk.search_types import SEMANTIC_UNAVAILABLE_NOTICE
 
 logger = logging.getLogger(__name__)
 
@@ -698,6 +699,23 @@ def _ingest_hits(coverage: dict[str, dict], hits: list[dict], query_text: str) -
             }
 
 
+def _keyword_only_note(keyword_only_queries: list[str], total_queries: int) -> str:
+    """A line for the coverage notes when some searches ran keyword-only, else "".
+
+    In #685 a failing embedder turned every research search lexical-only and the
+    run reported "0 unique passages" on a topic the corpus covered; three models
+    then told the user the documents did not discuss it. The synthesis reads
+    these notes, so it is told the coverage is incomplete, not just thin.
+    """
+    if not keyword_only_queries:
+        return ""
+    count = len(set(keyword_only_queries))
+    return (
+        f"Warning: semantic search was unavailable for {count} of {total_queries} searches, which ran as "
+        f"keyword matches only. {SEMANTIC_UNAVAILABLE_NOTICE}\n"
+    )
+
+
 async def _search_fan_out_steps(
     queries: list[str],
     user_id: uuid.UUID | None,
@@ -705,8 +723,13 @@ async def _search_fan_out_steps(
     *,
     paginate: bool = False,
     user_scope: UserScope | None = None,
+    keyword_only_queries: list[str] | None = None,
 ) -> AsyncGenerator[tuple, None]:
     """Phase 2: run all queries, dedupe by chunk_id, and say so after every search.
+
+    ``keyword_only_queries``, when given, collects each query whose search ran
+    without its vector leg (``semantic_status`` "unavailable", #685), so the
+    caller can tell the model its coverage is keyword-only.
 
     Yields ``("progress", searches_done, searches_planned)`` after each batch_search call (up to five
     queries, run one after another) and each pagination page, then ``("coverage", coverage)`` once, last.
@@ -744,6 +767,8 @@ async def _search_fan_out_steps(
             for query_result in result.get("results", []):
                 query_text = query_result.get("query", "")
                 _ingest_hits(coverage, query_result.get("hits", []), query_text)
+                if keyword_only_queries is not None and query_result.get("semantic_status") == "unavailable":
+                    keyword_only_queries.append(query_text)
                 if paginate and query_result.get("has_more") and query_result.get("total_candidates", 0) > k_per_query:
                     queries_with_more.append((query_text, k_per_query))
         except Exception:
@@ -1544,12 +1569,14 @@ async def research_stream(
                     # A heartbeat and a progress event per search, not per phase (#700): the reaper marks a
                     # task stale at five minutes of silence, and this phase has run longer than that while working.
                     coverage: dict[str, dict] = {}
+                    keyword_only_queries: list[str] = []
                     async for fan_out_step in _search_fan_out_steps(
                         queries,
                         user_id,
                         depth_config["k_per_query"],
                         paginate=depth_config.get("paginate", False),
                         user_scope=user_scope,
+                        keyword_only_queries=keyword_only_queries,
                     ):
                         if fan_out_step[0] == "coverage":
                             coverage = fan_out_step[1]
@@ -1572,6 +1599,7 @@ async def research_stream(
                         coverage_summary += (
                             f"- {dinfo['title']}: {dinfo['chunks']} passages (best score: {dinfo['best_score']:.2f})\n"
                         )
+                    coverage_summary += _keyword_only_note(keyword_only_queries, len(queries))
 
                     collected_notes.append(f"## Search coverage\n{coverage_summary}")
                     yield _sse(
@@ -1790,11 +1818,13 @@ async def research_stream(
 
                         # Run gap queries
                         gap_coverage: dict[str, dict] = {}
+                        gap_keyword_only: list[str] = []
                         async for fan_out_step in _search_fan_out_steps(
                             gap_queries,
                             user_id,
                             depth_config["k_per_query"],
                             user_scope=user_scope,
+                            keyword_only_queries=gap_keyword_only,
                         ):
                             if fan_out_step[0] == "coverage":
                                 gap_coverage = fan_out_step[1]
@@ -1806,11 +1836,17 @@ async def research_stream(
                             )
                         # Filter out already-seen chunks
                         new_chunks = {k: v for k, v in gap_coverage.items() if k not in coverage}
+                        gap_note = _keyword_only_note(gap_keyword_only, len(gap_queries))
+                        if gap_note:
+                            collected_notes.append(f"## Gap search coverage{round_label}\n{gap_note}")
 
                         if not new_chunks:
                             last_round_added_content = False
                             yield _sse(
-                                {"type": "notes", "content": f"No new material found in gap search{round_label}"}
+                                {
+                                    "type": "notes",
+                                    "content": f"No new material found in gap search{round_label}\n{gap_note}".rstrip(),
+                                }
                             )
                             continue
 

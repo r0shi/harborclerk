@@ -40,6 +40,11 @@ TASK_PREFIXES = {"query": "query: ", "passage": "passage: "}
 # `self.to(device)`) on every call. Measure before trusting it.
 MAX_CONCURRENCY = _positive_int_env("EMBED_MAX_CONCURRENCY", 1)
 
+# Retry-After on a failed encode. The memory-pressure episodes behind #619
+# cleared in seconds to minutes once the cache drained or the service restarted
+# (~14 s measured for a restart). A hint only: the worker's own backoff governs.
+ENCODE_FAILURE_RETRY_AFTER_SECONDS = 30
+
 _model: SentenceTransformer | None = None
 _encode_slots: asyncio.Semaphore | None = None
 
@@ -119,7 +124,22 @@ async def embed(request: EmbedRequest):
             release_gpu_cache()
 
     async with slots:
-        embeddings = await asyncio.to_thread(_encode_and_release)
+        try:
+            embeddings = await asyncio.to_thread(_encode_and_release)
+        except Exception as exc:
+            # An encode failure used to be a bare 500 whose traceback went only
+            # to uvicorn's stderr: the "uvicorn.error" logger does not propagate
+            # to the root logger, where main() attaches embedder.log, so a night
+            # of MPS out-of-memory failures left nothing in the service's own
+            # log (#619). Log it on this module's logger, which does reach the
+            # file. And answer 503 with Retry-After: the request is fine, the
+            # service cannot serve it right now.
+            logger.exception("encode failed for %d texts: %s", len(texts), type(exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail=f"encode failed: {type(exc).__name__}",
+                headers={"Retry-After": str(ENCODE_FAILURE_RETRY_AFTER_SECONDS)},
+            ) from exc
 
     return EmbedResponse(
         embeddings=embeddings.tolist(),

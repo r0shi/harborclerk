@@ -364,3 +364,58 @@ async def test_async_errors_never_render_a_dangling_colon(httpx_mock: HTTPXMock,
         await embed_texts_async(["q"], task="query", max_attempts=2)
 
     _assert_named_without_dangling_colon(str(excinfo.value), exc)
+
+
+# --------------------------------------------------------------------------
+# #619 — "the service could not serve it" is told apart from "the request is wrong"
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        lambda m: m.add_response(url=EMBED_URL, status_code=503),
+        lambda m: m.add_response(url=EMBED_URL, status_code=500),
+        lambda m: m.add_exception(httpx.ConnectError("refused"), url=EMBED_URL),
+    ],
+    ids=["503", "500", "connect"],
+)
+def test_exhausted_service_failures_are_unavailable(httpx_mock: HTTPXMock, failure):
+    """The embed stage defers these (worker/entry.py) instead of failing the document."""
+    from harbor_clerk.embedder_client import EmbedderUnavailableError
+
+    for _ in range(2):
+        failure(httpx_mock)
+
+    with pytest.raises(EmbedderUnavailableError):
+        embed_texts(["hello"], task="passage", max_attempts=2)
+
+
+def test_a_timeout_is_unavailable_but_still_not_resent(httpx_mock: HTTPXMock):
+    from harbor_clerk.embedder_client import EmbedderUnavailableError
+
+    httpx_mock.add_exception(httpx.ReadTimeout("slow"), url=EMBED_URL)
+
+    with pytest.raises(EmbedderUnavailableError):
+        embed_texts(["hello"], task="passage")
+    assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        lambda m: m.add_response(url=EMBED_URL, status_code=422, json={"detail": "bad"}),
+        lambda m: m.add_response(url=EMBED_URL, json={"embeddings": []}),
+        lambda m: m.add_exception(httpx.UnsupportedProtocol("ftp"), url=EMBED_URL),
+    ],
+    ids=["4xx", "short-response", "bad-url"],
+)
+def test_request_and_config_failures_are_not_unavailable(httpx_mock: HTTPXMock, failure):
+    """Waiting fixes none of these, so they must stay plain EmbedderErrors and fail the document."""
+    from harbor_clerk.embedder_client import EmbedderUnavailableError
+
+    failure(httpx_mock)
+
+    with pytest.raises(EmbedderError) as excinfo:
+        embed_texts(["hello"], task="passage")
+    assert not isinstance(excinfo.value, EmbedderUnavailableError)

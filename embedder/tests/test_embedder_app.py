@@ -309,3 +309,42 @@ def test_release_runs_on_the_worker_thread_not_the_event_loop(stub_model):
         f"release ran on {release_thread[0]} but the encode ran on {loop_thread[0]} — "
         "it must share the worker thread, not run on the event loop"
     )
+
+
+# --------------------------------------------------------------------------
+# #619 — an encode failure is a logged 503, not an unlogged 500
+# --------------------------------------------------------------------------
+
+
+def test_encode_failure_is_a_logged_503_with_retry_after(stub_model, caplog):
+    """A night of MPS out-of-memory failures left nothing in embedder.log.
+
+    The traceback went to uvicorn's own logger, which does not propagate to the
+    root logger where main() attaches the file handler. The failure must be
+    logged on a logger that reaches the root (caplog's handler sits there, so a
+    record it captures is one embedder.log would get), and it must be a 503
+    with Retry-After: the request was valid, the service could not serve it.
+    """
+    import logging
+    from unittest.mock import patch
+
+    stub_model.encode.side_effect = RuntimeError("MPS backend out of memory")
+
+    with (
+        caplog.at_level(logging.ERROR),
+        patch("embedder.app.SentenceTransformer", return_value=stub_model),
+        patch("embedder.app.release_gpu_cache"),
+    ):
+        from embedder.app import app
+
+        with TestClient(app, raise_server_exceptions=False) as c:
+            r = c.post("/embed", json={"texts": ["a", "b"]})
+
+    assert r.status_code == 503, f"expected 503, got {r.status_code}"
+    assert r.headers.get("retry-after"), "a 503 must say when to come back"
+    assert "RuntimeError" in r.json()["detail"]
+
+    records = [rec for rec in caplog.records if rec.name == "embedder.app" and rec.levelno >= logging.ERROR]
+    assert records, "the encode failure was not logged on the embedder's own logger"
+    assert records[0].exc_info is not None, "the log line must carry the traceback"
+    assert logging.getLogger("embedder.app").propagate, "the record must reach the root logger's file handler"

@@ -7,6 +7,18 @@ search_rerank.py imported from search.py (which imports from search_rerank.py).
 from dataclasses import dataclass, field
 from datetime import datetime
 
+SEMANTIC_OK = "ok"
+SEMANTIC_UNAVAILABLE = "unavailable"
+
+# Said alongside a degraded result on the surfaces a model reads (MCP, chat,
+# research). In #685 research reported "0 unique passages" for termination
+# notice periods across a corpus of contracts, and three models concluded the
+# corpus did not discuss it: a keyword-only result read as a complete one.
+SEMANTIC_UNAVAILABLE_NOTICE = (
+    "Semantic search is unavailable (the embedding service failed), so these results are keyword matches only. "
+    "Passages that use different wording are missed: absence here is not evidence the corpus lacks the topic."
+)
+
 
 @dataclass
 class ConflictSource:
@@ -36,6 +48,9 @@ class SearchResult:
     possible_conflict: bool = False
     conflict_sources: list[ConflictSource] = field(default_factory=list)
     reranker_status: str = "disabled"
+    # "ok", or "unavailable" when the vector leg failed (the query could not be
+    # embedded, or the vector query errored) and the hits are keyword-only.
+    semantic_status: str = SEMANTIC_OK
 
 
 @dataclass
@@ -70,3 +85,4 @@ class FindAllResult:
     truncated: bool  # total_matches > offset + len(hits)
     sort_by: str  # echo of the input
     presentation: str  # echo of the input
+    semantic_status: str = SEMANTIC_OK  # the inner hybrid_search's, see SearchResult

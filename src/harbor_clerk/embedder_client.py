@@ -72,6 +72,19 @@ class EmbedderError(RuntimeError):
     """Embedder call failed after exhausting retries, or failed unretryably."""
 
 
+class EmbedderUnavailableError(EmbedderError):
+    """The embedder could not serve a valid request: 5xx, 429, a dropped or
+    refused connection, or a timeout, still failing when the budget ran out.
+
+    Distinct from its parent because the cure differs. A 4xx or a malformed
+    response says the request (or the document) is wrong, and trying again
+    later changes nothing. This says the service is down, restarting or under
+    memory pressure, which in #619 lasted minutes, far past this module's
+    restart-sized window. The embed stage defers these and tries again later
+    (worker/entry.py) instead of failing the document for good.
+    """
+
+
 def _backoff_delay(attempt: int) -> float:
     """Exponential backoff with half-to-full jitter.
 
@@ -158,14 +171,31 @@ def _payload(texts: list[str], task: str) -> dict:
     return {"texts": texts, "task": task}
 
 
-def _give_up(attempts_made: int, max_attempts: int, detail: str) -> EmbedderError:
+def _give_up(attempts_made: int, max_attempts: int, detail: str) -> EmbedderUnavailableError:
     """`attempts_made` is what actually ran, which is not always max_attempts.
 
     Exiting via the deadline stops early, and this string is the operator-facing
     diagnostic in `ingestion_jobs.error` — reporting "7/7 attempts" for 3 sends
     someone looking for a retry storm that never happened.
+
+    Only retryable failures reach here, so the service, not the request, is at
+    fault: EmbedderUnavailableError.
     """
-    return EmbedderError(f"embedder call failed after {attempts_made}/{max_attempts} attempts: {detail}")
+    return EmbedderUnavailableError(f"embedder call failed after {attempts_made}/{max_attempts} attempts: {detail}")
+
+
+def _transport_failure(exc: httpx.TransportError) -> EmbedderError:
+    """A transport failure not worth an immediate retry, classified for later.
+
+    A timeout means the embedder is too busy to answer in time (see
+    `_is_retryable_transport` for why it is not re-sent at once), which is a
+    service condition: unavailable, not wrong. Anything else here (an
+    unsupported protocol in EMBEDDER_URL) is a misconfiguration no amount of
+    waiting fixes.
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return EmbedderUnavailableError(f"embedder call failed: {describe_error(exc)}")
+    return EmbedderError(f"embedder call failed: {describe_error(exc)}")
 
 
 def embed_texts(
@@ -192,7 +222,7 @@ def embed_texts(
             resp = httpx.post(url, json=_payload(texts, task), timeout=timeout)
         except httpx.TransportError as exc:
             if not _is_retryable_transport(exc):
-                raise EmbedderError(f"embedder call failed: {describe_error(exc)}") from exc
+                raise _transport_failure(exc) from exc
             last_detail = describe_error(exc)
         except httpx.RequestError as exc:
             # DecodingError / TooManyRedirects are RequestError but NOT
@@ -245,7 +275,7 @@ async def embed_texts_async(
                 resp = await client.post(url, json=_payload(texts, task))
             except httpx.TransportError as exc:
                 if not _is_retryable_transport(exc):
-                    raise EmbedderError(f"embedder call failed: {describe_error(exc)}") from exc
+                    raise _transport_failure(exc) from exc
                 last_detail = describe_error(exc)
             except httpx.RequestError as exc:
                 raise EmbedderError(f"embedder request failed: {describe_error(exc)}") from exc

@@ -56,22 +56,89 @@ async def test_health_check(client):
     assert data["checks"]["postgres"] == "ok"
 
 
-async def test_health_check_reports_embedder(client, monkeypatch):
+@pytest.fixture(autouse=True)
+def _fresh_embedder_probe(monkeypatch):
+    """The embedder probe is cached for EMBEDDER_PROBE_TTL_SECONDS; no test may read another's."""
+    monkeypatch.setattr("harbor_clerk.api.routes.system._embedder_probe_cache", None)
+
+
+def _stub_embedder(monkeypatch, *, health_status: int = 200, embed_status: int = 200, embed_json=None):
+    """Answer the embedder's /health and /embed; every other request goes through.
+
+    Returns the list of embedder URLs requested, in order. Resolved from config:
+    CI overrides EMBEDDER_URL (see test_health_check_names_a_timing_out_embedder).
+    """
     import httpx
 
-    real_get = httpx.AsyncClient.get
+    from harbor_clerk.config import get_settings
 
-    async def _selective_get(self, url, *args, **kwargs):
-        if str(url) == "http://embedder:8000/health":
-            return httpx.Response(200, json={"status": "ok"}, request=httpx.Request("GET", str(url)))
+    base = get_settings().embedder_url
+    calls: list[str] = []
+    real_get = httpx.AsyncClient.get
+    real_post = httpx.AsyncClient.post
+
+    async def _get(self, url, *args, **kwargs):
+        if str(url) == f"{base}/health":
+            calls.append(str(url))
+            return httpx.Response(health_status, json={"status": "ok"}, request=httpx.Request("GET", str(url)))
         return await real_get(self, url, *args, **kwargs)
 
-    monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
+    async def _post(self, url, *args, **kwargs):
+        if str(url) == f"{base}/embed":
+            calls.append(str(url))
+            body = embed_json if embed_json is not None else {"embeddings": [[0.1] * 4], "dimensions": 4}
+            if embed_status != 200:
+                body = {"detail": "Internal Server Error"}
+            return httpx.Response(embed_status, json=body, request=httpx.Request("POST", str(url)))
+        return await real_post(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _get)
+    monkeypatch.setattr(httpx.AsyncClient, "post", _post)
+    return calls
+
+
+async def test_health_check_reports_embedder(client, monkeypatch):
+    calls = _stub_embedder(monkeypatch)
 
     resp = await client.get("/api/system/health")
     assert resp.status_code == 200
     data = resp.json()
     assert data["checks"]["embedder"] == "ok"
+    assert any(c.endswith("/embed") for c in calls), "health must exercise /embed, not only /health"
+
+
+async def test_health_check_degrades_when_embed_fails_though_health_answers(client, monkeypatch):
+    """#685: the embedder's /health said 200 all night while every /embed was a 500.
+
+    The app looked healthy while search ran keyword-only. Health must run a real
+    embed, so a failing /embed reads as degraded.
+    """
+    _stub_embedder(monkeypatch, health_status=200, embed_status=500)
+
+    resp = await client.get("/api/system/health")
+    data = resp.json()
+
+    assert data["checks"]["embedder"] == "error: /embed returned HTTP 500"
+    assert data["status"] == "degraded"
+
+
+async def test_health_check_degrades_when_embed_returns_no_vector(client, monkeypatch):
+    _stub_embedder(monkeypatch, embed_json={"embeddings": []})
+
+    data = (await client.get("/api/system/health")).json()
+
+    assert data["checks"]["embedder"] == "error: /embed returned no vector"
+    assert data["status"] == "degraded"
+
+
+async def test_health_check_caches_the_embedder_probe(client, monkeypatch):
+    """The probe runs a real encode; a burst of health fetches must cost one."""
+    calls = _stub_embedder(monkeypatch)
+
+    for _ in range(3):
+        assert (await client.get("/api/system/health")).json()["checks"]["embedder"] == "ok"
+
+    assert len([c for c in calls if c.endswith("/embed")]) == 1, f"probe was not cached: {calls}"
 
 
 async def test_health_check_exposes_allow_source_download_default_false(client):
@@ -389,6 +456,75 @@ async def test_status_summary_surfaces_blocked_summarize_jobs(client, admin_user
     assert issue["count"] == 1
     assert "retry automatically with backoff" in issue["detail"]
     assert issue["action_href"] == "/settings/models"
+
+
+async def test_status_summary_surfaces_embeds_waiting_on_the_embedder(client, admin_user, admin_token, db_session):
+    """A deferred embed is `queued`; without this it reads as ordinary processing
+    while the embedding service is down (#619, #685)."""
+    from harbor_clerk.worker.pipeline import EMBED_RETRY_REASON
+
+    retry_at = datetime.now(UTC) + timedelta(minutes=5)
+    doc = Document(
+        title="Waiting on the embedder",
+        status="active",
+        sha256=b"e" * 32,
+        pipeline_status=PipelineStatus.embedding,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(
+        IngestionJob(
+            doc_id=doc.doc_id,
+            stage=JobStage.embed,
+            status=JobStatus.queued,
+            metrics={"reason": EMBED_RETRY_REASON, "retry_attempts": 2, "retry_after": retry_at.isoformat()},
+        )
+    )
+    await db_session.flush()
+
+    data = (await client.get("/api/system/status-summary", headers=auth_header(admin_token))).json()
+
+    assert data["state"] == "needs_attention"
+    assert data["counts"]["blocked_embed_jobs"] == 1
+    issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "embedding_blocked")
+    assert issue["severity"] == "warning"
+    assert issue["count"] == 1
+    assert "keyword only" in issue["detail"]
+    assert retry_at.isoformat() in issue["detail"]
+
+
+async def test_stats_report_embedding_coverage(client, admin_user, admin_token, db_session):
+    """After #685 the only way to learn 29% of a corpus had no vectors was to query Postgres."""
+    from harbor_clerk.models import Chunk
+
+    full = Document(title="Full", status="active", sha256=b"f" * 32, pipeline_status=PipelineStatus.ready)
+    partial = Document(title="Partial", status="active", sha256=b"q" * 32, pipeline_status=PipelineStatus.ready)
+    deleted = Document(title="Deleted", status="deleted", sha256=b"d" * 32, pipeline_status=PipelineStatus.ready)
+    db_session.add_all([full, partial, deleted])
+    await db_session.flush()
+    vec = [0.01] * 768
+    db_session.add_all(
+        [
+            Chunk(doc_id=full.doc_id, chunk_num=0, chunk_text="a", language="english", embedding=vec),
+            Chunk(doc_id=full.doc_id, chunk_num=1, chunk_text="b", language="english", embedding=vec),
+            Chunk(doc_id=partial.doc_id, chunk_num=0, chunk_text="c", language="english", embedding=vec),
+            Chunk(doc_id=partial.doc_id, chunk_num=1, chunk_text="d", language="english"),
+            Chunk(doc_id=deleted.doc_id, chunk_num=0, chunk_text="e", language="english"),
+        ]
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/system/stats", headers=auth_header(admin_token))
+
+    assert resp.status_code == 200
+    assert resp.json()["embeddings"] == {
+        "chunks_total": 4,
+        "chunks_embedded": 3,
+        "chunks_missing": 1,
+        "documents_with_chunks": 2,
+        "documents_fully_embedded": 1,
+        "documents_missing_embeddings": 1,
+    }
 
 
 async def test_status_summary_separates_stranded_pipeline_state(client, admin_user, admin_token, db_session):
