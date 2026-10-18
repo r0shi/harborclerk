@@ -512,3 +512,104 @@ def test_discovery_survives_a_failed_observer_sync(monkeypatch):
         daemon._stop.set()
         t.join(timeout=5)
     assert not t.is_alive()
+
+
+class _RecordingStop(threading.Event):
+    """A stop event whose waits return at once and record the delay asked for,
+    so a backoff schedule can be read without sleeping through it. Sets itself
+    after `limit` waits, so a loop that never stops still ends the test."""
+
+    def __init__(self, limit: int):
+        super().__init__()
+        self.delays: list[float] = []
+        self.limit = limit
+
+    def wait(self, timeout=None):
+        if timeout is not None:
+            self.delays.append(timeout)
+            if len(self.delays) >= self.limit:
+                self.set()
+        return self.is_set()
+
+
+def _flapping_listen(errors=None):
+    """Accepts LISTEN every time, then drops at the first poll()."""
+    calls = []
+
+    def _listen(stop_event, poll_interval, on_listening=None):
+        calls.append(1)
+        if on_listening is not None:
+            on_listening()
+        raise (errors(len(calls)) if errors else _db_blip())
+        yield  # unreachable; makes this a generator, as the real one is
+
+    return _listen, calls
+
+
+def _run_flapping_listener(monkeypatch, *, waits: int, healthy_secs: float | None = None, errors=None):
+    from harbor_clerk.watcher import main as watcher_main
+
+    listen, calls = _flapping_listen(errors)
+    monkeypatch.setattr(watcher_main, "listen_for_folder_changes", listen)
+    if healthy_secs is not None:
+        monkeypatch.setattr(watcher_main, "LISTENER_HEALTHY_SECS", healthy_secs)
+    daemon = WatcherDaemon(lambda: None)
+    daemon._stop = _RecordingStop(limit=waits)
+    syncs = []
+    monkeypatch.setattr(daemon, "_sync_observers", lambda: syncs.append(1))
+    t = _run_in_thread(daemon._listener_loop)
+    t.join(timeout=5)
+    assert not t.is_alive(), "listener loop did not end"
+    return daemon._stop.delays, calls, syncs
+
+
+def test_flapping_listener_backs_off(monkeypatch, caplog):
+    """A connection that accepts LISTEN and drops at the first poll() used to
+    reset the streak on every LISTEN: base delay forever, with a traceback, a
+    resync and a "reconnected" line each time. The backoff must grow."""
+    import logging
+
+    from harbor_clerk.watcher import main as watcher_main
+
+    with caplog.at_level(logging.DEBUG, logger="harbor_clerk.watcher.main"):
+        delays, calls, syncs = _run_flapping_listener(monkeypatch, waits=7)
+
+    base, cap = watcher_main.LISTENER_RETRY_BASE_SECS, watcher_main.LISTENER_RETRY_MAX_SECS
+    assert delays[:6] == [min(cap, base * 2**n) for n in range(6)], f"backoff did not grow: {delays}"
+    assert delays[-1] == cap
+    tracebacks = [r for r in caplog.records if r.exc_info and "listener" in r.getMessage()]
+    assert len(tracebacks) == 1, f"one traceback per streak, got {len(tracebacks)}"
+    reconnected = [r for r in caplog.records if "reconnected" in r.getMessage()]
+    assert len(reconnected) == 1, f"one 'reconnected' line per streak, got {len(reconnected)}"
+    assert len(syncs) == len(calls) - 1, "every reconnect still resyncs (NOTIFYs in the gap are lost)"
+
+
+def test_listener_streak_resets_after_a_healthy_connection(monkeypatch):
+    """The reset still happens once a connection has stayed up a healthy period:
+    a drop after hours of working is a new incident, back at the base delay."""
+    from harbor_clerk.watcher import main as watcher_main
+
+    delays, _, _ = _run_flapping_listener(monkeypatch, waits=4, healthy_secs=0.0)
+
+    assert delays == [watcher_main.LISTENER_RETRY_BASE_SECS] * 4, f"healthy runs did not reset the streak: {delays}"
+
+
+def test_listener_logs_a_changed_error_and_a_heartbeat(monkeypatch, caplog):
+    """Log-once must not hide a persistent cause: an error that changes within a
+    streak is logged at WARNING, and so is every tenth failure of the same one."""
+    import logging
+
+    def _errors(n):
+        if n <= 2:
+            return OSError("connection refused")
+        return RuntimeError('password authentication failed for user "lka"')
+
+    with caplog.at_level(logging.WARNING, logger="harbor_clerk.watcher.main"):
+        _run_flapping_listener(monkeypatch, waits=20, errors=_errors)
+
+    warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warned) == 4, warned  # first, changed (3rd), heartbeats (10th, 20th)
+    assert "failed; reconnecting" in warned[0]
+    assert "error changed" in warned[1] and "password authentication failed" in warned[1]
+    assert "failure 10, same error" in warned[2]
+    assert "failure 20, same error" in warned[3]

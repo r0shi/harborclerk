@@ -120,3 +120,35 @@ def test_connection_is_closed_when_setup_fails(monkeypatch, _sync_engine):
         next(listen_for_folder_changes(stop_event=threading.Event(), on_listening=_resync_fails))
 
     assert opened and opened[0].closed, "listener connection leaked when setup failed"
+
+
+def test_connection_is_closed_when_listen_is_refused(monkeypatch):
+    """LISTEN itself refused on a half-dead connection: the listener retries,
+    so each refusal must close the connection rather than leak it."""
+    import pytest
+
+    from harbor_clerk.watcher import db_listener
+
+    class _Cursor:
+        def execute(self, sql):
+            if sql.startswith("LISTEN"):
+                raise RuntimeError("server closed the connection unexpectedly")
+
+        def close(self):
+            pass
+
+    class _Conn:
+        closed = False
+
+        def cursor(self):
+            return _Cursor()
+
+        def close(self):
+            self.closed = True
+
+    conn = _Conn()
+    monkeypatch.setattr(db_listener, "_open_listen_connection", lambda: conn)
+    with pytest.raises(RuntimeError, match="server closed"):
+        next(listen_for_folder_changes(stop_event=threading.Event()))
+
+    assert conn.closed, "a refused LISTEN leaked the connection"

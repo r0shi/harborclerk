@@ -1054,3 +1054,76 @@ async def test_task_dying_during_the_query_of_an_inactive_label_is_still_reporte
     assert "connection dropped as the label was paused" in caplog.text
 
     await observer.stop()
+
+
+async def _run_until_reconciled(observer: MailObserver, reconciled: asyncio.Event) -> None:
+    run_task = asyncio.create_task(observer.run())
+    waiter = asyncio.create_task(reconciled.wait())
+    await asyncio.wait({run_task, waiter}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+    try:
+        assert not run_task.done(), f"run() ended: {run_task.exception()!r}"
+        assert waiter.done(), "never reconciled within the timeout"
+    finally:
+        waiter.cancel()
+        await observer.stop()
+        await asyncio.wait_for(run_task, timeout=5)
+
+
+async def test_reconcile_logs_a_changed_error_mid_streak(caplog):
+    """Log-once hid a persistent cause: a transient "connection refused" first,
+    then "password authentication failed" for good, and nothing at WARNING
+    ever named the second. A changed error is logged, with its traceback."""
+    import logging
+
+    from sqlalchemy.exc import OperationalError
+
+    errors = [
+        _db_blip(),
+        _db_blip(),
+        OperationalError("SELECT 1", None, OSError('password authentication failed for user "lka"')),
+        OperationalError("SELECT 1", None, OSError('password authentication failed for user "lka"')),
+    ]
+    reconciled = asyncio.Event()
+
+    async def _reconcile(_session_factory):
+        if errors:
+            raise errors.pop(0)
+        reconciled.set()
+
+    observer = MailObserver(supervisor_interval=0.001, session_factory=object())
+    observer._reconcile = _reconcile
+
+    with caplog.at_level(logging.WARNING, logger="harbor_clerk.watcher.mail_observer"):
+        await _run_until_reconciled(observer, reconciled)
+
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warned) == 2, [r.getMessage() for r in warned]
+    assert "reconcile failed;" in warned[0].getMessage()
+    assert "error changed" in warned[1].getMessage()
+    assert "password authentication failed" in warned[1].getMessage()
+    assert warned[1].exc_info, "a changed error should carry its traceback"
+
+
+async def test_reconcile_logs_a_heartbeat_every_tenth_failure(caplog):
+    import logging
+
+    failures = 0
+    reconciled = asyncio.Event()
+
+    async def _reconcile(_session_factory):
+        nonlocal failures
+        if failures < 12:
+            failures += 1
+            raise _db_blip()
+        reconciled.set()
+
+    observer = MailObserver(supervisor_interval=0.001, session_factory=object())
+    observer._reconcile = _reconcile
+
+    with caplog.at_level(logging.WARNING, logger="harbor_clerk.watcher.mail_observer"):
+        await _run_until_reconciled(observer, reconciled)
+
+    warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warned) == 2, warned  # the first failure and the 10th; 11 and 12 are quiet
+    assert "reconcile failed;" in warned[0]
+    assert "failure 10, same error" in warned[1]

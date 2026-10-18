@@ -45,6 +45,7 @@ from harbor_clerk.mail.sync import (
 )
 from harbor_clerk.models import MailAccount, WatchedLabel
 from harbor_clerk.secrets import get_cipher
+from harbor_clerk.watcher.failure_streak import FailureStreak
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ class MailObserver:
     async def run(self) -> None:
         """Supervisor loop. Returns when stop() is called."""
         session_factory = self._session_factory or _default_session_factory()
-        failures = 0
+        streak = FailureStreak()
         try:
             while not self._stop_event.is_set():
                 # `except Exception` leaves CancelledError (a BaseException) to
@@ -127,11 +128,9 @@ class MailObserver:
                 try:
                     await self._reconcile(session_factory)
                 except Exception as exc:
-                    failures += 1
-                    delay = _reconcile_backoff(self.supervisor_interval, failures)
-                    if failures == 1:
-                        # Once per streak: a database down for an hour would
-                        # otherwise log a traceback every tick.
+                    loudness = streak.record(exc)
+                    delay = _reconcile_backoff(self.supervisor_interval, streak.failures)
+                    if loudness == "first":
                         logger.warning(
                             "mail observer: reconcile failed; running label tasks continue, retrying with backoff "
                             "(up to %.0fs): %s",
@@ -139,14 +138,25 @@ class MailObserver:
                             describe_error(exc),
                             exc_info=True,
                         )
+                    elif loudness is not None:
+                        # A changed error carries its traceback; a heartbeat
+                        # repeats one already logged, so it does not.
+                        logger.warning(
+                            "mail observer: reconcile still failing (failure %d, %s): %s",
+                            streak.failures,
+                            "error changed" if loudness == "changed" else "same error",
+                            describe_error(exc),
+                            exc_info=loudness == "changed",
+                        )
                     else:
                         logger.debug(
-                            "mail observer: reconcile failed again (failure %d): %s", failures, describe_error(exc)
+                            "mail observer: reconcile failed again (failure %d): %s",
+                            streak.failures,
+                            describe_error(exc),
                         )
                 else:
-                    if failures:
-                        logger.info("mail observer: reconcile recovered after %d failed attempt(s)", failures)
-                    failures = 0
+                    if streak.failures:
+                        logger.info("mail observer: reconcile recovered after %d failed attempt(s)", streak.reset())
                     delay = self.supervisor_interval
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
