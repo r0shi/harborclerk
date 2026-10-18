@@ -225,9 +225,13 @@ async def _watched_doc_with_stored_original(db_session, tmp_path):
 
 
 @pytest.mark.parametrize("breakage", ["not-a-directory", "permission"])
-async def test_read_document_bytes_raises_missing_without_a_path_for_any_os_error(db_session, tmp_path, breakage):
+async def test_read_document_bytes_raises_missing_without_a_path_for_any_os_error(
+    db_session, tmp_path, breakage, caplog
+):
     """A path component replaced by a file, or no permission, is "cannot be read in
-    place": WatchedFileMissing, whose message names no path (it lands in doc.error)."""
+    place": WatchedFileMissing, whose message names the errno and no path (it lands in
+    doc.error). The read error is logged at WARNING with the errno, the path in the log only."""
+    import logging
     import os
     import shutil
 
@@ -244,10 +248,18 @@ async def test_read_document_bytes_raises_missing_without_a_path_for_any_os_erro
     session = get_sync_session()
     try:
         doc = session.get(Document, doc_id)
-        with pytest.raises(WatchedFileMissing) as raised:
+        with (
+            caplog.at_level(logging.INFO, logger="harbor_clerk.watched_source"),
+            pytest.raises(WatchedFileMissing) as raised,
+        ):
             read_document_bytes(session, doc)
     finally:
         session.close()
         if breakage == "permission":
             source.chmod(0o644)
+    errname = "ENOTDIR" if breakage == "not-a-directory" else "EACCES"
+    assert errname in str(raised.value)
     assert str(tmp_path) not in str(raised.value)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and errname in r.getMessage()]
+    assert warnings, [r.getMessage() for r in caplog.records]
+    assert str(doc_id) in warnings[0].getMessage()

@@ -30,6 +30,7 @@ read, and the read fails rather than guess at ``source_path``.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 from dataclasses import dataclass
@@ -243,6 +244,24 @@ async def watched_state_async(session, doc) -> WatchedState:
     return await asyncio.to_thread(watched_state_from_rows, rows, doc.source_path)
 
 
+def errno_name(exc: OSError) -> str:
+    """``exc``'s errno as its symbolic name ("EACCES"), else the exception's class name."""
+    return errno.errorcode.get(exc.errno, type(exc).__name__) if exc.errno else type(exc).__name__
+
+
+def log_read_error(exc: OSError, doc_id, path: str) -> str:
+    """Log a failed read of a watched file (the path in the log only) and return the
+    errno name for an error message that must not carry the path.
+
+    A file that is simply gone (ENOENT, often mid atomic save) logs at INFO; anything
+    else (EACCES, EIO, ESTALE, ETIMEDOUT...) at WARNING.
+    """
+    name = errno_name(exc)
+    level = logging.INFO if exc.errno == errno.ENOENT else logging.WARNING
+    logger.log(level, "reading the watched file of doc %s failed (%s): %s", doc_id, name, path)
+    return name
+
+
 def read_document_bytes(session, doc) -> tuple[bytes, str | None]:
     """A document's bytes, and the in-place path they came from (None: the stored original).
 
@@ -253,17 +272,19 @@ def read_document_bytes(session, doc) -> tuple[bytes, str | None]:
     unverified ``source_path``, and never reads a watched document's stored original.
     """
     state = watched_state(session, doc)
+    reason = "removed, missing, or moved"
     if state.path is not None:
         try:
             return Path(state.path).read_bytes(), state.path
-        except OSError:
+        except OSError as exc:
             # Missing, a path component no longer a directory, a directory in its
-            # place, a symlink loop, no permission: all "cannot be read in place".
-            # The OSError's message names the path; the one raised below does not.
-            pass
+            # place, a symlink loop, no permission, an I/O or network-mount error:
+            # all "cannot be read in place". The path goes to the log only; the
+            # error raised below (which lands in documents.error) names the errno.
+            reason = log_read_error(exc, doc.doc_id, state.path)
     if state.watched:
         raise WatchedFileMissing(
-            f"the watched file of doc {doc.doc_id} cannot be read in place (removed, missing, or moved); "
+            f"the watched file of doc {doc.doc_id} cannot be read in place ({reason}); "
             "the watcher's next event for the file queues it again"
         )
     if doc.original_object_key:

@@ -853,7 +853,7 @@ async def download_document(
     from pathlib import Path
 
     from harbor_clerk.file_types import guess_mime_type
-    from harbor_clerk.watched_source import watched_state_async
+    from harbor_clerk.watched_source import log_read_error, watched_state_async
 
     # Read as the extract stage does (watched_source): a watched document from its
     # file (even with a stored original, #859), else the stored original. A failed
@@ -874,9 +874,10 @@ async def download_document(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file is missing")
         try:
             file_bytes = await asyncio.to_thread(Path(state.path).read_bytes)
-        except OSError:
+        except OSError as exc:
             # Missing, a path component no longer a directory, no permission...: the
-            # file cannot be read in place. The detail names no path.
+            # file cannot be read in place. Logged with the path; the detail names none.
+            log_read_error(exc, doc_id, state.path)
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file is missing")
         filename = posixpath.basename(state.path)
         # doc.mime_type is what the extract stage set from this file and its magic

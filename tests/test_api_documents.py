@@ -747,9 +747,11 @@ async def test_download_never_serves_the_stored_original_of_a_removed_watched_fi
 
 @pytest.mark.parametrize("breakage", ["not-a-directory", "permission"])
 async def test_download_is_a_404_without_a_path_for_any_unreadable_watched_file(
-    client, admin_user, admin_token, db_session, tmp_path, breakage
+    client, admin_user, admin_token, db_session, tmp_path, breakage, caplog
 ):
-    """Its folder replaced by a file, or no permission: a 404 that names no path."""
+    """Its folder replaced by a file, or no permission: a 404 that names no path; the
+    read error is logged at WARNING with its errno."""
+    import logging
     import os
     import shutil
 
@@ -775,7 +777,8 @@ async def test_download_is_a_404_without_a_path_for_any_unreadable_watched_file(
     original = s.allow_source_download
     s.allow_source_download = True
     try:
-        resp = await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
+        with caplog.at_level(logging.INFO, logger="harbor_clerk.watched_source"):
+            resp = await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
     finally:
         s.allow_source_download = original
         if breakage == "permission":
@@ -783,3 +786,5 @@ async def test_download_is_a_404_without_a_path_for_any_unreadable_watched_file(
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Source file is missing"
     assert str(tmp_path) not in resp.text
+    errname = "ENOTDIR" if breakage == "not-a-directory" else "EACCES"
+    assert any(r.levelno == logging.WARNING and errname in r.getMessage() for r in caplog.records)

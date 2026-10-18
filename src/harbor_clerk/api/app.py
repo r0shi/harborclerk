@@ -432,13 +432,15 @@ def _slashless_redirect(request: Request) -> str | None:
     Without the SPA catch-all (no static dir, as in development) Starlette answers
     such a request with a 307 to the path without the slash when that path is a
     route; the catch-all would otherwise turn it into a 404. The target is built
-    from the path alone, starts with exactly one slash (never ``//host``), and
-    keeps the query string.
+    from the path alone, starts with exactly one slash (never ``//host``: the
+    path's first segment is an API prefix), and keeps the query string.
     """
     path = request.scope["path"]
     if not path.endswith("/"):
         return None
-    target = "/" + path.rstrip("/").lstrip("/\\")
+    # The catch-all calls this only for a path whose first segment is an API prefix
+    # (_is_api_path), so the path starts with exactly one slash and then a letter.
+    target = path.rstrip("/")
     probe = {**request.scope, "path": target, "raw_path": target.encode()}
     for route in request.app.router.routes:
         if getattr(route, "path", None) == _SPA_FALLBACK_PATH:
@@ -461,6 +463,8 @@ def _static_file(static_root: Path, full_path: str) -> str | object | None:
     ``os.path.isfile`` swallow most lookup errors themselves, and any that gets
     through is a 404, never a 500.
     """
+    # A NUL is refused here, whatever the Python version: realpath raises on one in
+    # 3.12+, but returned it unchanged in older ones.
     if "\x00" in full_path or "\\" in full_path:
         return _OUTSIDE
     segments = full_path.split("/")

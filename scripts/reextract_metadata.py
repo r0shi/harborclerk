@@ -24,7 +24,7 @@ from harbor_clerk.db import async_session_factory
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
 from harbor_clerk.models.document import Document
 from harbor_clerk.storage import get_storage
-from harbor_clerk.watched_source import watched_state_async
+from harbor_clerk.watched_source import log_read_error, watched_state_async
 
 log = logging.getLogger("reextract_metadata")
 
@@ -52,7 +52,8 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
                 if in_place is not None:
                     try:
                         raw_bytes = Path(in_place).read_bytes()
-                    except OSError:
+                    except OSError as exc:
+                        log_read_error(exc, doc.doc_id, in_place)
                         in_place = None
                 if in_place is None:
                     log.warning("doc %s: its watched file cannot be read in place; skipping", doc.doc_id)

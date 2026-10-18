@@ -244,3 +244,28 @@ async def test_a_trailing_slash_redirect_never_leaves_the_host(app, raw_path):
         assert location.startswith("/") and not location.startswith(("//", "/\\")), location
     else:
         assert status == 404 or (status == 200 and body == INDEX), (status, body[:80])
+
+
+@pytest.mark.parametrize("raw_path", ["/docs/../favicon.ico", "/docs/%2e%2e/favicon.ico", "/x/../index.html"])
+async def test_a_dot_dot_segment_is_a_404_even_when_it_resolves_inside(app, raw_path):
+    """Only the `..` check catches these: they resolve to a file inside the static dir."""
+    status, _, body = await _get(app, raw_path)
+    assert status == 404, (status, body[:80])
+
+
+async def test_a_backslash_is_a_404(app, static_layout):
+    """Only the backslash check catches this: a file with that very name exists inside."""
+    (static_layout["static"] / "x\\y.txt").write_bytes(b"backslash name")
+    status, _, body = await _get(app, "/x%5cy.txt")
+    assert status == 404, (status, body[:80])
+
+
+async def test_a_nul_is_a_404_whatever_realpath_does_with_it(app, monkeypatch):
+    """realpath raises on a NUL in Python 3.12+, but returned the path unchanged in older
+    versions; simulated here, so only the NUL check refuses it."""
+    import os
+
+    real_realpath = os.path.realpath
+    monkeypatch.setattr(os.path, "realpath", lambda p, *a, **k: p if "\x00" in str(p) else real_realpath(p, *a, **k))
+    status, _, body = await _get(app, "/favicon.ico%00")
+    assert status == 404, (status, body[:80])
