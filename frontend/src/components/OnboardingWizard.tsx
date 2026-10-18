@@ -56,7 +56,10 @@ export default function OnboardingWizard({ onComplete }: Props) {
   const navigate = useNavigate()
   const [page, setPage] = useState(1)
   const [system, setSystem] = useState<SystemInfo | null>(null)
+  // Neither is true until /api/watch/system answers (or if it fails): render
+  // platform-neutral copy rather than guessing.
   const isDocker = system?.platform === 'docker'
+  const isMac = system?.platform === 'macos'
   const [error, setError] = useState('')
   const [picking, setPicking] = useState(false)
   const [languages, setLanguages] = useState<LanguageRow[]>([])
@@ -190,10 +193,15 @@ export default function OnboardingWizard({ onComplete }: Props) {
                   Mount a folder of documents under <code>{system?.watch_root}</code>, Harbor Clerk indexes it on this
                   server, and you can query it from chat or search. To get started, follow the folder setup guide.
                 </>
-              ) : (
+              ) : isMac ? (
                 <>
                   Drop documents into a folder on this Mac, Harbor Clerk indexes them locally, and you can query them
                   from chat or search. Your files never leave this machine. To get started, pick a folder to watch.
+                </>
+              ) : (
+                <>
+                  Harbor Clerk indexes the documents in the folders it watches, and you can query them from chat or
+                  search.
                 </>
               )}
             </p>
@@ -343,7 +351,7 @@ export default function OnboardingWizard({ onComplete }: Props) {
             <div className="mb-5 border-l-2 border-blue-500/70 pl-3 text-sm text-(--color-text-secondary)">
               <div className="font-medium text-(--color-text-primary)">Setup path</div>
               <ol className="mt-2 list-decimal space-y-1 pl-4">
-                <li>Download a model that fits this {isDocker ? 'server' : 'Mac'}.</li>
+                <li>Download a model that fits this {isMac ? 'Mac' : isDocker ? 'server' : 'machine'}.</li>
                 <li>Activate it after the download completes.</li>
                 <li>Return to Ask or Research when the local AI status is ready.</li>
               </ol>
@@ -384,10 +392,10 @@ export default function OnboardingWizard({ onComplete }: Props) {
             </h2>
             <p className="mb-3 text-sm text-(--color-text-secondary)">
               Documents go through a 7-stage pipeline (extract → OCR → chunk → entities → embed → summarize → finalize).
-              {isDocker ? ' Where to watch:' : ' Two places to watch:'}
+              {isMac ? ' Two places to watch:' : ' Where to watch:'}
             </p>
             <ul className="mb-6 space-y-2 text-sm text-(--color-text-secondary)">
-              {!isDocker && (
+              {isMac && (
                 <li>
                   <strong className="text-(--color-text-primary)">Server menubar</strong> — click the Harbor Clerk icon
                   in your menu bar to see backend services running locally (Postgres, workers, the LLM if active).

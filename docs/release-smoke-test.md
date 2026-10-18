@@ -78,11 +78,12 @@ Docker:
 - Start with `docker compose up --build`.
 - Open `https://localhost` and accept the self-signed certificate.
 - Confirm admin account creation and watched-folder setup work.
-- Watched folder end to end: `mkdir -p ./data/watch/smoke`, copy in a
-  text-native PDF and a scanned (OCR-needed) PDF, and within ~60 seconds
-  confirm the folder appears under **Folders**, both documents finish every
-  stage (extract and OCR run in `worker-io` and `worker-cpu`, which read the
-  file in place), and a phrase from each is found by Search. Then set
+- Watched folder end to end: `mkdir -p ./data/watch/smoke` and copy in a
+  text-native PDF and a scanned (OCR-needed) PDF. Within ~60 seconds the folder
+  appears under **Folders** and a phrase from the text PDF is found by Search
+  (its summary may arrive later). The scanned PDF takes longer, since OCR runs
+  page by page, but must also become searchable (extract and OCR run in
+  `worker-io` and `worker-cpu`, which read the file in place). Then set
   `ALLOW_SOURCE_DOWNLOAD=true` in `.env` (download is off by default),
   `docker compose up -d app`, and confirm **Download** on the document detail
   page returns the original file (served by `app`). A watched document failing

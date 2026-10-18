@@ -33,7 +33,7 @@ services:
       # Watched documents are read in place from source_path (the path the watcher
       # saw), so every service that reads document bytes mounts the watcher's
       # host directory at the same container path, read-only (#869).
-      - ./data/watch:/data/watch:ro
+      - ./data/watch:${WATCH_ROOT:-/data/watch}:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,7 +67,7 @@ services:
       RERANKER_URL: http://reranker:8001
     volumes:
       # Extract/OCR read watched documents in place; see the mount on `app`.
-      - ./data/watch:/data/watch:ro
+      - ./data/watch:${WATCH_ROOT:-/data/watch}:ro
     depends_on:
       app:
         condition: service_healthy
@@ -86,7 +86,7 @@ services:
       RERANKER_URL: http://reranker:8001
     volumes:
       # Extract/OCR read watched documents in place; see the mount on `app`.
-      - ./data/watch:/data/watch:ro
+      - ./data/watch:${WATCH_ROOT:-/data/watch}:ro
     depends_on:
       app:
         condition: service_healthy
@@ -134,7 +134,7 @@ services:
       HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
     volumes:
       # Read-only: the watcher only reads, and sources are never modified.
-      - ./data/watch:/data/watch:ro
+      - ./data/watch:${WATCH_ROOT:-/data/watch}:ro
     depends_on:
       postgres:
         condition: service_healthy

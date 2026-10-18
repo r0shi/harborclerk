@@ -194,7 +194,7 @@ Harbor Clerk can run in two ways:
 | | macOS Native | Docker Compose |
 |---|---|---|
 | **Best for** | Small teams and independent operators with a Mac | DIY / Linux servers |
-| **Services** | Managed by menubar app as subprocesses | Eleven Docker containers |
+| **Services** | Managed by menubar app as subprocesses | Twelve Docker containers ([list](docs/architecture.md#docker-compose-services)) |
 | **Folder picker** | Native folder picker in the UI | Operator mounts host paths read-only into `watcher`, `app`, `worker-io` and `worker-cpu` ([guide](docs/watched-folders-docker.md)) |
 | **Originals** | Read in place from your filesystem | Read in place from bind-mounted volumes |
 | **HTTPS** | Direct localhost access | Caddy reverse proxy with self-signed cert |

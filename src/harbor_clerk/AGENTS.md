@@ -41,8 +41,9 @@ written to. IMAP messages and attachments are the one case where content is
 fetched and stored, because there is no file on disk to reference.
 `source_path` is the path the watcher saw, so under Compose every service that
 reads it (`app`, and the workers whose `QUEUE_STAGES` claim extract or OCR)
-mounts the watcher's host directory at the same container path; every bind of
-the watch root, the watcher's too, is `:ro` (#869;
+mounts the watcher's host directory at the same container path, taken from
+`${WATCH_ROOT:-/data/watch}` (#871); every bind of the watch root, the
+watcher's too, is `:ro` (#869;
 `tests/test_docker_compose_watch_mount.py`). A new stage that reads document
 bytes goes in that test's `BYTE_READING_STAGES`.
 

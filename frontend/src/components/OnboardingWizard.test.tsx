@@ -58,6 +58,42 @@ describe('OnboardingWizard', () => {
     expect(screen.getByText('Models route')).toBeInTheDocument()
   })
 
+  it('on macOS, shows the picker and the Mac copy on every page', async () => {
+    renderWizard()
+
+    expect(await screen.findByRole('button', { name: 'Pick a folder to watch' })).toBeInTheDocument()
+    expect(screen.getByText(/Drop documents into a folder on this Mac/)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Read folder setup docs' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next →' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    expect(screen.getByText('Download a model that fits this Mac.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    expect(screen.getByText('Server menubar')).toBeInTheDocument()
+    expect(screen.getByText(/Two places to watch:/)).toBeInTheDocument()
+  })
+
+  it('renders platform-neutral copy when the platform is unknown (system info failed)', async () => {
+    getMock.mockImplementation((path: string) => {
+      if (path === '/api/languages') return Promise.resolve({ languages: [] })
+      return Promise.reject(new Error('unavailable'))
+    })
+
+    renderWizard()
+
+    expect(await screen.findByText(/indexes the documents in the folders it watches/)).toBeInTheDocument()
+    expect(screen.queryByText(/on this Mac/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Pick a folder to watch' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next →' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    expect(screen.getByText('Download a model that fits this machine.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    expect(screen.queryByText('Server menubar')).not.toBeInTheDocument()
+  })
+
   it('on Docker, links the folder setup guide on GitHub in a new tab and drops the Mac-only copy', async () => {
     getMock.mockImplementation((path: string) => {
       if (path === '/api/watch/system') {
@@ -75,9 +111,12 @@ describe('OnboardingWizard', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
     expect(screen.queryByRole('button', { name: 'Pick a folder to watch' })).not.toBeInTheDocument()
     expect(screen.queryByText(/on this Mac/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Mount a folder of documents under/)).toBeInTheDocument()
+    expect(screen.getByText('/data/watch')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Next →' }))
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    expect(screen.getByText('Download a model that fits this server.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
     expect(screen.getByRole('heading', { name: 'Track ingestion progress' })).toBeInTheDocument()
     expect(screen.queryByText('Server menubar')).not.toBeInTheDocument()

@@ -16,7 +16,9 @@ The `watcher` service watches `WATCH_ROOT` (default `/data/watch`) for new top-l
    mkdir -p ./data/watch/contracts
    ```
 
-2. The default `docker-compose.yml` already mounts `./data/watch` read-only at `/data/watch` in `watcher`, `app`, `worker-io` and `worker-cpu`. New subdirectories of `./data/watch` are auto-discovered every 60 seconds — no restart needed.
+   On Linux, if Docker created `./data/watch` itself (the stack was started before the directory existed), it is owned by root and the `mkdir` needs `sudo`; `sudo chown "$USER" ./data/watch` once avoids that from then on.
+
+2. The default `docker-compose.yml` already mounts `./data/watch` read-only at `WATCH_ROOT` (default `/data/watch`) in `watcher`, `app`, `worker-io` and `worker-cpu`. New subdirectories of `./data/watch` are auto-discovered every 60 seconds — no restart needed.
 
 3. To mount a directory that lives elsewhere on the host, first create its mountpoint under `./data/watch` on the host (step 1, e.g. `mkdir -p ./data/watch/contracts`). `./data/watch` is mounted read-only, so Docker cannot create the mountpoint for a nested mount itself, and the container fails to start without it.
 
@@ -26,24 +28,24 @@ The `watcher` service watches `WATCH_ROOT` (default `/data/watch`) for new top-l
    services:
      watcher:
        volumes:
-         - ./data/watch:/data/watch:ro
-         - /Users/alice/Documents/Contracts:/data/watch/contracts:ro
+         - ./data/watch:${WATCH_ROOT:-/data/watch}:ro
+         - /Users/alice/Documents/Contracts:${WATCH_ROOT:-/data/watch}/contracts:ro
      app:
        volumes:
          - llama_models:/models
-         - ./data/watch:/data/watch:ro
-         - /Users/alice/Documents/Contracts:/data/watch/contracts:ro
+         - ./data/watch:${WATCH_ROOT:-/data/watch}:ro
+         - /Users/alice/Documents/Contracts:${WATCH_ROOT:-/data/watch}/contracts:ro
      worker-io:
        volumes:
-         - ./data/watch:/data/watch:ro
-         - /Users/alice/Documents/Contracts:/data/watch/contracts:ro
+         - ./data/watch:${WATCH_ROOT:-/data/watch}:ro
+         - /Users/alice/Documents/Contracts:${WATCH_ROOT:-/data/watch}/contracts:ro
      worker-cpu:
        volumes:
-         - ./data/watch:/data/watch:ro
-         - /Users/alice/Documents/Contracts:/data/watch/contracts:ro
+         - ./data/watch:${WATCH_ROOT:-/data/watch}:ro
+         - /Users/alice/Documents/Contracts:${WATCH_ROOT:-/data/watch}/contracts:ro
    ```
 
-   Watched documents are read in place from the path the watcher recorded, so a folder mounted only into `watcher` is discovered but every document in it fails extraction and cannot be downloaded. Use the same container path everywhere.
+   Watched documents are read in place from the path the watcher recorded, so a folder mounted only into `watcher` is discovered but every document in it fails extraction and cannot be downloaded. Use the same container path everywhere. Writing the target as `${WATCH_ROOT:-/data/watch}/<name>` keeps it a top-level subdirectory of the watch root if you change `WATCH_ROOT`.
 
    Recreate the services:
 
@@ -84,7 +86,7 @@ The watcher process is single-threaded and lightweight. Even with thousands of f
 
 | Env var      | Default        | Description                                                                |
 | ------------ | -------------- | -------------------------------------------------------------------------- |
-| `WATCH_ROOT` | `/data/watch`  | Directory inside the container whose top-level subdirs become folders.     |
+| `WATCH_ROOT` | `/data/watch`  | Directory inside the containers whose top-level subdirs become folders. Set it in `.env`: `docker-compose.yml` mounts `./data/watch` there in every service that reads watched files. |
 | `LOG_LEVEL`  | `INFO`         | Watcher log verbosity. Use `DEBUG` to see per-event details when debugging.|
 
 ## Related endpoints
