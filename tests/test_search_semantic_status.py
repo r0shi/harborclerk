@@ -7,6 +7,7 @@ user their contracts did not discuss it. The fallback stays (one request should
 not fail for it), but the result now carries `semantic_status`.
 """
 
+import asyncio
 import json
 import uuid
 from contextlib import asynccontextmanager
@@ -378,8 +379,91 @@ async def test_the_corpus_figure_is_cached_not_computed_per_search(db_session, c
     assert len(aggregates) == 1, f"{len(aggregates)} aggregates for 3 searches inside the TTL"
 
     clock[0] += embedding_coverage.CORPUS_COVERAGE_TTL_SECONDS + 1
-    await search_mod.hybrid_search(db_session, "lighthouse keeper")
+    stale = await search_mod.hybrid_search(db_session, "lighthouse keeper")
+    assert stale.semantic_coverage == 0.7, "the stale figure is served while it is replaced"
+    await asyncio.wait_for(embedding_coverage._refresh_task(), timeout=10)
     assert len(aggregates) == 2, "a stale figure was not refreshed"
+
+
+def _cache_figure(embedding_coverage, share: float, *, age: float):
+    """Seed the cache with ``share`` as computed ``age`` seconds ago."""
+    embedding_coverage._cache = (embedding_coverage._now() - age, share)
+
+
+async def test_a_stale_figure_is_returned_at_once_while_the_refresh_runs(db_session, monkeypatch):
+    """The search that finds the figure stale must not pay the aggregate (4.1 s cold)."""
+    import time
+
+    from harbor_clerk import embedding_coverage
+
+    async def _slow_counts(_session):
+        await asyncio.sleep(1.0)
+        return {"chunks_total": 10, "chunks_embedded": 9}
+
+    monkeypatch.setattr(embedding_coverage, "embedding_coverage_counts", _slow_counts)
+    _cache_figure(embedding_coverage, 0.4, age=embedding_coverage.CORPUS_COVERAGE_TTL_SECONDS + 5)
+
+    started = time.monotonic()
+    share = await embedding_coverage.corpus_embedding_coverage(db_session)
+    elapsed = time.monotonic() - started
+
+    assert share == 0.4
+    assert elapsed < 0.5, f"the stale read waited {elapsed:.2f}s on the aggregate"
+    task = embedding_coverage._refresh_task()
+    assert task is not None and not task.done(), "no background refresh was started"
+    await asyncio.wait_for(task, timeout=10)
+    assert await embedding_coverage.corpus_embedding_coverage(db_session) == 0.9
+
+
+async def test_the_first_search_waits_only_up_to_the_bound(db_session, monkeypatch):
+    import time
+
+    from harbor_clerk import embedding_coverage
+
+    async def _slow_counts(_session):
+        await asyncio.sleep(1.5)
+        return {"chunks_total": 4, "chunks_embedded": 3}
+
+    monkeypatch.setattr(embedding_coverage, "embedding_coverage_counts", _slow_counts)
+    monkeypatch.setattr(embedding_coverage, "FIRST_FIGURE_WAIT_SECONDS", 0.2)
+
+    started = time.monotonic()
+    share = await embedding_coverage.corpus_embedding_coverage(db_session)
+    elapsed = time.monotonic() - started
+
+    assert share is None, "past the bound the first search reports no figure"
+    assert elapsed < 1.0, f"the first search waited {elapsed:.2f}s, past its bound"
+    task = embedding_coverage._refresh_task()
+    assert task is not None and not task.done(), "the refresh must carry on in the background"
+    await asyncio.wait_for(task, timeout=10)
+    assert await embedding_coverage.corpus_embedding_coverage(db_session) == 0.75
+
+
+async def test_a_failed_refresh_keeps_the_old_figure_and_is_logged(db_session, monkeypatch, caplog):
+    import logging
+
+    from harbor_clerk import embedding_coverage
+
+    attempts: list[int] = []
+
+    async def _failing_counts(_session):
+        attempts.append(1)
+        raise RuntimeError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(embedding_coverage, "embedding_coverage_counts", _failing_counts)
+    _cache_figure(embedding_coverage, 0.4, age=embedding_coverage.CORPUS_COVERAGE_TTL_SECONDS + 5)
+
+    with caplog.at_level(logging.ERROR, logger="harbor_clerk.embedding_coverage"):
+        assert await embedding_coverage.corpus_embedding_coverage(db_session) == 0.4
+        task = embedding_coverage._refresh_task()
+        await asyncio.wait_for(task, timeout=10)
+
+    assert task.exception() is None, "the background task leaked its exception"
+    assert any("refresh failed" in r.getMessage() and r.exc_info for r in caplog.records), caplog.records
+    assert await embedding_coverage.corpus_embedding_coverage(db_session) == 0.4, "the old figure was lost"
+    # Let any refresh that search started run before counting attempts.
+    await asyncio.wait_for(embedding_coverage._refresh_task(), timeout=10)
+    assert len(attempts) == 1, "a refresh that just failed was retried on the next search"
 
 
 async def test_rest_and_mcp_report_partial_coverage(

@@ -7,10 +7,12 @@ was to query Postgres. One aggregate serves both readers:
 - `/system/stats` reports the counts (`embedding_coverage_counts`), uncached;
 - search marks a result "partial" from the figure for its reach
   (`search_scope_coverage`): with no document filter, the corpus share
-  (`corpus_embedding_coverage`), through a process-wide cache refreshed lazily
-  at most once per CORPUS_COVERAGE_TTL_SECONDS. The aggregate is not free:
-  measured at 125 ms warm and 4.1 s cold on 300k chunks, paid by the one search
-  that finds the figure stale, once a minute per process.
+  (`corpus_embedding_coverage`), through a process-wide cache refreshed in the
+  background at most once per CORPUS_COVERAGE_TTL_SECONDS. The aggregate is not
+  free (measured at 125 ms warm and 4.1 s cold on 300k chunks), so no search
+  pays it once a figure exists: a stale figure is served while a background
+  task replaces it, and only a process's first search waits, for at most
+  FIRST_FIGURE_WAIT_SECONDS.
 
 Not over a query's candidates. That figure was diluted by the vector leg itself
 (it only ever returns embedded chunks), so a corpus with a third of its
@@ -20,11 +22,12 @@ to ~1,000 candidate documents per find_all.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from harbor_clerk.models import Chunk, Document
 
@@ -35,13 +38,24 @@ logger = logging.getLogger(__name__)
 # a minute keeps the cost off the search path.
 CORPUS_COVERAGE_TTL_SECONDS = 60.0
 
+# How long the first search in a process waits for the first figure. Warm, the
+# aggregate takes ~125 ms; cold, seconds. Past this the search reports no figure
+# (a missed warning, the accepted error) and the refresh finishes in the background.
+FIRST_FIGURE_WAIT_SECONDS = 2.0
+
+# After a failed refresh, how long before another is tried: a database that just
+# failed the aggregate should not be asked again on every search.
+CORPUS_COVERAGE_RETRY_SECONDS = 30.0
+
 # A document filter this small gets an exact figure over just its documents:
 # one aggregate on chunks.doc_id (chunks_doc_idx), bounded by the filter. 50 is
 # the doc_ids cap REST and MCP already enforce on a caller's own filter.
 EXACT_COVERAGE_MAX_DOCS = 50
 
 _cache: tuple[float, float | None] | None = None  # (monotonic time, share)
-_refreshing = False
+# (loop, task) of the in-flight (or last) refresh: a task belongs to its loop.
+_refresh: tuple[asyncio.AbstractEventLoop, asyncio.Task] | None = None
+_failed_at: float | None = None
 
 
 def _now() -> float:
@@ -74,27 +88,82 @@ async def embedding_coverage_counts(session: AsyncSession) -> dict[str, int]:
 
 
 async def corpus_embedding_coverage(session: AsyncSession) -> float | None:
-    """The share of active chunks with a vector (None for an empty corpus), cached process-wide.
+    """The share of active chunks with a vector (None when unknown or the corpus is empty), cached process-wide.
 
-    A stale or missing figure is refreshed by the caller that finds it so, on
-    its own session; a caller arriving while that refresh is in flight uses the
-    previous figure rather than running a second aggregate.
+    Never pays the aggregate on the search path once a figure exists:
+
+    - fresh figure: returned;
+    - stale figure: returned at once, and one background refresh started
+      (single-flight: a refresh already running is reused, not doubled);
+    - no figure yet (the first search in a process): the refresh is started
+      and awaited for at most FIRST_FIGURE_WAIT_SECONDS; past that this search
+      reports no figure and the refresh finishes in the background.
+
+    The refresh runs on its own session from the caller's engine, since it may
+    outlive the caller's request. A failed refresh is logged and keeps the
+    previous figure, and is not retried for CORPUS_COVERAGE_RETRY_SECONDS.
     """
-    global _cache, _refreshing
     cached = _cache
     if cached is not None and _now() - cached[0] < CORPUS_COVERAGE_TTL_SECONDS:
         return cached[1]
-    if _refreshing:
-        return cached[1] if cached is not None else None
-    _refreshing = True
+    task = _start_refresh(session)
+    if cached is not None:
+        return cached[1]
+    if task is None:
+        return None  # a recent refresh failed; don't make every first search wait on another
     try:
-        counts = await embedding_coverage_counts(session)
+        await asyncio.wait_for(asyncio.shield(task), timeout=FIRST_FIGURE_WAIT_SECONDS)
+    except TimeoutError:
+        return None
+    latest = _cache
+    return latest[1] if latest is not None else None
+
+
+def _refresh_task() -> asyncio.Task | None:
+    """The in-flight (or last) refresh on the running loop, if any (tests await it)."""
+    refresh = _refresh
+    if refresh is None or refresh[0] is not asyncio.get_running_loop():
+        return None
+    return refresh[1]
+
+
+def _start_refresh(session: AsyncSession) -> asyncio.Task | None:
+    """Start the background refresh unless one is running (returned) or one just failed (None)."""
+    global _refresh
+    running = _refresh_task()
+    if running is not None and not running.done():
+        return running
+    if _failed_at is not None and _now() - _failed_at < CORPUS_COVERAGE_RETRY_SECONDS:
+        return None
+    bind = session.bind
+    engine = bind.engine if isinstance(bind, AsyncConnection) else bind
+    if engine is None:
+        from harbor_clerk.db import engine
+    loop = asyncio.get_running_loop()
+    # Held in _refresh: the loop keeps only a weak reference to a task, and an
+    # unreferenced one can be garbage-collected mid-run.
+    _refresh = (loop, loop.create_task(_refresh_figure(engine)))
+    return _refresh[1]
+
+
+async def _refresh_figure(engine) -> None:
+    """Run the aggregate on its own session and cache the share; log and swallow any failure."""
+    global _cache, _failed_at
+    try:
+        async with AsyncSession(bind=engine) as refresh_session:
+            counts = await embedding_coverage_counts(refresh_session)
         total = counts["chunks_total"]
         share = round(counts["chunks_embedded"] / total, 3) if total else None
         _cache = (_now(), share)
-        return share
-    finally:
-        _refreshing = False
+        _failed_at = None
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Swallowed after logging: nobody awaits a background task's result, so
+        # a raised exception would only surface as "Task exception was never
+        # retrieved". The previous figure, if any, stands.
+        _failed_at = _now()
+        logger.exception("Corpus embedding coverage refresh failed; keeping the previous figure")
 
 
 async def documents_embedding_coverage(session: AsyncSession, doc_ids: list) -> float | None:
@@ -132,7 +201,10 @@ async def search_scope_coverage(session: AsyncSession, scope_doc_ids: list | Non
 
 
 def reset() -> None:
-    """Forget the cached figure (tests)."""
-    global _cache, _refreshing
+    """Forget the cached figure and cancel any refresh in flight (tests)."""
+    global _cache, _refresh, _failed_at
+    if _refresh is not None and not _refresh[1].done():
+        _refresh[1].cancel()
     _cache = None
-    _refreshing = False
+    _refresh = None
+    _failed_at = None
