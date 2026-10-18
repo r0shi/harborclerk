@@ -244,6 +244,10 @@ def test_changes_while_down_are_reconciled_at_startup(factory, tmp_path):
     (root / "gone.txt").unlink()
     (root / "edited.txt").write_text("v2")
     (root / "new.txt").write_text("n")
+    # Let the changes age past FSEvents' delivery window: a stream started a
+    # moment after them can still report them, which would let the observer,
+    # not the startup reconciliation, do the work this test is about.
+    time.sleep(2.0)
 
     with _Running(factory, folder_id) as run:
         st = run.state()
