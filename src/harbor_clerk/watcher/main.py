@@ -51,6 +51,11 @@ LISTENER_HEALTHY_SECS = 120.0
 # How often each watched root is stat'ed to notice it was replaced (#739). An
 # observer that sees its root go wakes the check at once; this is the backstop.
 ROOT_CHECK_INTERVAL_SECS = 5.0
+# `watched_folders.unavailable_reason` values the watcher sets when a pass cannot compare the folder, and
+# clears when one can. Docker discovery owns "unmounted".
+ROOT_MISSING = "root_missing"
+ROOT_UNREADABLE = "root_unreadable"
+WATCHER_UNAVAILABLE_REASONS = (ROOT_MISSING, ROOT_UNREADABLE)
 
 StatKey = tuple[int, int, int, int, int]
 
@@ -181,6 +186,8 @@ class WatcherDaemon:
                 if fid not in self._missing_roots:
                     self._missing_roots.add(fid)
                     logger.warning("watcher: root of folder %s is missing (%s); waiting for it", fid, obs.root)
+                    # The pass finds the root gone and records why, removing nothing.
+                    self._request_reconcile(fid)
                 continue
             self._missing_roots.discard(fid)
             if state is RootState.ok:
@@ -260,6 +267,7 @@ class WatcherDaemon:
         """
         if not os.path.isdir(root):
             logger.warning("watcher: reconcile of %s skipped: the root is missing", root)
+            self._record_pass(folder_id, unavailable=ROOT_MISSING)
             return
         logger.info("watcher: reconcile of %s starting", root)
         count = 0
@@ -341,6 +349,7 @@ class WatcherDaemon:
         unlisted = _unlisted_dirs(root, walk_errors)
         if unlisted is None:
             logger.warning("watcher: reconcile of %s skipped: the root could not be listed (%s)", root, walk_errors[0])
+            self._record_pass(folder_id, unavailable=ROOT_UNREADABLE)
             return
         if unlisted:
             logger.warning(
@@ -397,23 +406,7 @@ class WatcherDaemon:
                 )
                 removed += 1
 
-        # Mark the pass complete and write the skip tally on the folder row.
-        # The stamp lands after the walk on purpose: a file present at last_scan_at has had its hash compared
-        # to the index. The eval harness relies on that when it decides whether to trust an index it did not
-        # build (scripts/test_corpora/runner/sweep.py, _files_the_index_did_not_read, #740).
-        sess = self._session_factory()
-        try:
-            folder = sess.query(WatchedFolder).filter_by(folder_id=folder_id).one_or_none()
-            if folder is not None:
-                folder.last_scan_at = datetime.now(UTC)
-                folder.skipped_count = skipped_count
-                folder.skipped_extensions = sorted(skipped_exts)
-                sess.commit()
-        except Exception:
-            sess.rollback()
-            logger.exception("watcher: failed to update last_scan_at for %s", folder_id)
-        finally:
-            sess.close()
+        self._record_pass(folder_id, unavailable=None, skipped_count=skipped_count, skipped_exts=skipped_exts)
 
         logger.info(
             "watcher: reconcile of %s complete (%d files compared, %d missing removed, %d skipped — extensions=%s)",
@@ -423,6 +416,44 @@ class WatcherDaemon:
             skipped_count,
             sorted(skipped_exts),
         )
+
+    def _record_pass(
+        self,
+        folder_id: uuid.UUID,
+        *,
+        unavailable: str | None,
+        skipped_count: int | None = None,
+        skipped_exts: set[str] | None = None,
+    ) -> None:
+        """Stamp `last_scan_at` and say whether the folder could be compared.
+
+        A completed pass lands after the walk on purpose: a file present at last_scan_at has had its hash
+        compared to the index. The eval harness relies on that when it decides whether to trust an index it
+        did not build (scripts/test_corpora/runner/sweep.py, _files_the_index_did_not_read, #740).
+
+        A pass skipped because the root is missing or cannot be listed is stamped too, or the API's
+        scan_status (`last_scan_at is None`) would read "scanning" for good; `unavailable_reason` says why,
+        which the folder list shows, and the harness distrusts that stamp. A completed pass clears only the
+        watcher's own reasons: "unmounted" belongs to Docker discovery.
+        """
+        sess = self._session_factory()
+        try:
+            folder = sess.query(WatchedFolder).filter_by(folder_id=folder_id).one_or_none()
+            if folder is not None:
+                folder.last_scan_at = datetime.now(UTC)
+                if unavailable is not None:
+                    folder.unavailable_reason = unavailable
+                elif folder.unavailable_reason in WATCHER_UNAVAILABLE_REASONS:
+                    folder.unavailable_reason = None
+                if skipped_count is not None:
+                    folder.skipped_count = skipped_count
+                    folder.skipped_extensions = sorted(skipped_exts or ())
+                sess.commit()
+        except Exception:
+            sess.rollback()
+            logger.exception("watcher: failed to update last_scan_at for %s", folder_id)
+        finally:
+            sess.close()
 
     def _active_paths(self, folder_id: uuid.UUID) -> set[str]:
         sess = self._session_factory()

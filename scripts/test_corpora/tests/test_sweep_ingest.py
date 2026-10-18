@@ -58,6 +58,28 @@ def test_hc_corpus_matches_true_when_folder_and_count_align(tmp_path: Path):
     assert _hc_corpus_matches(c, _manifest(ingest_dir=str(ingest))) is True
 
 
+def test_hc_corpus_matches_false_when_the_folder_is_unavailable(tmp_path: Path):
+    """The watcher stamps last_scan_at on a pass it skipped (root missing or unreadable) and says why in
+    unavailable_reason; that stamp compared nothing, so the index is not trusted."""
+    ingest = tmp_path / "cuad-ingest"
+    ingest.mkdir()
+    (ingest / "a.pdf").write_bytes(b"%PDF")
+    reason = {"value": "root_unreadable"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/watch/folders":
+            row = {"folder_id": "f1", "path": str(ingest), "last_scan_at": "2999-01-01T00:00:00+00:00"}
+            return httpx.Response(200, json=[{**row, "unavailable_reason": reason["value"]}])
+        if request.url.path == "/api/docs":
+            return httpx.Response(200, json={"items": [], "total": 80, "limit": 0, "offset": 0})
+        return httpx.Response(404)
+
+    c = _make_client(handler)
+    assert _hc_corpus_matches(c, _manifest(ingest_dir=str(ingest))) is False
+    reason["value"] = None
+    assert _hc_corpus_matches(c, _manifest(ingest_dir=str(ingest))) is True
+
+
 def test_hc_corpus_matches_false_when_no_watch_folders():
     """Empty watch folder list → no corpus loaded, fall through to re-ingest."""
 

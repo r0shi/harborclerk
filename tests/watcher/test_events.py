@@ -24,7 +24,7 @@ from harbor_clerk.watcher.events import (
     handle_event,
     is_sidecar,
 )
-from tests.watcher._fs import case_insensitive_only
+from tests.watcher._fs import case_insensitive_only, normalization_insensitive_only
 
 
 @pytest.fixture
@@ -1529,13 +1529,36 @@ def test_rename_onto_a_retired_path_keeps_the_moved_document(sync_session, folde
     assert sync_session.get(Document, old_doc_id) is None
 
 
-def test_file_exists_exact_follows_nfc_and_nfd_spellings(tmp_path):
-    """macOS may report a name in either normal form; the listing holds one."""
+def test_file_exists_exact_finds_the_spelling_on_disk(tmp_path):
     nfd = unicodedata.normalize("NFD", "café.txt")
     (tmp_path / nfd).write_text("x")
-    assert file_exists_exact(str(tmp_path), unicodedata.normalize("NFC", "café.txt"))
     assert file_exists_exact(str(tmp_path), nfd)
     assert not file_exists_exact(str(tmp_path), "cafe.txt")
+
+
+@normalization_insensitive_only
+def test_file_exists_exact_follows_the_other_normal_form(tmp_path):
+    """macOS may report a name in either normal form; the listing holds one."""
+    (tmp_path / unicodedata.normalize("NFD", "café")).mkdir()
+    (tmp_path / unicodedata.normalize("NFD", "café") / unicodedata.normalize("NFD", "été.txt")).write_text("x")
+    assert file_exists_exact(str(tmp_path), unicodedata.normalize("NFC", "café/été.txt"))
+
+
+def test_a_missing_file_is_answered_without_listing_its_directory(tmp_path, monkeypatch):
+    """A delete in a large directory must not list it: `rm *.pdf` of 10k files
+    would list a 20,000-entry directory 10k times under the folder lock."""
+    big = tmp_path / "big"
+    big.mkdir()
+    for i in range(2000):
+        (big / f"{i:05d}.pdf").write_bytes(b"x")
+    calls = []
+    real_listdir = os.listdir
+    monkeypatch.setattr(os, "listdir", lambda path=".": calls.append(path) or real_listdir(path))
+
+    assert not file_exists_exact(str(tmp_path), "big/gone.pdf")
+    assert calls == [], "a path that does not resolve needs no listing"
+    assert file_exists_exact(str(tmp_path), "big/00001.pdf")
+    assert len(calls) == 2, "a path that resolves is checked component by component"
 
 
 def test_file_exists_exact_requires_a_regular_file(tmp_path):

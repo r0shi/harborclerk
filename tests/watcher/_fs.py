@@ -1,6 +1,7 @@
 """Properties of the volume the tests' temp directories live on."""
 
 import tempfile
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,19 @@ def volume_is_case_insensitive(directory: Path | None = None) -> bool:
         probe = Path(tmp) / "CaseProbe"
         probe.write_text("x")
         return (Path(tmp) / "caseprobe").exists()
+
+
+def volume_is_normalization_insensitive(directory: Path | None = None) -> bool:
+    """True where an NFC and an NFD spelling name the same file (APFS), False on ext4 (CI)."""
+    with tempfile.TemporaryDirectory(dir=directory) as tmp:
+        (Path(tmp) / unicodedata.normalize("NFD", "café")).write_text("x")
+        return (Path(tmp) / unicodedata.normalize("NFC", "café")).exists()
+
+
+normalization_insensitive_only = pytest.mark.skipif(
+    not volume_is_normalization_insensitive(),
+    reason="needs a normalization-insensitive volume (APFS); on ext4 the other spelling is another file",
+)
 
 
 # A test that only means something where `Doc` and `doc` are the same file.

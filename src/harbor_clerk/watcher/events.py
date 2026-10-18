@@ -235,7 +235,14 @@ def file_exists_exact(base: str, relative_path: str) -> bool:
     up in its parent's listing. Names are compared NFC-normalised, since
     macOS may hand back either form, and the walk continues under the name
     the listing holds.
+
+    A path that does not resolve at all is answered from one ``lstat``: the
+    listings settle only the case-insensitive ambiguity, and listing a 20,000
+    entry directory per deleted file made ``rm *.pdf`` cost minutes of serial
+    work under the folder lock.
     """
+    if not os.path.lexists(os.path.join(base, relative_path)):
+        return False
     current = base
     for part in relative_path.split("/"):
         name = _listed_name(current, part)

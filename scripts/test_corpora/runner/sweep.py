@@ -985,6 +985,11 @@ def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
     ours = [f for f in folders if f.get("path") == target]
     if not ours:
         return False
+    if ours[0].get("unavailable_reason"):
+        # The watcher stamps last_scan_at on a pass it had to skip (root missing or not readable) so the
+        # folder stops reading "scanning"; such a pass compared nothing, so the stamp vouches for nothing.
+        log.warning("%s is watched but unavailable (%s): re-ingesting", target, ours[0]["unavailable_reason"])
+        return False
     threshold = max(1, int(manifest.doc_count * 0.5))
     actual = hc.document_count()
     if actual > manifest.doc_count:

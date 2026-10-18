@@ -688,10 +688,7 @@ async def rename_file(
 
     bookmark = _parse_base64(body.bookmark_data, "bookmark_data")
 
-    # The same rules as the watcher's moved event (watcher/relocate.py, #847):
-    # a live file at the destination is not overwritten; a retired file's
-    # leftover row there gives way, with its hidden document, as the reaper
-    # would drop them.
+    # The same rules as the watcher's moved event (watcher/events.py::_handle_moved, #847).
     if body.new_relative_path != body.old_relative_path:
         dest_result = await session.execute(
             select(WatchedFile).where(
@@ -701,8 +698,24 @@ async def rename_file(
         )
         dest = dest_result.scalar_one_or_none()
         if dest is not None and dest.status == WatchedFileStatus.active:
-            raise HTTPException(status_code=409, detail="A watched file already exists at new_relative_path")
+            # A rename onto a live file replaced it. The destination keeps its
+            # document, the one its path cites, and takes the moved content
+            # (reprocessed when it differs); the source is retired as a deleted file.
+            retire_watched_file(wf, await session.get(Document, wf.doc_id) if wf.doc_id else None)
+            dest.bookmark_data = bookmark
+            dest_doc = await session.get(Document, dest.doc_id) if dest.doc_id else None
+            changed = dest.sha256 != wf.sha256
+            dest.sha256 = wf.sha256
+            if dest_doc is not None:
+                dest_doc.source_path = body.source_path
+                if changed:
+                    dest_doc.sha256 = wf.sha256
+                    await reset_and_queue_extract_for_doc(session, dest_doc.doc_id, priority=10)
+            await session.commit()
+            return {"action": "replaced", "doc_id": str(dest.doc_id)}
         if dest is not None:
+            # A retired file's leftover row gives way, with its hidden document,
+            # as the reaper would drop them; the moved file keeps its own.
             stale_doc = await session.get(Document, dest.doc_id) if dest.doc_id else None
             await session.delete(dest)
             if stale_doc is not None:

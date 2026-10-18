@@ -541,3 +541,177 @@ def test_reconcile_removes_missing_files_beside_present_ones(factory, tmp_path):
     st = _state(factory, folder_id)
     assert st["a.txt"][0:3:2] == (ACTIVE, "active")
     assert st["b.txt"][0:3:2] == (REMOVED, "removed")
+
+
+# ---------------------------------------------------------------------------
+# A skipped pass still ends "scanning" and says why
+# ---------------------------------------------------------------------------
+
+
+def _folder_row(factory, folder_id) -> tuple:
+    sess = factory()
+    try:
+        row = sess.query(WatchedFolder).filter_by(folder_id=folder_id).one()
+        return row.last_scan_at, row.unavailable_reason
+    finally:
+        sess.close()
+
+
+def test_unreadable_root_is_stamped_and_reported_until_it_is_readable(factory, tmp_path):
+    """scan_status reads `last_scan_at is None` as scanning: a pass that could
+    not list the root must still stamp it, and say why, or the folder shows
+    "scanning" for good."""
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _add_folder(factory, root)
+    root.chmod(0o300)  # searchable, not listable
+    try:
+        if os.access(root, os.R_OK):
+            pytest.skip("running with privileges that read a write-only directory")
+        WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+        skipped_at, reason = _folder_row(factory, folder_id)
+        assert skipped_at is not None
+        assert reason == watcher_main.ROOT_UNREADABLE
+    finally:
+        root.chmod(0o755)
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    scanned_at, reason = _folder_row(factory, folder_id)
+    assert reason is None
+    assert scanned_at > skipped_at
+    assert list(_state(factory, folder_id)) == ["a.txt"]
+
+
+def test_missing_root_is_stamped_and_reported_until_it_returns(factory, tmp_path):
+    root = tmp_path / "not-yet"
+    folder_id = _add_folder(factory, root)
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    skipped_at, reason = _folder_row(factory, folder_id)
+    assert skipped_at is not None
+    assert reason == watcher_main.ROOT_MISSING
+
+    root.mkdir()
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    scanned_at, reason = _folder_row(factory, folder_id)
+    assert (reason, scanned_at > skipped_at) == (None, True)
+
+
+def test_a_root_that_goes_missing_is_reported_by_the_running_daemon(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _add_folder(factory, root)
+    with _Running(factory, folder_id) as run:
+        root.rename(tmp_path / "aside")
+        _wait_for(
+            "the folder to report its root missing",
+            lambda: _folder_row(factory, folder_id)[1] == watcher_main.ROOT_MISSING,
+        )
+        assert run.state()["a.txt"][0:3:2] == (ACTIVE, "active")
+        (tmp_path / "aside").rename(root)
+        _wait_for("the reason to clear once the root is back", lambda: _folder_row(factory, folder_id)[1] is None)
+
+
+def test_a_completed_pass_leaves_dockers_unmounted_reason_alone(factory, tmp_path):
+    """ "unmounted" belongs to Docker discovery, which clears it itself."""
+    root = _root(tmp_path)
+    folder_id = _add_folder(factory, root)
+    sess = factory()
+    try:
+        sess.query(WatchedFolder).filter_by(folder_id=folder_id).one().unavailable_reason = "unmounted"
+        sess.commit()
+    finally:
+        sess.close()
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    assert _folder_row(factory, folder_id)[1] == "unmounted"
+
+
+# ---------------------------------------------------------------------------
+# Retries, coalescing and re-attach failures
+# ---------------------------------------------------------------------------
+
+
+def test_a_failed_dispatch_is_retried_on_the_next_pass(factory, tmp_path, monkeypatch):
+    """The stat cache records a file only once its event was handled: a pass
+    whose handling failed must not mark the new content as compared."""
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("version one")
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    daemon._reconcile_folder(folder_id, str(root))
+    (root / "a.txt").write_text("version two")
+
+    real_handle_event = watcher_main.handle_event
+
+    def failing_handle_event(session, event):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(watcher_main, "handle_event", failing_handle_event)
+    daemon._reconcile_folder(folder_id, str(root))
+    assert _state(factory, folder_id)["a.txt"][3] == _sha("version one")
+
+    monkeypatch.setattr(watcher_main, "handle_event", real_handle_event)
+    daemon._reconcile_folder(folder_id, str(root))
+    assert _state(factory, folder_id)["a.txt"][3] == _sha("version two")
+
+
+def test_reconcile_requests_during_a_pass_coalesce_into_one_more_pass(factory, tmp_path):
+    import threading
+    from types import SimpleNamespace
+
+    folder_id = uuid.uuid4()
+    daemon = WatcherDaemon(factory)
+    daemon._observers[folder_id] = SimpleNamespace(root=str(tmp_path))
+    release, first_entered = threading.Event(), threading.Event()
+    calls = []
+
+    def fake_reconcile(fid, root):
+        calls.append(fid)
+        if len(calls) == 1:
+            first_entered.set()
+            assert release.wait(WAIT_SECS), "the test never released the first pass"
+
+    daemon._reconcile_folder = fake_reconcile
+    daemon._request_reconcile(folder_id)
+    assert first_entered.wait(WAIT_SECS), "the first pass never started"
+    daemon._request_reconcile(folder_id)
+    daemon._request_reconcile(folder_id)
+    release.set()
+    _wait_for("the worker to finish", lambda: folder_id not in daemon._reconciling)
+    assert calls == [folder_id, folder_id], "two requests during a pass make exactly one more pass"
+
+
+def test_a_failed_reattach_is_retried_and_reconciles_only_once_attached(factory, tmp_path):
+    from harbor_clerk.watcher.observer import RootState
+
+    class FlakyObserver:
+        root = str(tmp_path)
+
+        def __init__(self):
+            self.restarts = 0
+
+        def health(self):
+            return RootState.ok if self.restarts >= 2 else RootState.detached
+
+        def restart(self):
+            self.restarts += 1
+            if self.restarts == 1:
+                raise OSError("fsevents refused the stream")
+
+    folder_id = uuid.uuid4()
+    daemon = WatcherDaemon(factory)
+    obs = FlakyObserver()
+    daemon._observers[folder_id] = obs
+    daemon._seen_stats[folder_id] = {"a.txt": (1, 2, 3, 4, 5)}
+    requested = []
+    daemon._request_reconcile = requested.append
+
+    daemon._check_roots()
+    assert (obs.restarts, requested) == (1, []), "no pass over a root the observer is not watching"
+    assert folder_id in daemon._seen_stats
+
+    daemon._check_roots()
+    assert (obs.restarts, requested) == (2, [folder_id])
+    assert folder_id not in daemon._seen_stats, "a new attachment compares every file again"
+
+    daemon._check_roots()
+    assert (obs.restarts, requested) == (2, [folder_id]), "a healthy observer is left alone"

@@ -752,17 +752,28 @@ async def test_rename_to_another_type_reextracts(client, admin_token, db_session
     assert [(j.stage, j.status) for j in jobs] == [(JobStage.extract, JobStatus.queued)]
 
 
-async def test_rename_onto_a_live_file_is_a_409(client, admin_token, db_session, tmp_path):
+@pytest.mark.parametrize("same_content", [False, True], ids=["new-content", "same-content"])
+async def test_rename_onto_a_live_file_replaces_it_as_the_watcher_does(
+    client, admin_token, db_session, tmp_path, same_content
+):
+    """`mv a.txt b.txt` over a live b.txt: b.txt keeps its document (the one its
+    path cites) and takes a's content, reprocessed when it differs; a.txt's row
+    is retired as a deleted file. One rule with the watcher's moved event."""
     folder = await _folder(db_session, tmp_path)
-    wf, _doc = await _seed_watched(db_session, folder, "a.txt")
-    await _seed_watched(db_session, folder, "b.txt")
+    a_wf, a_doc = await _seed_watched(db_session, folder, "a.txt", sha=b"\x0a" * 32)
+    b_wf, b_doc = await _seed_watched(db_session, folder, "b.txt", sha=b"\x0a" * 32 if same_content else b"\x0b" * 32)
 
     resp = await client.post(
         "/api/watch/rename", headers=auth_header(admin_token), json=_rename_body(folder, tmp_path, "a.txt", "b.txt")
     )
-    assert resp.status_code == 409
-    await db_session.refresh(wf)
-    assert wf.relative_path == "a.txt"
+    assert resp.status_code == 200
+    assert resp.json() == {"action": "replaced", "doc_id": str(b_doc.doc_id)}
+    for row in (a_wf, a_doc, b_wf, b_doc):
+        await db_session.refresh(row)
+    assert (a_wf.relative_path, a_wf.status, a_doc.status) == ("a.txt", WatchedFileStatus.removed, "removed")
+    assert (b_wf.status, b_doc.status) == (WatchedFileStatus.active, "active")
+    assert b_wf.sha256 == b_doc.sha256 == b"\x0a" * 32
+    assert b_doc.pipeline_seq == (0 if same_content else 1)
 
 
 async def test_rename_onto_a_retired_path_keeps_the_moved_document(client, admin_token, db_session, tmp_path):
