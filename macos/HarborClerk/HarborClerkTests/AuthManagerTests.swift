@@ -35,9 +35,9 @@ final class FakeCredentialStore: CredentialStore {
 /// and the signing probe's start-nothing switch keeps AuthManager away from
 /// it altogether (#611).
 ///
-/// No test here lets a login succeed: that path injects the refresh cookie
-/// into `WKWebsiteDataStore.default()`, which for this test host is the same
-/// store the developer's installed app uses.
+/// Every transport here records cookies instead of writing them: the live
+/// sink is `WKWebsiteDataStore.default()`, which for this test host is the
+/// same store the developer's installed app uses.
 @MainActor
 final class AuthManagerTests: XCTestCase {
 
@@ -50,6 +50,7 @@ final class AuthManagerTests: XCTestCase {
     private var suiteName: String!
     private var setupCalls = 0
     private var loginCalls = 0
+    private var cookiesSet: [HTTPCookie] = []
 
     override func setUp() {
         super.setUp()
@@ -59,6 +60,7 @@ final class AuthManagerTests: XCTestCase {
         defaults = UserDefaults(suiteName: suiteName)
         setupCalls = 0
         loginCalls = 0
+        cookiesSet = []
     }
 
     override func tearDown() {
@@ -68,7 +70,7 @@ final class AuthManagerTests: XCTestCase {
 
     /// Setup already done; the login request answered by `answer`.
     private func transport(
-        _ answer: @escaping (URLRequest) throws -> (Data, URLResponse)
+        _ answer: @escaping (URLRequest) async throws -> (Data, URLResponse)
     ) -> AuthTransport {
         AuthTransport(
             setupStatus: { [unowned self] url in
@@ -78,8 +80,9 @@ final class AuthManagerTests: XCTestCase {
             },
             login: { [unowned self] request in
                 loginCalls += 1
-                return try answer(request)
-            }
+                return try await answer(request)
+            },
+            setCookie: { [unowned self] cookie in cookiesSet.append(cookie) }
         )
     }
 
@@ -92,7 +95,7 @@ final class AuthManagerTests: XCTestCase {
     private func makeManager(
         environment: [String: String] = [:],
         store: FakeCredentialStore,
-        login answer: @escaping (URLRequest) throws -> (Data, URLResponse)
+        login answer: @escaping (URLRequest) async throws -> (Data, URLResponse)
     ) -> AuthManager {
         AuthManager(
             baseURL: Self.baseURL,
@@ -145,6 +148,24 @@ final class AuthManagerTests: XCTestCase {
         XCTAssertEqual(store.deletes, 1, "a 401 means the saved password is wrong; forget it")
         XCTAssertNil(store.stored)
         XCTAssertEqual(auth.state, .loginRequired(errorMessage: nil))
+    }
+
+    /// The production wiring: `environment` left at its default, which under
+    /// XCTest really carries the switch, as it does under the signing probe.
+    func testTheDefaultEnvironmentCarriesTheSwitch() async {
+        let store = FakeCredentialStore(stored: Self.saved)
+        let auth = AuthManager(
+            baseURL: Self.baseURL,
+            credentials: store,
+            defaults: defaults,
+            transport: transport { _ in throw URLError(.networkConnectionLost) }
+        )
+
+        await bounded("onServerBecameAvailable") { await auth.onServerBecameAvailable() }
+
+        XCTAssertEqual(auth.state, .waitingForServer)
+        XCTAssertEqual(store.calls, 0)
+        XCTAssertEqual(setupCalls + loginCalls, 0)
     }
 
     // MARK: - Only a rejection deletes the saved login (#612)
@@ -202,5 +223,142 @@ final class AuthManagerTests: XCTestCase {
         XCTAssertEqual(store.calls, 0)
         XCTAssertEqual(loginCalls, 0)
         XCTAssertEqual(auth.state, .loginRequired(errorMessage: nil))
+    }
+
+    // MARK: - Manual login failures
+
+    func testAManualLoginThatCannotConnectSaysSoAndLeavesTheStoreAlone() async {
+        let store = FakeCredentialStore(stored: nil)
+        let auth = makeManager(store: store) { _ in throw URLError(.cannotConnectToHost) }
+
+        await bounded("login") { await auth.login(email: "a@example.test", password: "pw", rememberMe: true) }
+
+        XCTAssertEqual(auth.state, .loginRequired(errorMessage: "Connection failed. Is the server running?"))
+        XCTAssertEqual(store.calls, 0, "a failed manual login neither saves nor deletes")
+    }
+
+    func testAManualLoginWithAWrongPasswordSaysSoAndLeavesTheStoreAlone() async {
+        let store = FakeCredentialStore(stored: Self.saved)
+        let auth = makeManager(store: store, login: Self.status(401, body: #"{"detail":"Invalid email or password"}"#))
+
+        await bounded("login") { await auth.login(email: "a@example.test", password: "wrong", rememberMe: true) }
+
+        XCTAssertEqual(auth.state, .loginRequired(errorMessage: "Invalid email or password"))
+        XCTAssertEqual(store.calls, 0, "a rejected manual login neither saves the typed password nor deletes the saved one")
+        XCTAssertEqual(store.stored?.email, Self.saved.email)
+    }
+
+    // MARK: - A superseded auto-login does not decide the state
+
+    /// A first auto-login hangs (the server went down mid-request), the server
+    /// comes back, a second one succeeds, and then the first fails. It must
+    /// not overwrite `.authenticated`, nor act on the saved login.
+    private func assertALateFailureIsIgnored(
+        _ lateFailure: @escaping () throws -> (Data, URLResponse),
+        file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        let store = FakeCredentialStore(stored: Self.saved)
+        let gate = Gate()
+        let auth = makeManager(store: store) { [unowned self] request in
+            if loginCalls == 1 {
+                await gate.wait()
+                return try lateFailure()
+            }
+            let body = Data(#"{"access_token":"t"}"#.utf8)
+            return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+
+        let first = Task { @MainActor in await auth.onServerBecameAvailable() }
+        await bounded("the first login to reach the server") {
+            while self.loginCalls < 1 && !Task.isCancelled { await Task.yield() }
+        }
+        await bounded("the second auto-login") { await auth.onServerBecameAvailable() }
+        XCTAssertEqual(auth.state, .authenticated, file: file, line: line)
+
+        await gate.open()
+        await bounded("the first login's late failure") { await first.value }
+
+        XCTAssertEqual(loginCalls, 2, file: file, line: line)
+        XCTAssertEqual(auth.state, .authenticated, "a superseded attempt's failure must not sign the user out", file: file, line: line)
+        XCTAssertEqual(store.deletes, 0, file: file, line: line)
+        XCTAssertTrue(cookiesSet.isEmpty, "the success had no Set-Cookie header", file: file, line: line)
+    }
+
+    func testALateConnectionFailureAfterANewerSuccessIsIgnored() async {
+        await assertALateFailureIsIgnored { throw URLError(.networkConnectionLost) }
+    }
+
+    func testALateRejectionAfterANewerSuccessIsIgnored() async {
+        await assertALateFailureIsIgnored {
+            (Data("{}".utf8), HTTPURLResponse(url: Self.baseURL, statusCode: 401, httpVersion: nil, headerFields: nil)!)
+        }
+    }
+
+    /// The mirror case: the newer attempt failed, then the older one comes
+    /// back with a session. The newer outcome stands, and the stale session's
+    /// cookie is not installed.
+    func testALateSuccessAfterANewerFailureIsIgnored() async {
+        let store = FakeCredentialStore(stored: Self.saved)
+        let gate = Gate()
+        let auth = makeManager(store: store) { [unowned self] request in
+            if loginCalls == 1 {
+                await gate.wait()
+                let headers = ["Set-Cookie": "refresh_token=stale; Path=/api/auth; HttpOnly"]
+                let body = Data(#"{"access_token":"t"}"#.utf8)
+                return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: headers)!)
+            }
+            throw URLError(.networkConnectionLost)
+        }
+
+        let first = Task { @MainActor in await auth.onServerBecameAvailable() }
+        await bounded("the first login to reach the server") {
+            while self.loginCalls < 1 && !Task.isCancelled { await Task.yield() }
+        }
+        await bounded("the second auto-login") { await auth.onServerBecameAvailable() }
+        let newer = AuthState.loginRequired(errorMessage: "Connection failed. Is the server running?")
+        XCTAssertEqual(auth.state, newer)
+
+        await gate.open()
+        await bounded("the first login's late success") { await first.value }
+
+        XCTAssertEqual(auth.state, newer)
+        XCTAssertTrue(cookiesSet.isEmpty, "a superseded session's cookie is not installed")
+    }
+
+    /// The server going away supersedes a sign-in in flight as well.
+    func testALoginThatFinishesAfterTheServerWentAwayIsIgnored() async {
+        let store = FakeCredentialStore(stored: Self.saved)
+        let gate = Gate()
+        let auth = makeManager(store: store) { _ in
+            await gate.wait()
+            throw URLError(.networkConnectionLost)
+        }
+
+        let first = Task { @MainActor in await auth.onServerBecameAvailable() }
+        await bounded("the login to reach the server") {
+            while self.loginCalls < 1 && !Task.isCancelled { await Task.yield() }
+        }
+        auth.serverBecameUnavailable()
+        await gate.open()
+        await bounded("the late failure") { await first.value }
+
+        XCTAssertEqual(auth.state, .waitingForServer)
+    }
+}
+
+/// Holds a request until the test opens it.
+actor Gate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
     }
 }

@@ -45,7 +45,7 @@ struct ContentView: View {
             if available {
                 Task { await authManager.onServerBecameAvailable() }
             } else {
-                authManager.state = .waitingForServer
+                authManager.serverBecameUnavailable()
             }
         }
     }

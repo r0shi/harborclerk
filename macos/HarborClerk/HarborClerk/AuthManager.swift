@@ -26,11 +26,15 @@ struct KeychainCredentialStore: CredentialStore {
     func delete() { KeychainManager.delete() }
 }
 
-/// The two requests AuthManager makes, so a test can answer them without a
-/// server.
+/// The two requests AuthManager makes, and where it puts the session cookie,
+/// so a test can answer them without a server and let a login succeed
+/// without writing into the WebKit store the installed app shares.
 struct AuthTransport {
     var setupStatus: (URL) async throws -> (Data, URLResponse)
     var login: (URLRequest) async throws -> (Data, URLResponse)
+    var setCookie: @MainActor (HTTPCookie) async -> Void = { cookie in
+        await WKWebsiteDataStore.default().httpCookieStore.setCookie(cookie)
+    }
 
     static let live = AuthTransport(
         setupStatus: { url in try await URLSession.shared.data(from: url) },
@@ -59,6 +63,26 @@ final class AuthManager: ObservableObject {
     private let credentials: CredentialStore
     private let defaults: UserDefaults
     private let transport: AuthTransport
+
+    /// Bumped by every sign-in attempt and every outside state change. An
+    /// attempt captures it and may change the state only while it is still
+    /// current: `ContentView` starts a new auto-login each time the server
+    /// comes back, and an earlier one failing late used to overwrite a later
+    /// one's `.authenticated` with `.loginRequired`.
+    private var generation = 0
+
+    /// Thrown inside an attempt that a newer one has superseded; its caller
+    /// returns without touching the state or the saved login.
+    private struct Superseded: Error {}
+
+    private func begin() -> Int {
+        generation += 1
+        return generation
+    }
+
+    private func ensureCurrent(_ attempt: Int) throws {
+        guard attempt == generation else { throw Superseded() }
+    }
 
     /// Everything but `baseURL` defaults to the real thing. A test injects the
     /// environment (to keep or drop the start-nothing switch), a fake
@@ -95,10 +119,13 @@ final class AuthManager: ObservableObject {
             return
         }
 
+        let attempt = begin()
         state = .checkingAuth
 
         // 1. Check if first-time setup is needed
-        if await needsSetup() {
+        let setup = await needsSetup()
+        guard attempt == generation else { return }
+        if setup {
             state = .needsSetup
             return
         }
@@ -107,8 +134,14 @@ final class AuthManager: ObservableObject {
         let wasLoggedOut = defaults.bool(forKey: Self.loggedOutKey)
         if !wasLoggedOut, let creds = credentials.load() {
             do {
-                try await performLogin(email: creds.email, password: creds.password)
+                try await performLogin(email: creds.email, password: creds.password, attempt: attempt)
                 return // state is now .authenticated
+            } catch is Superseded {
+                return
+            } catch where attempt != generation {
+                // A newer attempt owns the state, and its outcome is newer
+                // news about these credentials than this one's.
+                return
             } catch let error as LoginError where error.credentialsRejected {
                 // The server said these credentials are wrong (the password
                 // was changed, the user removed): they are stale, so forget them.
@@ -130,17 +163,30 @@ final class AuthManager: ObservableObject {
     // MARK: - Manual login
 
     func login(email: String, password: String, rememberMe: Bool) async {
+        let attempt = begin()
         state = .loggingIn
         do {
-            try await performLogin(email: email, password: password)
+            try await performLogin(email: email, password: password, attempt: attempt)
             if rememberMe {
                 credentials.save(email: email, password: password)
             }
             // Clear logged-out flag on successful login
             defaults.removeObject(forKey: Self.loggedOutKey)
+        } catch is Superseded {
+            return
         } catch {
+            guard attempt == generation else { return }
             state = .loginRequired(errorMessage: Self.message(for: error))
         }
+    }
+
+    // MARK: - Server went away
+
+    /// Back to waiting, and any sign-in still in flight no longer decides
+    /// the state when it finishes.
+    func serverBecameUnavailable() {
+        generation += 1
+        state = .waitingForServer
     }
 
     /// What the login screen says about a failed sign-in.
@@ -160,12 +206,14 @@ final class AuthManager: ObservableObject {
         }
         // Remember that user explicitly logged out so we don't auto-login on next launch
         defaults.set(true, forKey: Self.loggedOutKey)
+        generation += 1
         state = .loginRequired(errorMessage: nil)
     }
 
     // MARK: - After setup completes (web navigated to /login)
 
     func handleSetupComplete() {
+        generation += 1
         state = .loginRequired(errorMessage: nil)
     }
 
@@ -183,7 +231,7 @@ final class AuthManager: ObservableObject {
         return needs
     }
 
-    private func performLogin(email: String, password: String) async throws {
+    private func performLogin(email: String, password: String, attempt: Int) async throws {
         let url = baseURL.appendingPathComponent("api/auth/login")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -193,6 +241,7 @@ final class AuthManager: ObservableObject {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await transport.login(request)
+        try ensureCurrent(attempt)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LoginError(message: "Unexpected response")
         }
@@ -220,6 +269,7 @@ final class AuthManager: ObservableObject {
 
         // Extract Set-Cookie from response headers and inject into WKWebView.
         await injectCookiesFromResponse(httpResponse, url: url)
+        try ensureCurrent(attempt)
         state = .authenticated
     }
 
@@ -270,8 +320,7 @@ final class AuthManager: ObservableObject {
 
         guard let cookie = HTTPCookie(properties: props) else { return }
 
-        let webCookieStore = WKWebsiteDataStore.default().httpCookieStore
-        await webCookieStore.setCookie(cookie)
+        await transport.setCookie(cookie)
     }
 }
 
