@@ -25,6 +25,14 @@ COMPOSE_DEFAULT_CONTEXT=8192
 # LLM_CONTEXT_TOKENS=0 reaches here as `-c 0`, which llama-server reads as the model's full training context
 # (262,144 tokens for Qwen3.5: a KV cache a container likely cannot hold, then an OOM restart loop). Compose
 # interpolation cannot refuse a 0, so it is replaced with the compose default, which the app budgets to as well.
+# Zero as a number, the way llama-server parses it: `0`, `00`, `000`... (digits only, so `-eq` cannot fail).
+is_zero() {
+    case "$1" in
+    '' | *[!0-9]*) return 1 ;;
+    esac
+    [ "$1" -eq 0 ]
+}
+
 prev=""
 rewrite=""
 for arg in "$@"; do
@@ -34,8 +42,14 @@ for arg in "$@"; do
     fi
     orig="$arg"
     case "$arg" in
-    -c=0 | --ctx-size=0) arg="${arg%=0}=$COMPOSE_DEFAULT_CONTEXT" ;;
-    0) if [ "$prev" = "-c" ] || [ "$prev" = "--ctx-size" ]; then arg="$COMPOSE_DEFAULT_CONTEXT"; fi ;;
+    -c=* | --ctx-size=*)
+        if is_zero "${arg#*=}"; then arg="${arg%%=*}=$COMPOSE_DEFAULT_CONTEXT"; fi
+        ;;
+    *)
+        if { [ "$prev" = "-c" ] || [ "$prev" = "--ctx-size" ]; } && is_zero "$arg"; then
+            arg="$COMPOSE_DEFAULT_CONTEXT"
+        fi
+        ;;
     esac
     if [ "$arg" != "$orig" ]; then
         echo "llama-server-entrypoint: LLM_CONTEXT_TOKENS=0 is not supported under Compose (llama-server would" \

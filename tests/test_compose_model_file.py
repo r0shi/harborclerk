@@ -237,3 +237,28 @@ def test_the_summarizer_says_to_download_the_compose_model_not_to_activate(
     assert used == "extractive"
     assert f"Download {MODEL_FILE} in Settings" in caplog.text
     assert "Activate a model" not in caplog.text
+
+
+@pytest.mark.parametrize("bad", ["8k", "16,384", "-1"])
+def test_a_malformed_context_does_not_stop_settings_from_constructing(monkeypatch, caplog, bad) -> None:
+    # Every service reads .env, so a typo here must not crash-loop the app, the watcher and the workers.
+    monkeypatch.setenv("LLM_CONTEXT_TOKENS", bad)
+    config._settings = None
+    with caplog.at_level(logging.ERROR, logger="harbor_clerk.config"):
+        settings = config.get_settings()
+    assert settings.llm_context_tokens == 0  # unset
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and repr(bad) in errors[0].getMessage()
+
+
+@pytest.mark.parametrize("bad", ["8k", "16,384", "-1"])
+def test_a_malformed_context_under_compose_budgets_to_the_compose_default(
+    compose_env: Path, monkeypatch, caplog, bad
+) -> None:
+    monkeypatch.setenv("LLM_CONTEXT_TOKENS", bad)
+    config._settings = None
+    with caplog.at_level(logging.ERROR, logger="harbor_clerk.config"):
+        settings = config.get_settings()
+    assert settings.llm_context_tokens == config.COMPOSE_DEFAULT_CONTEXT_TOKENS
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and repr(bad) in errors[0].getMessage(), [r.getMessage() for r in errors]

@@ -331,6 +331,11 @@ needs_dash = pytest.mark.skipif(shutil.which("dash") is None, reason="needs dash
         (["--ctx-size", "0"], ["--ctx-size", "8192"]),
         (["-c=0"], ["-c=8192"]),
         (["--ctx-size=0"], ["--ctx-size=8192"]),
+        # llama-server parses `00` and `000` as 0 as well (LLM_CONTEXT_TOKENS=00): the comparison is numeric.
+        (["-c", "00"], ["-c", "8192"]),
+        (["--ctx-size", "000"], ["--ctx-size", "8192"]),
+        (["-c=00"], ["-c=8192"]),
+        (["--ctx-size=000"], ["--ctx-size=8192"]),
     ],
 )
 def test_entrypoint_replaces_a_zero_context_with_the_compose_default(tmp_path: Path, given, passed) -> None:
@@ -347,11 +352,13 @@ def test_entrypoint_replaces_a_zero_context_with_the_compose_default(tmp_path: P
 
 
 @needs_dash
-def test_entrypoint_leaves_a_real_context_alone(tmp_path: Path) -> None:
+@pytest.mark.parametrize("context", [["-c", "16384"], ["-c", "010"], ["--ctx-size=08192"]])
+def test_entrypoint_leaves_a_real_context_alone(tmp_path: Path, context) -> None:
+    # A non-zero context passes untouched, leading zeros and all; so do other flags whose value is 0.
     fake, out = _fake_server(tmp_path)
     model = tmp_path / "Qwen3.5-4B-Q4_K_M.gguf"
     model.write_bytes(b"GGUF")
-    args = ["-m", str(model), "-ngl", "0", "-c", "16384", "--cache-ram", "0"]
+    args = ["-m", str(model), "-ngl", "0", *context, "--cache-ram", "0"]
     result = subprocess.run(["dash", str(ENTRYPOINT), *args], env=_env(fake), capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert out.read_text().splitlines() == args
@@ -363,3 +370,49 @@ def test_the_entrypoints_default_context_is_the_apps() -> None:
 
     match = re.search(r"^COMPOSE_DEFAULT_CONTEXT=(\d+)$", ENTRYPOINT.read_text(), re.M)
     assert match and int(match.group(1)) == COMPOSE_DEFAULT_CONTEXT_TOKENS
+
+
+@needs_sh
+def test_sigterm_while_waiting_leaves_no_sleep_behind(tmp_path: Path) -> None:
+    # The wait sleeps in the background so a trap can interrupt it; the trap must also kill that sleep, or every
+    # `docker compose down` during a wait leaves an orphan for the length of the poll interval.
+    fake, out = _fake_server(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    pids = tmp_path / "sleep-pids"
+    real_sleep = shutil.which("sleep")
+    fake_sleep = bin_dir / "sleep"
+    fake_sleep.write_text(f'#!/bin/sh\necho $$ >> "{pids}"\nexec {real_sleep} "$@"\n')
+    fake_sleep.chmod(0o755)
+    env = {**_env(fake), "LLAMA_WAIT_INTERVAL": "30", "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    proc = subprocess.Popen(["sh", str(ENTRYPOINT), "-m", str(tmp_path / "absent.gguf")], env=env)
+    sleepers: list[int] = []
+    try:
+        deadline = time.monotonic() + 5
+        while not (pids.exists() and pids.read_text().strip()) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        sleepers = [int(p) for p in pids.read_text().split()]
+        assert sleepers, "the entrypoint never started its wait"
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=5) == 143
+
+        def alive(pid: int) -> bool:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            return True
+
+        deadline = time.monotonic() + 3
+        while any(alive(p) for p in sleepers) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not [p for p in sleepers if alive(p)], "SIGTERM left the wait's sleep running"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        for p in sleepers:
+            try:
+                os.kill(p, signal.SIGKILL)
+            except ProcessLookupError:
+                pass

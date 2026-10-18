@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     # Compose, and the macOS app, whose launcher sizes `-c` itself, never is.
     hc_deployment: str = Field(default="")
     llm_model_file: str = Field(default="")
-    llm_context_tokens: int = Field(default=0, ge=0)
+    llm_context_tokens: int = Field(default=0)
 
     # Native macOS app config file (set by Swift via env var)
     native_config_file: str = Field(default="")
@@ -183,6 +183,31 @@ class Settings(BaseSettings):
         ),
     )
 
+    @field_validator("llm_context_tokens", mode="before")
+    @classmethod
+    def _lenient_context_tokens(cls, value: object) -> int:
+        """LLM_CONTEXT_TOKENS is read by every service from `.env`, so a malformed value (`8k`, `16,384`, `-1`)
+        must not stop Settings() from constructing, which would crash-loop the app, the watcher and every worker
+        (main ignored the variable). It is used only as a non-negative whole number; anything else is logged
+        once, naming the value, and treated as unset (under Compose, `_check_compose_context` then applies the
+        compose default)."""
+        global _context_tokens_rejected
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        text = str(value).strip()
+        if text == "":
+            return 0
+        if text.isascii() and text.isdigit():
+            return int(text)
+        _context_tokens_rejected = True
+        logger.error(
+            "LLM_CONTEXT_TOKENS=%r is not a whole number of tokens; ignoring it (under Docker Compose the compose "
+            "default, %d, applies)",
+            value,
+            COMPOSE_DEFAULT_CONTEXT_TOKENS,
+        )
+        return 0
+
     @field_validator("public_url", "local_mcp_url")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
@@ -202,6 +227,8 @@ def get_settings() -> Settings:
         # watcher alone starts several threads that all call this at once
         # (watcher/main.py: discovery, listener, per-folder scans, mail
         # observer), so one of them would silently get env-only values.
+        global _context_tokens_rejected
+        _context_tokens_rejected = False
         settings = Settings()
         _apply_to(settings)
         _check_compose_context(settings)
@@ -217,6 +244,10 @@ def get_settings() -> Settings:
     return _settings
 
 
+# Set by `Settings._lenient_context_tokens` when it rejected a malformed LLM_CONTEXT_TOKENS (and logged it), so
+# the Compose check does not log the same mistake twice. Reset by get_settings() before each construction.
+_context_tokens_rejected = False
+
 # What docker-compose.yml passes as `-c` when LLM_CONTEXT_TOKENS is unset (`${LLM_CONTEXT_TOKENS:-8192}`);
 # tests/test_docker_compose_llama.py holds the two together.
 COMPOSE_DEFAULT_CONTEXT_TOKENS = 8192
@@ -228,11 +259,12 @@ def _check_compose_context(settings: Settings) -> None:
     arithmetic, so the two would diverge. Compose interpolation cannot refuse a 0, so the app says so and budgets
     to the compose default instead, the smaller and safer of the two."""
     if is_compose(settings) and settings.llm_context_tokens <= 0:
-        logger.error(
-            "LLM_CONTEXT_TOKENS=0 under Docker Compose: llama-server runs `-c 0` at the model's full training context; "
-            "set LLM_CONTEXT_TOKENS in .env. Budgeting prompts to %d tokens.",
-            COMPOSE_DEFAULT_CONTEXT_TOKENS,
-        )
+        if not _context_tokens_rejected:  # a malformed value was already logged, naming it
+            logger.error(
+                "LLM_CONTEXT_TOKENS=0 under Docker Compose: llama-server runs `-c 0` at the model's full training "
+                "context; set LLM_CONTEXT_TOKENS in .env. Budgeting prompts to %d tokens.",
+                COMPOSE_DEFAULT_CONTEXT_TOKENS,
+            )
         settings.llm_context_tokens = COMPOSE_DEFAULT_CONTEXT_TOKENS
 
 

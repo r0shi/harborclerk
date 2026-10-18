@@ -15,17 +15,21 @@ in `docs/architecture.md#ingestion-pipeline-stages`.
 - **Sequential prefix:** `extract` → `ocr` → `chunk`. Then `entities` and
   `embed` fan out and **gate `finalize`**.
 - **`summarize` is a background stage.** It runs on the `llm` queue and does
-  **not** gate `finalize`; a document is searchable before its summary exists. See the rationale comment in `worker/pipeline.py`.
+  **not** gate `finalize`; a document is searchable before its summary exists.
+  See the rationale comment in `worker/pipeline.py`.
 - **Three queues: `io`, `cpu`, `llm`.** A new stage must be assigned to one, and
   every queue must have a subscriber — a queue nobody listens to silently
-  swallows work (this shipped once; `tests/test_docker_compose_queues.py` now guards it).
-- **OCR is conditional** and runs in-process (pypdfium2 + Tesseract). It never calls Tika.
+  swallows work (this shipped once; `tests/test_docker_compose_queues.py` now
+  guards it).
+- **OCR is conditional** and runs in-process (pypdfium2 + Tesseract). It never
+  calls Tika.
 
 ## Extraction
 
 Three paths, not two. Plain-text formats decode directly via
 `file_types.PLAIN_TEXT_EXTENSIONS`; markdown has its own branch preserving
-heading structure (`worker/markdown_extract.py`); everything else goes through Tika. Don't invent a fourth.
+heading structure (`worker/markdown_extract.py`); everything else goes through
+Tika. Don't invent a fourth.
 
 ## Storage
 
@@ -48,7 +52,8 @@ fetched and stored, because there is no file on disk to reference.
 ## Data model
 
 - The `documents` model is **flat**. There is no version table; reprocessing
-  updates the row in place. Same SHA on a known path is a no-op; a changed SHA reprocesses.
+  updates the row in place. Same SHA on a known path is a no-op; a changed SHA
+  reprocesses.
 - `chunks.embedding` is `vector(768)` (Granite-R2). `schema_metadata` records
   the embedding model and dimension, and startup refuses a mismatch — changing
   the model requires a migration, not just a config edit.
@@ -81,14 +86,8 @@ by default) are bounded at `LLAMA_CTX_CHECKPOINTS` and budgeted:
 alone. A new model states its `checkpoint_bytes`, in the registry and in Swift. The Swift mirror
 (`Settings.swift`: filenames, slots, windows, `kvBytesPerToken`,
 `kvFixedBytes`, `MemoryBudget`) is held to the registry by a test; a new model
-needs all of them. `HC_GGUF_LIVE=1` checks headers from the Hub for models not downloaded.
-
-## Docker Compose follows LLM_MODEL_FILE (#654)
-
-Gated on `config.is_compose()` (HC_DEPLOYMENT=compose, set only by docker-compose.yml; no native config.json). llama-server
-runs `-m /models/$LLM_MODEL_FILE -c $LLM_CONTEXT_TOKENS` (without `-m` it is a router that refuses the app); `llm_model_id` is
-that file's curated id while it is in the volume; Activate, Deactivate and deleting it are refused; `effective_context` is
-min(window without YaRN, LLM_CONTEXT_TOKENS). Summaries wait at most 90 s of *waiting* per document, no cross-document memory.
+needs all of them. `HC_GGUF_LIVE=1` checks headers from the Hub for models not
+downloaded. **Docker Compose follows `LLM_MODEL_FILE`** (#654, gated on `config.is_compose()`): switching away from the served model, or deleting it, is refused; prompts are budgeted to `LLM_CONTEXT_TOKENS`; a summary waits at most 90 s per document. Details: [docs/architecture.md](../../docs/architecture.md#local-model-under-docker-compose).
 
 ## API keys over REST
 
@@ -168,7 +167,8 @@ while the human keeps the folder leaf in chat citations and the whole error text
 in a tool chip, exactly as the web app shows them. The test describes the
 credential, not the client: any JWT holder on the MCP port is the human, so a
 harness that wants the agent view (the eval runner, a scripted client) must
-authenticate with an API key — `answer_eval.py` warns when it falls back to a login.
+authenticate with an API key — `answer_eval.py` warns when it falls back to a
+login.
 
 Concretely, in `mcp_server.py`: `_human_session()` is the predicate; every tool
 loads its SourceRef context through `_source_context()`, which passes
