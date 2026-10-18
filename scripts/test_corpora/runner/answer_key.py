@@ -19,8 +19,8 @@ A list answer's labels are read before its items are counted (#814, #816), and n
 or bold lead-in (`**...**` opening a line) that rejects takes its section out, to the next heading of its level or
 higher (a lead-in's to the next lead-in or heading); the answer's first section is never dropped
 (`without_excluded_sections`). A line or bullet that opens with a rejecting label naming no item ("- **Excluded
-near-misses:** ... `0050` ...", "Not counted: X") loses what follows the label, to the next semicolon, sentence end
-or label on the line, and a line that is only a rejecting label ("Excluded:") loses the list items under it. A label
+near-misses:** ... `0050` ...", "Not counted: X") loses what follows the label, to the next semicolon or sentence
+end on the line, and a line that is only a rejecting label ("Excluded:") loses the list items under it. A label
 rejects when it opens with a reject phrase ("excluded", "exclusions", "not counted", "not included", "not a match",
 "non-match", "near-miss", "false positive", "rejected", "ruled out", "does not qualify", and the French), or when
 its leading clause, the words before the first parenthesis, comma, colon, semicolon or dash, ends with one after
@@ -431,8 +431,8 @@ def named_contracts(
     document id appears and `doc_ids` maps that id to its title. The synthetic key names an invoice by its file
     stem and aliases it by its invoice number and its total, where unique in the corpus; `corpora/synthetic_key.py`
     says which. The answer's labels are read first: a section whose heading or lead-in rejects is not read
-    (`without_excluded_sections`), nor what follows a rejecting line label on its line, to the next semicolon,
-    sentence end or label (`_LINE_LABEL`), unless the label is followed by "none" ("Exclusions: none; ..."), nor the
+    (`without_excluded_sections`), nor what follows a rejecting line label on its line, to the next semicolon or
+    sentence end (`_LINE_LABEL`), unless the label is followed by "none" ("Exclusions: none; ..."), nor the
     list items under a line that is only a rejecting label (`_LABEL_ONLY`). Prose is not read for rejection at all.
     It misses an item referred to only by paraphrase ("the Papa John's deal").
 

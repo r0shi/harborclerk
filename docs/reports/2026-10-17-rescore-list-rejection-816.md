@@ -15,14 +15,16 @@
 
 ## The rule
 
-Only labels are read for rejection: headings, bold lead-ins, and the bold or colon-terminated label that opens a
-line or bullet. A heading or lead-in that rejects takes its section out, as under #814. A line label that rejects
-and names no item takes out what follows it on its line, up to the next semicolon, sentence end or label ("Not
-counted: eDiets; counted: Staar" keeps Staar); a plain label counts only if it is a single clause, with no comma,
-semicolon or dash before its colon. A line that is only a rejecting label ("Excluded:", "- **Excluded
-near-misses:**") takes the list items under it, up to a blank line, a heading, another label line, a line that is
-not a list item, or (under a bulleted label) an item back at its indentation. Line labels of more than twelve words
-are sentences, not labels.
+Only labels are read for rejection: headings, bold lead-ins at the margin, and the bold or colon-terminated label
+that opens a line or bullet. A heading or lead-in that rejects takes its section out, as under #814. A line label
+that rejects and names no item takes out what follows it on its line, up to the next semicolon or sentence end
+("Not counted: eDiets; counted: Staar" keeps Staar); a full stop after an abbreviation or an initial ("Inc.",
+"Jan.", "U.S.") does not end the sentence, and an inner colon ("doc_id:", "Skylight: targets Northwind") does not
+end the reach. A plain label counts only if it is a single clause, with no comma, semicolon or dash before its colon.
+A line that is only a rejecting label ("Excluded:", "- **Excluded near-misses:**") takes the list items under it, up
+to a blank line, a heading, another label line, a line that is not a list item, or an item indented less than the
+label (at its indentation, for a bulleted label), so an indented "Exclusions:" under one contract's bullet takes
+only its own sub-list. Line labels of more than twelve words are sentences, not labels.
 
 A label rejects when:
 
@@ -35,10 +37,12 @@ A label rejects when:
   rejected".
 
 It does not reject when:
+- after a contrast, it says the item qualifies with no negation ("Not included above but also qualifies"); "Close
+  But Do NOT Qualify" still rejects;
 - what follows the label, after its own colon or on the next line, is only "none", "nothing", "n/a", "zero" or the
   like, alone or followed by punctuation or a conjunction ("## Exclusions: none", "Exclusions: none; Staar and Papa
-  John's both qualify"). "None of these contains a genuine covenant:" and "No affirmative covenant in either:" are
-  rejections and do not stop it;
+  John's both qualify"). "None of these contains a genuine covenant:", "No affirmative covenant in either:" and
+  "Zero-rated:" do not stop it;
 - an opening participle describes something else: "Excluded from the cap", "Exclusions from the liability cap",
   "Rejected offers go to third parties", "Rejected-offer matching rights" (but "Excluded from the (final) list /
   consideration / scope / review / tally" and "Excluded due to scope" reject).
