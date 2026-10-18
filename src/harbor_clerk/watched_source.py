@@ -81,10 +81,10 @@ def display_filename(session, doc) -> str:
 
     Display only: the watched-file lookup runs only for a document carrying both a
     stored original and a ``source_path`` (the one shape where the answers can
-    differ), in a savepoint, and a failure falls back silently.
+    differ) and a session is given, in a savepoint, and a failure falls back silently.
     """
     doc_id, object_key, source_path = doc.doc_id, doc.original_object_key, doc.source_path
-    if object_key and source_path:
+    if session is not None and object_key and source_path:
         try:
             with session.begin_nested():
                 rows = session.execute(watched_paths_query(doc_id)).all()

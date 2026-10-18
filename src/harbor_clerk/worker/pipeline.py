@@ -27,7 +27,7 @@ def _is_ner_available() -> bool:
     return _ner_available
 
 
-def _doc_filename(doc: Document, session) -> str:
+def _doc_filename(doc: Document, session=None) -> str:
     """The document's filename for job events (``watched_source.display_filename``)."""
     from harbor_clerk.watched_source import display_filename
 
