@@ -506,6 +506,47 @@ def _predict_prompt_tokens(
     return int(counted + _predict_messages_tokens(messages[counted_upto:], ratio, prose))
 
 
+def _answers_every_call(call: dict, results: list[dict]) -> bool:
+    """Whether ``results`` (the tool rows directly after the assistant ``call``) hold one result per call it made. Ids
+    are compared when every call and result carries one: a model that sent no id is stored with an empty one, and its
+    result's row with none, so a missing id is not a mismatch."""
+    calls = call.get("tool_calls") or []
+    if len(results) != len(calls):
+        return False
+    call_ids = [tc.get("id") for tc in calls]
+    result_ids = [r.get("tool_call_id") for r in results]
+    if all(call_ids) and all(result_ids):
+        return sorted(call_ids) == sorted(result_ids)
+    return True
+
+
+def _whole_tool_exchanges(history: list[dict]) -> list[dict]:
+    """``history`` with every tool exchange whole: each tool result directly after the assistant call that asked for
+    it, and each call followed by a result for every call it made (#839). A result whose call is not before it (the
+    history window or the trim cut the call off) is dropped, and so is a call whose results were cut, with the
+    results that remain. gpt-oss's template raises on a tool message with no call before it, and llama-server
+    answers that prompt with a 500 (the pin, v0.4.1); other templates render the orphan and the model reads a
+    result to a call it never made. Returns a new list; ``history`` holds no system prompt."""
+    kept: list[dict] = []
+    i = 0
+    while i < len(history):
+        msg = history[i]
+        if msg.get("role") == "tool":
+            i += 1  # a result with no call directly before its run
+            continue
+        if msg.get("tool_calls"):
+            end = i + 1
+            while end < len(history) and history[end].get("role") == "tool":
+                end += 1
+            if _answers_every_call(msg, history[i + 1 : end]):
+                kept.extend(history[i:end])
+            i = end
+            continue
+        kept.append(msg)
+        i += 1
+    return kept
+
+
 def _trim_to_budget(
     messages: list[dict], context_window: int, model: "ModelInfo | None", ratio: float, prose: float
 ) -> list[dict]:
@@ -515,8 +556,10 @@ def _trim_to_budget(
     (last entry), whatever the budget: when nothing else fits, those two
     are what is sent, and the server says whether they fit (the floor; before
     it, a budget below the system prompt alone sent the whole history
-    untrimmed). Removes messages from the front of history, keeping tool
-    call/result pairs together. The budget is _TRIM_BUDGET_FRACTION of the
+    untrimmed). Removes messages from the front of history, a call together
+    with its results (``_whole_tool_exchanges``): given whole exchanges, as the
+    history window hands it (#839), it returns whole exchanges, and when the
+    history fits it returns it as it is. The budget is _TRIM_BUDGET_FRACTION of the
     context, less the schema at the model's measured ``prose`` ratio; the
     messages are weighted as a prediction with no count is
     (``_predict_messages_tokens``): results and their calls at the model's
@@ -537,15 +580,11 @@ def _trim_to_budget(
 
     # Remove from the front of history until we fit
     while history and _predict_messages_tokens(system + history + question, ratio, prose) > budget:
-        removed = history.pop(0)
-        # If we removed an assistant message with tool_calls, also remove
-        # the following tool result messages (they reference it).
-        while history and history[0].get("role") == "tool":
-            history.pop(0)
-        # If we removed a tool result, check if the preceding assistant
-        # message's tool calls are now orphaned (skip — rare edge case).
-        if removed.get("role") == "tool":
-            continue
+        # Only the front is cut, so the one exchange a pop can split is the one it starts: an assistant call popped
+        # leaves its results leading, and they go with it. (The old "removed a tool result" branch was reached only
+        # on a history that already led with an orphan; nothing precedes history[0] to be left without its result.)
+        history.pop(0)
+        history = _whole_tool_exchanges(history)
 
     trimmed = system + history + question
     if not history:
@@ -753,7 +792,7 @@ async def chat_stream(
         system_content = SYSTEM_PROMPT
         if topic_hint:
             system_content += f"\n\n## Corpus topics\n{topic_hint}"
-        messages: list[dict] = [{"role": "system", "content": system_content}]
+        window: list[dict] = []
         for msg in history_rows[-settings.max_history_messages :]:
             content = _truncate_for_llm(msg.content, tool_result_max_chars) if msg.role == "tool" else msg.content
             entry: dict = {"role": msg.role, "content": content}
@@ -763,7 +802,20 @@ async def chat_stream(
                     entry["content"] = ""
             if msg.tool_call_id:
                 entry["tool_call_id"] = msg.tool_call_id
-            messages.append(entry)
+            window.append(entry)
+        # The window is a slice of rows, not of exchanges: it can start on a result whose call is the row before it
+        # (#839). The trim repairs that only when it trims; a history that fits is sent as it is. Done here, before
+        # the tool-row test below, so a window whose only result was the orphan is read as the tool-less prompt it is.
+        whole = _whole_tool_exchanges(window)
+        if len(whole) < len(window):
+            logger.info(
+                "Dropped %d history message(s) whose tool call or result fell outside the %d-message window "
+                "(conversation=%s)",
+                len(window) - len(whole),
+                settings.max_history_messages,
+                conversation_id,
+            )
+        messages: list[dict] = [{"role": "system", "content": system_content}, *whole]
 
         # The conversation's own prose ratio applies while its prose is re-measured. A history holding a tool row is
         # not (its first prompts are tool-bearing), so the entry is dropped and every read takes the model's table, as
