@@ -1144,6 +1144,66 @@ async def test_entity_search_deduplicated(
     assert result["entities"][0]["mention_count"] == 2
 
 
+@pytest.mark.parametrize("deduplicate", [False, True])
+async def test_entity_search_pages_through_ties_without_skipping(
+    db_session, admin_user, mcp_principal, mock_session_factory, sample_doc, sample_chunks, deduplicate
+):
+    """Every page is its own LIMIT/OFFSET query, so the order must be total. Sorted only by entity_text
+    (mentions) or by mention count (deduplicated), 60 tied rows came back in a different order per page
+    (Postgres's bounded sort depends on LIMIT + OFFSET), and paging to the end skipped some and repeated
+    others: an entity the corpus holds never appeared on any page (sibling of #763)."""
+    for i in range(60):
+        db_session.add(
+            Entity(
+                chunk_id=sample_chunks[i % len(sample_chunks)].chunk_id,
+                doc_id=sample_doc.doc_id,
+                # Mentions: one text, so entity_text ties everywhere. Deduplicated: 60 texts, one mention each.
+                entity_text=f"Tiedco {i:02d}" if deduplicate else "Tiedco",
+                entity_type="ORG",
+                start_char=i,
+                end_char=i + 6,
+            )
+        )
+    await db_session.flush()
+
+    seen: list[str] = []
+    for offset in range(0, 60, 7):
+        page = json.loads(await kb_entity_search("Tiedco", deduplicate=deduplicate, limit=7, offset=offset))
+        assert page["total"] == 60
+        seen.extend(e["entity_text"] if deduplicate else e["entity_id"] for e in page["entities"])
+    assert len(seen) == 60 and len(set(seen)) == 60, sorted(seen)
+
+
+async def test_entity_cooccurrence_pages_through_ties_without_skipping(
+    db_session, admin_user, mcp_principal, mock_session_factory, sample_doc, sample_chunks
+):
+    """The co-occurrence pages were ordered by count, then text, but grouped by text and type: one text
+    under 40 types tied on both, so pages skipped and repeated groups. The order now covers the group key."""
+    chunk = sample_chunks[0]
+
+    def _entity(text: str, etype: str, at: int) -> Entity:
+        return Entity(
+            chunk_id=chunk.chunk_id,
+            doc_id=sample_doc.doc_id,
+            entity_text=text,
+            entity_type=etype,
+            start_char=at,
+            end_char=at + 4,
+        )
+
+    db_session.add(_entity("Hubbard", "PERSON", 0))
+    for i in range(40):
+        db_session.add(_entity("Tiedco", f"T{i:02d}", 10 + i))
+    await db_session.flush()
+
+    seen: list[str] = []
+    for offset in range(0, 40, 6):
+        page = json.loads(await kb_entity_cooccurrence("Hubbard", scope="chunk", limit=6, offset=offset))
+        assert page["total"] == 40
+        seen.extend(c["entity_type"] for c in page["cooccurrences"])
+    assert len(seen) == 40 and len(set(seen)) == 40, sorted(seen)
+
+
 async def test_entity_overview_happy(
     db_session,
     admin_user,

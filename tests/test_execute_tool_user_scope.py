@@ -238,10 +238,10 @@ async def test_execute_tool_verify_identifier_scope_hides_the_other_folder_on_ev
 async def test_kb_verify_identifier_scoped_key_applies_the_scope_before_the_metadata_cap(
     db_session, admin_user, two_folder_corpus, mock_session_factory
 ):
-    """The MCP surface with a scoped API key. The metadata pass reads at most 100 documents, so the scope must
-    restrict that read, not its result: with a hundred out-of-scope documents carrying the identifier, a key
-    scoped to A still resolves A's one. A key scoped to a folder with no documents finds nothing, even for a
-    title that exists."""
+    """The MCP surface with a scoped API key. verify_identifier returns at most 100 candidates, so the scope
+    must restrict the metadata pass, not its result: with a hundred out-of-scope documents carrying the
+    identifier, a key scoped to A still resolves A's one. A key scoped to a folder with no documents finds
+    nothing, even for a title that exists."""
     from harbor_clerk.api.deps import Principal
     from harbor_clerk.mcp_server import _mcp_principal, kb_verify_identifier
     from harbor_clerk.models.watched import WatchedFolder
@@ -250,9 +250,7 @@ async def test_kb_verify_identifier_scoped_key_applies_the_scope_before_the_meta
     empty = WatchedFolder(path="/c", display_name="Folder C", auto_discovered=False)
     db_session.add(empty)
     await db_session.flush()
-    # The unscoped read below is an unordered LIMIT 100 over the documents with metadata, and the overflow
-    # assertion needs every row it takes to carry the identifier. That holds because these 101 are the only
-    # documents with metadata: two_folder_corpus's four have none and are excluded by `doc_metadata != {}`.
+    # Unscoped, all 101 documents carry the identifier: one more than the candidate cap, so overflow is set.
     sidecar = {"sidecar": {"contract_id": "K-CAP-724"}}
     for i in range(100):
         await _doc_in_folder(db_session, folder_b, title=f"Decoy {i}", filename=f"decoy{i}.pdf", metadata=sidecar)

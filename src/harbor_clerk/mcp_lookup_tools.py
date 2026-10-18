@@ -18,14 +18,29 @@ Task 2 establishes the candidate-matching layer for verify_identifier.
 from __future__ import annotations
 
 import re
+import string
 import unicodedata
 import uuid
 from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sqlalchemy import and_, case, cast, func, literal, null, or_, select
-from sqlalchemy.dialects.postgresql import TIMESTAMP
+from sqlalchemy import (
+    Text,
+    and_,
+    case,
+    cast,
+    column,
+    func,
+    literal,
+    literal_column,
+    null,
+    or_,
+    select,
+    true,
+    type_coerce,
+)
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.error_text import message_or_type
@@ -55,32 +70,100 @@ def _normalize(s: str) -> str:
     return " ".join(s.lower().split())
 
 
-def _iter_id_like_leaves(metadata: dict) -> list[Any]:
-    """Walk metadata.sidecar.** and metadata.frontmatter.**, yielding the
-    value of every leaf whose KEY matches _IDENTIFIER_KEY_RE.
+# The ASCII characters str.split() treats as whitespace, which _normalize collapses: tab, LF, VT, FF, CR,
+# the four separators 0x1C-0x1F, and space. Spelled out for SQL because [[:space:]] under the C locale
+# (the Mac app's cluster is initdb --locale=C) leaves out 0x1C-0x1F.
+_ASCII_WHITESPACE_RUN = "[" + "".join(ch for ch in map(chr, range(128)) if ch.isspace()) + "]+"
+# A superset of _IDENTIFIER_KEY_RE for SQL: "id" or anything ending "_id", allowing the one trailing newline
+# Python's `$` allows. Python re-checks every key with _IDENTIFIER_KEY_RE (whose `.` stops at a newline).
+_IDENTIFIER_KEY_SQL_RE = r"(^id|_id)\n?$"
 
-    Lists at leaves contribute each element. Returns a flat list of raw
-    values (caller does normalisation + comparison).
+
+def _is_identifier_match(key: str, raw: Any, normalized: str, key_snippet_cap: int | None) -> bool:
+    """The exact test on one metadata leaf: an identifier-like key, a string value, within the key's cap
+    (#831: a value the key never sees whole is never confirmed), equal to the identifier once normalised."""
+    if not _IDENTIFIER_KEY_RE.match(key) or not isinstance(raw, str):
+        return False
+    if key_snippet_cap is not None and len(raw) > max(0, key_snippet_cap):
+        return False
+    return _normalize(raw) == normalized
+
+
+def _identifier_leaves(normalized: str, scope_clause: Any, key_snippet_cap: int | None) -> Any:
+    """Every string leaf under an identifier-like key in metadata.sidecar.** or metadata.frontmatter.** of
+    an active document that may equal ``normalized``, as rows (doc_id, title, key, value). No row limit:
+    the rows are the identifier's possible matches, not a sample of the documents (#763).
+
+    The walk is the Python one it replaces (a test holds the two together): objects are descended whatever
+    their key; under an identifier-like key a string is a leaf, and so is each string element of an array;
+    a namespace that is not an object, and non-string values, contribute nothing.
+
+    The value test is a superset of `_normalize(value) == normalized`, and the caller confirms each row
+    with `_is_identifier_match`. Postgres cannot apply `_normalize` itself: under the C locale `lower()`
+    folds ASCII only, so a SQL equality would miss "ÉCO-1" for "éco-1". An all-ASCII value is therefore
+    normalised exactly as `_normalize` does an ASCII string (A-Z folded by `translate`, runs of
+    `_ASCII_WHITESPACE_RUN` collapsed, ends trimmed) and compared in SQL; a value with any non-ASCII
+    character (more bytes than characters) is returned for Python to compare. Under a key's snippet cap
+    only values within the cap are read, in characters, as Python's `len` counts them.
     """
-    out: list[Any] = []
+    json_object = func.jsonb_typeof
+    empty_object = cast(literal("{}"), JSONB)
 
-    def _walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if isinstance(value, dict):
-                    _walk(value)
-                elif _IDENTIFIER_KEY_RE.match(str(key)):
-                    if isinstance(value, list):
-                        out.extend(value)
-                    else:
-                        out.append(value)
+    def _object_or_empty(expr: Any) -> Any:  # jsonb_each raises on anything but an object
+        return case((json_object(expr) == "object", expr), else_=empty_object)
 
-    for ns in _ID_KEY_NAMESPACES:
-        ns_dict = metadata.get(ns)
-        if isinstance(ns_dict, dict):
-            _walk(ns_dict)
+    namespaces = (
+        func.jsonb_each(_object_or_empty(Document.doc_metadata))
+        .table_valued(column("key", Text), column("value", JSONB))
+        .lateral("ns")
+    )
+    roots = (
+        select(Document.doc_id, namespaces.c.key, namespaces.c.value)
+        .select_from(Document)
+        .join(namespaces, true())
+        .where(Document.status == "active", namespaces.c.key.in_(_ID_KEY_NAMESPACES))
+    )
+    if scope_clause is not None:
+        roots = roots.where(scope_clause)
+    nodes = roots.cte("id_nodes", recursive=True)
+    children = (
+        func.jsonb_each(_object_or_empty(nodes.c.value))
+        .table_valued(column("key", Text), column("value", JSONB))
+        .lateral("child")
+    )
+    nodes = nodes.union_all(
+        select(nodes.c.doc_id, children.c.key, children.c.value).select_from(nodes).join(children, true())
+    )
 
-    return out
+    # A string leaf is its own one-element array, so one lateral reads both shapes.
+    elements = (
+        func.jsonb_array_elements(
+            case((json_object(nodes.c.value) == "array", nodes.c.value), else_=func.jsonb_build_array(nodes.c.value))
+        )
+        .table_valued(column("value", JSONB))
+        .lateral("leaf")
+    )
+    value = type_coerce(elements.c.value.op("#>>")(literal_column("'{}'")), Text)
+    ascii_normalized = func.btrim(
+        func.regexp_replace(
+            func.translate(value, string.ascii_uppercase, string.ascii_lowercase), _ASCII_WHITESPACE_RUN, " ", "g"
+        ),
+        " ",
+    )
+    stmt = (
+        select(nodes.c.doc_id, Document.title, nodes.c.key, value.label("value"))
+        .select_from(nodes)
+        .join(Document, Document.doc_id == nodes.c.doc_id)
+        .join(elements, true())
+        .where(
+            json_object(elements.c.value) == "string",
+            nodes.c.key.op("~")(_IDENTIFIER_KEY_SQL_RE),
+            or_(func.octet_length(value) != func.char_length(value), ascii_normalized == normalized),
+        )
+    )
+    if key_snippet_cap is not None:
+        stmt = stmt.where(func.char_length(value) <= max(0, key_snippet_cap))
+    return stmt
 
 
 async def _find_candidates(
@@ -88,6 +171,7 @@ async def _find_candidates(
     identifier: str,
     doc_ids: Collection[uuid.UUID] | None = None,
     key_snippet_cap: int | None = None,
+    limit: int = _VERIFY_CANDIDATE_CAP,
 ) -> list[Document]:
     """Return the set of active Documents matching `identifier` by any of:
       - title CONTAINS identifier (case-insensitive, whitespace-normalised)
@@ -96,13 +180,18 @@ async def _find_candidates(
       - any identifier-like-key leaf value in metadata.sidecar.** or
         metadata.frontmatter.** EQUALS identifier (case-insensitive)
 
-    Deduplicated by doc_id. Capped at _VERIFY_CANDIDATE_CAP results
-    (the public verify_identifier in Task 3 sets `overflow: true` when
-    the cap is reached).
+    Deduplicated by doc_id, at most ``limit`` documents: the title and filename matches first, then the
+    metadata matches, each ordered by title then doc_id, so which ones a cut keeps is stable.
+    verify_identifier asks for one more than it shows and reports ``overflow`` when that one came back.
+
+    Every limit here counts matches. The metadata pass once read an unordered hundred of the documents with
+    any metadata and matched among those; Tika headers put nearly every PDF in that set, so the document
+    carrying the identifier could be outside the hundred and the answer was not_found (#763). The leaves
+    are now matched in SQL (`_identifier_leaves`) with no row limit.
 
     ``doc_ids`` (a scoped principal's visible set; None is unrestricted) restricts both passes in SQL, before
-    the metadata pass's cap: filtering afterwards would let a hundred out-of-scope documents fill the cap and
-    hide the one the caller may see (#724).
+    any limit: filtering afterwards would let a hundred out-of-scope documents fill the cap and hide the one
+    the caller may see (#724).
 
     ``key_snippet_cap`` is the calling key's snippet cap (#831). The ``tika.title`` and metadata-leaf
     equalities are tests on stored metadata text, so under a cap each matches only a stored value
@@ -114,11 +203,9 @@ async def _find_candidates(
         return []
     scope_clause = Document.doc_id.in_(list(doc_ids)) if doc_ids is not None else None
 
-    # SQL-side pass: title / canonical_filename ILIKE (escape metacharacters
+    # First pass: title / canonical_filename ILIKE (escape metacharacters
     # so an identifier like "50% off" or "___" doesn't act as a wildcard),
     # plus tika.title true equality via func.lower() (no wildcards needed).
-    # The metadata-key match needs Python-side traversal because the leaf
-    # paths are variable.
     pattern = f"%{escape_ilike(normalized)}%"
     # JSONB ->> returns text; func.lower() gives true case-insensitive
     # equality without wildcard semantics (normalized is already lowercase).
@@ -141,42 +228,24 @@ async def _find_candidates(
     )
     if scope_clause is not None:
         stmt = stmt.where(scope_clause)
-    sql_hits = (await session.execute(stmt)).scalars().all()
+    sql_hits = list((await session.execute(stmt.order_by(Document.title, Document.doc_id).limit(limit))).scalars())
+    if len(sql_hits) >= limit:
+        return sql_hits
     sql_hit_ids = {d.doc_id for d in sql_hits}
 
-    # Python-side pass for identifier-like metadata keys. Fetch active
-    # docs whose metadata is non-empty and walk their JSON structure.
-    # Capped at _VERIFY_CANDIDATE_CAP so the Python-side loop is always
-    # bounded: a corpus with 10k+ metadata-bearing docs never loads them
-    # all into memory on a single call.
-    stmt_meta = select(Document).where(Document.status == "active").where(Document.doc_metadata != {})
-    if scope_clause is not None:
-        stmt_meta = stmt_meta.where(scope_clause)
-    meta_hits = (await session.execute(stmt_meta.limit(_VERIFY_CANDIDATE_CAP))).scalars().all()
-
-    extra: list[Document] = []
-    for doc in meta_hits:
-        if doc.doc_id in sql_hit_ids:
+    # Second pass: identifier-like metadata leaves, every possible match read from SQL and each confirmed
+    # here with the exact test (key rule, cap rule, normalisation).
+    matched: dict[uuid.UUID, str] = {}
+    for row in (await session.execute(_identifier_leaves(normalized, scope_clause, key_snippet_cap))).all():
+        if row.doc_id in sql_hit_ids or row.doc_id in matched:
             continue
-        for raw in _iter_id_like_leaves(doc.doc_metadata or {}):
-            if key_snippet_cap is not None and isinstance(raw, str) and len(raw) > max(0, key_snippet_cap):
-                continue  # a value the key never sees whole: no match on it can be reported
-            if isinstance(raw, str) and _normalize(raw) == normalized:
-                extra.append(doc)
-                break
-
-    combined = list(sql_hits) + extra
-    # Deduplicate preserving order; cap.
-    seen: set = set()
-    result: list[Document] = []
-    for d in combined:
-        if d.doc_id in seen:
-            continue
-        seen.add(d.doc_id)
-        result.append(d)
-        if len(result) >= _VERIFY_CANDIDATE_CAP:
-            break
-    return result
+        if _is_identifier_match(row.key, row.value, normalized, key_snippet_cap):
+            matched[row.doc_id] = row.title or ""
+    kept = sorted(matched, key=lambda did: (matched[did], str(did)))[: limit - len(sql_hits)]
+    if not kept:
+        return sql_hits
+    by_id = {d.doc_id: d for d in (await session.execute(select(Document).where(Document.doc_id.in_(kept)))).scalars()}
+    return sql_hits + [by_id[did] for did in kept if did in by_id]
 
 
 # Words a person puts in a document's name that a filing name never carries.
@@ -218,11 +287,15 @@ def _title_tokens(text: str | None) -> set[str]:
 
 
 async def _find_candidates_by_words(
-    session: AsyncSession, identifier: str, doc_ids: Collection[uuid.UUID] | None = None
+    session: AsyncSession,
+    identifier: str,
+    doc_ids: Collection[uuid.UUID] | None = None,
+    limit: int = _VERIFY_CANDIDATE_CAP,
 ) -> list[Document]:
     """The loose pass, for when `_find_candidates` finds nothing: every word of the name must be a word of
     the title or the canonical filename, in any order. ``doc_ids`` (a scope's visible set; None is
-    unrestricted) restricts the names read, so the cap is applied to what the caller may see.
+    unrestricted) restricts the names read, so the cap is applied to what the caller may see. At most ``limit``
+    documents, ordered by title then doc_id.
 
     People name a document by a display name and files carry a filing name: "the Arca US Treasury Fund
     development agreement" against ``ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_11971930_EX-99.K5_Development
@@ -247,9 +320,9 @@ async def _find_candidates_by_words(
         names = names.where(Document.doc_id.in_(list(doc_ids)))
     matched_ids = [
         row.doc_id
-        for row in sorted((await session.execute(names)).all(), key=lambda r: r.title or "")
+        for row in sorted((await session.execute(names)).all(), key=lambda r: (r.title or "", str(r.doc_id)))
         if wanted <= (_title_tokens(row.title) | _title_tokens(row.canonical_filename))
-    ][:_VERIFY_CANDIDATE_CAP]
+    ][:limit]
     if not matched_ids:
         return []
     docs = (await session.execute(select(Document).where(Document.doc_id.in_(matched_ids)))).scalars().all()
@@ -312,11 +385,14 @@ async def verify_identifier(
     if not identifier or not identifier.strip():
         return {"error": "identifier must be a non-empty string"}
 
-    candidates = await _find_candidates(session, identifier, doc_ids, key_snippet_cap)
+    # One more than the cap: overflow is reported only when a candidate was actually left out.
+    candidates = await _find_candidates(session, identifier, doc_ids, key_snippet_cap, _VERIFY_CANDIDATE_CAP + 1)
     matched_by_words = False
     if not candidates:
-        candidates = await _find_candidates_by_words(session, identifier, doc_ids)
+        candidates = await _find_candidates_by_words(session, identifier, doc_ids, _VERIFY_CANDIDATE_CAP + 1)
         matched_by_words = bool(candidates)
+    overflow = len(candidates) > _VERIFY_CANDIDATE_CAP
+    candidates = candidates[:_VERIFY_CANDIDATE_CAP]
 
     if not candidates:
         return {"status": "not_found", "identifier": identifier}
@@ -364,8 +440,6 @@ async def verify_identifier(
                 "discriminating_fields": per_cand,
             }
         )
-
-    overflow = len(candidates) >= _VERIFY_CANDIDATE_CAP
 
     if overflow:
         suggestion = (

@@ -1246,6 +1246,47 @@ async def test_verify_identifier_tika_title_matches_only_within_the_cap(
         _assert_capped_not_found(payload)
 
 
+@pytest.mark.parametrize("who", ["human", "key cap=None", "key cap=50"])
+async def test_verify_identifier_finds_a_frontmatter_id_behind_a_hundred_tika_only_documents(
+    db_session, mock_session_factory, admin_user, who
+):
+    """#763: the metadata pass read an unordered ``LIMIT 100`` of the documents with any metadata, and
+    extract stores Tika headers there, so nearly every PDF qualified. With 120 Tika-only documents ahead
+    of it, the one document whose frontmatter carries the identifier (inserted last, titled to sort
+    last) was outside the hundred rows read, and the tool answered a confident not_found. It must be
+    found on every call, for the human, an uncapped key, and a capped key (the stored value is within
+    its cap)."""
+    import harbor_clerk.mcp_server as m
+
+    for i in range(120):
+        db_session.add(
+            Document(
+                title=f"Scan {i:03d}",
+                status="active",
+                sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+                pipeline_status=PipelineStatus.ready,
+                mime_type="application/pdf",
+                doc_metadata={"tika": {"title": f"Scanned page {i}", "content_type": "application/pdf"}},
+            )
+        )
+    await db_session.flush()
+    target = Document(
+        title="zzz pilotage note",
+        status="active",
+        sha256=uuid.uuid4().bytes + uuid.uuid4().bytes,
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/markdown",
+        doc_metadata={"frontmatter": {"id": "HC-763-LAST", "tags": ["pilotage"]}},
+    )
+    db_session.add(target)
+    await db_session.flush()
+
+    for _ in range(3):
+        payload = await _mcp_as(db_session, admin_user, who, lambda: m.kb_verify_identifier("hc-763-last"))
+        assert payload["status"] == "unique", payload
+        assert payload["match"]["doc_id"] == str(target.doc_id), payload
+
+
 _MESSAGE_ID = "<20240115.0001.pilotage-notice@mail.northbasin.example>"
 
 # Every email.* filter key, with values past a 50-character cap where the field allows it: mail headers

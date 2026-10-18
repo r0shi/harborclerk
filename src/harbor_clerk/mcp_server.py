@@ -2522,7 +2522,9 @@ async def kb_entity_search(
             total_q = select(func.count()).select_from(count_q.subquery())
             total = (await session.execute(total_q)).scalar() or 0
 
-            rows = (await session.execute(count_q.order_by(func.count().desc()).offset(offset).limit(limit))).all()
+            # Each page is its own query: a tie-broken (total) order, or paging skips and repeats rows.
+            paged = count_q.order_by(func.count().desc(), Entity.entity_text, Entity.entity_type)
+            rows = (await session.execute(paged.offset(offset).limit(limit))).all()
             entities = [
                 {
                     "entity_text": r[0],
@@ -2538,7 +2540,11 @@ async def kb_entity_search(
             rows = (
                 (
                     await session.execute(
-                        select(Entity).where(*base_filter).order_by(Entity.entity_text).offset(offset).limit(limit)
+                        select(Entity)
+                        .where(*base_filter)
+                        .order_by(Entity.entity_text, Entity.entity_id)  # total order: pages neither skip nor repeat
+                        .offset(offset)
+                        .limit(limit)
                     )
                 )
                 .scalars()
@@ -2771,7 +2777,10 @@ async def kb_entity_cooccurrence(
 
         # Paginated results
         rows = (
-            await session.execute(base_q.order_by(func.count().desc(), e2.entity_text).offset(offset).limit(limit))
+            # Tie-broken on the whole group key, so the pages partition the result.
+            await session.execute(
+                base_q.order_by(func.count().desc(), e2.entity_text, e2.entity_type).offset(offset).limit(limit)
+            )
         ).all()
 
         cooccurrences = [

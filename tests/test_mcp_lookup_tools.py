@@ -14,8 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.mcp_lookup_tools import (
+    _IDENTIFIER_KEY_RE,
     _find_candidates,
     _find_candidates_by_words,
+    _normalize,
     _query_documents_by_date,
     documents_by_date,
     verify_identifier,
@@ -188,40 +190,134 @@ async def test_excludes_inactive_documents(db_session):
 
 
 @pytest.mark.asyncio
-async def test_metadata_scan_cap_still_finds_match_among_many_non_matching_docs(db_session):
-    """Regression for the unbounded metadata scan.
-
-    Seed 99 active docs all with non-empty metadata but no matching
-    identifier key, then one doc that DOES match via a sidecar contract_id.
-    With LIMIT 100 on the metadata scan, all 100 are fetched and the
-    matching doc (inserted last but within the 100-row window) is found.
-    _find_candidates must still return the matching doc, and the total
-    result count must be bounded by _VERIFY_CANDIDATE_CAP.
-
-    The regression value is in the LIMIT: without it, a corpus with 10k+
-    metadata docs would load them all into memory every call.
-    """
-    # 99 non-matching docs with non-empty metadata (total with the matching
-    # doc = 100, within the LIMIT 100 window).
-    for i in range(99):
+async def test_metadata_pass_finds_a_match_behind_any_number_of_metadata_bearing_documents(db_session):
+    """#763: the metadata pass read an unordered LIMIT 100 of the documents with any metadata, then matched
+    among those. 150 documents with Tika and sidecar metadata but no matching identifier, inserted first,
+    filled that window, and the one matching document (inserted last, titled to sort last) was never read.
+    The pass now matches in SQL with no row limit, so it is found, and only it."""
+    for i in range(150):
         await _seed_doc(
             db_session,
             title=f"NoMatch {i:03d}",
-            metadata={"sidecar": {"vendor": f"Vendor {i}"}},
+            metadata={"tika": {"title": f"Scan {i}"}, "sidecar": {"vendor": f"Vendor {i}", "contract_id": f"K-{i}"}},
         )
-    # One doc that matches only via the Python-side identifier-key walk.
     matching = await _seed_doc(
         db_session,
-        title="Unique Title XZQ",
+        title="zzz Unique Title XZQ",
         metadata={"sidecar": {"contract_id": "UNIQUE-XZQ-9999"}},
     )
     await db_session.flush()
 
-    candidates = await _find_candidates(db_session, "UNIQUE-XZQ-9999")
-    # The matching doc must be found despite the large non-matching pool.
-    assert any(c.doc_id == matching.doc_id for c in candidates)
-    # Total candidates must be bounded (at most _VERIFY_CANDIDATE_CAP).
-    assert len(candidates) <= 100
+    for _ in range(3):
+        candidates = await _find_candidates(db_session, "UNIQUE-XZQ-9999")
+        assert [c.doc_id for c in candidates] == [matching.doc_id]
+
+
+def _reference_leaves(metadata: dict) -> list:
+    """The Python walk the metadata pass used before #763, kept here as the reference the SQL walk must
+    agree with: objects descended whatever their key; under an identifier-like key a value, or each element
+    of a list; only sidecar and frontmatter, and only when they are objects."""
+    out: list = []
+
+    def _walk(node) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, dict):
+                    _walk(value)
+                elif _IDENTIFIER_KEY_RE.match(str(key)):
+                    if isinstance(value, list):
+                        out.extend(value)
+                    else:
+                        out.append(value)
+
+    for ns in ("sidecar", "frontmatter"):
+        if isinstance(metadata.get(ns), dict):
+            _walk(metadata[ns])
+    return out
+
+
+def _reference_match(metadata: dict, identifier: str, cap: int | None) -> bool:
+    normalized = _normalize(identifier)
+    for raw in _reference_leaves(metadata):
+        if cap is not None and isinstance(raw, str) and len(raw) > max(0, cap):
+            continue
+        if isinstance(raw, str) and _normalize(raw) == normalized:
+            return True
+    return False
+
+
+# Shapes the SQL walk and its value test must treat exactly as the Python reference does. The database
+# the Mac app creates is --locale=C, where Postgres lower() folds ASCII only: the accented, Kelvin-sign and
+# no-break-space rows are the ones a plain SQL lower() equality would miss.
+_SHAPES: list[dict] = [
+    {"sidecar": {"contract_id": "K-1"}},
+    {"sidecar": {"contract": {"id": "K-2"}}},
+    {"frontmatter": {"order_id": ["K-3", 7, {"id": "K-4"}, ["K-5"]]}},
+    {"sidecar": {"id": {"id": "K-6"}}},
+    {"sidecar": {"invoice_id": 763}},
+    {"sidecar": {"ID": "K-7"}},
+    {"sidecar": {"case_id\n": "K-8"}},
+    {"sidecar": {"x\ny_id": "K-9"}},
+    {"sidecar": {"vendor": "K-10"}},
+    {"sidecar": "K-11"},
+    {"frontmatter": ["K-12"]},
+    {"tika": {"id": "K-13"}},
+    {"id": "K-14"},
+    {"sidecar": {"case_id": "  k-15 \t  PART\x1ctwo "}},
+    {"sidecar": {"case_id": "K-16 B"}},
+    {"frontmatter": {"id": "ÉCO-17"}},
+    {"frontmatter": {"id": "K-18"}},
+    {"frontmatter": {"id": "K-19　X"}},
+    {"frontmatter": {"a": {"b": {"c": {"ref_id": "K-20"}}}}},
+    {"sidecar": {"policy_id": "K_21%"}},
+    {"sidecar": {"policy_id": "KX21Y"}},
+    {"sidecar": {"message_id": " " * 8 + "K-22"}},
+    {"sidecar": {"contract_id": None, "order_id": True}},
+    {},
+]
+_SHAPE_IDENTIFIERS = [
+    "K-1", "K-2", "K-3", "K-4", "K-5", "K-6", "763", "K-7", "K-8", "K-9", "K-10", "K-11", "K-12", "K-13",
+    "K-14", "k-15 part two", "k-16 b", "éco-17", "ÉCO-17", "k-18", "k-19 x", "K-20", "k_21%", "K-22",
+    "true", "null",
+]  # fmt: skip
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cap", [None, 50, 5, 0])
+async def test_metadata_pass_agrees_with_the_python_walk_on_every_shape(db_session, cap):
+    """For every identifier, the documents the metadata pass returns are exactly those the reference walk
+    matches, under no cap and under caps that drop some values (a value longer than the cap is never
+    confirmed, #831). Titles carry none of the identifiers, so only the metadata pass can match."""
+    docs = [await _seed_doc(db_session, title=f"Shape {i:02d}", metadata=meta) for i, meta in enumerate(_SHAPES)]
+    await db_session.flush()
+
+    for identifier in _SHAPE_IDENTIFIERS:
+        expected = {d.doc_id for d, meta in zip(docs, _SHAPES, strict=True) if _reference_match(meta, identifier, cap)}
+        found = {c.doc_id for c in await _find_candidates(db_session, identifier, key_snippet_cap=cap)}
+        assert found == expected, (identifier, cap)
+    # The rows a SQL lower() or [[:space:]] would get wrong do match: the reference is not vacuously empty.
+    assert _reference_match(_SHAPES[15], "éco-17", None) and _reference_match(_SHAPES[16], "k-18", None)
+    assert _reference_match(_SHAPES[13], "k-15 part two", None) and _reference_match(_SHAPES[14], "k-16 b", None)
+
+
+@pytest.mark.asyncio
+async def test_overflow_is_reported_only_when_a_candidate_was_left_out(db_session):
+    """Exactly 100 matches all come back with no overflow; a 101st turns overflow on, and the one left out
+    is the same on every call (candidates are ordered by title, then doc_id)."""
+    for i in range(100):
+        await _seed_doc(db_session, title=f"Doc {i:03d}", metadata={"frontmatter": {"id": "SHARED-763"}})
+    await db_session.flush()
+
+    result = await verify_identifier(db_session, "SHARED-763")
+    assert result["status"] == "ambiguous" and result["count"] == 100
+    assert "overflow" not in result and "More than 100" not in result["suggestion"]
+
+    last = await _seed_doc(db_session, title="zzz last", metadata={"frontmatter": {"id": "SHARED-763"}})
+    await db_session.flush()
+    for _ in range(3):
+        result = await verify_identifier(db_session, "SHARED-763")
+        assert result["count"] == 100 and result["overflow"] is True
+        assert str(last.doc_id) not in {c["doc_id"] for c in result["candidates"]}
 
 
 @pytest.mark.asyncio
