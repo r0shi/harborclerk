@@ -1,6 +1,8 @@
-"""#816: what a list answer's own words say about an item it names. A heading that rejects takes its section out; a
-heading that hedges does not; a name the prose rejects where it stands does not count there. The three answers the
-issue names are fixtures, copied from the stored runs, so that these tests do not depend on a results directory."""
+"""#816: what a list answer's own words say about an item it names. A heading with an explicit reject phrase takes its
+section out; any other heading, a hedge or a prohibition, does not; a name the prose rejects with a verdict attached
+to it does not count there. A false drop silently lowers recall on a right answer and a false keep only lowers
+precision, so where the two pull apart these pin the keep. The three answers the issue names are fixtures, copied
+from the stored runs, and so are the probes of the review of the first version of this rule (each marked "review")."""
 
 from __future__ import annotations
 
@@ -8,16 +10,36 @@ from pathlib import Path
 
 import pytest
 
-from scripts.test_corpora.runner.answer_key import PROSE_WINDOW, named_contracts, rejecting_label, score
+from scripts.test_corpora.runner.answer_key import named_contracts, rejecting_label, score
 
 FIXTURES = Path(__file__).parent / "fixtures" / "list_rejection"
 HARBOUR, SKYLIGHT, NORTHSTAR = "Harbour Lights", "Skylight", "Northstar"
 CAMPAIGNS = [HARBOUR, NORTHSTAR, SKYLIGHT]  # synthetic-key-20's universe
 CAMPAIGN_ALIASES = {HARBOUR: ["Harbor Lights"]}
 
+STAAR = "StaarSurgicalCompany_20180801_10-Q_EX-10.37_11289449_EX-10.37_Distributor Agreement"
+EDIETS = "EdietsComInc_20001030_10QSB_EX-10.4_2606646_EX-10.4_Co-Branding Agreement"
+PAPA = "PapaJohnsInternationalInc_20190617_8-K_EX-10.1_11707365_EX-10.1_Endorsement Agreement"
+SID, EID, PID = (
+    "7de22e9f-30e5-4d0f-b1a9-5345b4c39de0",
+    "3c40cba1-a4cc-47f4-a1a6-2011dc83888a",
+    "a30ad65d-2370-4336-87f9-0f8823e8e096",
+)
+CONTRACTS, IDS = [STAAR, EDIETS, PAPA], {SID: STAAR, EID: EDIETS, PID: PAPA}
+INVOICES = ["0012_invoice", "0048_invoice", "0050_invoice"]
+INVOICE_ALIASES = {
+    "0012_invoice": ["17195.51", "17195"],
+    "0048_invoice": ["14060.00", "14060"],
+    "0050_invoice": ["GS-2025-00847", "12720.41", "12720"],
+}
+
 
 def named(text: str) -> set[str]:
     return named_contracts(text, CAMPAIGNS, CAMPAIGN_ALIASES)
+
+
+def contracts(text: str) -> set[str]:
+    return named_contracts(text, CONTRACTS, None, IDS)
 
 
 # ── headings ──
@@ -26,31 +48,28 @@ def named(text: str) -> set[str]:
 @pytest.mark.parametrize(
     "label",
     [
-        # A reject phrase, whatever else the label says (each observed in a stored answer unless marked).
+        # An explicit reject phrase (each observed in a stored answer unless marked).
         "False positive (excluded)",
         "Reviewed and excluded (matched the keywords but are not license grants)",
+        "Contracts Excluded (Delaware mentioned but NOT the governing law)",
         "Excluded — near-misses worth noting",
-        "Near-misses (reviewed and excluded)",
         "Near-miss worth flagging (not Delaware-governed)",
         "One additional keyword match, not counted above:",
         "⚠️ Notable Contracts That Were Close But Do NOT Qualify (Employee Non-Solicitation Only)",
+        "Mention insurance but contain **no** maintenance requirement (excluded after reading)",
         "Rejected",  # not observed
         "Non-match",  # not observed
+        "Ruled out",  # not observed
         "Contrats écartés",  # not observed, French
         "Non retenus",  # not observed, French
         "Faux positifs",  # not observed, French
-        # A negation that no qualifier softens: it denies the clause outright.
+        # A heading that opens by denying the category.
         "Not a non-disparagement clause (word appears only incidentally)",
-        "⚠️ Contracts With Employee-Only Non-Solicitation Clauses (NOT Customer Solicitation Bans)",
-        "Contracts with Non-Solicitation Clauses Limited to Employees (Not Customers):",
-        "Not Found:",
+        "Not an Acme campaign",  # not observed
         "Ce n'est pas une clause de non-dénigrement",  # not observed, French
-        # A hedge does not save a section whose label also denies outright, nor one whose hedge is negated.
-        "Mentions / borderline (included for completeness, not operative ROFRs in the document itself)",
-        "Not related",  # not observed
     ],
 )
-def test_a_heading_that_rejects_membership_rejects_its_section(label):
+def test_a_heading_with_an_explicit_reject_phrase_rejects_its_section(label):
     assert rejecting_label(label)
 
 
@@ -60,152 +79,279 @@ def test_a_heading_that_rejects_membership_rejects_its_section(label):
         # Hedges: the answer still offers the items, as weaker or partial matches.
         "Borderline / related provisions (contain disparagement language but not a classic non-disparagement covenant)",
         "Borderline / special case",
+        "Mentions / borderline (included for completeness, not operative ROFRs in the document itself)",
         "Related but narrower: trademark / licensed-material use restrictions (3)",
-        "Related provisions worth including, with qualifications",
         "🟡 Contracts with Anti-Disparagement Language (Functional Equivalents)",
-        "Partial matches",  # not observed
-        "Weaker matches",  # not observed
-        "Arguable cases",  # not observed
-        "Possible matches (not confirmed)",  # not observed: a negated certainty is a hedge
-        "Clauses connexes",  # not observed, French
-        # A negation of a degree, a form or the extent of the match, not of the match.
+        "Possible matches (not confirmed)",  # not observed
+        # A negation that is not a reject phrase: the clauses asked for are prohibitions, and a heading describes them.
+        "Irrevocable licenses (may not be revoked)",  # review
+        "Licenses that can't be revoked",  # review
+        "Perpetual licenses (do not expire)",  # review
+        "Contracts in which a party shall not disparage the other",  # review
+        "Contracts where a party may not solicit the other's customers",  # review
+        "Clauses prohibiting solicitation (not limited to employees)",  # review
+        "Mutual clauses (neither party may disparage)",  # review
+        "Delaware law (not New York)",  # review
+        "Insurance required (amount not specified)",  # review
+        "One-way, not mutual",  # review
+        "Not mutual",  # review
         "Perpetual only (not described as irrevocable)",
-        "Matches (not exhaustive)",  # not observed
-        # A negated infinitive states the clause.
         "Contracts with a genuine non-disparagement clause (a party covenants not to disparage the other)",
-        # Neither a reject phrase nor a negation ("no" is not one, and "exclusive" is not "excluded").
+        # A denial of the category that denies a degree or a form, not the match.
+        "Not a classic covenant, but related",
+        # A negation that the lost first version read as a rejection, and that is not an explicit one.
+        "⚠️ Contracts With Employee-Only Non-Solicitation Clauses (NOT Customer Solicitation Bans)",
+        "Contracts with Non-Solicitation Clauses Limited to Employees (Not Customers):",
+        "Not Found:",
+        # A reject phrase a negation cancels.
+        "Nothing excluded",  # review
+        "Not excluded",  # review
+        "None rejected",  # review
+        "No false positives",  # review
+        "Not a near-miss",  # review
+        # Not a reject phrase at all.
+        "Excluding duplicates",  # review: an active verb, with its object
+        "Clear matches",  # review
         "Disparagement as a termination trigger only — no affirmative covenant (1)",
         "Matches (no duplicates)",
         "Exclusive license grants (2)",
         "Contracts governed by Delaware law — 8 found",
     ],
 )
-def test_a_heading_that_hedges_or_qualifies_keeps_its_section(label):
+def test_any_other_heading_keeps_its_section(label):
     assert not rejecting_label(label)
 
 
-def test_a_hedged_section_counts_and_a_rejecting_one_does_not():
+def test_a_hedged_or_prohibiting_section_counts_and_a_rejecting_one_does_not():
     text = (
         "## Campaigns for Acme Corp\n\n- Harbour Lights\n\n"
         "## Borderline / related (mention Acme but not a classic Acme brief)\n\n- Skylight\n\n"
         "## Not an Acme campaign\n\n- Northstar\n"
     )
     assert named(text) == {HARBOUR, SKYLIGHT}
-    # The same answer under the rule #814 left (borderline was a reject word) named Harbour Lights and Northstar.
+    # review: headings that describe a prohibition keep their items
+    prohibition = f"I found three.\n\n## Customer non-solicitation\n\n- `{SID}`\n\n## Irrevocable licenses (may not be revoked)\n\n- `{EID}`\n- `{PID}`\n"
+    assert contracts(prohibition) == {STAAR, EDIETS, PAPA}
+    one_way = f"I found three.\n\n## Mutual\n\n- `{SID}`\n\n## One-way (not mutual)\n\n- `{EID}`\n- `{PID}`\n"
+    assert contracts(one_way) == {STAAR, EDIETS, PAPA}
 
 
-# ── prose: each cue ──
+# ── prose: verdicts attached to a name ──
 
 
 @pytest.mark.parametrize(
     "rejection",
     [
         "Skylight — excluded.",
+        "Skylight - excluded: it targets Northwind.",  # review
+        "Skylight (excluded) targets Northwind.",
         "Skylight was excluded after reading.",
+        "Skylight is excluded.",
         "I excluded Skylight.",
+        "Excluded: Skylight.",
+        "- **Not counted:** Skylight.",
+        "Not counted: Skylight.",
         "Skylight only targets Northwind, so I'll exclude it.",
         "Skylight is not a match.",
-        "Skylight does not target Acme Corp.",
-        "Skylight doesn't target Acme Corp.",
-        "Skylight is not an Acme campaign.",
-        "Skylight isn't an Acme campaign.",
+        "Skylight isn't a match.",
+        "Skylight is not one.",
+        "Skylight does not qualify.",
+        "Skylight doesn't qualify.",
         "Skylight was not counted.",
         "Skylight was rejected.",
-        "Skylight does not qualify.",
+        "Skylight is a false positive.",
+        "Skylight is not an Acme campaign.",
+        "Skylight isn't an Acme campaign.",
+        "Skylight is not an Acme campaign: it targets Northwind.",  # review, item 1
+        "Skylight is not an Acme campaign. It targets Northwind.",  # review
         "The campaign is Harbour Lights rather than Skylight.",
         "Harbour Lights, not Skylight.",
         "Every campaign except Skylight.",
         "Skylight n'est pas une campagne d'Acme.",
-        "Skylight ne cible pas Acme Corp.",
-        "Toutes les campagnes sauf Skylight.",
         "Skylight est exclu.",
-        "Excluded: Skylight.",
-        "- **Not counted:** Skylight.",
+        "Skylight ne correspond pas.",
+        "Toutes les campagnes sauf Skylight.",
     ],
 )
-def test_a_name_the_prose_rejects_where_it_stands_is_not_named(rejection):
-    answer = f"Harbour Lights targets Acme Corp.\n{rejection}"
-    assert named(answer) == {HARBOUR}
+def test_a_verdict_attached_to_a_name_rejects_it(rejection):
+    assert named(f"Harbour Lights targets Acme Corp.\n{rejection}") == {HARBOUR}
 
 
 @pytest.mark.parametrize(
-    "affirmation",
-    [
-        "Skylight targets Acme Corp.",
-        "Skylight is an Acme campaign.",
-        "Skylight was included.",
-        "Skylight also matches.",
+    "rejection",
+    [  # review: the verdict, then a colon or semicolon and the reason
+        f"eDiets (`{EID}`) is not a match: the word appears only in a warranty.",
+        f"eDiets (`{EID}`) is not a match; the word appears only in a warranty.",
+        f"`{EID}` (eDiets) does not qualify: the word appears only in a warranty.",
+        f"eDiets (`{EID}`) — excluded: the word appears only in a warranty.",
+        f"`{EID}` is not a match.",
+        f"**Not a match:** `{EID}`",
     ],
 )
-def test_without_a_cue_a_name_in_prose_is_named(affirmation):
-    assert named(affirmation) == {SKYLIGHT}
+def test_a_verdict_on_an_id_rejects_it_and_only_it(rejection):
+    assert contracts(f"Staar (`{SID}`) has one.\n{rejection}") == {STAAR}
 
 
-# ── prose: the false negations it must not read ──
+def test_a_verdict_takes_only_its_own_name_never_an_earlier_one():
+    """review, item 2: the first version dropped every name within ten words before a cue."""
+    assert contracts(f"Staar (`{SID}`) matches, eDiets (`{EID}`) is not a match.") == {STAAR}
+    three = f"Staar (`{SID}`): insurance required. Papa (`{PID}`): insurance required. eDiets (`{EID}`) is not one."
+    assert contracts(three) == {STAAR, PAPA}
+    assert contracts(three.replace(f"eDiets (`{EID}`)", f"`{EID}`")) == {STAAR, PAPA}
+    assert named("Harbour Lights is the only one; Skylight is not a match.") == {HARBOUR}
+    assert named("Harbour Lights and Northstar match. Skylight is excluded.") == {HARBOUR, NORTHSTAR}
+    assert named("I counted Harbour Lights and excluded Skylight.") == {HARBOUR}
+    assert named("Skylight is excluded, Harbour Lights included.") == {HARBOUR}
+    # "so I'll exclude it" and a sentence-final "— excluded" are read only when the sentence names one item before
+    # them, and not over a colon or a contrast word.
+    assert named("Harbour Lights and Skylight were read, so I'll exclude it.") == {HARBOUR, SKYLIGHT}
+    assert named("Skylight targets Northwind — excluded.") == set()
+    assert named("Harbour Lights and Skylight were read — excluded.") == {HARBOUR, SKYLIGHT}
+    assert named("Skylight: a Northwind brief — excluded.") == {SKYLIGHT}
+    assert named("Skylight targets Acme, but the Northwind brief — excluded.") == {SKYLIGHT}
 
 
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        # "not only X but also Y" affirms both.
-        ("Not only Harbour Lights but also Skylight targets Acme Corp.", {HARBOUR, SKYLIGHT}),
-        ("Harbour Lights is not only the largest campaign but also the oldest.", {HARBOUR}),
-        ("Harbour Lights is not limited to Acme Corp.", {HARBOUR}),
-        # A negated infinitive is an obligation, not a verdict.
-        ("Acme agreed not to cite Skylight in its filings.", {SKYLIGHT}),
-        # A quotation is the document's words: "is not for retail buyers" is about the audience.
-        ('Harbour Lights: the brief says "this campaign is not for retail buyers".', {HARBOUR}),
-        # A negation inside a subordinate clause is about that clause's subject.
-        ("Harbour Lights has a budget that is not yet approved.", {HARBOUR}),
-        ("Harbour Lights targets Acme Corp, which does not run its own ads.", {HARBOUR}),
-        # A possessive: the term, not the item, is negated.
-        ("Northstar's budget is not final.", {NORTHSTAR}),
-        ("Harbour Lights' launch date is not set.", {HARBOUR}),
-        # A contrast word ends the negation's reach when the other side names its own item...
-        ("Skylight is not one, but Harbour Lights is.", {HARBOUR}),
-        ("Harbour Lights targets Acme, whereas Skylight does not.", {HARBOUR}),
-        # ...and "rather than" rejects what follows it, not the name before it.
-        ("Harbour Lights targets Acme rather than Northwind.", {HARBOUR}),
-        # An active reject verb rejects its object, which here is not a name.
-        ("After excluding duplicates, the campaigns are Harbour Lights and Skylight.", {HARBOUR, SKYLIGHT}),
-        ("The Skylight brief excludes the retail segment.", {SKYLIGHT}),
-        # "except for <a purpose>" is a carve-out in the clause, and the name cited after it is not its object.
-        ("The agency shall not reuse assets, except for joint marketing purposes [Skylight, p. 3].", {SKYLIGHT}),
-        # A reject word with a name right after it rejects that name, not the one before it.
-        ("I counted Harbour Lights and excluded Skylight.", {HARBOUR}),
-        ("Skylight is excluded, Harbour Lights included.", {HARBOUR}),
-        # "exclusive" is not "excluded".
-        ("Harbour Lights was crafted exclusively for Acme Corp.", {HARBOUR}),
+        # review, item 4: a description of the clause, not a verdict on the item.
+        (
+            f"- Staar (`{SID}`), §4.2: if the offer is rejected, STAAR may sell to a third party on the same terms.",
+            {STAAR},
+        ),
+        (
+            f"- Staar (`{SID}`), §4.2: right of first refusal on any sale; offers rejected by Distributor lapse.",
+            {STAAR},
+        ),
+        (f"- Staar (`{SID}`): product liability insurance of $5M; punitive damages excluded.", {STAAR}),
+        (
+            f"- Staar (`{SID}`): Distributor must insure the Products, with consequential losses excluded from cover.",
+            {STAAR},
+        ),
+        (f"- Staar (`{SID}`): insurance required, policy limits not listed in the excerpt.", {STAAR}),
+        (f"1. Staar Surgical (`{SID}`) — Section 9 requires insurance, but the amount is not specified.", {STAAR}),
+        (f"- `{SID}` (Staar): the license is perpetual, although it is not described as irrevocable.", {STAAR}),
+        (
+            f"- **StaarSurgicalCompany** (`{SID}`): Distributor shall maintain insurance. The policy amount is not stated.",
+            {STAAR},
+        ),
+        (
+            f"- StaarSurgicalCompany (`{SID}`) — Distributor must carry product liability insurance; coverage does not lapse.",
+            {STAAR},
+        ),
+        (
+            f"- StaarSurgicalCompany (`{SID}`) — the clause is mutual: neither party may solicit customers of the other.",
+            {STAAR},
+        ),
+        (
+            f"Staar Surgical Company (`{SID}`) is a distributor agreement that does not allow termination for convenience.",
+            {STAAR},
+        ),
+        (f"Both `{SID}` and `{EID}` contain one.", {STAAR, EDIETS}),
+        (f"| `{SID}` | Staar | §9.2 | Yes — not limited |", {STAAR}),
+        (f"| Staar | `{SID}` | Insurance required (amount not specified) |", {STAAR}),
+        (f"- Staar (`{SID}`): a perpetual license; termination does not revoke it.", {STAAR}),
+        (f"- `{SID}` Staar: governed by Delaware law (not New York).", {STAAR}),
+        (
+            f"- `{PID}` Papa John's: the endorser will not disparage Papa John's; Papa John's will not disparage the endorser.",
+            {PAPA},
+        ),
+        (f"I found it in `{SID}` (Staar). It is not an exhaustive list.", {STAAR}),
+        (f"`{SID}` and `{EID}` both require insurance, but neither specifies amounts.", {STAAR, EDIETS}),
+        (f"Staar (`{SID}`), not to be confused with eDiets, requires insurance.", {STAAR}),
+        (f"Staar (`{SID}`) — Distributor can't solicit customers.", {STAAR}),
+        (f"Staar (`{SID}`) — Distributor won't disparage the company.", {STAAR}),
+        (f"Staar (`{SID}`) — Section 12 (Insurance). I am not certain the list is complete.", {STAAR}),
+        (f"Staar (`{SID}`) requires insurance, which is not unusual.", {STAAR}),
+        (f"Staar (`{SID}`): insurance is required — this isn't optional.", {STAAR}),
+        (f"Staar (`{SID}`) is the only one I did not find ambiguous.", {STAAR}),
+        ("StaarSurgicalCompany's license is perpetual, but it is not described as irrevocable.", {STAAR}),
+        ("StaarSurgicalCompany grants a perpetual license; however, it is not described as irrevocable.", {STAAR}),
+        (f"- `{SID}` - Distributor shall not solicit customers of `{PID}`.", {STAAR, PAPA}),
+        (f"Staar (`{SID}`) is not a mutual covenant but binds the Distributor.", {STAAR}),
+        (f"Staar (`{SID}`) is not a classic non-disparagement clause.", {STAAR}),
+        # review: a negated verdict is no verdict.
+        (f"Staar (`{SID}`) was not excluded: its §6.7 is a real covenant.", {STAAR}),
+        (f"Staar (`{SID}`) is not a false positive: §6.7 is a real covenant.", {STAAR}),
+        (f"I did not exclude Staar (`{SID}`).", {STAAR}),
+        (f"Nothing was excluded: `{SID}`, `{PID}`.", {STAAR, PAPA}),
+        (f"Staar (`{SID}`) — the clause is one-way; Papa John's is mutual.", {STAAR}),
+        # a quotation is the document's words
+        (f'Staar (`{SID}`): the clause reads "the Distributor is excluded from the Territory".', {STAAR}),
     ],
 )
-def test_a_cue_that_negates_something_other_than_the_item_does_not_reject_it(text, expected):
+def test_a_description_of_the_clause_is_not_a_verdict_on_the_item(text, expected):
+    assert contracts(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [  # review: campaigns
+        ("Harbour Lights targets Acme Corp. Its brief is not public.", {HARBOUR}),
+        ("Harbour Lights targets Acme Corp, but the budget is not set.", {HARBOUR}),
+        ("Harbour Lights — targets Acme Corp (not exclusively).", {HARBOUR}),
+        ("Harbour Lights targets Acme Corp; I did not find any other.", {HARBOUR}),
+        ("The Harbour Lights brief targets Acme Corp, although its launch date isn't confirmed.", {HARBOUR}),
+        ("Not only Harbour Lights but also Skylight targets Acme Corp.", {HARBOUR, SKYLIGHT}),
+        ("Harbour Lights targets Acme rather than Northwind.", {HARBOUR}),
+        ("After excluding duplicates, the campaigns are Harbour Lights and Skylight.", {HARBOUR, SKYLIGHT}),
+        ("The Skylight brief excludes the retail segment.", {SKYLIGHT}),
+        ("Harbour Lights was crafted exclusively for Acme Corp.", {HARBOUR}),
+        ("Harbour Lights' launch date is not set.", {HARBOUR}),
+    ],
+)
+def test_campaign_descriptions_keep_their_campaign(text, expected):
     assert named(text) == expected
 
 
-def test_a_cue_whose_own_clause_names_nothing_reaches_back_to_the_names_before_it():
-    """qwen35-9b, bench-20260928-1050-keyed cuad-key-18: "(e.g., StampscomInc, PaperexchangeComInc, ImpresseCorp),
-    but these are procedural dispute resolution mechanisms rather than substantive first-offer ... rights"."""
-    assert named("Skylight and Northstar have briefs too, but these are not for Acme Corp.") == set()
-    assert named("Skylight and Northstar have briefs, but these are retail campaigns rather than Acme ones.") == set()
+@pytest.mark.parametrize(
+    "text",
+    [  # review: invoices
+        "- 0012_invoice — GS? no — total $17,195.51, not yet paid",
+        "- 0012_invoice (total 17,195.51) is not yet paid.",
+        "- Invoice 0012_invoice, total $17,195.51; due date is not stated.",
+        "- 0012_invoice: $17,195.51 (tax not included)",
+        "- 0012_invoice: $17,195.51 (excluding tax)",
+        "- 0012_invoice: $17,195.51 excl. tax",
+        "- 0012_invoice: $17,195.51, tax excluded",
+        "- 0012_invoice: $17,195.51 — the PO number is not shown",
+    ],
+)
+def test_invoice_details_keep_their_invoice(text):
+    assert named_contracts(text, INVOICES, INVOICE_ALIASES) == {"0012_invoice"}
 
 
-def test_the_window_is_ten_words_with_a_name_counting_as_one():
-    filler = " ".join(["word"] * PROSE_WINDOW)
-    assert PROSE_WINDOW == 10
-    assert named(f"Skylight {filler} is not an Acme campaign.") == set(), "ten words between: rejected"
-    assert named(f"Skylight {filler} more is not an Acme campaign.") == {SKYLIGHT}, "eleven: out of reach"
-    # A multi-word name between the cue and the item is one word, so a list of names does not run out the window.
-    seven = " ".join(["word"] * 7)  # "find", seven words, a two-word name, "or": ten
-    assert named(f"The search did not find {seven} Harbor Lights or Skylight.") == set()
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A bare negated predicate is not a verdict: as often a description as a rejection. Accepted false keeps.
+        ("Harbour Lights targets Acme Corp. Skylight does not target Acme Corp.", {HARBOUR, SKYLIGHT}),
+        ("Harbour Lights targets Acme Corp. Skylight ne cible pas Acme Corp.", {HARBOUR, SKYLIGHT}),
+        ("Only Harbour Lights. Skylight and Northstar target other clients.", set(CAMPAIGNS)),  # review
+        (f"`{SID}` matches and `{EID}` does not.", {STAAR, EDIETS}),  # review: elliptical
+        # A verdict reaches no earlier name over a clause.
+        ("Skylight and Northstar have briefs too, but these are not for Acme Corp.", {SKYLIGHT, NORTHSTAR}),
+        ("The search did not find a perpetual grant in Skylight or Northstar.", {SKYLIGHT, NORTHSTAR}),
+        # A rejection in one sentence does not cancel a listing in another.
+        ("Skylight is not an Acme campaign.\n\n| Campaign |\n|---|\n| Skylight |\n", {SKYLIGHT}),
+    ],
+)
+def test_what_the_prose_rule_does_not_read_is_kept(text, expected):
+    assert named_contracts(text, CAMPAIGNS + CONTRACTS, CAMPAIGN_ALIASES, IDS) == expected
 
 
-def test_a_sentence_ends_the_reach_and_a_name_listed_anywhere_else_still_counts():
-    assert named("Skylight is not an Acme campaign. Northstar is.") == {NORTHSTAR}
-    assert named("Skylight is not an Acme campaign; Northstar is.") == {NORTHSTAR}
-    # Decided: a sentence that rejects a name does not cancel another that lists it.
-    assert named("Skylight is not an Acme campaign.\n\n| Campaign |\n|---|\n| Skylight |\n") == {SKYLIGHT}
-    # A table cell is a sentence: a cue in the next cell does not reach the name.
-    assert named("| Skylight | does not target retail |\n") == {SKYLIGHT}
+def test_a_sentence_ends_before_a_backtick_or_a_lower_case_word():
+    """review, item 2: "Staar: ... Papa: ... eDiets is not one." once ran as one sentence."""
+    text = f"Staar (`{SID}`) has one. `{EID}` is not one. Papa (`{PID}`) has one. and `{EID}` was read."
+    assert contracts(text) == {STAAR, PAPA, EDIETS}, "eDiets is listed without a verdict in its last sentence"
+    assert contracts(f"Staar (`{SID}`) has one. `{EID}` is not one.") == {STAAR}
+
+
+def test_a_label_naming_no_item_rejects_the_names_after_it_and_one_naming_an_item_is_read_by_the_patterns():
+    assert named("- **Excluded near-misses:** Skylight (Jan 3), Northstar (Jan 9).") == set()
+    assert named("Nothing was excluded: Skylight, Northstar.") == {SKYLIGHT, NORTHSTAR}
+    assert named("Skylight: targets Acme Corp.") == {SKYLIGHT}
+    assert named("Harbour Lights targets Acme Corp.\nSkylight - excluded: it targets Northwind.") == {HARBOUR}
 
 
 # ── the three answers #816 names ──
@@ -314,3 +460,18 @@ def test_fable_rerun_cuad_key_16_counts_its_borderline_section_and_not_its_rejec
     assert KEY16_DOC_IDS["3c40cba1-a4cc-47f4-a1a6-2011dc83888a"] not in got, "eDiets is under the rejecting heading"
     result = score({"kind": "list", "positives": KEY16_POSITIVES, "universe": universe}, answer, KEY16_DOC_IDS)
     assert (result["named"], result["right"]) == (9, 6) and result["score"] == pytest.approx(2 / 3)
+
+
+def test_the_rerun_cuad_key_16_reads_the_same_with_its_table_written_as_bullets():
+    """review: the same words in the format another run would plausibly use, cells joined by an em dash."""
+    answer = _fixture("fable-rerun-cuad-key-16.md")
+    lines = []
+    for line in answer.splitlines():
+        if line.startswith(("|---", "| #", "| Contract")):
+            continue
+        if line.startswith("| "):
+            line = "- " + " — ".join(cell.strip() for cell in line.strip("|").split("|"))
+        lines.append(line)
+    universe = sorted(set(KEY16_DOC_IDS.values()) | set(KEY16_POSITIVES))
+    table = named_contracts(answer, universe, None, KEY16_DOC_IDS)
+    assert named_contracts("\n".join(lines), universe, None, KEY16_DOC_IDS) == table

@@ -17,55 +17,51 @@ the answer wrote out, nothing more.
 
 A list answer is read for what its own words say about an item before the item is counted (#814, #816). Frontier
 models write their reasoning into the answer and name what they reject; local models mostly do not, so a scorer that
-cannot read a rejection costs the strong models precision the weak ones never pay. Two readings:
+cannot read a rejection costs the strong models precision the weak ones never pay. But a false drop silently lowers
+recall on a right answer, while a false keep only lowers precision, which the reports already read as a floor for a
+narrating model. So an item is dropped only on a rejection that is explicit and attached to it, and wherever the two
+pull apart the rule keeps. Two readings:
 
-Sections. A heading (`#` line) or bold lead-in (`**...**` opening a line) whose text rejects membership takes its
-section out (`without_excluded_sections`, `rejecting_label`); a heading's section runs to the next heading of its
-level or higher, a lead-in's to the next lead-in or heading, and the answer's first section is never dropped. A
-label rejects when it holds a reject phrase ("excluded" and its forms, "not counted", "not included", "not a match",
+Sections. A heading (`#` line) or bold lead-in (`**...**` opening a line) that rejects membership takes its section
+out (`without_excluded_sections`, `rejecting_label`); a heading's section runs to the next heading of its level or
+higher, a lead-in's to the next lead-in or heading, and the answer's first section is never dropped. A label rejects
+only on an explicit reject phrase ("excluded", "exclusions", "not counted", "not included", "not a match",
 "non-match", "near-miss", "false positive", "rejected", "does not qualify", "ruled out"; French "exclu", "écarté",
-"non retenu", "faux positif", "ne correspond pas"), or a negation ("not", "-n't", French "pas") that no qualifier
-softens within three words. A qualifier negates a degree, a form, a certainty or the extent of the match, not the
-match: "not a classic covenant", "not described as irrevocable", "not confirmed", "not exhaustive". A negated
-infinitive ("covenants not to disparage") states the clause and denies nothing. Everything else keeps its section,
-and that includes every hedge: "Borderline / related", "Related but narrower", "with qualifications", "Possible
-matches". The split is the decision #816 made. #814 read "borderline" as a reject and so dropped the Borderline
-section of bench-20261015-2259-cuad-fable-rerun's cuad-key-16, three CUAD positives in it (0.43, where the first
-run, the same contracts under other headings, scored 0.67), while it kept "Not a non-disparagement clause" and "(NOT
-Customer Solicitation Bans)", which it had no word for. A hedge beside an unqualified negation does not save its
-section: "Mentions / borderline (included for completeness, not operative ROFRs in the document itself)" lists items
-the answer says are not ROFRs. "Near-miss" stays a reject: every one in the stored answers sat beside "excluded" or
-a denial. A bare "no" is not a negation here: on the real data it marked only a section holding a labelled contract
-("— no affirmative covenant"), and it would drop "## Matches (no duplicates)". The cost, accepted: a hedged section
-the answer itself does not count is counted (rerun cuad-key-19's "Borderline / special case", one contract the
-answer calls "an insurance arrangement itself rather than a covenant", 1.00 to 0.98), because the heading vocabulary
-cannot tell a weaker match from a rejected one and the decision is to read a hedge as offered.
+"non retenu", "faux positif", "ne correspond pas") that no negation just before it cancels ("Nothing excluded", "No
+false positives", "Not a near-miss"), or when it opens by denying the category ("Not a non-disparagement clause",
+unless what it denies is a degree or a form: "Not a classic covenant"). Nothing else rejects. Not a hedge:
+"Borderline / related", "Related but narrower", "Mentions / borderline (… not operative ROFRs …)" all count, which
+is the decision #816 made; #814 read "borderline" as a reject and so dropped the Borderline section of
+bench-20261015-2259-cuad-fable-rerun's cuad-key-16, three CUAD positives in it (0.43, where the first run, the same
+contracts under other headings, scored 0.67). And not a negation elsewhere in a label: the clauses a list question
+asks for are prohibitions, and a heading that describes them ("Licenses that may not be revoked", "Contracts in
+which a party shall not disparage the other", "(not mutual)", "(amount not specified)") is not rejecting its items
+(review of #816, whose first version read any unqualified "not" as a rejection). The costs, accepted: "(NOT Customer
+Solicitation Bans)" and "Limited to Employees (Not Customers)" keep their items, which the answers meant as rejects;
+and a hedged section the answer itself does not count is counted (rerun cuad-key-19's "Borderline / special case",
+one contract the answer calls "an insurance arrangement itself rather than a covenant", 1.00 to 0.98), because a
+heading vocabulary cannot tell a weaker match from a rejected one.
 
-Prose. Outside the dropped sections, a name the prose rejects where it stands does not count there (`_rejections`).
-The prose is cut into sentences (`_SENTENCE_END`, a semicolon, a table cell's bar), and a sentence that opens with a
-short "Label:" is read as a heading would be, over that sentence ("- **Excluded near-misses:** ... `0050` ...").
-Else a mention is rejected by a cue within `PROSE_WINDOW` (10) words of it in its sentence, a name counting as one
-word: a reject phrase (above; "excluded", "not a match", "not counted", "exclu"), a negated predicate ("is not",
-"isn't", "does not", "doesn't", "were not", "n'est pas", "ne ... pas"), "rather than", or, directly before the name,
-"not", "except" or "sauf" ("Harbour Lights, not Skylight"). A reject phrase or a negated predicate takes the name
-before it (its subject: "0048 is a July 2025 invoice — excluded") or, with none, the name after it ("the search did
-not find one in X"); a name right after a reject word is its object ("I kept X and excluded Y"); "rather than" takes
-the name after it only. Ten words is about a clause, and it is what the stored answers support: the farthest
-rejection read sits nine words from its name (qwen35-9b, "(e.g., StampscomInc, ...), but these are procedural ...
-mechanisms rather than"), a window of seven misses four of the ten, and widening it to twenty reads nothing more,
-so it is the guards, not the window, that keep a cue about something else off a name. The guards, each pinned in the
-tests: a cue inside quotation marks is the document's words, not the answer's ("shall not solicit"); "not only",
-"not just", "not limited to" and a negated infinitive are not rejections; a negated predicate inside a subordinate
-clause ("a license that is not revocable") or after a possessive ("Northstar's budget is not final") is about
-something else; a contrast word ("but", "whereas", "while", "mais") ends a cue's reach, unless the cue's own clause
-names nothing and so refers back ("X, Y and Z have such clauses, but these are dispute mechanisms rather than
-ROFRs"); an active reject verb rejects only its object ("excluding duplicates" rejects nothing), and the noun
-("exclusions") is not read. An item is named when at least one of its mentions survives: a sentence that rejects a
-name does not cancel a table row that lists it. The costs, accepted: a rejection farther than ten words from its
-name, or said with a pronoun in the next sentence ("It is an insurance arrangement itself rather than..."), or with
-a word the cues do not hold ("— none target Acme Corp"), is not read; a cue about something else that the guards
-miss takes a name out of that sentence; and a lead-in followed by `###` items ("**Not counted:**", then "### 1.
-Rand") excludes nothing but itself, because a heading ends a lead-in's section.
+Prose. Outside the dropped sections, a mention is dropped only on a verdict attached to that one name
+(`_rejections`), within one sentence: what `_SENTENCE_END` ends, also before a backtick or a lower-case word, and at
+a semicolon, a line break or a table cell's bar. The verdicts: after the name and what trails it (an id, a
+parenthesis, a citation, the rest of its title), "is not a match", "is not one", "does not qualify / match / count /
+apply", "does not contain one", "is excluded", "is a false positive", "— excluded", "(excluded)", "is not an Acme
+campaign" (a denied category, unless a degree or a form is denied), and the French; before the name, with only
+markup, a colon or two filler words between, "excluded", "excluding", "not counted:", "rather than", "except",
+"sauf", and "not" ("Harbour Lights, not Skylight"); and, when the sentence names one item and no colon or contrast
+word stands between, "so I'll exclude it" or a sentence-final "— excluded". A sentence that opens with a "Label:"
+naming no item is read as a heading over that sentence ("- **Excluded near-misses:** ... `0050` ..."). A negation
+just before a verdict cancels it ("was not excluded", "I did not exclude"), quoted text is the document's words and
+is not read, "not only" and "not to" are not verdicts, and a verdict never reaches back over a clause, a colon or a
+contrast word to an earlier name. A bare negated predicate ("does not target", "is not stated", "isn't optional") is
+not a verdict: it is as often a description of the clause (review of #816: "if the offer is rejected, STAAR may
+sell", "consequential losses excluded from cover", "the amount is not specified" each dropped a positive under the
+first version). An item is named when at least one of its mentions survives. The costs, accepted: "Skylight does not
+target Acme Corp", "X matches and Y does not", "but these are dispute mechanisms rather than ROFRs" and "the search
+did not find one in X" keep their names; in the stored answers that is fourteen contracts the answers rejected, all
+unlabelled, all kept; and a lead-in followed by `###` items ("**Not counted:**", then "### 1. Rand") excludes
+nothing but itself, because a heading ends a lead-in's section.
 
 The fact matcher accepts negation ("New York law, not Delaware" finds "Delaware"); a key is one phrase, so this has
 not mattered yet, and is stated so that a score of 1.0 is read as "the phrase is present", nothing more. The one
@@ -262,49 +258,51 @@ _LEAD_IN_LEVEL = 7  # below any heading: a heading's section takes its lead-ins 
 # What an answer's own words say about membership, read lower-cased, accents folded and with typographic apostrophes
 # straightened (`_cue_view`). The module docstring says why each list is what it is.
 #
-# Rejects: a phrase that takes an item out of the answer's list, whatever else is said beside it. Read in a label
-# (heading, lead-in, or a "Label:" opening a sentence) and in prose. "exclu" and its forms, never "exclusive". A
-# near-miss is a miss: every one of the five in the stored answers sat beside "excluded" or a denial.
+# Reject phrases: what takes an item, or a section, out of the answer's list. "excluded" and "exclusions", never
+# "exclusive", "excluding" or "excludes" (which have objects: "excluding duplicates"). Read in a label (heading,
+# lead-in, or a "Label:" opening a sentence) unless a negation stands just before it ("Nothing excluded", "No false
+# positives", "Not a near-miss").
 _REJECTS = re.compile(
-    r"\bexclu(?:de[ds]?|ding|sions?|es?|s)?\b"
-    r"|\bnot (?:counted|included|listed|retained|selected)\b|\bnot (?:an? )?match(?:es|ed|ing)?\b"
-    r"|\bnon[- ]?match(?:es|ing)?\b|\bnear[- ]?miss(?:es)?\b|\bfalse positives?\b|\breject(?:ed|s)?\b"
+    r"\bexclu(?:ded|sions?|es?|s)?\b"
+    r"|\bnot (?:counted|included|listed|retained|selected)\b|\bnot (?:an? )?match(?:es)?\b"
+    r"|\bnon[- ]?match(?:es)?\b|\bnear[- ]?miss(?:es)?\b|\bfalse positives?\b|\brejected\b"
     r"|\b(?:does|do|did) not qualify\b|\b(?:doesn|don|didn)'t qualify\b|\bnot qualifying\b|\bdisqualified\b"
     r"|\bruled out\b"
     r"|\becarte(?:e|s|es)?\b|\bnon retenu(?:e|s|es)?\b|\bfaux positifs?\b|\bne correspond(?:ent)? pas\b"
 )
-# A negation in a label rejects its section ("Not a non-disparagement clause", "(NOT Customer Solicitation Bans)")
-# unless a qualifier follows it within `_LABEL_WORDS` words: a word that negates a degree, a form, a certainty or
-# the extent of the match rather than the match ("not a classic covenant", "not described as irrevocable", "not
-# confirmed", "not exhaustive"). A hedge ("borderline", "related", "narrower", "possible") is not a rejection and
-# keeps its section; beside an unqualified negation it does not save it ("Mentions / borderline (... not operative
-# ROFRs ...)"), beside a qualified one it needs no saving.
-_NEGATION_WORD = re.compile(r"not|pas|\w+n't")
-_QUALIFIER = re.compile(
-    r"(?:classic(?:al)?|typical(?:ly)?|standard|true|truly|genuine(?:ly)?|pure(?:ly)?|strict(?:ly)?|formal(?:ly)?"
-    r"|traditional(?:ly)?|conventional(?:ly)?|stand|standalone|general|express(?:ly)?|explicit(?:ly)?|full|fully"
-    r"|described|label(?:l)?ed|called|titled|named|worded|phrased|confirmed|verified|certain|definitive"
-    r"|exhaustive|complete|necessarily|all|every|only|just|merely|simply|limited"
-    r"|classique|typique|explicite(?:ment)?|expres(?:se|sement)?|formel(?:le)?(?:ment)?|confirme(?:e|s|es)?"
-    r"|exhaustive?|necessairement|seulement|toutes?|tous)"
+_NEGATOR = re.compile(r"\b(?:not|no|nothing|none|never|without|neither|nor|pas|aucune?|rien|ni)\b|n't\b")
+_NEGATOR_WORDS = 2  # how far before a reject phrase a negation cancels it: "nothing was excluded"
+# A heading that opens by denying the category ("Not a non-disparagement clause", "Ce n'est pas une clause ...") is a
+# reject phrase of its own, unless what it denies is a degree or a form ("Not a classic covenant, but ...") or itself
+# a rejection ("Not a near-miss").
+_QUALIFIER = (
+    r"(?:classic(?:al)?|typical|standard|true|genuine|pure|strict|formal|traditional|conventional|general|stand"
+    r"|standalone|full|complete|exhaustive|separate|express|explicit|mutual|reciprocal|one|two|bilateral|unilateral"
+    r"|perpetual|irrevocable|exclusive|broad|narrow|written|specific|single|direct|false|near|match"
+    r"|classique|typique|explicite|expresse|formelle|exhaustive|mutuelle|reciproque|exclusive)\b"
 )
-_LABEL_WORDS = 3  # how far, in words, a qualifier may follow its negation: over "a classic", not the whole label
+_NOT_A = re.compile(rf"^[^a-z0-9]*(?:not an?|(?:ce )?n'est pas une?)\s+(?!{_QUALIFIER})[a-z0-9]")
 
 
 def _cue_view(text: str) -> str:
-    return fold(text).lower().replace("’", "'").replace("‘", "'")
+    """`text` folded, lower-cased and with straight apostrophes, one character for each of `text`'s, so that an
+    offset in one is an offset in the other."""
+    return "".join((fold(ch).lower() or " ")[0] for ch in text).replace("’", "'").replace("‘", "'")
+
+
+def _negated_before(view: str, at: int) -> bool:
+    return bool(_NEGATOR.search(" ".join(view[:at].split()[-_NEGATOR_WORDS:])))
 
 
 def rejecting_label(label: str) -> bool:
     """Whether a heading, lead-in or sentence label says its items are not in the answer's list: it holds a reject
-    phrase (`_REJECTS`), or a negation that no qualifier softens (`_QUALIFIER`). A negated infinitive ("covenants
-    not to disparage") states a clause and denies nothing. Anything else, every hedge included, keeps its items."""
+    phrase no negation cancels (`_REJECTS`), or it opens by denying the category (`_NOT_A`). Nothing else rejects:
+    not a hedge ("Borderline / related"), and not a negation elsewhere in the label, because the clauses a list
+    question asks for are themselves prohibitions ("Licenses that may not be revoked", "shall not disparage")."""
     low = _cue_view(label)
-    if _REJECTS.search(low):
+    if any(not _negated_before(low, m.start()) for m in _REJECTS.finditer(low)):
         return True
-    words = re.findall(r"[a-z0-9']+", low)
-    negations = [i for i, w in enumerate(words) if _NEGATION_WORD.fullmatch(w) and words[i + 1 : i + 2] != ["to"]]
-    return any(not any(_QUALIFIER.fullmatch(w) for w in words[i + 1 : i + 1 + _LABEL_WORDS]) for i in negations)
+    return bool(_NOT_A.match(low))
 
 
 def without_excluded_sections(text: str) -> str:
@@ -333,50 +331,67 @@ def without_excluded_sections(text: str) -> str:
 
 # ── rejection in prose ──
 #
-# A sentence is what `_SENTENCE_END` ends, cut further at a semicolon and at a table cell's bar. A cue is looked for
-# outside quotation marks: a quoted clause is the document's words ("shall not solicit"), not the answer's verdict.
-PROSE_WINDOW = 10  # words between a cue and a name, a name counting as one word; the module docstring says why 10
-_SEGMENT_END = re.compile(_SENTENCE_END.pattern + r"|[;|]")
+# A false drop silently lowers recall on a correct answer; a false keep lowers precision, which the reports already
+# read as a floor for a narrating model. So the prose drops a name only on a verdict attached to that one name, in
+# a tight pattern, and never reaches over a clause, a colon or a contrast to an earlier name. A sentence is what
+# `_SEGMENT_END` ends: `_SENTENCE_END`'s ends, also before a backtick or a lower-case word, and a semicolon, a line
+# break or a table cell's bar. Quoted text is the document's words, not the answer's verdict, and is not read.
+_SEGMENT_END = re.compile(r"[.!?][*_)\]\"'”’]*(?=\s+[A-Za-z0-9\"“*(\[`]|\s*$)|\r?\n|[;|]")
 _QUOTED = re.compile(r"“[^”\n]*”|«[^»\n]*»|\"[^\"\n]*\"")
-# A negated predicate: the item named before it is its subject ("0048 is not a February invoice"); with no name
-# before it in its clause, the name after it is its object ("the search did not find one in X").
-_NEGATED = re.compile(
-    r"\b(?:is|are|was|were|does|do|did) not\b|\b(?:isn|aren|wasn|weren|doesn|don|didn)'t\b"
-    r"|\bn'\w+ pas\b|\bne \w+ pas\b"
+# After a name (and what may trail it: an id in backticks, a parenthesis, a citation in brackets, bold marks, the
+# rest of its title in capitalised words), a verdict on it: "<name> is not a match", "does not qualify", "is
+# excluded", "— excluded", "(excluded)", "is not one", "is not an Acme campaign" (a denied category, unless what is
+# denied is a degree or a form), and the French. A bare negated predicate ("does not target", "is not stated") is
+# not a verdict: it is as often a description of the clause.
+_POST_VERDICT = re.compile(
+    r"[ \t]*,?[ \t]*(?:"
+    r"(?:is|are|was|were|has been|have been)\s+(?:also\s+)?(?:excluded|rejected|ruled out|disqualified|not counted"
+    r"|not included|not listed|(?:an?\s+)?false positives?|(?:an?\s+)?near[- ]miss(?:es)?)\b"
+    r"|(?:is|are|was|were)\s+not\s+(?:an?\s+)?(?:match(?:es)?|one|among them)\b"
+    r"|(?:isn't|aren't|wasn't|weren't)\s+(?:an?\s+)?(?:match(?:es)?|one)\b"
+    r"|(?:(?:does|do|did)\s+not|doesn't|don't|didn't)\s+(?:qualify|match|count|apply|contain\s+(?:one|any|such))\b"
+    rf"|(?:(?:is|are)\s+not|isn't|aren't)\s+an?\s+(?!{_QUALIFIER})[a-z0-9]"
+    r"|[—–-]+\s*(?:excluded|rejected|not counted|not included|not a match|ruled out|false positive|near[- ]miss"
+    r"|does not qualify|doesn't qualify|exclue?s?|ecartee?s?)\b"
+    r"|\(\s*(?:excluded|rejected|not counted|not included|not a match|false positive|near[- ]miss|exclue?s?)\b"
+    r"|:\s*(?:excluded|rejected|not counted|not included|not a match|false positive|does not qualify)\b"
+    r"|(?:est|sont|a ete|ont ete)\s+(?:exclue?s?|ecartee?s?|rejetee?s?)\b"
+    r"|n'est pas (?:retenue?|une correspondance|pertinente?)\b|ne (?:correspond(?:ent)?|qualifie(?:nt)?) pas\b"
+    rf"|n'est pas une?\s+(?!{_QUALIFIER})[a-z0-9]"
+    r")"
 )
-# A contrast that negates what follows it: "Harbour Lights rather than Skylight" rejects Skylight only.
-_RATHER = re.compile(r"\brather than\b|\binstead of\b|\bplutot que\b|\bau lieu de\b")
-# A cue that rejects only a name directly after it, two words at most between: "Harbour Lights, not Skylight",
-# "every invoice except 0048", "sauf la facture 0048".
-_DIRECT = re.compile(r"\bnot\b|\bexcept(?:ing)?\b|\bsauf\b|\bhormis\b|\ba l'exception de\b")
-_DIRECT_GAP = 2
-# A reject verb in the active voice has an object, and the object is what it rejects: "I'll exclude it" and
-# "excluding 0048" reject a name, "the agreement excludes the application of other laws" and "excluding duplicates"
-# do not. So it is read as a direct cue, or, before a pronoun, as an ordinary one reaching the name the pronoun
-# stands for. The noun ("exclusions") is not read in prose at all: "subject to the exclusions in §4".
-_ACTIVE_REJECT = re.compile(r"exclude|excludes|excluding|reject|rejects")
-_REJECT_NOUN = re.compile(r"exclusions?")
-_PRONOUN = re.compile(r"\s+(?:it|them|this|these|those|both|all|each|one)\b")
-# Read right after a negation, these make it not a rejection: "not only X but also Y", "is not limited to X", and a
-# negated infinitive, which states an obligation ("agrees not to solicit"), not a verdict.
-_NOT_ONLY = re.compile(r"\s+(?:only|just|merely|simply|necessarily|limited|seulement|uniquement|to)\b")
-# Words that end one clause and open another that may be about something else. A cue does not reach over one to a
-# name, unless its own clause names nothing ("X, Y and Z have such clauses, but these are dispute mechanisms rather
-# than ROFRs"): then it reaches back to the names before it.
-_CONTRAST = re.compile(
-    r"\b(?:but|whereas|while|although|though|however|yet|mais|alors que|tandis que|cependant|pourtant)\b"
+_TAIL_UNIT = re.compile(
+    r"[ \t]*(?:[`*_)\]\"”’]+|\([^()\n]{0,120}\)|`[^`\n]{0,80}`|\[[^\]\n]{0,160}\]|【[^】\n]{0,160}】"
+    r"|[A-Z0-9][\w.&'’/-]*(?=[ \t`*(\[,—–-]|$))"
 )
-# A negated predicate inside a subordinate clause is about that clause's subject, not about the item: "X grants a
-# license that is not revocable", "it also specifies that the liability is not limited".
-_SUBORDINATE = re.compile(
-    r"\b(?:that|which|who|whom|whose|where|when|whenever|if|unless|whether|whereby|because|since"
-    r"|qui|que|dont|lorsque|quand|si)\b"
+_TAIL_UNITS = 8
+# Before a name, a verdict whose object it is: "excluded 0048", "Excluded: Skylight", "not counted: X", "rather than
+# Skylight", "except Skylight", "sauf Skylight", "Harbour Lights, not Skylight". Between the verdict and the name:
+# markup, a colon, and at most two of `_FILLER`; a negation just before the verdict cancels it ("I did not exclude").
+_PRE_VERDICT = re.compile(
+    r"\b(?:excluded?|excluding|rejected?|rejecting|ruled out|not counted|not included|not listed|rather than"
+    r"|instead of|except|excepting|sauf|hormis|a l'exception de|plutot que|au lieu de|exclue?s?|excluant|not)\b"
 )
-_LOCAL_CLAUSE = re.compile(r"[,:(—–]")
-_CLAUSE_MARK = re.compile(r"[,;:.()—–]")
-_POSSESSIVE = re.compile(r"['’](?:s\b|(?=\s))")
+_PRE_GAP = re.compile(r"[ \t]*:?[ \t*_`\"“(\[]*")
+_FILLER = re.compile(
+    r"(?:the|a|an|la|le|les|l'|un|une|de|du|des|for|both|invoices?|factures?|contracts?|contrats?|agreements?"
+    r"|campaigns?|campagnes?|briefs?|documents?)\b"
+)
+_FILLERS = 2
+# "<name> ... so I'll exclude it": a verdict by pronoun, read only when the sentence names one item before it.
+_SO_EXCLUDE = re.compile(
+    r"\b(?:so|and|therefore|thus|hence)\s+i(?:'ll| will| have| am|'ve)?\s+(?:excluded?|excluding|rejected?|rejecting"
+    r"|omit(?:ted)?|dropp?(?:ed)?)\s+(?:it|them)\b"
+)
+# "<name> is a July 2025 invoice — excluded.": a verdict that ends its sentence after a dash, read like "so I'll
+# exclude it". Neither reaches over a colon or a contrast word to the name.
+_FINAL_VERDICT = re.compile(
+    r"[—–-]+\s*(?:excluded|rejected|not counted|not included|not a match|ruled out|exclue?s?)[\s*_.!)]*$"
+)
+_BREAK = re.compile(r":|\b(?:but|whereas|while|although|though|however|yet|mais|alors que|tandis que|cependant)\b")
 # A sentence that opens with a short label and a colon ("Excluded near-misses: ...", "- **Not counted:** ...") is
-# read as a heading would be, over that sentence.
+# read as a heading would be, over that sentence, when the label names no item; one that names its item ("eDiets —
+# excluded: ...") is read by the patterns above.
 _SENTENCE_LABEL = re.compile(
     r"^\s*(?:(?:[-*•]|\d+[.)])\s+)?(?:\*\*|__)?(?P<label>[^:\n*_]{1,80}?)(?:\*\*|__)?\s*:(?:\*\*|__)?(?=\s|$)"
 )
@@ -474,98 +489,69 @@ def _segments(text: str) -> list[tuple[int, int]]:
 
 
 def _rejections(text: str, mentions: list[tuple[str, int, int]]) -> dict[int, str]:
-    """{index into `mentions`: why it is rejected} for the mentions the answer's prose rejects: its sentence opens
-    with a rejecting label, or a cue near it in its sentence takes it out (the module docstring has the rule)."""
+    """{index into `mentions`: why it is rejected} for the mentions the answer's prose rejects (the module
+    docstring has the rule)."""
     why: dict[int, str] = {}
     for seg_start, seg_end in _segments(text):
         local = {i: (a - seg_start, b - seg_start) for i, (_, a, b) in enumerate(mentions) if seg_start <= a < seg_end}
         if local:
-            why |= _Sentence(text[seg_start:seg_end], local).rejections()
+            sentence = text[seg_start:seg_end]
+            titles = {i: mentions[i][0] for i in local}
+            why |= _sentence_rejections(sentence, local, titles)
     return why
 
 
-class _Sentence:
-    """One sentence and the names in it (`local`: mention index -> span in the sentence), read for rejection."""
+def _sentence_rejections(sentence: str, local: dict[int, tuple[int, int]], titles: dict[int, str]) -> dict[int, str]:
+    view = _cue_view(sentence)
+    for q in _QUOTED.finditer(view):  # the document's words, not the answer's verdict
+        view = view[: q.start()] + " " * (q.end() - q.start()) + view[q.end() :]
+    said = sentence.strip()
+    why: dict[int, str] = {}
+    label = _SENTENCE_LABEL.match(sentence)
+    if (
+        label
+        and len(label.group("label").split()) <= _LABEL_MAX_WORDS
+        and not any(a < label.end() for a, _ in local.values())
+        and rejecting_label(label.group("label"))
+    ):
+        return {i: f"label '{label.group('label').strip()}': {said}" for i in local}
+    for i, (_, end) in local.items():
+        pos = end
+        for _ in range(_TAIL_UNITS + 1):
+            verdict = _POST_VERDICT.match(view, pos)
+            if verdict:
+                why[i] = f"after '{view[verdict.start() : verdict.end()].strip()}': {said}"
+                break
+            unit = _TAIL_UNIT.match(sentence, pos)
+            if not unit or unit.end() == pos:
+                break
+            pos = unit.end()
+    for m in _PRE_VERDICT.finditer(view):
+        if _negated_before(view, m.start()):
+            continue
+        pos = _PRE_GAP.match(view, m.end()).end()
+        for _ in range(_FILLERS + 1):
+            hits = [i for i, (a, _) in local.items() if a == pos]  # a name may be found twice there
+            if hits:
+                if m.group() != "not" or not _NOT_ONLY.match(view, m.end()):
+                    for i in hits:
+                        why.setdefault(i, f"before '{m.group()}': {said}")
+                break
+            filler = _FILLER.match(view, pos)
+            if not filler:
+                break
+            pos = _PRE_GAP.match(view, filler.end()).end()
+    for m in [*_SO_EXCLUDE.finditer(view), *_FINAL_VERDICT.finditer(view)]:
+        before = [i for i, (a, _) in local.items() if a < m.start()]
+        between = view[max((local[i][1] for i in before), default=0) : m.start()]
+        if len({titles[i] for i in before}) == 1 and not _BREAK.search(between):
+            for i in before:
+                why.setdefault(i, f"'{m.group()}': {said}")
+    return why
 
-    def __init__(self, sentence: str, local: dict[int, tuple[int, int]]):
-        self.text, self.local = sentence, local
-        view, self.at = _mapped(sentence, lambda c: True)
-        view = view.replace("’", "'").replace("‘", "'")  # as `_cue_view`, keeping the offsets
-        for q in _QUOTED.finditer(view):  # the document's words, not the answer's verdict
-            view = view[: q.start()] + " " * (q.end() - q.start()) + view[q.end() :]
-        self.view = view
-        self.tokens = [m.span() for m in re.finditer(r"\S+", sentence)]
-        self.covered = {k: i for i, (a, b) in local.items() for k in range(self.token_at(a), self.token_at(b - 1) + 1)}
-        self.contrasts = [self.orig(m.start()) for m in _CONTRAST.finditer(view)]
 
-    def orig(self, i: int) -> int:
-        """The sentence offset of view offset `i`."""
-        return self.at[i] if i < len(self.at) else len(self.text)
-
-    def token_at(self, pos: int) -> int:
-        return next((k for k, (_, end) in enumerate(self.tokens) if pos < end), len(self.tokens))
-
-    def gap(self, left_end: int, right_start: int) -> int:
-        """Words strictly between two spans, a name counting as one word."""
-        ks = range(self.token_at(max(left_end - 1, 0)) + 1, self.token_at(right_start))
-        names = {self.covered[k] for k in ks if k in self.covered}
-        return sum(1 for k in ks if k not in self.covered) + len(names)
-
-    def clause(self, pos: int) -> int:
-        return sum(1 for c in self.contrasts if c <= pos)
-
-    def rejections(self) -> dict[int, str]:
-        label = _SENTENCE_LABEL.match(self.text)
-        if label and len(label.group("label").split()) <= _LABEL_MAX_WORDS and rejecting_label(label.group("label")):
-            said = f"label '{label.group('label').strip()}': {self.text.strip()}"
-            return {i: said for i, (a, _) in self.local.items() if a >= label.end()}
-        view = self.view
-        cues = []
-        for m in _REJECTS.finditer(view):
-            if _REJECT_NOUN.fullmatch(m.group()):
-                continue
-            active = _ACTIVE_REJECT.fullmatch(m.group()) and not _PRONOUN.match(view, m.end())
-            cues.append(("direct" if active else "reject", m))
-        cues += [("negated", m) for m in _NEGATED.finditer(view) if not _NOT_ONLY.match(view, m.end())]
-        cues += [("rather", m) for m in _RATHER.finditer(view)]
-        cues += [("direct", m) for m in _DIRECT.finditer(view) if not _NOT_ONLY.match(view, m.end())]
-        why: dict[int, str] = {}
-        for kind, m in cues:
-            if kind == "negated":
-                opened = [x.end() for x in _LOCAL_CLAUSE.finditer(view, 0, m.start())]
-                opened += [x.start() for x in _CONTRAST.finditer(view, 0, m.start())]
-                if _SUBORDINATE.search(view, max(opened, default=0), m.start()):
-                    continue
-            a, b = self.orig(m.start()), self.orig(m.end() - 1) + 1
-            for i in self.targets(kind, a, b):
-                why.setdefault(i, f"{kind} '{self.text[a:b]}': {self.text.strip()}")
-        return why
-
-    def targets(self, kind: str, a: int, b: int) -> list[int]:
-        """The names a cue at [a, b) of kind `kind` rejects."""
-        local = self.local
-        same = [i for i in local if self.clause(local[i][0]) == self.clause(a)]
-        if not same:  # its own clause names nothing: it reaches back to the names before it
-            if kind == "direct":
-                return []
-            return [i for i in local if local[i][1] <= a and self.gap(local[i][1], a) <= PROSE_WINDOW]
-        before = [i for i in same if local[i][1] <= a and self.gap(local[i][1], a) <= PROSE_WINDOW]
-        after = [i for i in same if local[i][0] >= b and self.gap(b, local[i][0]) <= PROSE_WINDOW]
-        # A name right after the cue, nothing but words between, is its object ("excluded Skylight", "not Skylight").
-        direct = [
-            i
-            for i in after
-            if self.gap(b, local[i][0]) <= _DIRECT_GAP and not _CLAUSE_MARK.search(self.text, b, local[i][0])
-        ]
-        if kind == "direct":
-            return [i for i in after if self.gap(b, local[i][0]) <= _DIRECT_GAP]
-        if kind == "rather":
-            return after
-        if kind == "negated":  # "X's term is not ..." is about the term
-            before = [i for i in before if not _POSSESSIVE.match(self.text, local[i][1])]
-        elif direct:  # "I kept Harbour Lights and excluded Skylight" rejects Skylight only
-            return direct
-        return before or after
+# Right after "not", these make it no verdict: "not only X but also Y", "not to be confused with X".
+_NOT_ONLY = re.compile(r"\s+(?:only|just|merely|simply|necessarily|limited|to|seulement|uniquement)\b")
 
 
 def named_contracts(

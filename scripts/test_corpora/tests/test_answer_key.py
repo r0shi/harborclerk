@@ -664,15 +664,18 @@ def test_an_item_under_a_heading_or_lead_in_that_marks_exclusion_is_not_named():
         "pp. 13–14) — the word appears only in content warranties.\n"
     )
     assert named_contracts(false_positive, UNIVERSE, None, DOC_IDS) == {STAAR}
-    # Fable key-18: bulleted items under a hedged heading that also denies outright ("not operative ROFRs"): the
-    # denial wins (#816), then a second excluded section.
+    # Fable key-18: bulleted items under a hedged heading, then a second excluded section. The hedge counts (#816):
+    # "not operative ROFRs" is not an explicit reject phrase, so Women.com is named there.
     borderline = (
         f"## Contracts with an operative right of first refusal\n\n- **Staar** (`{ID_STAAR}`), §4\n\n"
         "## Mentions / borderline (included for completeness, not operative ROFRs in the document itself)\n\n"
         f"- **Women.com** (`{ID_EDIETS}`), §9.1(d) — a cross-reference to the separate Franchise Agreement.\n\n"
         f'## Reviewed and excluded\n"First right" hits that are enforcement priorities: {EDIETS}.\n'
     )
-    assert named_contracts(borderline, UNIVERSE, None, DOC_IDS) == {STAAR}
+    assert named_contracts(borderline, UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS}
+    assert EDIETS not in named_contracts(
+        borderline.replace(f"- **Women.com** (`{ID_EDIETS}`)", "- Women.com"), UNIVERSE
+    )
     # Fable key-20: a near-miss heading, and a heading after it that is kept (the drop ends there).
     near_miss = (
         f"## Contracts governed by Delaware law — 1 found\n\n- **Staar** (`{ID_STAAR}`)\n\n"
