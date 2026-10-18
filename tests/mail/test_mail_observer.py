@@ -997,3 +997,60 @@ async def test_task_finishing_during_the_query_is_judged_against_fresh_rows(
     assert "no longer active" in caplog.text
 
     await observer.stop()
+
+
+async def test_task_dying_during_the_query_of_an_inactive_label_is_still_reported(
+    db_session, mock_aioimap, observer_session_factory, caplog
+):
+    """The other half of the snapshot: a task that dies while the query is in
+    flight, for a label the query already shows inactive, is not reaped that
+    tick. The cancel sweep must leave it for the next reap rather than drop it,
+    or its exception is never retrieved and the death never logged.
+    """
+    import contextlib
+    import logging
+
+    from sqlalchemy import select as _select
+
+    from harbor_clerk.models import WatchedLabel as _WL
+
+    label_id = await _one_active_label(db_session, "inactivedeath")
+    lbl = (await db_session.execute(_select(_WL).where(_WL.label_id == label_id))).scalar_one()
+    lbl.status = "paused"
+    await db_session.commit()
+
+    observer = MailObserver(session_factory=observer_session_factory)
+    query_done = asyncio.Event()
+
+    async def _dies_mid_query() -> None:
+        await query_done.wait()
+        raise RuntimeError("connection dropped as the label was paused")
+
+    task = asyncio.create_task(_dies_mid_query())
+    observer._tasks[label_id] = task
+    observer._spawned_at[label_id] = __import__("time").monotonic()
+
+    @contextlib.asynccontextmanager
+    async def _task_dies_after_the_read():
+        async with observer_session_factory() as session:
+            real_execute = session.execute
+
+            async def _execute(*args, **kwargs):
+                result = await real_execute(*args, **kwargs)
+                query_done.set()
+                await asyncio.wait({task}, timeout=5)
+                return result
+
+            session.execute = _execute
+            yield session
+
+    with caplog.at_level(logging.INFO, logger="harbor_clerk.watcher.mail_observer"):
+        await asyncio.wait_for(observer._reconcile(_task_dies_after_the_read), timeout=10)
+        assert task.done()
+        await asyncio.wait_for(observer._reconcile(observer_session_factory), timeout=10)
+
+    assert label_id not in observer._tasks
+    assert "while going inactive" in caplog.text, f"the death was dropped unlogged: {caplog.text}"
+    assert "connection dropped as the label was paused" in caplog.text
+
+    await observer.stop()
