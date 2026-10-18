@@ -584,14 +584,25 @@ def test_flapping_listener_backs_off(monkeypatch, caplog):
     assert len(syncs) == len(calls) - 1, "every reconnect still resyncs (NOTIFYs in the gap are lost)"
 
 
-def test_listener_streak_resets_after_a_healthy_connection(monkeypatch):
+def test_listener_streak_resets_after_a_healthy_connection(monkeypatch, caplog):
     """The reset still happens once a connection has stayed up a healthy period:
-    a drop after hours of working is a new incident, back at the base delay."""
+    a drop after hours of working is a new incident, back at the base delay, and
+    its reconnect is announced again (once per streak, not once per process)."""
+    import logging
+
     from harbor_clerk.watcher import main as watcher_main
 
-    delays, _, _ = _run_flapping_listener(monkeypatch, waits=4, healthy_secs=0.0)
+    with caplog.at_level(logging.INFO, logger="harbor_clerk.watcher.main"):
+        delays, calls, _ = _run_flapping_listener(monkeypatch, waits=4, healthy_secs=0.0)
 
     assert delays == [watcher_main.LISTENER_RETRY_BASE_SECS] * 4, f"healthy runs did not reset the streak: {delays}"
+    # Every drop is its own streak here, and every LISTEN after the first is the
+    # reconnect that ends one.
+    reconnected = [r for r in caplog.records if "listener reconnected" in r.getMessage()]
+    assert len(calls) == 4
+    assert len(reconnected) == len(calls) - 1, (
+        f"expected one 'reconnected' line per healthy-separated streak, got {len(reconnected)}"
+    )
 
 
 def test_listener_logs_a_changed_error_and_a_heartbeat(monkeypatch, caplog):
