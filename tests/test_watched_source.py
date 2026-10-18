@@ -148,7 +148,106 @@ def test_is_file_exact_case(tmp_path):
     (tmp_path / "dir.txt").mkdir()
     assert is_file_exact_case(str(tmp_path / "note.txt"))
     assert is_file_exact_case(str(tmp_path / "link.txt"))
-    assert not is_file_exact_case(str(tmp_path / "Note.txt"))
     assert not is_file_exact_case(str(tmp_path / "gone.txt"))
     assert not is_file_exact_case(str(tmp_path / "dangling.txt"))
     assert not is_file_exact_case(str(tmp_path / "dir.txt"))
+
+
+def test_is_file_exact_case_refuses_a_case_only_match(tmp_path, monkeypatch):
+    """On a case-insensitive filesystem isfile answers yes for Note.txt when note.txt
+    exists; the listing refuses it. Simulated here so it holds on case-sensitive CI."""
+    import os
+
+    from harbor_clerk.watched_source import is_file_exact_case
+
+    (tmp_path / "note.txt").write_text("x")
+    real_isfile = os.path.isfile
+    monkeypatch.setattr(os.path, "isfile", lambda p: str(p).lower() == str(tmp_path / "note.txt") or real_isfile(p))
+    assert not is_file_exact_case(str(tmp_path / "Note.txt"))
+    assert is_file_exact_case(str(tmp_path / "note.txt"))
+
+
+def test_is_file_exact_case_lists_the_parent_only_for_a_file(tmp_path, monkeypatch):
+    """Listing a large directory on every delete event is O(entries): isfile goes first."""
+    import os
+
+    from harbor_clerk.watched_source import is_file_exact_case
+
+    (tmp_path / "note.txt").write_text("x")
+    (tmp_path / "dir.txt").mkdir()
+    calls: list[str] = []
+    real_listdir = os.listdir
+
+    def counting_listdir(path="."):
+        calls.append(str(path))
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", counting_listdir)
+    assert not is_file_exact_case(str(tmp_path / "gone.txt"))
+    assert not is_file_exact_case(str(tmp_path / "dir.txt"))
+    assert calls == []
+    assert is_file_exact_case(str(tmp_path / "note.txt"))
+    assert calls == [str(tmp_path)]
+
+
+async def _watched_doc_with_stored_original(db_session, tmp_path):
+    """A watched document at tmp_path/folder/sub/doc.txt with a stored original. Returns (doc_id, file path)."""
+    folder = tmp_path / "folder"
+    (folder / "sub").mkdir(parents=True)
+    source = folder / "sub" / "doc.txt"
+    source.write_text("on disk")
+    doc = Document(
+        title="doc",
+        status="active",
+        sha256=hashlib.sha256(b"on disk").digest(),
+        pipeline_status=PipelineStatus.ready,
+        source_path=str(source),
+        original_bucket="originals",
+        original_object_key=f"originals/docs/{uuid.uuid4()}/doc.txt",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    wf_folder = WatchedFolder(path=str(folder), display_name="folder")
+    db_session.add(wf_folder)
+    await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=wf_folder.folder_id,
+            relative_path="sub/doc.txt",
+            bookmark_data=b"",
+            sha256=doc.sha256,
+            doc_id=doc.doc_id,
+            status=WatchedFileStatus.active,
+        )
+    )
+    await db_session.commit()
+    return doc.doc_id, source
+
+
+@pytest.mark.parametrize("breakage", ["not-a-directory", "permission"])
+async def test_read_document_bytes_raises_missing_without_a_path_for_any_os_error(db_session, tmp_path, breakage):
+    """A path component replaced by a file, or no permission, is "cannot be read in
+    place": WatchedFileMissing, whose message names no path (it lands in doc.error)."""
+    import os
+    import shutil
+
+    from harbor_clerk.watched_source import WatchedFileMissing, read_document_bytes
+
+    if breakage == "permission" and os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode")
+    doc_id, source = await _watched_doc_with_stored_original(db_session, tmp_path)
+    if breakage == "not-a-directory":
+        shutil.rmtree(source.parent)
+        source.parent.write_text("a file where the directory was")
+    else:
+        source.chmod(0)
+    session = get_sync_session()
+    try:
+        doc = session.get(Document, doc_id)
+        with pytest.raises(WatchedFileMissing) as raised:
+            read_document_bytes(session, doc)
+    finally:
+        session.close()
+        if breakage == "permission":
+            source.chmod(0o644)
+    assert str(tmp_path) not in str(raised.value)

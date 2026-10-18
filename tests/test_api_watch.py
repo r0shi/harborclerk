@@ -1073,3 +1073,39 @@ async def test_ingest_of_an_unchanged_file_heals_a_source_path_that_is_a_label(
 
     assert resp.status_code == 200, resp.text
     assert (await _doc_row(db_session, doc_id)).source_path == str(real / "a.txt")
+
+
+@pytest.mark.parametrize("status", [WatchedFileStatus.active, WatchedFileStatus.removed], ids=["case1", "case2"])
+async def test_ingest_of_unchanged_bytes_re_extracts_a_doc_indexed_from_an_older_upload(
+    client, admin_token, db_session, tmp_path, status
+):
+    """Case 1 and Case 2: a document whose sha256 is not its watched file's (a #859-
+    shaped new version) takes the file's sha256 and is queued again from the file."""
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path="a.txt", status=status)
+    doc = await _doc_row(db_session, doc_id)
+    doc.sha256 = bytes.fromhex(uuid.uuid4().hex * 2)  # the older upload's
+    await db_session.commit()
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    row = await _doc_row(db_session, doc_id)
+    assert row.sha256 == bytes.fromhex(sha)
+    assert row.source_path == str(real / "a.txt")
+    assert await _queued_extracts(db_session, doc_id) == 1
+
+
+async def test_ingest_of_unchanged_bytes_does_not_reprocess_a_current_doc(client, admin_token, db_session, tmp_path):
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path=str(real / "a.txt"))
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    assert (await _doc_row(db_session, doc_id)).pipeline_status == PipelineStatus.ready
+    assert await _queued_extracts(db_session, doc_id) == 0

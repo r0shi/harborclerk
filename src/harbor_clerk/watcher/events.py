@@ -303,7 +303,7 @@ def handle_event(session: Session, event: FileEvent) -> None:
     # visits every file, so this heals rows older clients stored).
     if existing is not None and existing.status == WatchedFileStatus.active and existing.sha256 == sha:
         _repair_source_path(session, existing)
-        _requeue_if_errored(session, existing, sha)
+        _bring_up_to_date(session, existing, sha)
         return
 
     # Branch 2: existing+active+different → reprocess in place
@@ -318,7 +318,7 @@ def handle_event(session: Session, event: FileEvent) -> None:
         existing.removed_at = None
         _unhide_document(session, existing.doc_id)
         _repair_source_path(session, existing)
-        _requeue_if_errored(session, existing, sha)
+        _bring_up_to_date(session, existing, sha)
         return
 
     # Branch 4: existing+removed+different → resurrect + reprocess
@@ -349,18 +349,25 @@ def _repair_source_path(session: Session, watched_file: WatchedFile) -> None:
         doc.source_path = repaired
 
 
-def _requeue_if_errored(session: Session, watched_file: WatchedFile, sha: bytes) -> None:
-    """Queue the document's extract again when its last run failed because its file
-    could not be read (``watched_source.failed_for_a_missing_source``).
+def _bring_up_to_date(session: Session, watched_file: WatchedFile, sha: bytes) -> None:
+    """Queue the document's extract again, from its file, when its index does not
+    reflect the file it is read from:
 
-    A read of a watched document fails while its file is missing (mid atomic save,
-    or deleted and later restored with the same bytes); the unchanged-file
-    branches would otherwise leave it in error for good. Other errors are left.
+    - its last run failed because its file could not be read
+      (``watched_source.failed_for_a_missing_source``): mid atomic save, or deleted
+      and later restored with the same bytes. Other errors are left;
+    - its sha256 is not the watched file's: a new version confirmed before that was
+      refused (#859) indexed an upload, while reads now come from the file.
+
+    The unchanged-file branches would otherwise leave either for good.
     """
     if watched_file.doc_id is None:
         return
     doc = session.get(Document, watched_file.doc_id)
-    if doc is None or not failed_for_a_missing_source(doc):
+    if doc is None:
+        return
+    stale = doc.sha256 != sha
+    if not stale and not failed_for_a_missing_source(doc):
         return
     # Only a document that now verifies as read in place: one whose repair was
     # declined stays as it is (it would fail again), and the path handed on is the
@@ -368,7 +375,7 @@ def _requeue_if_errored(session: Session, watched_file: WatchedFile, sha: bytes)
     in_place = watched_state(session, doc).path
     if in_place is None:
         return
-    logger.info("watcher: queueing doc %s again after a failed run", doc.doc_id)
+    logger.info("watcher: queueing doc %s again (%s)", doc.doc_id, "stale index" if stale else "after a failed run")
     _reprocess_doc(session, doc.doc_id, sha, in_place)
 
 

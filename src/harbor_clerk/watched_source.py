@@ -12,8 +12,10 @@ has one. A watched document is **read in place** when its watched file is active
 and its ``source_path`` is exactly that file's path, computed from the watched
 file (its folder's path, that path normalized, or its realpath, joined with its
 relative path), never taken from the document. The folder's enabled state does
-not matter: a paused folder's documents are still its files. A ``source_path``
-set any other way is a label a client supplied, not a file to read or look beside.
+not matter to reading: a paused folder's documents are still its files. A paused
+folder is not scanned, though, so its documents are not repaired or re-queued
+(below) until it is enabled again. A ``source_path`` set any other way is a label a
+client supplied, not a file to read or look beside.
 
 A watched document's bytes are its file's, and nothing else's, even when it also
 carries a stored original (a new version confirmed before that was refused,
@@ -188,9 +190,11 @@ def is_file_exact_case(path: str) -> bool:
     differs only in case; the listing of the parent settles it.
     """
     try:
-        if os.path.basename(path) not in os.listdir(os.path.dirname(path) or "."):
+        # isfile first: listing the parent is O(entries), and only matters when
+        # isfile says yes (a case-insensitive match).
+        if not os.path.isfile(path):
             return False
-        return os.path.isfile(path)
+        return os.path.basename(path) in os.listdir(os.path.dirname(path) or ".")
     except OSError:
         return False
 
@@ -218,10 +222,12 @@ def failed_for_a_missing_source(doc) -> bool:
 def watched_state(session, doc) -> WatchedState:
     """The ``WatchedState`` of ``doc``, on a sync session.
 
-    A failed lookup raises. In a pipeline stage that fails the stage: the job is
-    marked as an error (there is no automatic retry), and the watcher's next event
-    for the file re-queues the document. It never falls back to a stored original,
-    which for a document that also carries one would index the wrong bytes.
+    A failed lookup (a database error) raises. In a pipeline stage that fails the
+    stage: the job and document are marked as errors with that error. There is no
+    automatic retry, and the watcher does not re-queue it (it re-queues only
+    missing-source failures and stale indexes); it is run again by a reprocess, or
+    when the file's bytes change. It never falls back to a stored original, which
+    for a document that also carries one would index the wrong bytes.
     """
     rows = session.execute(watched_paths_query(doc.doc_id)).all()
     return watched_state_from_rows(rows, doc.source_path)
@@ -250,7 +256,10 @@ def read_document_bytes(session, doc) -> tuple[bytes, str | None]:
     if state.path is not None:
         try:
             return Path(state.path).read_bytes(), state.path
-        except FileNotFoundError:
+        except OSError:
+            # Missing, a path component no longer a directory, a directory in its
+            # place, a symlink loop, no permission: all "cannot be read in place".
+            # The OSError's message names the path; the one raised below does not.
             pass
     if state.watched:
         raise WatchedFileMissing(

@@ -753,3 +753,93 @@ def test_a_document_in_a_folder_stored_with_a_dot_dot_path_is_readable(factory, 
         assert _read(factory, doc_id)[1] == b"dot dot body"
     finally:
         _truncate_watched(factory)
+
+
+def _queued_extracts(factory, doc_id) -> int:
+    from harbor_clerk.models.enums import JobStage, JobStatus
+    from harbor_clerk.models.ingestion_job import IngestionJob
+
+    sess = factory()
+    try:
+        return (
+            sess.query(IngestionJob).filter_by(doc_id=doc_id, stage=JobStage.extract, status=JobStatus.queued).count()
+        )
+    finally:
+        sess.close()
+
+
+def test_startup_scan_re_extracts_a_doc_indexed_from_an_older_upload(factory, tmp_path, monkeypatch):
+    """A #859-shaped document (its sha256, pages and stored original from an upload,
+    its watched file holding other bytes) is reprocessed from the file on one scan
+    visit, so search and download agree."""
+    import hashlib
+
+    from harbor_clerk.models.document import Document
+    from harbor_clerk.models.document_page import DocumentPage
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+    tmp_path = tmp_path.resolve()
+    folder_id, doc_id, real = _aliased_watched_doc(factory, tmp_path, stored_source="doc.txt")
+    sess = factory()
+    try:
+        doc = sess.get(Document, doc_id)
+        doc.sha256 = hashlib.sha256(b"older upload").digest()
+        doc.original_bucket = "originals"
+        doc.original_object_key = "originals/docs/x/doc.txt"
+        sess.add(DocumentPage(doc_id=doc_id, page_num=1, page_text="older upload"))
+        sess.commit()
+        seq = doc.pipeline_seq
+    finally:
+        sess.close()
+    try:
+        WatcherDaemon(factory)._scan_folder(folder_id, str(real))
+
+        sess = factory()
+        try:
+            doc = sess.get(Document, doc_id)
+            assert doc.sha256 == hashlib.sha256(b"on disk body").digest()
+            assert doc.pipeline_seq == seq + 1
+            assert doc.source_path == str(real / "doc.txt")
+        finally:
+            sess.close()
+        assert _queued_extracts(factory, doc_id) == 1
+
+        run_extract(doc_id)
+        sess = factory()
+        try:
+            pages = sess.query(DocumentPage).filter_by(doc_id=doc_id).all()
+            assert [p.page_text for p in pages] == ["on disk body"]
+        finally:
+            sess.close()
+    finally:
+        _truncate_watched(factory)
+
+
+def test_startup_scan_does_not_reprocess_a_current_doc(factory, tmp_path, monkeypatch):
+    """A document whose sha256 already matches its watched file is not reprocessed."""
+    from harbor_clerk.models.document import Document
+
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+    tmp_path = tmp_path.resolve()
+    folder_id, doc_id, real = _aliased_watched_doc(factory, tmp_path, stored_source="doc.txt")
+    sess = factory()
+    try:
+        seq = sess.get(Document, doc_id).pipeline_seq
+    finally:
+        sess.close()
+    try:
+        WatcherDaemon(factory)._scan_folder(folder_id, str(real))
+
+        sess = factory()
+        try:
+            doc = sess.get(Document, doc_id)
+            assert doc.source_path == str(real / "doc.txt")
+            assert doc.pipeline_seq == seq
+        finally:
+            sess.close()
+        assert _queued_extracts(factory, doc_id) == 0
+    finally:
+        _truncate_watched(factory)

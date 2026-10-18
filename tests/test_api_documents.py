@@ -743,3 +743,43 @@ async def test_download_never_serves_the_stored_original_of_a_removed_watched_fi
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Source file is missing"
     assert b"stale stored" not in resp.content
+
+
+@pytest.mark.parametrize("breakage", ["not-a-directory", "permission"])
+async def test_download_is_a_404_without_a_path_for_any_unreadable_watched_file(
+    client, admin_user, admin_token, db_session, tmp_path, breakage
+):
+    """Its folder replaced by a file, or no permission: a 404 that names no path."""
+    import os
+    import shutil
+
+    from harbor_clerk.config import get_settings
+
+    if breakage == "permission" and os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode")
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    src = folder / "doc.txt"
+    src.write_bytes(b"on disk")
+    doc = Document(title="Watched", status="active", source_path=str(src), **_DOC_DEFAULTS)
+    db_session.add(doc)
+    await db_session.flush()
+    await watch_document(db_session, doc, src)
+    if breakage == "not-a-directory":
+        shutil.rmtree(folder)
+        folder.write_text("a file where the folder was")
+    else:
+        src.chmod(0)
+
+    s = get_settings()
+    original = s.allow_source_download
+    s.allow_source_download = True
+    try:
+        resp = await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
+    finally:
+        s.allow_source_download = original
+        if breakage == "permission":
+            src.chmod(0o644)
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Source file is missing"
+    assert str(tmp_path) not in resp.text

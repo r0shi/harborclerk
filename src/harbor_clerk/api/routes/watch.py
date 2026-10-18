@@ -135,6 +135,23 @@ def _validate_source_path(source_path: str, folder_path: str) -> str:
     return real_source
 
 
+async def _bring_up_to_date(session: AsyncSession, doc: Document, sha256_bytes: bytes) -> None:
+    """Queue the document's extract again, as the watcher does
+    (``watcher/events.py::_bring_up_to_date``), when its last run failed because its
+    file could not be read, or when its sha256 is not the watched file's (a #859-
+    shaped new version indexed an upload); and only when it verifies as read in
+    place, so one whose repair was declined is left as it is. The document takes the
+    watched file's sha256, so the next visit finds it current.
+    """
+    stale = doc.sha256 != sha256_bytes
+    if not stale and not failed_for_a_missing_source(doc):
+        return
+    if (await watched_state_async(session, doc)).path is None:
+        return
+    doc.sha256 = sha256_bytes
+    await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
+
+
 def _canonical_source_path(source_path: str, relative_path: str, folder_path: str) -> str:
     """The ``source_path`` to store for a watched file: the folder's path joined with
     its relative path, the form the watcher stores and ``watched_source`` verifies.
@@ -574,9 +591,9 @@ async def ingest_file(
     )
     wf = wf_result.scalar_one_or_none()
 
-    # Case 1: active + same SHA256 → skip, but for an aliased source_path, which is
-    # canonicalized so the document verifies as read in place, and for a document
-    # whose last read failed because its file was missing, which is queued again.
+    # Case 1: active + same SHA256 → skip, but for a source_path that is not the
+    # canonical path, which is repaired, and for a document whose index does not
+    # reflect its file, which is queued again (_bring_up_to_date).
     if wf and wf.status == WatchedFileStatus.active and wf.sha256 == sha256_bytes:
         if wf.doc_id:
             doc = (await session.execute(select(Document).where(Document.doc_id == wf.doc_id))).scalar_one_or_none()
@@ -586,10 +603,7 @@ async def ingest_file(
                 )
                 if repaired is not None:
                     doc.source_path = repaired
-                # As the watcher does: only a document that now verifies as read in
-                # place is queued again (one whose repair was declined would fail again).
-                if failed_for_a_missing_source(doc) and (await watched_state_async(session, doc)).path is not None:
-                    await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
+                await _bring_up_to_date(session, doc, sha256_bytes)
                 await session.commit()
         return {"action": "skipped", "doc_id": str(wf.doc_id)}
 
@@ -620,12 +634,12 @@ async def ingest_file(
                     await session.commit()
                     return {"action": "updated", "doc_id": str(doc.doc_id)}
 
-        # Same bytes: a document whose last read failed because its file was missing
-        # is queued again; otherwise its index is current.
+        # Same bytes: a document whose index does not reflect its file is queued
+        # again (_bring_up_to_date); otherwise its index is current.
         if wf.doc_id:
             doc = (await session.execute(select(Document).where(Document.doc_id == wf.doc_id))).scalar_one_or_none()
-            if doc is not None and failed_for_a_missing_source(doc):
-                await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
+            if doc is not None:
+                await _bring_up_to_date(session, doc, sha256_bytes)
         await session.commit()
         return {"action": "resurrected", "doc_id": str(wf.doc_id)}
 

@@ -246,3 +246,58 @@ async def test_reextract_skips_a_removed_watched_file_with_a_stored_original(db_
     db_session.expire_all()
     refreshed = (await db_session.execute(select(Document).where(Document.doc_id == doc_id))).scalar_one()
     assert refreshed.doc_metadata == {}
+
+
+@pytest.mark.parametrize("breakage", ["not-a-directory", "permission"])
+async def test_reextract_skips_an_unreadable_watched_file_and_carries_on(db_session, tmp_path: Path, breakage):
+    """Its folder replaced by a file, or no permission: the document is skipped and
+    the run goes on to the next one."""
+    import os
+    import shutil
+
+    import scripts.reextract_metadata as script
+    from tests.conftest import watch_document
+
+    if breakage == "permission" and os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode")
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    broken = folder / "broken.md"
+    broken.write_bytes(_md("Broken"))
+    fine_dir = tmp_path / "fine"
+    fine_dir.mkdir()
+    fine = fine_dir / "fine.md"
+    fine.write_bytes(_md("Fine"))
+    ids = []
+    for source in (broken, fine):
+        doc = Document(
+            title=source.stem,
+            canonical_filename=source.name,
+            status="active",
+            sha256=hashlib.sha256(source.read_bytes()).digest(),
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/markdown",
+            source_path=str(source),
+            doc_metadata={},
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        await watch_document(db_session, doc, source)
+        ids.append(doc.doc_id)
+    await db_session.commit()
+    if breakage == "not-a-directory":
+        shutil.rmtree(folder)
+        folder.write_text("a file where the folder was")
+    else:
+        broken.chmod(0)
+
+    try:
+        processed, updated, skipped = await script.reextract_all()
+    finally:
+        if breakage == "permission":
+            broken.chmod(0o644)
+
+    assert (processed, updated, skipped) == (2, 1, 1)
+    db_session.expire_all()
+    fine_doc = (await db_session.execute(select(Document).where(Document.doc_id == ids[1]))).scalar_one()
+    assert fine_doc.doc_metadata["frontmatter"] == {"vendor": "Fine"}

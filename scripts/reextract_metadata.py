@@ -52,7 +52,7 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
                 if in_place is not None:
                     try:
                         raw_bytes = Path(in_place).read_bytes()
-                    except FileNotFoundError:
+                    except OSError:
                         in_place = None
                 if in_place is None:
                     log.warning("doc %s: its watched file cannot be read in place; skipping", doc.doc_id)

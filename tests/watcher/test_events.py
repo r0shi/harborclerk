@@ -1423,3 +1423,33 @@ def test_a_delete_event_for_a_path_no_longer_a_regular_file_removes_it(
     sync_session.commit()
 
     assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.removed
+
+
+def test_a_later_atomic_save_sending_only_a_delete_reprocesses_the_new_content(sync_session, real_folder, tmp_path):
+    """After the first atomic save, live FSEvents sends only `deleted target` for later
+    saves (the file present, its content changed): that is reprocessed as a modify."""
+    import os
+
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    target = tmp_path / "note.txt"
+    target.write_text("first version")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "note.txt", str(target)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    doc_id, seq = doc.doc_id, doc.pipeline_seq
+    run_extract(doc_id)
+
+    tmp = tmp_path / ".note.txt.tmp"
+    tmp.write_text("third version")
+    os.replace(tmp, target)
+    handle_event(sync_session, FileEvent(EventKind.deleted, real_folder.folder_id, "note.txt", str(target)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.active
+    assert sync_session.get(Document, doc_id).pipeline_seq == seq + 1
+    run_extract(doc_id)
+    sync_session.expire_all()
+    pages = sync_session.query(DocumentPage).filter_by(doc_id=doc_id).all()
+    assert [p.page_text for p in pages] == ["third version"]

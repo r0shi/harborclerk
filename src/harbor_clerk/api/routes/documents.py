@@ -874,7 +874,9 @@ async def download_document(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file is missing")
         try:
             file_bytes = await asyncio.to_thread(Path(state.path).read_bytes)
-        except FileNotFoundError:
+        except OSError:
+            # Missing, a path component no longer a directory, no permission...: the
+            # file cannot be read in place. The detail names no path.
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file is missing")
         filename = posixpath.basename(state.path)
         # doc.mime_type is what the extract stage set from this file and its magic
