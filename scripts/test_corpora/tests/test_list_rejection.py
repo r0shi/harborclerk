@@ -962,6 +962,8 @@ def test_review_8_probes(text, expected):
         ("Not included above but also qualifies", False),
         ("Not counted above, but qualifies", False),
         ("Not counted, but qualifies under a broader reading", False),
+        ("Excluded, but none of these qualifies", True),  # "none" is a negation after the contrast
+        ("Excluded, but nothing here counts", True),
         # review 8: "count", "total", "scope", "review" are the answer's only at the end of the label.
         ("Excluded from the total liability cap", False),
         ("Excluded from the license scope", False),
