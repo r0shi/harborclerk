@@ -11,6 +11,41 @@ enum AuthState: Equatable {
     case needsSetup
 }
 
+/// Where AuthManager keeps the remembered login. Production is the Keychain;
+/// a test passes a fake, so it never reads or deletes the developer's real
+/// saved login (#612).
+protocol CredentialStore {
+    func load() -> KeychainCredentials?
+    func save(email: String, password: String)
+    func delete()
+}
+
+struct KeychainCredentialStore: CredentialStore {
+    func load() -> KeychainCredentials? { KeychainManager.load() }
+    func save(email: String, password: String) { KeychainManager.save(email: email, password: password) }
+    func delete() { KeychainManager.delete() }
+}
+
+/// The two requests AuthManager makes, so a test can answer them without a
+/// server.
+struct AuthTransport {
+    var setupStatus: (URL) async throws -> (Data, URLResponse)
+    var login: (URLRequest) async throws -> (Data, URLResponse)
+
+    static let live = AuthTransport(
+        setupStatus: { url in try await URLSession.shared.data(from: url) },
+        login: { request in
+            // Use a session that does NOT handle cookies itself, so the raw
+            // Set-Cookie header is preserved in the response for us to parse.
+            let ephemeral = URLSessionConfiguration.ephemeral
+            ephemeral.httpCookieAcceptPolicy = .never
+            ephemeral.httpShouldSetCookies = false
+            let session = URLSession(configuration: ephemeral)
+            return try await session.data(for: request)
+        }
+    )
+}
+
 /// Owns the authentication state machine: Keychain auto-login, API calls, cookie injection.
 @MainActor
 final class AuthManager: ObservableObject {
@@ -20,8 +55,26 @@ final class AuthManager: ObservableObject {
 
     private static let loggedOutKey = "didLogOut"
 
-    init(baseURL: URL) {
+    private let environment: [String: String]
+    private let credentials: CredentialStore
+    private let defaults: UserDefaults
+    private let transport: AuthTransport
+
+    /// Everything but `baseURL` defaults to the real thing. A test injects the
+    /// environment (to keep or drop the start-nothing switch), a fake
+    /// credential store, a defaults suite of its own and a canned transport.
+    init(
+        baseURL: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        credentials: CredentialStore = KeychainCredentialStore(),
+        defaults: UserDefaults = .standard,
+        transport: AuthTransport = .live
+    ) {
         self.baseURL = baseURL
+        self.environment = environment
+        self.credentials = credentials
+        self.defaults = defaults
+        self.transport = transport
     }
 
     // MARK: - Server became available
@@ -37,7 +90,7 @@ final class AuthManager: ObservableObject {
         // binary has a different designated requirement from the build that stored
         // it — so that read raises the ACL prompt in the middle of `make sign`.
         // WaitingView touches nothing.
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        if environment["XCTestConfigurationFilePath"] != nil {
             state = .waitingForServer
             return
         }
@@ -51,14 +104,23 @@ final class AuthManager: ObservableObject {
         }
 
         // 2. Try auto-login from Keychain (skip if user explicitly logged out)
-        let wasLoggedOut = UserDefaults.standard.bool(forKey: Self.loggedOutKey)
-        if !wasLoggedOut, let creds = KeychainManager.load() {
+        let wasLoggedOut = defaults.bool(forKey: Self.loggedOutKey)
+        if !wasLoggedOut, let creds = credentials.load() {
             do {
                 try await performLogin(email: creds.email, password: creds.password)
                 return // state is now .authenticated
+            } catch let error as LoginError where error.credentialsRejected {
+                // The server said these credentials are wrong (the password
+                // was changed, the user removed): they are stale, so forget them.
+                credentials.delete()
             } catch {
-                // Saved credentials are stale — clear and show login
-                KeychainManager.delete()
+                // Anything else says nothing about the credentials: the API
+                // restarting mid-login, a 5xx, a body we could not read, a
+                // disabled account. Deleting here wiped the remembered password
+                // whenever the server blinked (#612). Keep it, say why the
+                // sign-in did not happen, and let the user retry.
+                state = .loginRequired(errorMessage: Self.message(for: error))
+                return
             }
         }
 
@@ -72,15 +134,18 @@ final class AuthManager: ObservableObject {
         do {
             try await performLogin(email: email, password: password)
             if rememberMe {
-                KeychainManager.save(email: email, password: password)
+                credentials.save(email: email, password: password)
             }
             // Clear logged-out flag on successful login
-            UserDefaults.standard.removeObject(forKey: Self.loggedOutKey)
-        } catch let error as LoginError {
-            state = .loginRequired(errorMessage: error.message)
+            defaults.removeObject(forKey: Self.loggedOutKey)
         } catch {
-            state = .loginRequired(errorMessage: "Connection failed. Is the server running?")
+            state = .loginRequired(errorMessage: Self.message(for: error))
         }
+    }
+
+    /// What the login screen says about a failed sign-in.
+    private static func message(for error: Error) -> String {
+        (error as? LoginError)?.message ?? "Connection failed. Is the server running?"
     }
 
     // MARK: - Logout (called when web UI navigates to /login)
@@ -94,7 +159,7 @@ final class AuthManager: ObservableObject {
             }
         }
         // Remember that user explicitly logged out so we don't auto-login on next launch
-        UserDefaults.standard.set(true, forKey: Self.loggedOutKey)
+        defaults.set(true, forKey: Self.loggedOutKey)
         state = .loginRequired(errorMessage: nil)
     }
 
@@ -108,7 +173,7 @@ final class AuthManager: ObservableObject {
 
     private func needsSetup() async -> Bool {
         let url = baseURL.appendingPathComponent("api/system/setup-status")
-        guard let (data, response) = try? await URLSession.shared.data(from: url),
+        guard let (data, response) = try? await transport.setupStatus(url),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let needs = json["needs_setup"] as? Bool
@@ -127,20 +192,17 @@ final class AuthManager: ObservableObject {
         let body = ["email": email, "password": password]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        // Use a session that does NOT handle cookies itself, so the raw
-        // Set-Cookie header is preserved in the response for us to parse.
-        let ephemeral = URLSessionConfiguration.ephemeral
-        ephemeral.httpCookieAcceptPolicy = .never
-        ephemeral.httpShouldSetCookies = false
-        let session = URLSession(configuration: ephemeral)
-
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.login(request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LoginError(message: "Unexpected response")
         }
 
+        // 401 is the API's answer to a wrong email or password
+        // (`POST /api/auth/login`), and the only answer that condemns the
+        // credentials. Its 403 means the account is disabled, which a correct
+        // password still gets.
         if httpResponse.statusCode == 401 {
-            throw LoginError(message: "Invalid email or password")
+            throw LoginError(message: "Invalid email or password", credentialsRejected: true)
         }
         if httpResponse.statusCode == 403 {
             throw LoginError(message: "Account disabled")
@@ -215,4 +277,7 @@ final class AuthManager: ObservableObject {
 
 private struct LoginError: Error {
     let message: String
+    /// The server rejected the email or password themselves, as opposed to
+    /// failing to answer, answering with an error, or answering oddly.
+    var credentialsRejected = false
 }
