@@ -408,6 +408,27 @@ final class AuthManagerTests: XCTestCase {
         await assertALateSetupAnswerIsIgnored(needsSetup: false)
     }
 
+    /// Setup completing in the web view supersedes an auto-login in flight:
+    /// its late failure does not replace the login form's state.
+    func testSetupCompletionSupersedesASignInInFlight() async {
+        let store = FakeCredentialStore(stored: Self.saved)
+        let gate = Gate()
+        let auth = makeManager(store: store) { _ in
+            await gate.wait()
+            throw URLError(.networkConnectionLost)
+        }
+
+        let first = Task { @MainActor in await auth.onServerBecameAvailable() }
+        await bounded("the login to reach the server") {
+            while self.loginCalls < 1 && !Task.isCancelled { await Task.yield() }
+        }
+        auth.handleSetupComplete()
+        await gate.open()
+        await bounded("the late failure") { await first.value }
+
+        XCTAssertEqual(auth.state, .loginRequired(errorMessage: nil), "not the stale attempt's connection error")
+    }
+
     /// The server going away supersedes a sign-in in flight as well.
     func testALoginThatFinishesAfterTheServerWentAwayIsIgnored() async {
         let store = FakeCredentialStore(stored: Self.saved)

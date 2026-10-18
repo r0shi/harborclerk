@@ -719,6 +719,8 @@ final class TestHostGuardTests: XCTestCase {
 
     /// This very process: the runner set the switch, and the launch stopped
     /// at the first guard. Breaking the first guard moves it to the second.
+    /// Only `applicationDidFinishLaunching` writes the outcome, so the other
+    /// tests here calling `launch` cannot make this one pass.
     func testThisTestHostStoppedAtTheLaunchGuard() {
         XCTAssertNotNil(ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"])
         XCTAssertEqual(AppDelegate.launchOutcome, .stoppedAtLaunchGuard)

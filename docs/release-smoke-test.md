@@ -63,7 +63,11 @@ macOS native:
 - Launch **Harbor Clerk Server**.
 - Confirm the menu app starts Postgres, API, workers, Tika, embedder, reranker,
   and local AI services without manual terminal commands.
-- Open the Harbor Clerk app window.
+- Open the Harbor Clerk app window from Finder or the Dock (not from a script
+  that sets `XCTestConfigurationFilePath`). Confirm it shows the waiting view,
+  then the login form or the web UI once the server answers: that is the only
+  release check that runs the client's real window. The signing launch probe
+  shows an inert placeholder instead.
 - With an empty corpus, confirm onboarding routes to **Folders**, not Search.
 - Confirm model setup can be skipped and Search/Documents/Folders remain usable.
 - If no local AI model is configured, open Ask/Research and confirm the setup
@@ -79,6 +83,8 @@ Docker:
 Release blockers:
 
 - App cannot launch without manual service surgery.
+- The Harbor Clerk window crashes, or never leaves the waiting view while the
+  server is up.
 - Empty-state onboarding strands the user away from folder setup.
 - Skipping local AI breaks non-AI surfaces.
 

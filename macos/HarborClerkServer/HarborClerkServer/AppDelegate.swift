@@ -13,8 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var restartTask: Task<Void, Never>?
     private var isQuitting = false
 
-    /// How far this process's launch got. Read by the test that the test host
-    /// started nothing; nothing in the app uses it.
+    /// How far this process's own launch got. Written once, by
+    /// `applicationDidFinishLaunching` and nothing else, so the test that the
+    /// test host started nothing reads the real launch, whatever other tests
+    /// have called. Nothing in the app uses it.
     enum LaunchOutcome: Equatable {
         case notLaunched, stoppedAtLaunchGuard, stoppedAtBootGuard, booted
     }
@@ -22,9 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let environment = ProcessInfo.processInfo.environment
+        var outcome = LaunchOutcome.stoppedAtLaunchGuard
         Self.launch(environment: environment) {
-            Self.launchOutcome = self.bootLiveStack(environment: environment) ? .booted : .stoppedAtBootGuard
+            outcome = self.bootLiveStack(environment: environment) ? .booted : .stoppedAtBootGuard
         }
+        Self.launchOutcome = outcome
     }
 
     /// Everything booting the live stack does that reaches outside this
@@ -63,7 +67,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             // symptom is a menubar app that starts no services and shows no
             // status item, and this line is the only thing that would explain it.
             Log.logger("lifecycle").notice("XCTest host launch — skipping service startup")
-            launchOutcome = .stoppedAtLaunchGuard
             return
         }
         boot()
