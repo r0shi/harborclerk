@@ -303,8 +303,10 @@ def run_chunk(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             session.commit()
             raise DocumentTooLargeError(
                 f"Document too large to index: it splits into {len(chunk_ranges):,} chunks, over the "
-                f"per-document limit of {ceiling:,} (setting MAX_CHUNKS_PER_DOCUMENT). Raise the limit and "
-                f"reprocess to index it, or leave files like this (dataset or database dumps) out of the library."
+                f"per-document limit of {ceiling:,} (the max_chunks_per_document setting: MAX_CHUNKS_PER_DOCUMENT "
+                f"in the environment or .env, max_chunks_per_document in the Mac app's config.json). Raise the "
+                f"limit and reprocess to index it, or leave files like this (dataset or database dumps) out of the "
+                f"library."
             )
 
         for i, (char_start, char_end) in enumerate(chunk_ranges):

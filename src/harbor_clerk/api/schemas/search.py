@@ -11,9 +11,11 @@ from harbor_clerk.api.schemas.source_ref import SourceRefOut
 
 # Whether a search's vector leg ran: "unavailable" means the embedder (or the
 # vector query) failed and the results are keyword matches only; "partial" that
-# it ran but under 90% of the corpus's chunks have a vector, so some documents
-# are findable by keyword only (semantic_coverage gives the corpus share, null
-# when the vector leg failed or the corpus is empty).
+# it ran but under 90% of the chunks of the documents this search covers have a
+# vector, so some documents are findable by keyword only. semantic_coverage is
+# that share: of the corpus without a document filter, of the filtered
+# documents with a filter of at most 50; null when the vector leg failed, the
+# filter is larger, or there is nothing to measure.
 SemanticStatus = Literal["ok", "partial", "unavailable"]
 
 

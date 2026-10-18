@@ -481,6 +481,7 @@ async def test_rest_and_mcp_report_partial_coverage(
     assert (rest["semantic_status"], rest["semantic_coverage"]) == ("partial", 0.7)
     assert (mcp["semantic_status"], mcp["semantic_coverage"]) == ("partial", 0.7)
     assert "aren't searchable by meaning yet" in mcp["semantic_notice"]
+    assert "the documents this search covers" in mcp["semantic_notice"]
 
 
 async def test_find_all_carries_the_flag(db_session, corpus, monkeypatch):
@@ -719,6 +720,8 @@ def test_cli_text_output_says_partial(command, payload):
     render(payload, mode=OutputMode.TEXT, command=command, stream=out)
 
     assert "semantic_status=partial - some documents aren't searchable by meaning yet (40% of" in out.getvalue()
+    # True with or without a document filter: never "the corpus" or "the library".
+    assert "the documents this search covers" in out.getvalue()
 
 
 async def test_research_records_partial_coverage_with_its_own_note(monkeypatch):

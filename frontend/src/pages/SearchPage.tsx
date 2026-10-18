@@ -70,8 +70,9 @@ interface SearchResponse {
 // Whether the server's semantic (vector) leg ran: "unavailable" means it failed
 // (the query could not be embedded, or the vector query errored) and the
 // results are keyword matches only;
-// "partial" that under 90% of the library is embedded, so some documents are
-// findable by keyword only (semantic_coverage is the library-wide share).
+// "partial" that under 90% of the documents this search covers is embedded, so
+// some are findable by keyword only. semantic_coverage is that share: of the
+// whole library without a document filter, of the filtered documents with one.
 type SemanticStatus = 'ok' | 'partial' | 'unavailable'
 
 interface FindAllTopChunk {
@@ -116,7 +117,7 @@ function SemanticNotice({ status, coverage }: { status?: SemanticStatus; coverag
         'Passages that use different wording are missed, so a missing result does not mean the documents lack it.'
       : "Some documents aren't searchable by meaning yet: " +
         `${coverage != null ? `${Math.round(coverage * 100)}% of` : 'only part of'} ` +
-        'the library is embedded, so the rest can only be found by keyword.'
+        'the passages in the documents this search covers are embedded, so the rest can only be found by keyword.'
   return (
     <div
       role="status"

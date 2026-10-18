@@ -131,7 +131,11 @@ describe('SearchPage', () => {
     fireEvent.change(input, { target: { value: 'force majeure' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
 
-    expect(await screen.findByText(/Some documents aren't searchable by meaning yet: 42% of/)).toBeInTheDocument()
+    expect(
+      await screen.findByText(
+        /Some documents aren't searchable by meaning yet: 42% of the passages in the documents this search covers/,
+      ),
+    ).toBeInTheDocument()
   })
 
   it('shows no semantic notice for a healthy result', async () => {

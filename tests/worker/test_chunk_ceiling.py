@@ -86,6 +86,7 @@ async def test_a_document_over_the_ceiling_fails_with_a_clear_reason(db_session,
     assert "Document too large to index" in doc_error, doc_error
     assert "over the per-document limit of 5" in doc_error
     assert "MAX_CHUNKS_PER_DOCUMENT" in doc_error
+    assert "max_chunks_per_document in the Mac app's config.json" in doc_error, "the Mac app's knob must be named too"
     assert job_error == doc_error
     assert chunks == 0, "no chunks may reach the embedder, and the previous version's must go"
 

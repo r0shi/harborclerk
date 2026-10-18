@@ -36,6 +36,19 @@ from harbor_clerk.error_text import HEALTH_DETAIL_LIMIT
 # between them, a wedged encode slot does not.
 EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS = 120.0
 
+# How stale the evidence may get before /system/health starts a background
+# probe (api/routes/system.py reads it from here).
+EMBEDDER_PROBE_TTL_SECONDS = 30.0
+
+# Busy events further apart than this are not one streak. Twice the probe TTL:
+# while the embedder is being watched, consecutive probes land within it.
+BUSY_STREAK_MAX_GAP_SECONDS = 2 * EMBEDDER_PROBE_TTL_SECONDS
+
+# Past this age a verdict is not reported at all: health says "checking" (with
+# the age) until a fresh probe lands. An hour-old "ok" for a dead embedder is
+# worse than no answer.
+EMBEDDER_MAX_EVIDENCE_AGE_SECONDS = 2 * EMBEDDER_PROBE_TTL_SECONDS
+
 BUSY_NOTE = "busy: the embedder did not answer in time (it is serving other work)"
 
 
@@ -69,7 +82,15 @@ def record_failure(detail: str) -> None:
 
 def record_busy() -> None:
     now = _now()
-    if _evidence.kind != "busy" or _evidence.busy_since is None:
+    # A streak is consecutive busy evidence. A gap longer than
+    # BUSY_STREAK_MAX_GAP_SECONDS since the previous event starts a new one:
+    # two isolated timeouts an hour apart are not an hour of "not answering".
+    gap = now - _evidence.at if _evidence.at is not None else None
+    if (
+        _evidence.kind != "busy"
+        or _evidence.busy_since is None
+        or (gap is not None and gap > BUSY_STREAK_MAX_GAP_SECONDS)
+    ):
         _evidence.busy_since = now
     _evidence.kind, _evidence.at, _evidence.detail = "busy", now, ""
 

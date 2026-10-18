@@ -9,13 +9,15 @@ from datetime import datetime
 
 SEMANTIC_OK = "ok"
 SEMANTIC_UNAVAILABLE = "unavailable"
-# The query embedded, but a share of the corpus has no vectors (an embed still
-# pending, deferred or failed), so some documents are invisible to the
-# semantic leg and findable by keyword only (embedding_coverage.py).
+# The query embedded, but a share of the documents this search covers has no
+# vectors (an embed still pending, deferred or failed), so some of them are
+# invisible to the semantic leg and findable by keyword only. "Covers" is the
+# whole corpus without a document filter, or the filtered documents with one
+# (embedding_coverage.search_scope_coverage).
 SEMANTIC_PARTIAL = "partial"
-# Below this share of the active corpus's chunks with a vector, a result is
-# "partial". A tenth of the corpus unsearchable by meaning is enough to miss
-# whole documents; a fully embedded corpus reads 1.0.
+# Below this share of the covered documents' chunks with a vector, a result is
+# "partial". A tenth unsearchable by meaning is enough to miss whole
+# documents; fully embedded reads 1.0.
 SEMANTIC_PARTIAL_COVERAGE = 0.9
 
 # Said alongside a degraded result on the surfaces a model reads (MCP, chat,
@@ -30,8 +32,8 @@ SEMANTIC_UNAVAILABLE_NOTICE = (
     "Passages that use different wording are missed: absence here is not evidence the corpus lacks the topic."
 )
 SEMANTIC_PARTIAL_NOTICE = (
-    "Some documents aren't searchable by meaning yet: part of the corpus is not embedded, so those documents "
-    "can only be found by keyword. Passages that use different wording may be missed."
+    "Some documents aren't searchable by meaning yet: part of the documents this search covers is not embedded, "
+    "so those can only be found by keyword. Passages that use different wording may be missed."
 )
 
 
@@ -65,11 +67,13 @@ class SearchResult:
     reranker_status: str = "disabled"
     # "ok"; "unavailable" when the vector leg failed (the query could not be
     # embedded, or the vector query errored) and the hits are keyword-only;
-    # "partial" when it ran but under SEMANTIC_PARTIAL_COVERAGE of the corpus
-    # is embedded.
+    # "partial" when it ran but under SEMANTIC_PARTIAL_COVERAGE of the
+    # documents this search covers is embedded.
     semantic_status: str = SEMANTIC_OK
-    # Share of the active corpus's chunks with a vector (cached, see
-    # embedding_coverage.py); None when the vector leg failed or the corpus is empty.
+    # Share of the covered documents' chunks with a vector: the corpus without
+    # a document filter, the filtered documents with one of at most 50
+    # (embedding_coverage.search_scope_coverage); None when the vector leg
+    # failed, the filter is larger, or there is nothing to measure.
     semantic_coverage: float | None = None
 
 

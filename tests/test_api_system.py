@@ -264,15 +264,87 @@ async def test_busy_for_longer_than_the_threshold_is_degraded(client, monkeypatc
     first = await _settled_health(client)
     assert first["checks"]["embedder"] == "ok" and first["notes"]["embedder"].startswith("busy")
 
-    clock[0] += query_embed_health.EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS + 1
-    still = (await client.get("/api/system/health")).json()  # stale: starts the next probe
-    assert still["checks"]["embedder"] == "ok", "one stale busy probe is not yet a streak"
-    await _await_probe()
+    # Consecutive probes, each due (past the TTL) and inside the streak gap.
+    step = query_embed_health.EMBEDDER_PROBE_TTL_SECONDS + 15
+    assert step < query_embed_health.BUSY_STREAK_MAX_GAP_SECONDS
+    elapsed = 0.0
+    while elapsed < query_embed_health.EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS:
+        clock[0] += step
+        elapsed += step
+        await client.get("/api/system/health")  # stale: starts the next probe
+        await _await_probe()
     data = (await client.get("/api/system/health")).json()
 
     assert data["checks"]["embedder"].startswith("error: embedder not answering"), data["checks"]["embedder"]
     assert data["notes"]["embedder"].startswith("not answering")
     assert data["status"] == "degraded"
+
+
+def test_isolated_busy_events_are_not_a_streak(monkeypatch):
+    """Two timeouts an hour apart, with nothing between, read "not answering
+    (timed out for 3600s)" when the streak never restarted."""
+    from harbor_clerk import query_embed_health
+
+    clock = [1000.0]
+    monkeypatch.setattr(query_embed_health, "_now", lambda: clock[0])
+
+    query_embed_health.record_busy()
+    clock[0] += 3600
+    query_embed_health.record_busy()
+
+    assert query_embed_health.verdict() == ("ok", query_embed_health.BUSY_NOTE)
+
+
+def test_busy_events_inside_the_gap_build_a_streak(monkeypatch):
+    from harbor_clerk import query_embed_health
+
+    clock = [1000.0]
+    monkeypatch.setattr(query_embed_health, "_now", lambda: clock[0])
+    gap = query_embed_health.BUSY_STREAK_MAX_GAP_SECONDS
+
+    query_embed_health.record_busy()
+    while clock[0] - 1000.0 < query_embed_health.EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS:
+        clock[0] += gap - 1
+        query_embed_health.record_busy()
+
+    status, _ = query_embed_health.verdict()
+    assert status.startswith("error: embedder not answering"), status
+
+
+async def test_an_old_verdict_is_not_served_as_current(client, monkeypatch):
+    """/health served an hour-old "ok" for a dead embedder on the first call. Past
+    the maximum evidence age it says "checking", with the age, and probes."""
+    from harbor_clerk import query_embed_health
+
+    clock = [1000.0]
+    monkeypatch.setattr(query_embed_health, "_now", lambda: clock[0])
+    query_embed_health.record_success()
+    calls = _stub_embedder(monkeypatch, embed_status=500)
+
+    clock[0] += query_embed_health.EMBEDDER_MAX_EVIDENCE_AGE_SECONDS + 1
+    data = (await client.get("/api/system/health")).json()
+
+    assert data["checks"]["embedder"] == "checking", data["checks"]["embedder"]
+    assert "61s old" in data["notes"]["embedder"], data["notes"]
+    await _await_probe()
+    assert calls, "no fresh probe was started"
+    settled = (await client.get("/api/system/health")).json()
+    assert settled["checks"]["embedder"] == "error: /embed returned HTTP 500"
+
+
+async def test_a_verdict_within_the_maximum_age_is_still_served(client, monkeypatch):
+    from harbor_clerk import query_embed_health
+
+    clock = [1000.0]
+    monkeypatch.setattr(query_embed_health, "_now", lambda: clock[0])
+    query_embed_health.record_success()
+    _stub_embedder(monkeypatch)
+
+    clock[0] += query_embed_health.EMBEDDER_MAX_EVIDENCE_AGE_SECONDS - 1
+    data = (await client.get("/api/system/health")).json()
+    await _await_probe()
+
+    assert data["checks"]["embedder"] == "ok"
 
 
 @pytest.mark.parametrize("timeout_exc", ["PoolTimeout", "ConnectTimeout"])
@@ -833,6 +905,35 @@ async def test_status_summary_surfaces_embeds_waiting_on_the_embedder(client, ad
     assert retry_at.isoformat() not in issue["detail"], "a raw ISO timestamp is not for humans"
     assert "The next retry is in about 5 minutes (" in issue["detail"], issue["detail"]
     assert retry_at.strftime("%H:%M UTC") in issue["detail"]
+
+
+async def test_an_embed_being_retried_still_counts_as_waiting_on_the_embedder(
+    client, admin_user, admin_token, db_session
+):
+    """While a deferred embed is being retried its row is running, still carrying its
+    retry state; counting only queued rows made the item flicker away each retry."""
+    from harbor_clerk.worker.pipeline import EMBED_RETRY_REASON
+
+    past = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    doc = Document(title="Retrying", status="active", sha256=b"r" * 32, pipeline_status=PipelineStatus.embedding)
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(
+        IngestionJob(
+            doc_id=doc.doc_id,
+            stage=JobStage.embed,
+            status=JobStatus.running,
+            heartbeat_at=datetime.now(UTC),
+            metrics={"reason": EMBED_RETRY_REASON, "retry_attempts": 2, "retry_after": past},
+        )
+    )
+    await db_session.flush()
+
+    data = (await client.get("/api/system/status-summary", headers=auth_header(admin_token))).json()
+
+    assert data["counts"]["blocked_embed_jobs"] == 1
+    issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "embedding_blocked")
+    assert "next retry" not in issue["detail"].lower(), "a running retry has no next retry time to show"
 
 
 def test_retry_times_read_as_durations():

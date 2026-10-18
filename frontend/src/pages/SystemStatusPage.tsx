@@ -155,6 +155,11 @@ function statePill(state: StatusSummary['state'] | undefined, attentionItems: St
   return 'active'
 }
 
+// Re-poll schedule while the embedder reads "checking": every 5 s, at most 6
+// times (30 s), which covers a probe's worst case (5 s /health + 10 s /embed).
+const HEALTH_CHECKING_POLL_MS = 5000
+const HEALTH_CHECKING_MAX_POLLS = 6
+
 // "checking": the embedder's first background probe has not landed yet. Not a
 // failure, so it never raises a service issue.
 function serviceIsOk(status?: string): boolean {
@@ -247,6 +252,21 @@ export default function SystemStatusPage() {
       cancelled = true
     }
   }, [])
+
+  // While the embedder reads "checking" (a background probe is running), poll
+  // health a few more times so the card settles without a manual refresh.
+  const embedderChecking = health?.checks.embedder === 'checking'
+  const [checkingPolls, setCheckingPolls] = useState(0)
+  useEffect(() => {
+    if (!embedderChecking || checkingPolls >= HEALTH_CHECKING_MAX_POLLS) return
+    const timer = setTimeout(() => {
+      get<HealthCheck>('/api/system/health')
+        .then((data) => setHealth(data))
+        .catch(() => undefined)
+        .finally(() => setCheckingPolls((n) => n + 1))
+    }, HEALTH_CHECKING_POLL_MS)
+    return () => clearTimeout(timer)
+  }, [embedderChecking, checkingPolls])
 
   function handleRefresh() {
     setError('')

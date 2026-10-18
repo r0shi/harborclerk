@@ -545,6 +545,48 @@ async def test_sigterm_abandons_and_requeues_the_running_job_after_the_grace(db_
     assert job.metrics["retry_attempts"] == 2, "an interruption is not progress"
 
 
+def test_a_stage_timeout_due_within_the_grace_is_left_to_fire(monkeypatch):
+    """When the stage's own timeout comes sooner than the grace, SIGTERM leaves it
+    alone: re-arming to the grace would extend the stage past its own deadline."""
+    import signal
+
+    from harbor_clerk.worker import entry as entry_mod
+
+    monkeypatch.setattr(entry_mod, "SHUTDOWN_GRACE_SECONDS", 8)
+    monkeypatch.setattr(entry_mod, "_shutdown_deadline_armed", False)
+    previous = signal.signal(signal.SIGALRM, lambda *_: None)  # nothing may fire into the test
+    try:
+        signal.alarm(3)  # the stage timeout, 3 s away
+        entry_mod._arm_shutdown_deadline()
+        remaining = signal.alarm(0)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+    assert entry_mod._shutdown_deadline_armed is False, "the deadline replaced a sooner stage timeout"
+    assert 1 <= remaining <= 3, f"the stage timeout was moved to {remaining}s"
+
+
+def test_a_stage_timeout_due_after_the_grace_is_replaced_by_it(monkeypatch):
+    import signal
+
+    from harbor_clerk.worker import entry as entry_mod
+
+    monkeypatch.setattr(entry_mod, "SHUTDOWN_GRACE_SECONDS", 8)
+    monkeypatch.setattr(entry_mod, "_shutdown_deadline_armed", False)
+    previous = signal.signal(signal.SIGALRM, lambda *_: None)
+    try:
+        signal.alarm(3600)
+        entry_mod._arm_shutdown_deadline()
+        remaining = signal.alarm(0)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+    assert entry_mod._shutdown_deadline_armed is True
+    assert 7 <= remaining <= 8, f"expected the 8 s grace, got {remaining}s"
+
+
 # --------------------------------------------------------------------------
 # The alarm cannot fire into the recording of a stage's outcome
 # --------------------------------------------------------------------------

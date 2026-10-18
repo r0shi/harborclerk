@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { get, post } from '../api'
 import { listMailAccounts } from '../api/mail'
 import { useLLMStatusContext } from '../components/LLMStatusBanner'
@@ -211,6 +211,72 @@ describe('SystemStatusPage', () => {
     expect(screen.getByText('Chunks embedded')).toBeInTheDocument()
     expect(screen.getByText('Chunks without vectors')).toBeInTheDocument()
     expect(screen.queryByText('Search services need attention')).not.toBeInTheDocument()
+  })
+
+  describe('while the embedder is checking', () => {
+    const CHECKING = {
+      ...HEALTHY,
+      checks: { ...HEALTHY.checks, embedder: 'checking' },
+      notes: { embedder: 'checking: the first embedder probe is still running' },
+    }
+
+    function countHealthCalls(healthFor: (call: number) => object) {
+      mockRequests({ ...SUMMARY, needs_attention: [] })
+      const calls = { health: 0 }
+      getMock.mockImplementation((url) => {
+        if (url === '/api/system/health') {
+          calls.health += 1
+          return Promise.resolve(healthFor(calls.health))
+        }
+        if (url === '/api/system/status-summary') return Promise.resolve({ ...SUMMARY, needs_attention: [] })
+        if (url === '/api/system/stats') return Promise.resolve(STATS)
+        return Promise.reject(new Error(`Unexpected URL: ${url}`))
+      })
+      return calls
+    }
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    // One poll interval, with React allowed to re-render and schedule the next.
+    async function nextPoll() {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+    }
+
+    it('re-polls health until the embedder settles, then stops', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const calls = countHealthCalls((n) => (n < 3 ? CHECKING : HEALTHY))
+
+      renderStatusPage()
+
+      expect(await screen.findByText('Checking')).toBeInTheDocument()
+      await nextPoll()
+      await waitFor(() => expect(calls.health).toBe(2))
+      await nextPoll()
+      await waitFor(() => expect(calls.health).toBe(3))
+      await waitFor(() => expect(screen.queryByText('Checking')).not.toBeInTheDocument())
+
+      for (let i = 0; i < 6; i += 1) await nextPoll()
+      expect(calls.health).toBe(3)
+    })
+
+    it('stops re-polling after six tries', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const calls = countHealthCalls(() => CHECKING)
+
+      renderStatusPage()
+
+      expect(await screen.findByText('Checking')).toBeInTheDocument()
+      for (let poll = 1; poll <= 6; poll += 1) {
+        await nextPoll()
+        await waitFor(() => expect(calls.health).toBe(1 + poll))
+      }
+      for (let i = 0; i < 4; i += 1) await nextPoll()
+      expect(calls.health).toBe(1 + 6)
+    })
   })
 
   it('treats a still-checking embedder as not failed', async () => {

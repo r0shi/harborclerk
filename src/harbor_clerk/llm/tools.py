@@ -919,7 +919,7 @@ def _semantic_statuses(data: dict) -> set[str]:
 
 
 def _semantic_suffix(data: dict) -> str:
-    """What the chip adds when the search was keyword-only (worst first) or the corpus partly embedded."""
+    """What the chip adds when the search was keyword-only (worst first) or what it covers is partly embedded."""
     statuses = _semantic_statuses(data)
     if "unavailable" in statuses:
         return _KEYWORD_ONLY_SUFFIX

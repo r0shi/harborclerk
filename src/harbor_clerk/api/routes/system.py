@@ -166,8 +166,10 @@ async def ping() -> dict[str, str]:
 # probe. /system/health is unauthenticated and polled (the Mac app every 2 s),
 # and it never waits on the embedder: it reports the last known verdict
 # (query_embed_health) and, past this age, starts one single-flight probe
-# that callers do not await.
-EMBEDDER_PROBE_TTL_SECONDS = 30.0
+# that callers do not await. Defined beside the evidence it governs, with the
+# maximum age a verdict may be reported at.
+EMBEDDER_PROBE_TTL_SECONDS = embedder_evidence.EMBEDDER_PROBE_TTL_SECONDS
+EMBEDDER_MAX_EVIDENCE_AGE_SECONDS = embedder_evidence.EMBEDDER_MAX_EVIDENCE_AGE_SECONDS
 # The probe's /embed deadline. The embedder runs one encode at a time, so
 # during a heavy ingest the probe queues behind 64-text batches (~3.5 s each on
 # an M4): a timeout here is busy evidence, not failure.
@@ -203,7 +205,9 @@ async def _embedder_check(embedder_url: str) -> tuple[str, str | None]:
     500, so the app looked healthy while search ran keyword-only for hours. The
     verdict comes from the latest evidence (query_embed_health): search's own
     query embeds and the background probe. Stale or missing evidence starts a
-    probe and returns at once: the last verdict, or "checking" before the first.
+    probe and returns at once: the last verdict while it is no older than
+    EMBEDDER_MAX_EVIDENCE_AGE_SECONDS, otherwise "checking" (with the age), as
+    before the first verdict. An hour-old "ok" said nothing about a dead embedder.
     """
     evidence_age = embedder_evidence.age()
     if evidence_age is None or evidence_age >= EMBEDDER_PROBE_TTL_SECONDS:
@@ -211,6 +215,8 @@ async def _embedder_check(embedder_url: str) -> tuple[str, str | None]:
     known = embedder_evidence.verdict()
     if known is None:
         return "checking", EMBEDDER_CHECKING_NOTE
+    if evidence_age is not None and evidence_age >= EMBEDDER_MAX_EVIDENCE_AGE_SECONDS:
+        return "checking", f"checking: the last embedder evidence is {evidence_age:.0f}s old; a fresh probe is running"
     return known
 
 
@@ -582,13 +588,18 @@ async def status_summary(
         await session.execute(
             select(
                 func.count(func.distinct(IngestionJob.doc_id)),
-                func.min(IngestionJob.metrics["retry_after"].astext),
+                # The next retry among those still waiting: a running row's
+                # retry_after is the past one that let it be claimed.
+                func.min(IngestionJob.metrics["retry_after"].astext).filter(IngestionJob.status == JobStatus.queued),
             )
             .join(Document, Document.doc_id == IngestionJob.doc_id)
             .where(
                 Document.status == "active",
                 IngestionJob.stage == JobStage.embed,
-                IngestionJob.status == JobStatus.queued,
+                # Running too: a deferred embed being retried still carries its
+                # retry state, and counting only queued rows made the item
+                # vanish and reappear with every retry.
+                IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
                 IngestionJob.pipeline_seq == Document.pipeline_seq,
                 IngestionJob.metrics["reason"].astext == EMBED_RETRY_REASON,
             )
