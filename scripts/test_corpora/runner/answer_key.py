@@ -284,17 +284,11 @@ _DESCRIBES = re.compile(
     r"\s+(?:from|by|under|in|for|on|of|toward|towards|du|de|par)\s+(?!(?:the |my |this |la |le |les )?"
     r"(?:list|count|answer|results?|matches|table|tally|total|consideration|scope|review|liste|decompte)\b)"
 )
-# A leading clause that opens with a negation and holds a reject word does not reject: "No contracts were excluded",
-# "None of these were excluded", "Nothing excluded", "No false positives", "Not a near-miss".
-_NEGATION = re.compile(r"(?:no|not|none|nothing|never|neither|aucune?|rien|jamais)\b")
-_REJECT_WORD = re.compile(
-    r"\b(?:excluded|exclusions?|rejected|ruled out|near[- ]?miss(?:es)?|false positives?|non[- ]?match(?:es)?"
-    r"|exclue?s?|ecartee?s?|rejetee?s?|faux positifs?)\b"
-)
 # A leading clause that ends with a reject phrase rejects only when every word before the phrase is one of these:
 # words for the items themselves, framing, and grammar ("Context on what was excluded", "Reviewed and excluded",
 # "Notable Contracts That Were Close But Do NOT Qualify"). Any other word means the phrase describes something else:
-# "Punitive damages excluded", "Employee solicitation not included", "Sale once the first offer is rejected".
+# "Punitive damages excluded", "Employee solicitation not included", "Sale once the first offer is rejected". A
+# negation is never one of them, so "No contracts were excluded" and "Nothing has been excluded" do not reject.
 _FRAME = frozenset((
     "candidates", "candidate", "contracts", "contract", "agreements", "agreement", "documents", "document", "items",
     "item", "matches", "match", "hits", "hit", "others", "other", "rest", "ones", "one", "near-misses", "near-miss",
@@ -306,7 +300,7 @@ _FRAME = frozenset((
     "contrats", "contrat", "documents", "factures", "autres", "candidats", "examines", "verifies", "et", "ou", "les",
     "des", "ceux", "qui", "ont", "ete", "sont", "le", "la", "l'", "un", "une",
 ))  # fmt: skip
-_CLAUSE_END = re.compile(r"[(,;:—–]| - ")
+_CLAUSE_END = re.compile(r"[(,;:—–]")
 
 
 def _label_view(label: str) -> str:
@@ -360,17 +354,14 @@ def rejecting_label(label: str, question: str | None = None) -> bool:
     with a reject phrase, or with a denial of the question's category (`_OPENS`), or its leading clause, the words
     before the first parenthesis, comma, colon, semicolon or dash, ends with a reject phrase (`_CLOSES`: "Reviewed and
     excluded", "Context on what was excluded"). A reject phrase anywhere else does nothing ("Insurance required (limits
-    not listed)"), and neither does a leading clause that opens with a negation ("No contracts were excluded") or, for
-    the closing phrase, holds any word but those for the items and framing (`_FRAME`: "Punitive damages excluded",
-    "once the offer is rejected")."""
+    not listed)"), and neither does a closing phrase after any word but those for the items and framing (`_FRAME`:
+    "Punitive damages excluded", "once the offer is rejected", "No contracts were excluded")."""
     low = _label_view(label)
     clause = re.sub(r"[^a-z0-9']+$", "", _CLAUSE_END.split(low, maxsplit=1)[0])
-    if _NEGATION.match(clause) and _REJECT_WORD.search(clause):
-        return False
     if opened := _OPENS.match(low):
         if not re.fullmatch(_REJECT_PHRASE, opened.group()):  # a denial: the match stops where the denied phrase starts
             rest = low[opened.end() :]
-            denied = re.split(r"[(;:—–]| - ", rest, maxsplit=1)[0]  # a list of alternatives may hold commas
+            denied = re.split(r"[(;:—–]", rest, maxsplit=1)[0]  # a list of alternatives may hold commas
             degree = re.match(_QUALIFIER, rest)  # "Not a classic covenant", unless "irrevocable" is what is asked
             if degree and degree.group().rstrip() not in _content_words(question or ""):
                 return False

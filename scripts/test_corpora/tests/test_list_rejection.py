@@ -170,7 +170,7 @@ def test_a_label_that_opens_with_or_whose_leading_clause_ends_with_a_reject_phra
         "Insurance with deductibles excluded",
         "Delaware law with conflict rules excluded",
         "Clauses with consequential damages excluded",  # pinned as a cost in the version before
-        "Delaware law - conflict rules excluded",  # a spaced hyphen ends the leading clause
+        "Delaware law - conflict rules excluded",  # "delaware", "law", "conflict" are not framing words
         "Delaware law — excluded",  # the reject phrase is after the leading clause
         "Rejected offers go to third parties",  # review 3
         "Rejected-offer matching rights",  # review 3
@@ -279,6 +279,7 @@ def test_a_closing_phrase_rejects_only_after_words_that_name_or_frame_the_items(
         ("Not an exclusive license, but perpetual", Q16, False),  # review 3
         ("Not a party but bound", Q15, False),  # review 2
         ("Not a classic non-disparagement covenant", Q16, False),  # a degree or a form
+        ("Not a non-disparagement clause (but still a covenant not to disparage)", Q16, False),  # it goes on
         ("Not a typical ROFR", Q18, False),
         ("Not a non-disparagement clause", None, False),  # no question, no denial
     ],
@@ -653,6 +654,7 @@ def test_the_rerun_cuad_key_16_reads_the_same_with_its_table_written_as_bullets(
         (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\n\n- Papa (`{PID}`)\n", {PAPA}),
         (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\n## Matches\n- Papa (`{PID}`)\n", {PAPA}),
         (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nMatches:\n- Papa (`{PID}`)\n", {PAPA}),
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\n- **Matches:**\n  - Papa (`{PID}`)\n", {PAPA}),
         (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nAnd one more that qualifies:\n- Papa (`{PID}`)\n", {PAPA}),
         (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nPapa (`{PID}`) qualifies.\n", {PAPA}),
         (f"Two.\n\n- **Excluded near-misses:**\n  - eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {PAPA}),
@@ -663,6 +665,8 @@ def test_the_rerun_cuad_key_16_reads_the_same_with_its_table_written_as_bullets(
         (f"Three.\n\nMatches:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n- Staar (`{SID}`)\n", {STAAR, EDIETS, PAPA}),
         (f"Three.\n\nExcluded from the cap:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
         (f"Three.\n\nExcluded: none.\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
+        # "no" is not an escape word: the label still takes its line.
+        (f"One.\n- Staar (`{SID}`)\n- Excluded: no. eDiets (`{EID}`) has only a warranty.\n", {STAAR}),
         # review 4: a descriptive closing phrase on a line label takes nothing.
         (
             f"Two.\n\n- Staar (`{SID}`): $5M CGL\n- Punitive damages excluded: Papa John's (`{PID}`) must carry $2M CGL\n",
