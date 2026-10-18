@@ -688,11 +688,18 @@ def test_review_4_shapes(text, expected):
         (f"Excluded contracts aside, the matches are: `{SID}`, `{PID}`\n", {STAAR, PAPA}),
         (f"Excluded: `{EID}`. Matches: `{SID}`.\n", {STAAR}),
         (f"Excluded: `{EID}` Matches: `{SID}`\n", {STAAR}),
+        (f"Excluded: `{EID}`. `{SID}` qualifies.\n", {STAAR}),
+        (f"- **Not counted — Staar (`{SID}`)**: Papa John's (`{PID}`) qualifies.\n", {STAAR, PAPA}),
+        # A label of more than twelve words is a sentence (this one is fourteen, under eighty characters).
+        (f"Excluded as all of them were for other firms and not Acme at all: `{EID}`\n", {EDIETS}),
+        (f"Excluded as all of them were for other firms: `{EID}`\n", set()),
         (f"- **Excluded:** `{EID}`; `{SID}` qualifies.\n", {STAAR}),
         (f"- **Excluded:** `{EID}`, `{PID}` (warranties only).\n", set()),
         (f"Excluded - see below: `{EID}`\n", {EDIETS}),
         # A setext heading ("Excluded" over a row of dashes) is not read as a heading: an accepted false keep.
         (f"Found.\n\nMatches\n-------\n\n- `{SID}`\n\nExcluded\n--------\n\n- `{EID}`\n", {STAAR, EDIETS}),
+        # A label-only line must be a single clause too.
+        (f"Two.\n\n- `{SID}`\n\nExcluded contracts aside, these remain:\n- `{EID}`\n", {STAAR, EDIETS}),
         # review 5: a nine-word label-only line takes its list (the cap is twelve words).
         (
             f"Two.\n\n- `{SID}`\n\nNotable Contracts That Were Close But Do NOT Qualify:\n- `{EID}`\n- `{PID}`\n",
