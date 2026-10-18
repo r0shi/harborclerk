@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import unicodedata
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +16,15 @@ from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
-from harbor_clerk.watcher.events import EventKind, FileEvent, _should_ignore, handle_event, is_sidecar
+from harbor_clerk.watcher.events import (
+    EventKind,
+    FileEvent,
+    _should_ignore,
+    file_exists_exact,
+    handle_event,
+    is_sidecar,
+)
+from tests.watcher._fs import case_insensitive_only
 
 
 @pytest.fixture
@@ -1424,3 +1434,151 @@ def test_deleted_directory_retires_only_the_files_gone_from_under_it(sync_sessio
     }
     hidden = {d.canonical_filename: d.status for d in sync_session.query(Document).all()}
     assert hidden == {"a.txt": "removed", "c.txt": "active", "top.txt": "active"}
+
+
+# ---------------------------------------------------------------------------
+# Moves and metadata sidecars, retired destinations, exact existence (#860 review)
+# ---------------------------------------------------------------------------
+
+
+def test_rename_away_from_its_sidecar_rereads_and_releases_the_sidecar(sync_session, folder, tmp_path):
+    """`mv INV-001.pdf INV-002.pdf` beside `INV-001.json`: the document's
+    `metadata.sidecar` came from INV-001.json and is stale, so it is extracted
+    again (reading INV-002.json, or none); INV-001.json, owned by nothing now,
+    becomes an ordinary document rather than vanishing from both places."""
+    pdf = tmp_path / "INV-001.pdf"
+    pdf.write_bytes(b"%PDF-1.4 invoice body")
+    sidecar = tmp_path / "INV-001.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    wf, doc = _index(sync_session, folder, pdf, "INV-001.pdf")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+    _mark_extracted_with_sidecar(sync_session, doc)
+    assert sync_session.query(WatchedFile).count() == 1, "the sidecar is not a document while it is owned"
+
+    pdf.rename(tmp_path / "INV-002.pdf")
+    handle_event(sync_session, _moved(folder, tmp_path, "INV-001.pdf", "INV-002.pdf"))
+    sync_session.commit()
+
+    assert (wf.relative_path, doc.status) == ("INV-002.pdf", "active")
+    assert doc.pipeline_seq == 1
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 1
+    json_wf = sync_session.query(WatchedFile).filter_by(relative_path="INV-001.json").one()
+    json_doc = sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one()
+    assert (json_wf.status, json_doc.status) == (WatchedFileStatus.active, "active")
+
+
+def test_rename_onto_the_stem_of_an_indexed_json_reads_it_as_the_sidecar(sync_session, folder, tmp_path):
+    """`mv draft.pdf INV-003.pdf` where INV-003.json was indexed as a document
+    (it had no sibling): it is retired as a document and read as the PDF's
+    sidecar, so it is in exactly one of the two places."""
+    sidecar = tmp_path / "INV-003.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    json_wf, json_doc = _index(sync_session, folder, sidecar, "INV-003.json")
+    draft = tmp_path / "draft.pdf"
+    draft.write_bytes(b"%PDF-1.4 draft body")
+    wf, doc = _index(sync_session, folder, draft, "draft.pdf")
+    _mark_extracted(sync_session, doc.doc_id)
+
+    draft.rename(tmp_path / "INV-003.pdf")
+    handle_event(sync_session, _moved(folder, tmp_path, "draft.pdf", "INV-003.pdf"))
+    sync_session.commit()
+
+    assert (json_wf.status, json_doc.status) == (WatchedFileStatus.removed, "removed")
+    assert (wf.relative_path, doc.status, doc.pipeline_seq) == ("INV-003.pdf", "active", 1)
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 1
+
+
+def test_rename_within_a_stem_change_without_sidecars_does_not_reextract(sync_session, folder, tmp_path):
+    src = tmp_path / "a.pdf"
+    src.write_bytes(b"%PDF-1.4 body")
+    wf, doc = _index(sync_session, folder, src, "a.pdf")
+    _mark_extracted(sync_session, doc.doc_id)
+    src.rename(tmp_path / "b.pdf")
+
+    handle_event(sync_session, _moved(folder, tmp_path, "a.pdf", "b.pdf"))
+    sync_session.commit()
+    assert doc.pipeline_seq == 0
+    assert sync_session.query(WatchedFile).count() == 1
+
+
+def test_rename_onto_a_retired_path_keeps_the_moved_document(sync_session, folder, tmp_path):
+    """Delete report.txt, later `mv draft.txt report.txt`: draft's document,
+    with its citations, follows the file. The retired report row is a leftover
+    and gives way (with its hidden document, as the reaper would drop it)."""
+    report = tmp_path / "report.txt"
+    report.write_text("old report")
+    old_wf, old_doc = _index(sync_session, folder, report, "report.txt")
+    old_doc_id = old_doc.doc_id
+    report.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "report.txt", str(report)))
+    sync_session.commit()
+    draft = tmp_path / "draft.txt"
+    draft.write_text("draft body")
+    wf, doc = _index(sync_session, folder, draft, "draft.txt")
+
+    draft.rename(report)
+    handle_event(sync_session, _moved(folder, tmp_path, "draft.txt", "report.txt"))
+    sync_session.commit()
+
+    rows = sync_session.query(WatchedFile).all()
+    assert [(r.relative_path, r.status, r.doc_id) for r in rows] == [
+        ("report.txt", WatchedFileStatus.active, doc.doc_id)
+    ]
+    assert (doc.status, doc.pipeline_seq) == ("active", 0)
+    assert sync_session.get(Document, old_doc_id) is None
+
+
+def test_file_exists_exact_follows_nfc_and_nfd_spellings(tmp_path):
+    """macOS may report a name in either normal form; the listing holds one."""
+    nfd = unicodedata.normalize("NFD", "café.txt")
+    (tmp_path / nfd).write_text("x")
+    assert file_exists_exact(str(tmp_path), unicodedata.normalize("NFC", "café.txt"))
+    assert file_exists_exact(str(tmp_path), nfd)
+    assert not file_exists_exact(str(tmp_path), "cafe.txt")
+
+
+def test_file_exists_exact_requires_a_regular_file(tmp_path):
+    (tmp_path / "sub").mkdir()
+    assert not file_exists_exact(str(tmp_path), "sub")
+    assert not file_exists_exact(str(tmp_path), "sub/missing.txt")
+
+
+@case_insensitive_only
+def test_file_exists_exact_checks_every_component_case(tmp_path):
+    """`isfile("Invoices/x.txt")` is true after `mv Invoices invoices` on APFS."""
+    (tmp_path / "Invoices").mkdir()
+    (tmp_path / "Invoices" / "x.txt").write_text("x")
+    (tmp_path / "Invoices").rename(tmp_path / "invoices")
+    assert os.path.isfile(tmp_path / "Invoices" / "x.txt"), "the premise: the volume ignores case"
+    assert not file_exists_exact(str(tmp_path), "Invoices/x.txt")
+    assert file_exists_exact(str(tmp_path), "invoices/x.txt")
+
+
+@case_insensitive_only
+def test_delete_under_a_case_renamed_directory_is_believed(sync_session, folder, tmp_path):
+    (tmp_path / "Invoices").mkdir()
+    f = tmp_path / "Invoices" / "x.txt"
+    f.write_text("x")
+    wf, doc = _index(sync_session, folder, f, "Invoices/x.txt")
+    (tmp_path / "Invoices").rename(tmp_path / "invoices")
+
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "Invoices/x.txt", str(f)))
+    sync_session.commit()
+    assert (wf.status, doc.status) == (WatchedFileStatus.removed, "removed")
+
+
+@case_insensitive_only
+def test_directory_delete_under_its_old_case_retires_its_files(sync_session, folder, tmp_path):
+    (tmp_path / "Invoices").mkdir()
+    f = tmp_path / "Invoices" / "x.txt"
+    f.write_text("x")
+    wf, _doc = _index(sync_session, folder, f, "Invoices/x.txt")
+    (tmp_path / "Invoices").rename(tmp_path / "invoices")
+
+    handle_event(
+        sync_session,
+        FileEvent(EventKind.deleted, folder.folder_id, "Invoices", str(tmp_path / "Invoices"), is_directory=True),
+    )
+    sync_session.commit()
+    assert wf.status == WatchedFileStatus.removed

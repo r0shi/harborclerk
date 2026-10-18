@@ -17,6 +17,7 @@ import signal
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 from datetime import UTC, datetime
 
@@ -52,6 +53,26 @@ LISTENER_HEALTHY_SECS = 120.0
 ROOT_CHECK_INTERVAL_SECS = 5.0
 
 StatKey = tuple[int, int, int, int, int]
+
+
+def _fold(relative_path: str) -> str:
+    """A path as a case-insensitive, normalisation-insensitive volume compares it."""
+    return unicodedata.normalize("NFC", relative_path).casefold()
+
+
+def _unlisted_dirs(root: str, errors: list[OSError]) -> list[str] | None:
+    """Relative paths of the directories ``os.walk`` could not list; None when the root itself is one."""
+    unlisted = []
+    for err in errors:
+        rel = os.path.relpath(err.filename or root, root).replace(os.sep, "/")
+        if rel == ".":
+            return None
+        unlisted.append(rel)
+    return unlisted
+
+
+def _under(relative_path: str, directories: list[str]) -> bool:
+    return any(relative_path.startswith(d + "/") for d in directories)
 
 
 def _stat_key(path: str) -> StatKey | None:
@@ -212,16 +233,22 @@ class WatcherDaemon:
         comparison makes a known, unchanged file a no-op, indexes a new one,
         reprocesses a changed one and resurrects a removed one), except a file
         whose stat is unchanged since this process last compared it with an
-        active row. Then every active row whose file is gone is dispatched as
-        a delete, which `handle_event` checks against the disk once more.
-        This is both the scan at attach (watchdog only reports changes made
-        after the observer starts, so files already there, or deleted while
-        the app was down, are otherwise never seen) and the periodic one.
+        active row. A new path that differs from a vanished active one only by
+        case or Unicode normalisation (``mv Invoices invoices`` while the app
+        was down) is dispatched as a move, so the file keeps its document.
+        Then every active row whose file is gone is dispatched as a delete,
+        which `handle_event` checks against the disk once more. This is both
+        the scan at attach (watchdog only reports changes made after the
+        observer starts, so files already there, or deleted while the app was
+        down, are otherwise never seen) and the periodic one.
 
-        Removal is skipped, never guessed: when the root is missing, when a
-        directory could not be listed (its files would look deleted), or when
-        the root holds no files at all while the index holds some (an empty
-        mount point looks exactly like that). Deletes still arrive as events.
+        Removal is skipped, never guessed. Under a directory that could not be
+        listed (permissions, a TCC-protected folder), its files would look
+        deleted, so nothing under it is removed; the rest of the folder is
+        reconciled as usual. The whole folder is skipped when the root is
+        missing or cannot be listed, or holds no files at all while the index
+        holds some (an empty mount point looks exactly like that). Deletes
+        still arrive as events.
 
         Updates `watched_folders.last_scan_at` when done, so the API's
         scan_status flips from "scanning" to "idle" and the folder says when
@@ -242,6 +269,10 @@ class WatcherDaemon:
         walk_errors: list[OSError] = []
         seen = self._seen_stats.setdefault(folder_id, {})
         active = self._active_paths(folder_id)
+        active_by_fold: dict[str, list[str]] = {}
+        for path in sorted(active):
+            active_by_fold.setdefault(_fold(path), []).append(path)
+        respelled: list[tuple[str, str]] = []
         try:
             for dirpath, dirnames, filenames in os.walk(root, onerror=walk_errors.append):
                 # Prune dotfile / __MACOSX directories so we don't recurse
@@ -287,6 +318,11 @@ class WatcherDaemon:
                     stat = _stat_key(abs_path)
                     if stat is not None and rel_path in active and seen.get(rel_path) == stat:
                         continue
+                    if rel_path not in active and any(p != rel_path for p in active_by_fold.get(_fold(rel_path), [])):
+                        # Decided after the walk, once it is known whether the
+                        # other spelling is still on disk too.
+                        respelled.append((rel_path, abs_path))
+                        continue
                     handled = self._on_event(
                         FileEvent(
                             kind=EventKind.created,
@@ -302,16 +338,46 @@ class WatcherDaemon:
             logger.exception("watcher: reconcile of %s failed", root)
             return
 
-        missing = sorted(active - present)
-        removed = 0
-        if walk_errors:
+        unlisted = _unlisted_dirs(root, walk_errors)
+        if unlisted is None:
+            logger.warning("watcher: reconcile of %s skipped: the root could not be listed (%s)", root, walk_errors[0])
+            return
+        if unlisted:
             logger.warning(
-                "watcher: reconcile of %s could not list %d directories (first: %s); nothing removed",
+                "watcher: reconcile of %s could not list %d directories (first: %s); nothing under them removed",
                 root,
-                len(walk_errors),
+                len(unlisted),
                 walk_errors[0],
             )
-        elif missing and not present:
+
+        moved_from: set[str] = set()
+        for rel_path, abs_path in respelled:
+            old = next(
+                (
+                    p
+                    for p in active_by_fold.get(_fold(rel_path), [])
+                    if p not in present and p not in moved_from and not _under(p, unlisted)
+                ),
+                None,
+            )
+            if old is None:
+                event = FileEvent(EventKind.created, folder_id, rel_path, abs_path)
+            else:
+                moved_from.add(old)
+                event = FileEvent(
+                    EventKind.moved,
+                    folder_id,
+                    old,
+                    os.path.join(root, old),
+                    dest_relative_path=rel_path,
+                    dest_absolute_path=abs_path,
+                )
+            self._on_event(event)
+            count += 1
+
+        missing = sorted(p for p in active - present - moved_from if not _under(p, unlisted))
+        removed = 0
+        if missing and not present:
             logger.warning(
                 "watcher: reconcile of %s found no files while %d are indexed; nothing removed "
                 "(an empty mount point looks the same)",

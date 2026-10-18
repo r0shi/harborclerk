@@ -3,6 +3,7 @@
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
@@ -638,3 +639,147 @@ async def test_remove_hides_the_document_but_never_overrides_an_admin_delete(
     assert wf.status == WatchedFileStatus.removed
     assert wf.removed_at is not None
     assert doc.status == doc_after
+
+
+async def _seed_watched(db_session, folder, rel, *, wf_status=WatchedFileStatus.active, doc_status="active", sha=None):
+    sha = sha or bytes([len(rel)]) * 32
+    doc = Document(
+        title=rel.rsplit(".", 1)[0].rsplit("/", 1)[-1],
+        canonical_filename=rel.rsplit("/", 1)[-1],
+        status=doc_status,
+        sha256=sha,
+        pipeline_status=PipelineStatus.ready,
+        source_path=f"{folder.path}/{rel}",
+        mime_type="text/plain",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    wf = WatchedFile(
+        folder_id=folder.folder_id,
+        relative_path=rel,
+        bookmark_data=b"",
+        sha256=sha,
+        doc_id=doc.doc_id,
+        status=wf_status,
+    )
+    db_session.add(wf)
+    await db_session.flush()
+    return wf, doc
+
+
+@pytest.mark.parametrize(("doc_before", "doc_after"), [("removed", "active"), ("deleted", "deleted")])
+async def test_ingest_of_a_returning_file_restores_only_a_hidden_document(
+    client, admin_token, db_session, tmp_path, doc_before, doc_after
+):
+    """As the watcher's resurrection: an admin's "deleted" stays deleted when the file is re-ingested."""
+    folder = WatchedFolder(path=str(tmp_path), display_name="w", bookmark_data=None)
+    db_session.add(folder)
+    await db_session.flush()
+    wf, doc = await _seed_watched(
+        db_session, folder, "a.txt", wf_status=WatchedFileStatus.removed, doc_status=doc_before, sha=b"\x07" * 32
+    )
+
+    resp = await client.post(
+        "/api/watch/ingest",
+        headers=auth_header(admin_token),
+        json={
+            "folder_id": str(folder.folder_id),
+            "relative_path": "a.txt",
+            "sha256": "07" * 32,
+            "bookmark_data": "",
+            "source_path": str(tmp_path / "a.txt"),
+            "mime_type": "text/plain",
+        },
+    )
+    assert resp.status_code == 200
+    await db_session.refresh(wf)
+    await db_session.refresh(doc)
+    assert wf.status == WatchedFileStatus.active
+    assert doc.status == doc_after
+
+
+# ---------------------------------------------------------------------------
+# POST /api/watch/rename — the watcher's move rules (watcher/relocate.py, #847)
+# ---------------------------------------------------------------------------
+
+
+def _rename_body(folder, tmp_path, old, new):
+    return {
+        "folder_id": str(folder.folder_id),
+        "old_relative_path": old,
+        "new_relative_path": new,
+        "bookmark_data": "",
+        "source_path": str(tmp_path / new),
+    }
+
+
+async def _folder(db_session, tmp_path):
+    folder = WatchedFolder(path=str(tmp_path), display_name="w", bookmark_data=None)
+    db_session.add(folder)
+    await db_session.flush()
+    return folder
+
+
+async def test_rename_moves_the_paths_name_and_derived_title(client, admin_token, db_session, tmp_path):
+    folder = await _folder(db_session, tmp_path)
+    wf, doc = await _seed_watched(db_session, folder, "a.txt")
+
+    resp = await client.post(
+        "/api/watch/rename", headers=auth_header(admin_token), json=_rename_body(folder, tmp_path, "a.txt", "sub/b.txt")
+    )
+    assert resp.status_code == 200
+    await db_session.refresh(wf)
+    await db_session.refresh(doc)
+    assert wf.relative_path == "sub/b.txt"
+    assert (doc.source_path, doc.canonical_filename, doc.title) == (str(tmp_path / "sub/b.txt"), "b.txt", "b")
+    assert doc.pipeline_seq == 0, "same type, no sidecar: nothing to extract again"
+
+
+async def test_rename_to_another_type_reextracts(client, admin_token, db_session, tmp_path):
+    folder = await _folder(db_session, tmp_path)
+    wf, doc = await _seed_watched(db_session, folder, "notes.txt")
+
+    resp = await client.post(
+        "/api/watch/rename",
+        headers=auth_header(admin_token),
+        json=_rename_body(folder, tmp_path, "notes.txt", "notes.md"),
+    )
+    assert resp.status_code == 200
+    await db_session.refresh(doc)
+    assert doc.mime_type == "text/markdown"
+    assert doc.pipeline_seq == 1
+    jobs = (await db_session.execute(select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id))).scalars().all()
+    assert [(j.stage, j.status) for j in jobs] == [(JobStage.extract, JobStatus.queued)]
+
+
+async def test_rename_onto_a_live_file_is_a_409(client, admin_token, db_session, tmp_path):
+    folder = await _folder(db_session, tmp_path)
+    wf, _doc = await _seed_watched(db_session, folder, "a.txt")
+    await _seed_watched(db_session, folder, "b.txt")
+
+    resp = await client.post(
+        "/api/watch/rename", headers=auth_header(admin_token), json=_rename_body(folder, tmp_path, "a.txt", "b.txt")
+    )
+    assert resp.status_code == 409
+    await db_session.refresh(wf)
+    assert wf.relative_path == "a.txt"
+
+
+async def test_rename_onto_a_retired_path_keeps_the_moved_document(client, admin_token, db_session, tmp_path):
+    folder = await _folder(db_session, tmp_path)
+    wf, doc = await _seed_watched(db_session, folder, "draft.txt")
+    _old_wf, old_doc = await _seed_watched(
+        db_session, folder, "report.txt", wf_status=WatchedFileStatus.removed, doc_status="removed"
+    )
+    old_doc_id, doc_id, folder_id = old_doc.doc_id, doc.doc_id, folder.folder_id
+
+    resp = await client.post(
+        "/api/watch/rename",
+        headers=auth_header(admin_token),
+        json=_rename_body(folder, tmp_path, "draft.txt", "report.txt"),
+    )
+    assert resp.status_code == 200
+    db_session.expire_all()
+    rows = (await db_session.execute(select(WatchedFile).where(WatchedFile.folder_id == folder_id))).scalars().all()
+    assert [(r.relative_path, r.doc_id, r.status) for r in rows] == [("report.txt", doc_id, WatchedFileStatus.active)]
+    assert await db_session.get(Document, old_doc_id) is None

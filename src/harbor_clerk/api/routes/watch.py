@@ -26,6 +26,7 @@ from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.watcher.notify import notify_folder_change_async
+from harbor_clerk.watcher.relocate import apply_move, move_needs_reextract
 from harbor_clerk.watcher.visibility import restore_document, retire_watched_file
 from harbor_clerk.worker.pipeline import queue_extract_for_current_pipeline, reset_and_queue_extract_for_doc
 
@@ -685,15 +686,35 @@ async def rename_file(
     if not wf:
         raise HTTPException(status_code=404, detail="Watched file not found")
 
-    wf.relative_path = body.new_relative_path
-    wf.bookmark_data = _parse_base64(body.bookmark_data, "bookmark_data")
+    bookmark = _parse_base64(body.bookmark_data, "bookmark_data")
 
-    # Update source_path on the document
-    if wf.doc_id:
-        doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
-        doc = doc_result.scalar_one_or_none()
-        if doc:
-            doc.source_path = body.source_path
+    # The same rules as the watcher's moved event (watcher/relocate.py, #847):
+    # a live file at the destination is not overwritten; a retired file's
+    # leftover row there gives way, with its hidden document, as the reaper
+    # would drop them.
+    if body.new_relative_path != body.old_relative_path:
+        dest_result = await session.execute(
+            select(WatchedFile).where(
+                WatchedFile.folder_id == fid,
+                WatchedFile.relative_path == body.new_relative_path,
+            )
+        )
+        dest = dest_result.scalar_one_or_none()
+        if dest is not None and dest.status == WatchedFileStatus.active:
+            raise HTTPException(status_code=409, detail="A watched file already exists at new_relative_path")
+        if dest is not None:
+            stale_doc = await session.get(Document, dest.doc_id) if dest.doc_id else None
+            await session.delete(dest)
+            if stale_doc is not None:
+                await session.delete(stale_doc)
+            await session.flush()
+
+    doc = await session.get(Document, wf.doc_id) if wf.doc_id else None
+    reextract = move_needs_reextract(body.old_relative_path, body.new_relative_path, doc, body.source_path)
+    apply_move(wf, doc, body.new_relative_path, body.source_path)
+    wf.bookmark_data = bookmark
+    if doc is not None and reextract:
+        await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
 
     await session.commit()
     return {"action": "renamed", "doc_id": str(wf.doc_id)}

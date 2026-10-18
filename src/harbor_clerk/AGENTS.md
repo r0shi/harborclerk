@@ -39,13 +39,13 @@ the filesystem directly. `STORAGE_BACKEND` selects the implementation.
 Watched-folder documents are read in place from `source_path` and are never
 written to. IMAP messages and attachments are the one case where content is
 fetched and stored (the normal document path; only legacy uploads use the
-`originals/<doc_id>/<original_filename>` bucket). Watcher: a gone file's row and
-document are hidden through `watcher/visibility.py`, shared with `/watch/remove`;
-a delete is believed only once `file_exists_exact` agrees (atomic saves report
-deletes of live files; APFS is case-insensitive); a move keeps the doc_id. A
-reconcile (attach, `WATCH_RESCAN_INTERVAL_SECS`) removes nothing when the root is
-missing, empty or partly unlistable; a lost root re-attaches the observer, and
-never reaches `handle_event`, which would remove every document (#604/#847/#739).
+`originals/<doc_id>/<original_filename>` bucket). Watcher: a gone file is hidden
+via `watcher/visibility.py` (shared with `/watch/remove`), a move keeps its doc_id
+via `watcher/relocate.py` (shared with `/watch/rename`). A delete is believed only
+once `file_exists_exact` agrees on every path component (atomic saves report live
+files deleted; APFS ignores case). A reconcile (attach, `WATCH_RESCAN_INTERVAL_SECS`)
+removes nothing for a missing, empty or unlistable root, nor under an unlistable
+dir; a lost root re-attaches the observer, never reaches `handle_event` (#739).
 
 ## Retrieval
 

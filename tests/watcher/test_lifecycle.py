@@ -21,6 +21,8 @@ from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.watcher.main import WatcherDaemon
+from harbor_clerk.watcher.visibility import retire_watched_file
+from tests.watcher._fs import case_insensitive_only
 
 WAIT_SECS = 10.0
 ACTIVE = WatchedFileStatus.active
@@ -339,6 +341,68 @@ def test_missing_root_removes_nothing_and_is_reattached_when_back(factory, tmp_p
         assert st["a.txt"][0:3:2] == (ACTIVE, "active")
 
 
+def _deafen(run: _Running) -> None:
+    """Drop every event the live observer delivers, as a lost FSEvents batch would."""
+    for obs in run.daemon._observers.values():
+        obs._handler.sink = lambda _event: None
+
+
+def test_periodic_rescan_indexes_a_modify_an_event_missed(factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("WATCH_RESCAN_INTERVAL_SECS", "0.5")
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("version one")
+    folder_id = _add_folder(factory, root)
+    with _Running(factory, folder_id) as run:
+        doc_id = run.state()["a.txt"][1]
+        _deafen(run)
+        (root / "a.txt").write_text("version two")
+        st = run.wait_for(
+            "the periodic pass to index the new content", lambda st: st["a.txt"][3] == _sha("version two")
+        )
+        assert st["a.txt"] == (ACTIVE, doc_id, "active", _sha("version two"), 1)
+
+
+@case_insensitive_only
+def test_case_only_directory_rename_keeps_each_document(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "Invoices").mkdir()
+    (root / "Invoices" / "x.txt").write_text("x")
+    folder_id = _add_folder(factory, root)
+    with _Running(factory, folder_id) as run:
+        doc_id = run.state()["Invoices/x.txt"][1]
+        (root / "Invoices").rename(root / "invoices")
+        st = run.wait_for(
+            "the row to follow the case-only rename",
+            lambda st: "invoices/x.txt" in st and "Invoices/x.txt" not in st,
+        )
+        time.sleep(1.0)
+        assert run.state() == {"invoices/x.txt": (ACTIVE, doc_id, "active", _sha("x"), 0)}, st
+
+
+@case_insensitive_only
+def test_case_only_directory_rename_while_down_keeps_each_document(factory, tmp_path):
+    """After `mv Invoices invoices` with the app down, `isfile("Invoices/x.txt")`
+    still answers yes on APFS: the startup pass must neither duplicate the file
+    nor lose its document."""
+    root = _root(tmp_path)
+    (root / "Invoices").mkdir()
+    (root / "Invoices" / "x.txt").write_text("x")
+    (root / "Invoices" / "y.txt").write_text("y")
+    folder_id = _add_folder(factory, root)
+    with _Running(factory, folder_id) as run:
+        before = run.state()
+
+    (root / "Invoices").rename(root / "invoices")
+    time.sleep(2.0)  # past FSEvents' delivery window, as in the test above
+
+    with _Running(factory, folder_id) as run:
+        st = run.state()
+    assert st == {
+        "invoices/x.txt": (ACTIVE, before["Invoices/x.txt"][1], "active", _sha("x"), 0),
+        "invoices/y.txt": (ACTIVE, before["Invoices/y.txt"][1], "active", _sha("y"), 0),
+    }
+
+
 # ---------------------------------------------------------------------------
 # What a reconciliation refuses to remove
 # ---------------------------------------------------------------------------
@@ -369,13 +433,18 @@ def test_reconcile_of_a_missing_root_removes_nothing(factory, tmp_path):
     assert _state(factory, folder_id)["a.txt"][0:3:2] == (ACTIVE, "active")
 
 
-def test_reconcile_with_an_unreadable_directory_removes_nothing(factory, tmp_path):
+def test_reconcile_keeps_files_under_an_unreadable_directory_and_removes_the_rest(factory, tmp_path):
+    """One unlistable subdirectory (permissions, TCC) must not stop removal everywhere else."""
     root = _root(tmp_path)
     (root / "top.txt").write_text("top")
+    (root / "gone.txt").write_text("gone")
     sub = root / "sub"
     sub.mkdir()
     (sub / "a.txt").write_text("alpha")
+    (root / "subway.txt").write_text("a sibling whose name starts like the directory's")
     folder_id = _reconcile_once(factory, root)
+    (root / "gone.txt").unlink()
+    (root / "subway.txt").unlink()
     sub.chmod(0)
     try:
         if os.access(sub, os.R_OK):
@@ -383,7 +452,83 @@ def test_reconcile_with_an_unreadable_directory_removes_nothing(factory, tmp_pat
         WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
     finally:
         sub.chmod(0o755)
-    assert _state(factory, folder_id)["sub/a.txt"][0:3:2] == (ACTIVE, "active")
+    st = _state(factory, folder_id)
+    assert st["sub/a.txt"][0:3:2] == (ACTIVE, "active")
+    assert st["top.txt"][0:3:2] == (ACTIVE, "active")
+    assert st["gone.txt"][0:3:2] == (REMOVED, "removed")
+    assert st["subway.txt"][0:3:2] == (REMOVED, "removed")
+
+
+def test_reconcile_of_an_unreadable_root_removes_nothing(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _reconcile_once(factory, root)
+    root.chmod(0o300)  # searchable, not listable
+    try:
+        if os.access(root, os.R_OK):
+            pytest.skip("running with privileges that read a write-only directory")
+        WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    finally:
+        root.chmod(0o755)
+    assert _state(factory, folder_id)["a.txt"][0:3:2] == (ACTIVE, "active")
+
+
+def test_reconcile_handles_an_unchanged_file_whose_row_was_retired(factory, tmp_path):
+    """The stat cache skips only files whose row is active: one retired since
+    the last pass (a lost event, `/watch/remove`) is compared again, and its
+    file on disk restores it, as a fresh process's pass would."""
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    daemon._reconcile_folder(folder_id, str(root))
+    sess = factory()
+    try:
+        wf = sess.query(WatchedFile).filter_by(folder_id=folder_id).one()
+        retire_watched_file(wf, sess.get(Document, wf.doc_id))
+        sess.commit()
+    finally:
+        sess.close()
+
+    daemon._reconcile_folder(folder_id, str(root))
+    assert _state(factory, folder_id)["a.txt"][0:3:2] == (ACTIVE, "active")
+
+
+def test_events_for_one_folder_are_handled_one_at_a_time(factory, tmp_path, monkeypatch):
+    """The observer thread and a reconciliation both dispatch; two creates of
+    one new file at once would race into the same (folder_id, relative_path)."""
+    import threading
+
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _add_folder(factory, root)
+    in_flight, peak, guard = [0], [0], threading.Lock()
+    real_handle_event = watcher_main.handle_event
+
+    def slow_handle_event(session, event):
+        with guard:
+            in_flight[0] += 1
+            peak[0] = max(peak[0], in_flight[0])
+        try:
+            time.sleep(0.3)
+            real_handle_event(session, event)
+        finally:
+            with guard:
+                in_flight[0] -= 1
+
+    monkeypatch.setattr(watcher_main, "handle_event", slow_handle_event)
+    daemon = WatcherDaemon(factory)
+    event = watcher_main.FileEvent(watcher_main.EventKind.created, folder_id, "a.txt", str(root / "a.txt"))
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(daemon._on_event(event))) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=WAIT_SECS)
+    assert not any(t.is_alive() for t in threads), "an event handler did not return"
+    assert peak[0] == 1, "two events of one folder were handled at once"
+    assert results == [True, True]
+    assert list(_state(factory, folder_id)) == ["a.txt"]
 
 
 def test_reconcile_removes_missing_files_beside_present_ones(factory, tmp_path):
