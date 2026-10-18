@@ -27,7 +27,15 @@ from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_engine
 from harbor_clerk.error_text import describe_error
 from harbor_clerk.log_setup import setup_logging
-from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+from harbor_clerk.models.watched import (
+    ROOT_EMPTY,
+    ROOT_MISSING,
+    ROOT_UNREADABLE,
+    WATCHER_UNAVAILABLE_REASONS,
+    WatchedFile,
+    WatchedFileStatus,
+    WatchedFolder,
+)
 from harbor_clerk.watcher.db_listener import listen_for_folder_changes
 from harbor_clerk.watcher.discovery import scan_watch_root
 from harbor_clerk.watcher.events import EventKind, FileEvent, SkipReason, classify_skip, handle_event
@@ -51,11 +59,6 @@ LISTENER_HEALTHY_SECS = 120.0
 # How often each watched root is stat'ed to notice it was replaced (#739). An
 # observer that sees its root go wakes the check at once; this is the backstop.
 ROOT_CHECK_INTERVAL_SECS = 5.0
-# `watched_folders.unavailable_reason` values the watcher sets when a pass cannot compare the folder, and
-# clears when one can. Docker discovery owns "unmounted".
-ROOT_MISSING = "root_missing"
-ROOT_UNREADABLE = "root_unreadable"
-WATCHER_UNAVAILABLE_REASONS = (ROOT_MISSING, ROOT_UNREADABLE)
 
 StatKey = tuple[int, int, int, int, int]
 
@@ -74,6 +77,14 @@ def _unlisted_dirs(root: str, errors: list[OSError]) -> list[str] | None:
             return None
         unlisted.append(rel)
     return unlisted
+
+
+def _listable(path: str) -> bool:
+    try:
+        with os.scandir(path):
+            return True
+    except OSError:
+        return False
 
 
 def _under(relative_path: str, directories: list[str]) -> bool:
@@ -109,6 +120,9 @@ class WatcherDaemon:
         # compared it with an active row; an unchanged stat is not hashed again.
         self._seen_stats: dict[uuid.UUID, dict[str, StatKey]] = {}
         self._missing_roots: set[uuid.UUID] = set()
+        # The watcher reason each folder's last pass recorded (`_record_pass`), so `_check_roots` can
+        # notice a root that is back without waiting for the periodic pass.
+        self._reasons: dict[uuid.UUID, str] = {}
         self._stop = threading.Event()
         # Set by an observer that lost its root, so the monitor checks now.
         self._wake = threading.Event()
@@ -191,6 +205,11 @@ class WatcherDaemon:
                 continue
             self._missing_roots.discard(fid)
             if state is RootState.ok:
+                # A root that was missing or unreadable and is back (inotify keeps
+                # watching a root moved aside and back) is compared now, which
+                # clears the reason, rather than at the next periodic pass or never.
+                if self._reasons.get(fid) in (ROOT_MISSING, ROOT_UNREADABLE) and _listable(obs.root):
+                    self._request_reconcile(fid)
                 continue
             with self._observers_lock:
                 if self._observers.get(fid) is not obs:
@@ -274,6 +293,9 @@ class WatcherDaemon:
         skipped_count = 0
         skipped_exts: set[str] = set()
         present: set[str] = set()
+        # Files the watcher would index. Noise (.DS_Store, Icon\r, AppleDouble) and unsupported files do not
+        # make a root non-empty: Finder writes a .DS_Store into any folder it shows, mount point or not.
+        admitted = 0
         walk_errors: list[OSError] = []
         seen = self._seen_stats.setdefault(folder_id, {})
         active = self._active_paths(folder_id)
@@ -323,6 +345,7 @@ class WatcherDaemon:
                         # its sibling (handle_event), so it needs no visit.
                         continue
 
+                    admitted += 1
                     stat = _stat_key(abs_path)
                     if stat is not None and rel_path in active and seen.get(rel_path) == stat:
                         continue
@@ -386,7 +409,8 @@ class WatcherDaemon:
 
         missing = sorted(p for p in active - present - moved_from if not _under(p, unlisted))
         removed = 0
-        if missing and not present:
+        empty = bool(missing) and admitted == 0
+        if empty:
             logger.warning(
                 "watcher: reconcile of %s found no files while %d are indexed; nothing removed "
                 "(an empty mount point looks the same)",
@@ -406,7 +430,12 @@ class WatcherDaemon:
                 )
                 removed += 1
 
-        self._record_pass(folder_id, unavailable=None, skipped_count=skipped_count, skipped_exts=skipped_exts)
+        self._record_pass(
+            folder_id,
+            unavailable=ROOT_EMPTY if empty else None,
+            skipped_count=skipped_count,
+            skipped_exts=skipped_exts,
+        )
 
         logger.info(
             "watcher: reconcile of %s complete (%d files compared, %d missing removed, %d skipped — extensions=%s)",
@@ -432,23 +461,28 @@ class WatcherDaemon:
         did not build (scripts/test_corpora/runner/sweep.py, _files_the_index_did_not_read, #740).
 
         A pass skipped because the root is missing or cannot be listed is stamped too, or the API's
-        scan_status (`last_scan_at is None`) would read "scanning" for good; `unavailable_reason` says why,
-        which the folder list shows, and the harness distrusts that stamp. A completed pass clears only the
-        watcher's own reasons: "unmounted" belongs to Docker discovery.
+        scan_status (`last_scan_at is None`) would read "scanning" for good; `unavailable_reason` says why
+        (as it does for an empty root, whose removals were skipped), which the folder list shows, and the
+        harness distrusts that stamp. These reasons are informational (`folder_is_unavailable`). The watcher
+        sets and clears only its own: "unmounted" belongs to Docker discovery, which re-enables a folder only
+        while it reads "unmounted", so it is never overwritten here.
         """
         sess = self._session_factory()
         try:
             folder = sess.query(WatchedFolder).filter_by(folder_id=folder_id).one_or_none()
             if folder is not None:
                 folder.last_scan_at = datetime.now(UTC)
-                if unavailable is not None:
+                # Never over another owner's reason ("unmounted").
+                if folder.unavailable_reason is None or folder.unavailable_reason in WATCHER_UNAVAILABLE_REASONS:
                     folder.unavailable_reason = unavailable
-                elif folder.unavailable_reason in WATCHER_UNAVAILABLE_REASONS:
-                    folder.unavailable_reason = None
                 if skipped_count is not None:
                     folder.skipped_count = skipped_count
                     folder.skipped_extensions = sorted(skipped_exts or ())
                 sess.commit()
+            if unavailable is None:
+                self._reasons.pop(folder_id, None)
+            else:
+                self._reasons[folder_id] = unavailable
         except Exception:
             sess.rollback()
             logger.exception("watcher: failed to update last_scan_at for %s", folder_id)

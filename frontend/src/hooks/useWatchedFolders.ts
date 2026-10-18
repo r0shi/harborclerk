@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { get } from '../api'
+import { folderIsUnavailable } from '../utils/watchedFolders'
 
 export interface WatchedFolderInfo {
   folder_id: string
@@ -19,7 +20,7 @@ export function useWatchedFolders() {
     staleTime: 30_000,
   })
 
-  const folders = (query.data ?? []).filter((f) => f.unavailable_reason === null)
+  const folders = (query.data ?? []).filter((f) => !folderIsUnavailable(f.unavailable_reason))
 
   return {
     folders,

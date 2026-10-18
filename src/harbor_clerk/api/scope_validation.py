@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.schemas.scope import ScopeSpec
-from harbor_clerk.models.watched import WatchedFolder
+from harbor_clerk.models.watched import WatchedFolder, folder_is_unavailable
 
 
 async def validate_scope_folders(scope: ScopeSpec | None, session: AsyncSession) -> None:
@@ -32,7 +32,7 @@ async def validate_scope_folders(scope: ScopeSpec | None, session: AsyncSession)
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unknown folder_ids: {unknown}")
 
-    unavailable = [str(r[0]) for r in rows if r[1] is not None]
+    unavailable = [str(r[0]) for r in rows if folder_is_unavailable(r[1])]
     if unavailable:
         raise HTTPException(
             status_code=422,

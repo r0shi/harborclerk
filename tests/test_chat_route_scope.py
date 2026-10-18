@@ -42,6 +42,22 @@ async def test_create_conversation_rejects_unavailable_folder(client, admin_toke
     assert r.status_code == 422
 
 
+async def test_create_conversation_accepts_a_folder_whose_root_is_missing(client, admin_token, db_session):
+    """An unplugged drive's documents stay searchable, so a chat can still be
+    scoped to its folder: the watcher's reasons are informational."""
+    from harbor_clerk.models.watched import WatchedFolder
+
+    folder = WatchedFolder(path="/Volumes/Archive", display_name="Archive", unavailable_reason="root_missing")
+    db_session.add(folder)
+    await db_session.commit()
+    r = await client.post(
+        "/api/chat/conversations",
+        json={"title": "Archive", "scope": {"folder_ids": [str(folder.folder_id)]}},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200
+
+
 async def test_get_conversation_returns_scope(client, admin_token, two_folder_corpus):
     folder_a, _, _, _ = two_folder_corpus
     create = await client.post(

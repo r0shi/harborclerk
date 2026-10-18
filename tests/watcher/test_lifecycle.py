@@ -422,6 +422,34 @@ def test_reconcile_of_an_empty_root_removes_nothing(factory, tmp_path):
     (root / "a.txt").unlink()
     WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
     assert _state(factory, folder_id)["a.txt"][0:3:2] == (ACTIVE, "active")
+    assert _folder_row(factory, folder_id)[1] == watcher_main.ROOT_EMPTY
+
+
+def test_a_root_holding_only_noise_counts_as_empty(factory, tmp_path):
+    """Finder writes a .DS_Store into any folder it shows, a custom icon is an
+    `Icon\\r` file, and AppleDouble or unsupported files are not documents:
+    none of them makes an emptied mount point look populated."""
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    (root / "b.pdf").write_bytes(b"%PDF-1.4 beta")
+    folder_id = _reconcile_once(factory, root)
+    (root / "a.txt").unlink()
+    (root / "b.pdf").unlink()
+    (root / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+    (root / "Icon\r").write_bytes(b"")
+    (root / "._b.pdf").write_bytes(b"AppleDouble")
+    (root / "download.tmp").write_bytes(b"partial")
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert {rel: v[0:3:2] for rel, v in st.items()} == {"a.txt": (ACTIVE, "active"), "b.pdf": (ACTIVE, "active")}
+    assert _folder_row(factory, folder_id)[1] == watcher_main.ROOT_EMPTY
+
+    (root / "c.txt").write_text("a document is back")
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert (st["a.txt"][0], st["c.txt"][0]) == (REMOVED, ACTIVE), "with a document present, removal resumes"
+    assert _folder_row(factory, folder_id)[1] is None
 
 
 def test_reconcile_of_a_missing_root_removes_nothing(factory, tmp_path):
@@ -611,9 +639,11 @@ def test_a_root_that_goes_missing_is_reported_by_the_running_daemon(factory, tmp
         _wait_for("the reason to clear once the root is back", lambda: _folder_row(factory, folder_id)[1] is None)
 
 
-def test_a_completed_pass_leaves_dockers_unmounted_reason_alone(factory, tmp_path):
-    """ "unmounted" belongs to Docker discovery, which clears it itself."""
-    root = _root(tmp_path)
+@pytest.mark.parametrize("root_present", [True, False], ids=["completed-pass", "missing-root-pass"])
+def test_a_watcher_pass_never_overwrites_dockers_unmounted(factory, tmp_path, root_present):
+    """ "unmounted" belongs to Docker discovery, which re-enables a folder only
+    while it reads "unmounted": a watcher pass, completed or skipped, leaves it."""
+    root = _root(tmp_path) if root_present else tmp_path / "gone"
     folder_id = _add_folder(factory, root)
     sess = factory()
     try:
@@ -623,6 +653,54 @@ def test_a_completed_pass_leaves_dockers_unmounted_reason_alone(factory, tmp_pat
         sess.close()
     WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
     assert _folder_row(factory, folder_id)[1] == "unmounted"
+
+
+@pytest.mark.parametrize("how", ["missing", "unreadable"])
+def test_a_root_that_is_back_is_compared_at_once(factory, tmp_path, how):
+    """inotify keeps watching a root moved aside and back (same inode), so the
+    observer reports `ok` throughout; the reason must still clear without
+    waiting for a periodic pass (or forever, with the interval at 0)."""
+    from harbor_clerk.watcher.observer import RootState
+
+    root = tmp_path / "watched"
+    if how == "unreadable":
+        root.mkdir()
+        root.chmod(0o300)
+        if os.access(root, os.R_OK):
+            root.chmod(0o755)
+            pytest.skip("running with privileges that read a write-only directory")
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    try:
+        daemon._reconcile_folder(folder_id, str(root))
+    finally:
+        if how == "unreadable":
+            root.chmod(0o755)
+    expected = watcher_main.ROOT_MISSING if how == "missing" else watcher_main.ROOT_UNREADABLE
+    assert _folder_row(factory, folder_id)[1] == expected
+    root.mkdir(exist_ok=True)
+
+    class SteadyObserver:
+        def __init__(self, path):
+            self.root = path
+
+        def health(self):
+            return RootState.ok
+
+        def restart(self):
+            raise AssertionError("an ok observer is not restarted")
+
+    daemon._observers[folder_id] = SteadyObserver(str(root))
+    requested = []
+    daemon._request_reconcile = requested.append
+    daemon._check_roots()
+    assert requested == [folder_id]
+
+    daemon._reconcile_folder(folder_id, str(root))
+    assert _folder_row(factory, folder_id)[1] is None
+    requested.clear()
+    daemon._check_roots()
+    assert requested == [], "once the reason is cleared, an ok root is left alone"
 
 
 # ---------------------------------------------------------------------------

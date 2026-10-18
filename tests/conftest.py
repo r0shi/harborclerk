@@ -353,7 +353,7 @@ async def unavailable_folder(db_session):
         path="/unavailable",
         display_name="Unavailable",
         auto_discovered=False,
-        unavailable_reason="test-disabled",
+        unavailable_reason="unmounted",  # the one reason that makes a folder unusable (folder_is_unavailable)
     )
     db_session.add(folder)
     await db_session.commit()

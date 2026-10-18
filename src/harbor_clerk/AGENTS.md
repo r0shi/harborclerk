@@ -36,16 +36,16 @@ Tika. Don't invent a fourth.
 All storage access goes through the `StorageBackend` ABC — never touch MinIO or
 the filesystem directly. `STORAGE_BACKEND` selects the implementation.
 
-Watched-folder documents are read in place from `source_path`, never written to.
-IMAP content is the one case fetched and stored (legacy uploads alone use the
-`originals/<doc_id>/<original_filename>` bucket). Watcher: a gone file is hidden
-via `watcher/visibility.py` (shared with `/watch/remove`), a move keeps its doc_id
-via `watcher/relocate.py` (shared with `/watch/rename`). A delete is believed only
-once `file_exists_exact` agrees on every path component (atomic saves report live
-files deleted; APFS ignores case). A reconcile (attach, `WATCH_RESCAN_INTERVAL_SECS`)
-removes nothing for a missing, empty or unlistable root, nor under an unlistable
-dir; a skipped pass still stamps `last_scan_at` and sets `unavailable_reason`.
-A lost root re-attaches the observer, and never reaches `handle_event` (#739).
+Watched-folder documents are read in place from `source_path`, never written to;
+IMAP content alone is fetched and stored (legacy uploads: `originals/<doc_id>/<name>`).
+Watcher: a gone file is hidden via `watcher/visibility.py` (shared with
+`/watch/remove`), a move keeps its doc_id via `watcher/relocate.py` (shared with
+`/watch/rename`). A delete is believed only once `file_exists_exact` agrees on
+every path component (atomic saves report live files deleted; APFS ignores case).
+A reconcile removes nothing for a missing, unlistable or empty root (noise files
+don't count), nor under an unlistable dir, and says so in `unavailable_reason`
+(`root_*`: shown, never blocking; only discovery's `unmounted` makes a folder
+unusable, `folder_is_unavailable`). A lost root re-attaches, never hits `handle_event`.
 
 ## Retrieval
 

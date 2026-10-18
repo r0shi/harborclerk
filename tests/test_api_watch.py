@@ -322,6 +322,57 @@ async def test_delete_active_auto_discovered_returns_409(client, admin_token, db
     assert resp.status_code == 409
 
 
+@pytest.mark.parametrize("reason", ["root_missing", "root_unreadable", "root_empty"])
+async def test_delete_protection_holds_for_the_watchers_informational_reasons(
+    client, admin_token, db_session, monkeypatch, tmp_path, reason
+):
+    """Only discovery's "unmounted" lifts the protection; a pass the watcher
+    skipped does not make a live mount deletable."""
+    monkeypatch.setenv("WATCH_ROOT", str(tmp_path))
+    _reset_settings_cache(monkeypatch)
+    sub = tmp_path / "inbox"
+    sub.mkdir()
+    folder = WatchedFolder(
+        path=str(sub), auto_discovered=True, display_name="inbox", bookmark_data=None, unavailable_reason=reason
+    )
+    db_session.add(folder)
+    await db_session.flush()
+    resp = await client.delete(f"/api/watch/folders/{folder.folder_id}", headers=auth_header(admin_token))
+    assert resp.status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("reason", "refused"),
+    [(None, False), ("root_missing", False), ("root_unreadable", False), ("root_empty", False), ("unmounted", True)],
+)
+async def test_scope_refuses_only_unmounted_folders(db_session, reason, refused):
+    """An unplugged drive's documents are kept and searchable, so chat, research
+    and search can still scope to its folder; only an unmounted Docker mount is refused."""
+    from fastapi import HTTPException
+
+    from harbor_clerk.api.schemas.scope import ScopeSpec
+    from harbor_clerk.api.scope_validation import validate_scope_folders
+
+    folder = WatchedFolder(path="/w", display_name="w", bookmark_data=None, unavailable_reason=reason)
+    db_session.add(folder)
+    await db_session.flush()
+    scope = ScopeSpec(folder_ids=[folder.folder_id])
+    if refused:
+        with pytest.raises(HTTPException) as exc:
+            await validate_scope_folders(scope, db_session)
+        assert exc.value.status_code == 422
+    else:
+        await validate_scope_folders(scope, db_session)
+
+
+def test_only_unmounted_makes_a_folder_unavailable():
+    from harbor_clerk.models.watched import WATCHER_UNAVAILABLE_REASONS, folder_is_unavailable
+
+    assert folder_is_unavailable("unmounted")
+    assert not folder_is_unavailable(None)
+    assert not any(folder_is_unavailable(r) for r in WATCHER_UNAVAILABLE_REASONS)
+
+
 async def test_delete_unmounted_auto_discovered_succeeds(client, admin_token, db_session, monkeypatch, tmp_path):
     """auto_discovered=True but unavailable_reason='unmounted' → DELETE allowed."""
     monkeypatch.setenv("WATCH_ROOT", str(tmp_path))

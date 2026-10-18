@@ -14,6 +14,28 @@ class WatchedFileStatus(PyEnum):
     removed = "removed"
 
 
+# `watched_folders.unavailable_reason` values. Docker discovery sets UNMOUNTED
+# (and disables the folder) when a mount under WATCH_ROOT goes away. The
+# watcher sets the ROOT_* values when a reconcile could not compare the folder;
+# they are informational: the folder's documents stay searchable, so it can
+# still be scoped, picked and protected from deletion. Mirrored in
+# frontend/src/utils/watchedFolders.ts.
+UNMOUNTED = "unmounted"
+ROOT_MISSING = "root_missing"
+ROOT_UNREADABLE = "root_unreadable"
+ROOT_EMPTY = "root_empty"
+WATCHER_UNAVAILABLE_REASONS = (ROOT_MISSING, ROOT_UNREADABLE, ROOT_EMPTY)
+
+
+def folder_is_unavailable(reason: str | None) -> bool:
+    """Whether a folder with this ``unavailable_reason`` is unavailable for use (scoping, picking).
+
+    Only an unmounted Docker mount is; the watcher's reasons describe a pass
+    it had to skip and leave the folder usable.
+    """
+    return reason == UNMOUNTED
+
+
 class WatchedFolder(Base):
     __tablename__ = "watched_folders"
 

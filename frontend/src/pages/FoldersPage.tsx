@@ -8,6 +8,7 @@ import { Card } from '../components/Card'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
 import EmailSection from '../components/EmailSection'
+import { folderDeleteProtected, unavailableReasonLabel } from '../utils/watchedFolders'
 
 interface FolderInfo {
   folder_id: string
@@ -60,8 +61,8 @@ function mapFolderStatusToPillState(f: FolderInfo, p?: ProgressInfo): PillState 
 }
 
 function mapFolderStatusLabel(f: FolderInfo, p?: ProgressInfo): string {
-  if (f.unavailable_reason === 'unmounted') return 'unmounted'
-  if (f.unavailable_reason) return 'unavailable'
+  const reasonLabel = unavailableReasonLabel(f.unavailable_reason)
+  if (reasonLabel) return reasonLabel
   if (!f.enabled) return 'disabled'
   if (p?.scan_status === 'scanning') return 'scanning'
   if (p?.ingest_status === 'processing') return 'processing'
@@ -273,7 +274,7 @@ export default function FoldersPage() {
           {folders.map((f) => {
             const p = progress[f.folder_id]
             const isExpanded = expanded === f.folder_id
-            const deleteDisabled = f.auto_discovered && f.unavailable_reason === null
+            const deleteDisabled = folderDeleteProtected(f)
             const pendingDelete = pendingDeleteId === f.folder_id
             return (
               <FolderRow

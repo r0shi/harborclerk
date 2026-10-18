@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from harbor_clerk.models.watched import WatchedFolder
+from harbor_clerk.models.watched import UNMOUNTED, WatchedFolder
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +46,10 @@ def scan_watch_root(session: Session, watch_root: str) -> None:
     # Reconcile existing rows
     for row in auto_rows:
         if row.path in on_disk:
-            if row.unavailable_reason == "unmounted":
+            if row.unavailable_reason == UNMOUNTED:
                 row.unavailable_reason = None
                 row.enabled = True
         else:
-            if row.unavailable_reason != "unmounted":
-                row.unavailable_reason = "unmounted"
+            if row.unavailable_reason != UNMOUNTED:
+                row.unavailable_reason = UNMOUNTED
                 row.enabled = False

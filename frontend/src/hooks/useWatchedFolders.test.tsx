@@ -24,6 +24,20 @@ describe('useWatchedFolders', () => {
     mockGet.mockRestore()
   })
 
+  it("keeps folders whose reason is only the watcher's (their documents stay searchable)", async () => {
+    const mockGet = vi.spyOn(api, 'get').mockResolvedValue([
+      { folder_id: 'a', display_name: 'A', path: '/a', unavailable_reason: 'root_missing' },
+      { folder_id: 'b', display_name: 'B', path: '/b', unavailable_reason: 'root_unreadable' },
+      { folder_id: 'c', display_name: 'C', path: '/c', unavailable_reason: 'root_empty' },
+      { folder_id: 'd', display_name: 'D', path: '/d', unavailable_reason: 'unmounted' },
+    ])
+
+    const { result } = renderHook(() => useWatchedFolders(), { wrapper })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.folders.map((f) => f.folder_id)).toEqual(['a', 'b', 'c'])
+    mockGet.mockRestore()
+  })
+
   it('returns empty array when no folders', async () => {
     const mockGet = vi.spyOn(api, 'get').mockResolvedValue([])
     const { result } = renderHook(() => useWatchedFolders(), { wrapper })

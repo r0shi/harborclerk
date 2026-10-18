@@ -24,7 +24,7 @@ from harbor_clerk.models.document import Document
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus, UploadSource
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
-from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder, folder_is_unavailable
 from harbor_clerk.watcher.notify import notify_folder_change_async
 from harbor_clerk.watcher.relocate import apply_move, move_needs_reextract
 from harbor_clerk.watcher.visibility import restore_document, retire_watched_file
@@ -464,7 +464,7 @@ async def delete_folder(
         raise HTTPException(status_code=404, detail="Watched folder not found")
 
     # Active Docker mounts cannot be deleted via the API — operator must unmount first.
-    if folder.auto_discovered and folder.unavailable_reason is None:
+    if folder.auto_discovered and not folder_is_unavailable(folder.unavailable_reason):
         raise HTTPException(
             status_code=409,
             detail="Folder is an active Docker mount; unmount it first",
