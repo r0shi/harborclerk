@@ -816,3 +816,184 @@ async def test_cancellation_during_logout_still_exits_the_audit_session(
         await observer._run_label(label_id, observer_session_factory)
 
     assert exits == [1], "cancellation during logout skipped the audit-session exit"
+
+
+# --- #593: the supervisor survives a failing desired-state query -------------
+
+
+def _db_blip() -> Exception:
+    """What a Postgres restart or a dropped pool connection raises from the query."""
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError("SELECT watched_labels ...", None, OSError("server closed the connection unexpectedly"))
+
+
+async def _park_forever(*_args) -> None:
+    await asyncio.Event().wait()
+
+
+async def test_run_survives_a_failed_reconcile_and_retries(
+    db_session, mock_aioimap, observer_session_factory, monkeypatch, caplog
+):
+    """`_reconcile` queries Postgres every tick. Unguarded, one error unwound
+    run(): watcher/main.py logged "mail observer exited" and mail sync stopped
+    for good, because nothing restarts the observer thread.
+
+    The query fails three times, then works: the observer must still be
+    running, must have reconciled (spawned the active label's task), and must
+    have logged the streak once, not once per failure.
+    """
+    import logging
+
+    label_id = await _one_active_label(db_session, "dbblip")
+    calls = 0
+
+    def _flaky_factory():
+        nonlocal calls
+        calls += 1
+        if calls <= 3:
+            raise _db_blip()
+        return observer_session_factory()
+
+    observer = MailObserver(supervisor_interval=0.01, session_factory=_flaky_factory)
+    monkeypatch.setattr(observer, "_run_label", _park_forever)  # no IMAP; just occupy the slot
+
+    async def _label_spawned() -> None:
+        while label_id not in observer._tasks:
+            await asyncio.sleep(0.01)
+
+    with caplog.at_level(logging.DEBUG, logger="harbor_clerk.watcher.mail_observer"):
+        run_task = asyncio.create_task(observer.run())
+        spawned = asyncio.create_task(_label_spawned())
+        # Wait on whichever comes first, so an observer that died fails at once
+        # rather than after the timeout.
+        await asyncio.wait({run_task, spawned}, timeout=5, return_when=asyncio.FIRST_COMPLETED)
+        try:
+            assert not run_task.done(), f"run() ended on a database error: {run_task.exception()!r}"
+            assert spawned.done(), "the observer survived but never reconciled after the database came back"
+            assert calls >= 4
+        finally:
+            spawned.cancel()
+            await observer.stop()
+            await asyncio.wait_for(run_task, timeout=5)
+
+    failed = [r for r in caplog.records if "reconcile failed;" in r.getMessage()]
+    assert len(failed) == 1, f"expected one warning per failure streak, got {len(failed)}"
+    assert failed[0].levelno == logging.WARNING
+    assert any("recovered after 3 failed attempt(s)" in r.getMessage() for r in caplog.records)
+
+
+async def test_reconcile_backoff_grows_and_caps():
+    from harbor_clerk.watcher.mail_observer import _MAX_RECONCILE_BACKOFF, _reconcile_backoff
+
+    delays = [_reconcile_backoff(5.0, n) for n in range(1, 8)]
+    assert delays[0] == 5.0, "the first retry should come one ordinary tick later"
+    assert delays == sorted(delays) and delays[1] > delays[0], f"backoff did not grow: {delays}"
+    assert max(delays) == _MAX_RECONCILE_BACKOFF
+    assert _reconcile_backoff(5.0, 100_000) == _MAX_RECONCILE_BACKOFF  # no OverflowError
+
+
+async def _observer_in_backoff(monkeypatch) -> tuple[MailObserver, asyncio.Task]:
+    """An observer whose query always fails, parked in a backoff far longer
+    than any wait in these tests, so only a prompt shutdown can end it in time."""
+    failed = asyncio.Event()
+
+    def _down_factory():
+        failed.set()
+        raise _db_blip()
+
+    observer = MailObserver(supervisor_interval=30.0, session_factory=_down_factory)
+    run_task = asyncio.create_task(observer.run())
+    await asyncio.wait_for(failed.wait(), timeout=5)
+    await asyncio.sleep(0.05)  # let run() reach the backoff wait
+    assert not run_task.done(), "run() ended on a database error instead of backing off"
+    return observer, run_task
+
+
+async def test_stop_during_reconcile_backoff_exits_promptly(monkeypatch):
+    observer, run_task = await _observer_in_backoff(monkeypatch)
+
+    await asyncio.wait_for(observer.stop(), timeout=2)
+    await asyncio.wait_for(run_task, timeout=2)  # well inside the 30s backoff
+
+    assert run_task.exception() is None
+
+
+async def test_cancel_during_reconcile_backoff_exits_promptly(monkeypatch):
+    observer, run_task = await _observer_in_backoff(monkeypatch)
+
+    run_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(run_task, timeout=2)
+
+
+async def test_cancellation_raised_by_reconcile_is_not_retried():
+    """The guard must catch Exception, not BaseException: a CancelledError out
+    of the query is a shutdown, and retrying it would hang stop()."""
+
+    def _cancelled_factory():
+        raise asyncio.CancelledError()
+
+    observer = MailObserver(supervisor_interval=30.0, session_factory=_cancelled_factory)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(observer.run(), timeout=2)
+
+
+async def test_task_finishing_during_the_query_is_judged_against_fresh_rows(
+    db_session, mock_aioimap, observer_session_factory, caplog
+):
+    """#593 item 3. A task that marks its account auth_error and returns while
+    the desired-state query is in flight was reaped against the query's stale
+    rows: still "desired", so a backoff was armed and "respawning in 5s" logged
+    for a respawn that never came. It must wait for the next tick instead.
+    """
+    import contextlib
+    import logging
+
+    from sqlalchemy import update as _update
+
+    from harbor_clerk.models import MailAccount as _MA
+
+    label_id = await _one_active_label(db_session, "staleview")
+    observer = MailObserver(session_factory=observer_session_factory)
+
+    query_done = asyncio.Event()
+
+    async def _marks_auth_error_then_returns() -> None:
+        await query_done.wait()
+        await db_session.execute(_update(_MA).values(status="auth_error"))
+        await db_session.commit()
+
+    task = asyncio.create_task(_marks_auth_error_then_returns())
+    observer._tasks[label_id] = task
+    observer._spawned_at[label_id] = __import__("time").monotonic()
+
+    @contextlib.asynccontextmanager
+    async def _task_finishes_after_the_read():
+        async with observer_session_factory() as session:
+            real_execute = session.execute
+
+            async def _execute(*args, **kwargs):
+                result = await real_execute(*args, **kwargs)  # rows read: label still active
+                query_done.set()
+                await asyncio.wait_for(asyncio.shield(task), timeout=5)
+                return result
+
+            session.execute = _execute
+            yield session
+
+    with caplog.at_level(logging.INFO, logger="harbor_clerk.watcher.mail_observer"):
+        await asyncio.wait_for(observer._reconcile(_task_finishes_after_the_read), timeout=10)
+        assert task.done()
+        assert "respawning" not in caplog.text, f"judged against stale rows: {caplog.text}"
+        assert label_id not in observer._consecutive_failures
+
+        # The next tick reads the auth_error and retires the label quietly.
+        await asyncio.wait_for(observer._reconcile(observer_session_factory), timeout=10)
+
+    assert label_id not in observer._tasks
+    assert label_id not in observer._consecutive_failures
+    assert "respawning" not in caplog.text
+    assert "no longer active" in caplog.text
+
+    await observer.stop()

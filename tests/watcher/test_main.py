@@ -1,3 +1,4 @@
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -389,3 +390,125 @@ def test_scan_folder_retires_sidecar_rows_an_earlier_build_indexed(factory, tmp_
         assert sidecar.read_bytes() == sidecar_bytes, "the watcher never modifies a source"
     finally:
         _truncate_watched(factory)
+
+
+# --- #593: one transient database error must not end a background thread ----
+
+
+def _db_blip() -> Exception:
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError("SELECT watched_folders ...", None, OSError("server closed the connection unexpectedly"))
+
+
+def _run_in_thread(target) -> threading.Thread:
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    return t
+
+
+def test_listener_reconnects_after_the_connection_drops(monkeypatch, caplog):
+    """A dropped LISTEN connection (a Postgres restart) ended the listener
+    thread for good: folder add/remove/enable/disable from the API stopped
+    taking effect until the watcher restarted. It must reconnect, resync once
+    LISTEN is back (NOTIFYs sent in the gap are lost), and keep listening.
+    """
+    import logging
+
+    from harbor_clerk.watcher import main as watcher_main
+
+    monkeypatch.setattr(watcher_main, "LISTENER_RETRY_BASE_SECS", 0.01)
+    attempts = []
+    listening_again = threading.Event()
+
+    def _fake_listen(stop_event, poll_interval, on_listening=None):
+        attempts.append(1)
+        if len(attempts) <= 2:
+            raise _db_blip()  # connect or LISTEN refused while Postgres restarts
+        if on_listening is not None:
+            on_listening()
+        listening_again.set()
+        yield {"folder_id": str(uuid.uuid4()), "action": "added"}
+        stop_event.wait(timeout=5)
+
+    syncs = []
+    monkeypatch.setattr(watcher_main, "listen_for_folder_changes", _fake_listen)
+    daemon = WatcherDaemon(lambda: None)
+    monkeypatch.setattr(daemon, "_sync_observers", lambda: syncs.append(1))
+
+    with caplog.at_level(logging.INFO, logger="harbor_clerk.watcher.main"):
+        t = _run_in_thread(daemon._listener_loop)
+        try:
+            assert listening_again.wait(timeout=5), "listener never reconnected after the connection dropped"
+            deadline = time.monotonic() + 5
+            while len(syncs) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert t.is_alive(), "listener thread ended"
+        finally:
+            daemon._stop.set()
+            t.join(timeout=5)
+    assert not t.is_alive(), "listener did not stop promptly"
+
+    assert len(syncs) == 2, "expected a resync on reconnect plus one for the NOTIFY"
+    failed = [r for r in caplog.records if "listener failed" in r.getMessage()]
+    assert len(failed) == 1, f"expected one log per failure streak, got {len(failed)}"
+    assert any("reconnected after 2 failed attempt(s)" in r.getMessage() for r in caplog.records)
+
+
+def test_listener_stops_promptly_during_its_backoff(monkeypatch):
+    from harbor_clerk.watcher import main as watcher_main
+
+    monkeypatch.setattr(watcher_main, "LISTENER_RETRY_BASE_SECS", 30.0)
+    failed = threading.Event()
+
+    def _down(stop_event, poll_interval, on_listening=None):
+        failed.set()
+        raise _db_blip()
+        yield  # unreachable; makes this a generator, as the real one is
+
+    monkeypatch.setattr(watcher_main, "listen_for_folder_changes", _down)
+    daemon = WatcherDaemon(lambda: None)
+    t = _run_in_thread(daemon._listener_loop)
+    assert failed.wait(timeout=5)
+    time.sleep(0.05)
+    assert t.is_alive(), "listener thread ended on a database error instead of backing off"
+
+    daemon._stop.set()
+    t.join(timeout=2)  # well inside the 30s backoff
+    assert not t.is_alive(), "stop during the listener backoff did not end the thread"
+
+
+def test_discovery_survives_a_failed_observer_sync(monkeypatch):
+    """`_sync_observers()` sat outside the discovery loop's try, so one database
+    error there ended the discovery thread for good."""
+    from types import SimpleNamespace
+
+    from harbor_clerk.watcher import main as watcher_main
+
+    monkeypatch.setattr(watcher_main, "get_settings", lambda: SimpleNamespace(watch_root="/nonexistent-root"))
+    monkeypatch.setattr(watcher_main, "scan_watch_root", lambda sess, root: None)
+    monkeypatch.setattr(watcher_main, "DISCOVERY_INTERVAL_SECS", 0.01)
+
+    class _Session:
+        def commit(self): ...
+        def rollback(self): ...
+        def close(self): ...
+
+    calls = []
+    second_pass = threading.Event()
+
+    def _sync():
+        calls.append(1)
+        if len(calls) == 1:
+            raise _db_blip()
+        second_pass.set()
+
+    daemon = WatcherDaemon(_Session)
+    monkeypatch.setattr(daemon, "_sync_observers", _sync)
+    t = _run_in_thread(daemon._discovery_loop)
+    try:
+        assert second_pass.wait(timeout=5), "discovery thread died on a database error"
+    finally:
+        daemon._stop.set()
+        t.join(timeout=5)
+    assert not t.is_alive()

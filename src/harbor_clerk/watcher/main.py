@@ -34,6 +34,12 @@ logger = logging.getLogger(__name__)
 
 DISCOVERY_INTERVAL_SECS = 60.0
 NOTIFY_POLL_INTERVAL_SECS = 1.0
+# Reconnect backoff for the folder-change listener (#593). One dropped LISTEN
+# connection (a Postgres restart) used to end the listener thread for good, and
+# live folder add/remove/enable/disable from the API stopped taking effect until
+# the watcher restarted.
+LISTENER_RETRY_BASE_SECS = 2.0
+LISTENER_RETRY_MAX_SECS = 60.0
 
 
 class WatcherDaemon:
@@ -209,17 +215,42 @@ class WatcherDaemon:
                 logger.exception("watcher: discovery scan failed")
             finally:
                 sess.close()
-            self._sync_observers()
+            # Guarded on its own: it queries the database too, and an exception
+            # here used to end the discovery thread for good (#593).
+            try:
+                self._sync_observers()
+            except Exception:
+                logger.exception("watcher: observer sync after discovery failed; retrying next pass")
             self._stop.wait(timeout=DISCOVERY_INTERVAL_SECS)
 
     def _listener_loop(self) -> None:
         # We don't need the payload itself — any NOTIFY arrival means a folder
         # row changed; _sync_observers() reads the current world from DB.
-        try:
-            for _ in listen_for_folder_changes(self._stop, poll_interval=NOTIFY_POLL_INTERVAL_SECS):
+        failures = 0
+
+        def _on_listening() -> None:
+            nonlocal failures
+            if failures:
+                # NOTIFYs sent while disconnected are lost; resync once LISTEN is
+                # back in place, so nothing changed in the gap is missed.
+                logger.info("watcher: listener reconnected after %d failed attempt(s)", failures)
                 self._sync_observers()
-        except Exception:
-            logger.exception("watcher: listener loop crashed")
+            failures = 0
+
+        while not self._stop.is_set():
+            try:
+                for _ in listen_for_folder_changes(
+                    self._stop, poll_interval=NOTIFY_POLL_INTERVAL_SECS, on_listening=_on_listening
+                ):
+                    self._sync_observers()
+            except Exception:
+                failures += 1
+                if failures == 1:
+                    # Once per streak: a database down for an hour would
+                    # otherwise log a traceback every retry.
+                    logger.exception("watcher: folder-change listener failed; reconnecting with backoff")
+                delay = min(LISTENER_RETRY_MAX_SECS, LISTENER_RETRY_BASE_SECS * 2 ** min(failures - 1, 8))
+                self._stop.wait(timeout=delay)
 
     def start(self) -> None:
         self._sync_observers()
