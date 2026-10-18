@@ -13,8 +13,8 @@ from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.error_text import describe_error
 from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS, sniff_mime
-from harbor_clerk.ingest.metadata_extractors import read_in_place_query
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
+from harbor_clerk.ingest.metadata_extractors import verified_in_place_path, watched_paths_query
 from harbor_clerk.models import Document, DocumentHeading, DocumentLink, DocumentPage
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
@@ -576,9 +576,9 @@ def run_extract(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         # extraction so raw_bytes are available and the document attributes
         # (mime_type, source_path) are fully resolved on the doc object.
         try:
-            read_in_place = bool(session.execute(read_in_place_query(doc.doc_id)).scalar())
+            watched = session.execute(watched_paths_query(doc.doc_id)).all()
             metadata = run_metadata_extractors(
-                doc=doc, raw_bytes=data, source_path=doc.source_path, read_in_place=read_in_place
+                doc=doc, raw_bytes=data, in_place_path=verified_in_place_path(watched, doc.source_path)
             )
             doc.doc_metadata = metadata
         except Exception as exc:

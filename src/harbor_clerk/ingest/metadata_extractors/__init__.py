@@ -18,10 +18,11 @@ Public surface:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
-from sqlalchemy import Select, exists, select
+from sqlalchemy import Select, select
 
 log = logging.getLogger(__name__)
 
@@ -84,24 +85,50 @@ EXTRACTORS: list[MetadataExtractor] = [
 ]
 
 
-def read_in_place_query(doc_id) -> Select:
-    """A query for whether the document is read in place from a watched folder.
+def watched_paths_query(doc_id) -> Select:
+    """``(folder path, relative path)`` of each active watched file, in an enabled
+    folder, that maps to the document. Usable with a sync or an async session;
+    feed the rows to ``verified_in_place_path``."""
+    from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 
-    True iff a watched file maps to it. Only such a document's ``source_path``
-    names a file on this host: an upload's is a label its client supplied, and
-    it may still carry a stored original. Usable with a sync or an async session.
+    return (
+        select(WatchedFolder.path, WatchedFile.relative_path)
+        .join(WatchedFolder, WatchedFolder.folder_id == WatchedFile.folder_id)
+        .where(
+            WatchedFile.doc_id == doc_id,
+            WatchedFile.status == WatchedFileStatus.active,
+            WatchedFolder.enabled.is_(True),
+        )
+    )
+
+
+def verified_in_place_path(rows, source_path: str | None) -> str | None:
+    """The path a document is read in place from, or None.
+
+    It is computed from the watched file (its folder's path, or that path's
+    realpath, joined with its relative path), never taken from the document,
+    and returned only when the document's ``source_path`` is exactly that path.
+    A ``source_path`` set any other way is a label a client supplied, not a file
+    this process may look beside. A relative path that is not already normal (a
+    ``..`` or ``.`` segment, a doubled slash) matches nothing.
     """
-    from harbor_clerk.models.watched import WatchedFile
+    if not source_path:
+        return None
+    for folder_path, relative_path in rows:
+        for root in dict.fromkeys((folder_path, os.path.realpath(folder_path))):
+            watched = os.path.join(root, relative_path)
+            if os.path.normpath(watched) == watched and watched == source_path:
+                return watched
+    return None
 
-    return select(exists().where(WatchedFile.doc_id == doc_id))
 
-
-def run_all(*, doc, raw_bytes: bytes, source_path: str | None, read_in_place: bool) -> dict[str, Any]:
+def run_all(*, doc, raw_bytes: bytes, in_place_path: str | None) -> dict[str, Any]:
     """Entry point used by the extract stage. Runs EXTRACTORS in order,
     merges results, returns a namespaced dict suitable for assigning to
     Document.doc_metadata.
 
-    ``read_in_place`` is ``read_in_place_query``'s answer. Without it the
-    extractors get no ``source_path``, so nothing beside it (a sidecar) is read.
+    ``in_place_path`` is what ``verified_in_place_path`` returned for the document, the
+    only path the extractors receive (as ``source_path``): None for an upload or
+    a mail message, so nothing beside a client's label (a sidecar) is read.
     """
-    return _run_extractors(EXTRACTORS, doc=doc, raw_bytes=raw_bytes, source_path=source_path if read_in_place else None)
+    return _run_extractors(EXTRACTORS, doc=doc, raw_bytes=raw_bytes, source_path=in_place_path)

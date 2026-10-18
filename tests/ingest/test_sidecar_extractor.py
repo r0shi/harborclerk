@@ -53,8 +53,8 @@ def test_sidecar_extractor_returns_none_when_source_path_unset():
     assert out is None
 
 
-def test_run_all_reads_a_sidecar_only_for_a_document_read_in_place(tmp_path: Path, monkeypatch):
-    """run_all hands the extractors a source_path only when read_in_place is true."""
+def test_run_all_reads_a_sidecar_only_beside_the_in_place_path(tmp_path: Path, monkeypatch):
+    """run_all hands the extractors the in-place path and nothing else."""
     from harbor_clerk.ingest import metadata_extractors
 
     monkeypatch.setattr(metadata_extractors, "EXTRACTORS", [SidecarExtractor()])
@@ -63,11 +63,34 @@ def test_run_all_reads_a_sidecar_only_for_a_document_read_in_place(tmp_path: Pat
     (tmp_path / "0001_invoice.json").write_text(json.dumps({"vendor": "Acme"}))
     doc = _FakeDoc(doc_id=uuid.uuid4(), title="i")
 
-    labelled = metadata_extractors.run_all(doc=doc, raw_bytes=b"body", source_path=str(doc_file), read_in_place=False)
-    in_place = metadata_extractors.run_all(doc=doc, raw_bytes=b"body", source_path=str(doc_file), read_in_place=True)
-
-    assert labelled == {}
+    assert metadata_extractors.run_all(doc=doc, raw_bytes=b"body", in_place_path=None) == {}
+    in_place = metadata_extractors.run_all(doc=doc, raw_bytes=b"body", in_place_path=str(doc_file))
     assert in_place["sidecar"] == {"vendor": "Acme"}
+
+
+def test_verified_in_place_path_is_the_watched_path_only_when_source_path_matches(tmp_path: Path):
+    from harbor_clerk.ingest.metadata_extractors import verified_in_place_path
+
+    folder = tmp_path / "folder"
+    (folder / "sub").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(folder, target_is_directory=True)
+    watched = str(folder.resolve() / "sub" / "a.txt")
+    rows = [(str(folder), "sub/a.txt")]
+
+    assert verified_in_place_path(rows, watched) == watched
+    # The folder's path is the realpath'd one or the stored one; a symlinked folder still matches.
+    assert verified_in_place_path([(str(link), "sub/a.txt")], watched) == watched
+    assert verified_in_place_path([(str(link), "sub/a.txt")], str(link / "sub" / "a.txt")) == str(
+        link / "sub" / "a.txt"
+    )
+    # Anything else is a label: no path.
+    assert verified_in_place_path(rows, str(tmp_path / "elsewhere" / "a.txt")) is None
+    assert verified_in_place_path(rows, None) is None
+    assert verified_in_place_path([], watched) is None
+    # A relative path that is not normal matches nothing, even when the strings line up.
+    escaping = str(folder.resolve() / "sub" / ".." / ".." / "a.txt")
+    assert verified_in_place_path([(str(folder), "sub/../../a.txt")], escaping) is None
 
 
 def test_sidecar_extractor_logs_and_returns_none_on_malformed_json(tmp_path: Path):

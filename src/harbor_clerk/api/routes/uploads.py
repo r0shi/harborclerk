@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_human_user
@@ -34,6 +34,7 @@ from harbor_clerk.db import get_session
 from harbor_clerk.file_types import ALLOWED_EXTENSIONS, is_excalidraw
 from harbor_clerk.models import Document, Upload, UploadSession
 from harbor_clerk.models.enums import PipelineStatus
+from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
 from harbor_clerk.storage import get_storage
 from harbor_clerk.worker.pipeline import queue_extract_for_current_pipeline, reset_and_queue_extract_for_doc
 
@@ -263,6 +264,16 @@ async def _confirm_single(
         doc = doc_result.scalar_one_or_none()
         if doc is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        watched = await session.execute(
+            select(exists().where(WatchedFile.doc_id == doc_id, WatchedFile.status == WatchedFileStatus.active))
+        )
+        if watched.scalar():
+            # A watched document's content is its file, read in place; an upload
+            # replacing it would be overwritten, or shadow the file, on the next edit.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This document is read in place from a watched folder; edit the file instead.",
+            )
 
         safe_name = os.path.basename(upload.original_filename) or "file"
         canonical_key = f"originals/docs/{doc_id}/{safe_name}"

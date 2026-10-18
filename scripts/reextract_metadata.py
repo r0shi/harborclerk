@@ -21,8 +21,8 @@ from pathlib import Path
 from sqlalchemy import select
 
 from harbor_clerk.db import async_session_factory
-from harbor_clerk.ingest.metadata_extractors import read_in_place_query
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
+from harbor_clerk.ingest.metadata_extractors import verified_in_place_path, watched_paths_query
 from harbor_clerk.models.document import Document
 from harbor_clerk.storage import get_storage
 
@@ -59,12 +59,11 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
                 skipped += 1
                 continue
 
-            read_in_place = bool((await session.execute(read_in_place_query(doc.doc_id))).scalar())
+            watched = (await session.execute(watched_paths_query(doc.doc_id))).all()
             metadata = run_metadata_extractors(
                 doc=doc,
                 raw_bytes=raw_bytes,
-                source_path=doc.source_path,
-                read_in_place=read_in_place,
+                in_place_path=verified_in_place_path(watched, doc.source_path),
             )
             if metadata == doc.doc_metadata:
                 continue  # idempotent no-op

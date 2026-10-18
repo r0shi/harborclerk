@@ -77,9 +77,12 @@ async def test_extract_stage_writes_sidecar_metadata_to_doc(db_session, tmp_path
     assert "sidecar" in metadata["_source_provenance"]
 
 
-async def _extract_with_stored_original(db_session, tmp_path: Path, *, watched: bool) -> tuple[dict | None, int | None]:
+async def _extract_with_stored_original(
+    db_session, tmp_path: Path, *, watched_file: Path | None
+) -> tuple[dict | None, int | None]:
     """Extract a document whose original is in storage and whose source_path
-    names a different file with a sidecar beside it. Returns (metadata, chars)."""
+    names a different file with a sidecar beside it, optionally mapped to the
+    watched file ``watched_file``. Returns (metadata, chars)."""
     import io
     import uuid
 
@@ -107,8 +110,8 @@ async def _extract_with_stored_original(db_session, tmp_path: Path, *, watched: 
     )
     db_session.add(doc)
     await db_session.flush()
-    if watched:
-        await _watch(db_session, doc, labelled)
+    if watched_file is not None:
+        await _watch(db_session, doc, watched_file)
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
     await db_session.commit()
     doc_id = doc.doc_id
@@ -132,19 +135,26 @@ async def _extract_with_stored_original(db_session, tmp_path: Path, *, watched: 
 async def test_extract_stage_reads_no_sidecar_beside_an_uploads_source_path(db_session, tmp_path: Path):
     """An upload's source_path is a client-supplied label: the extract stage reads
     its bytes from storage and attaches no file found beside that path."""
-    metadata, extracted_chars = await _extract_with_stored_original(db_session, tmp_path, watched=False)
+    metadata, extracted_chars = await _extract_with_stored_original(db_session, tmp_path, watched_file=None)
 
     assert extracted_chars == len(b"Stored body text"), "the body must come from storage"
     assert "sidecar" not in (metadata or {}), f"no sidecar may be read for an upload, got: {metadata}"
 
 
 @pytest.mark.asyncio
-async def test_extract_stage_reads_the_sidecar_of_a_watched_doc_with_a_stored_original(db_session, tmp_path: Path):
-    """A watched document that also carries an object key (a confirmed new
-    version) is still read in place for its sidecar."""
-    metadata, _ = await _extract_with_stored_original(db_session, tmp_path, watched=True)
+async def test_extract_stage_reads_no_sidecar_when_source_path_is_not_the_watched_path(db_session, tmp_path: Path):
+    """A document mapped to a watched file but whose source_path names some
+    other file reads no sidecar, neither beside its source_path nor beside the
+    watched file."""
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    watched = folder / "real.txt"
+    watched.write_text("the watched file")
+    (folder / "real.json").write_text(json.dumps({"vendor": "WatchedSidecar"}))
 
-    assert (metadata or {}).get("sidecar") == {"vendor": "Beside"}, f"expected the sidecar, got: {metadata}"
+    metadata, _ = await _extract_with_stored_original(db_session, tmp_path, watched_file=watched)
+
+    assert "sidecar" not in (metadata or {}), f"no sidecar may be read, got: {metadata}"
 
 
 @pytest.mark.asyncio
