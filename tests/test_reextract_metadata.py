@@ -121,3 +121,79 @@ async def test_reextract_reads_a_watched_doc_in_place_with_its_sidecar(db_sessio
     refreshed = (await db_session.execute(select(Document).where(Document.doc_id == doc_id))).scalar_one()
     assert refreshed.doc_metadata["frontmatter"] == {"vendor": "OnDisk"}
     assert refreshed.doc_metadata["sidecar"] == {"vendor": "Beside"}
+
+
+async def test_reextract_skips_an_unverified_source_path(db_session, tmp_path: Path):
+    """Not read in place and no stored original: skipped, without reading the file at source_path."""
+    import scripts.reextract_metadata as script
+
+    source = tmp_path / "label.md"
+    source.write_bytes(_md("AtTheLabel"))
+    doc = Document(
+        title="label",
+        canonical_filename="label.md",
+        status="active",
+        sha256=hashlib.sha256(source.read_bytes()).digest(),
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/markdown",
+        source_path=str(source),
+        doc_metadata={},
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    doc_id = doc.doc_id
+
+    processed, updated, skipped = await script.reextract_all()
+
+    assert (processed, updated, skipped) == (1, 0, 1)
+    db_session.expire_all()
+    refreshed = (await db_session.execute(select(Document).where(Document.doc_id == doc_id))).scalar_one()
+    assert refreshed.doc_metadata == {}
+
+
+async def test_reextract_skips_a_watched_doc_whose_file_is_missing(db_session, tmp_path: Path):
+    """A missing watched file is skipped, never replaced by the stored original."""
+    import scripts.reextract_metadata as script
+
+    stored = _md("Stored")
+    source = tmp_path / "gone.md"
+    key = f"originals/docs/{uuid.uuid4()}/gone.md"
+    get_storage().put_object("originals", key, io.BytesIO(stored), len(stored), "text/markdown")
+    doc = Document(
+        title="gone",
+        canonical_filename="gone.md",
+        status="active",
+        sha256=hashlib.sha256(stored).digest(),
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/markdown",
+        source_path=str(source),
+        original_bucket="originals",
+        original_object_key=key,
+        doc_metadata={},
+    )
+    db_session.add(doc)
+    folder = WatchedFolder(path=str(tmp_path), display_name=tmp_path.name)
+    db_session.add(folder)
+    await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=folder.folder_id,
+            relative_path=source.name,
+            bookmark_data=b"",
+            sha256=doc.sha256,
+            doc_id=doc.doc_id,
+            status=WatchedFileStatus.active,
+        )
+    )
+    await db_session.commit()
+    doc_id = doc.doc_id
+
+    try:
+        processed, updated, skipped = await script.reextract_all()
+    finally:
+        get_storage().remove_object("originals", key)
+
+    assert (processed, updated, skipped) == (1, 0, 1)
+    db_session.expire_all()
+    refreshed = (await db_session.execute(select(Document).where(Document.doc_id == doc_id))).scalar_one()
+    assert refreshed.doc_metadata == {}

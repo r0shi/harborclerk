@@ -849,16 +849,17 @@ async def download_document(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    import os
+    import asyncio
     from pathlib import Path
 
     from harbor_clerk.file_types import guess_mime_type
     from harbor_clerk.watched_source import in_place_path_async
 
-    # Read as the extract stage does: a document read in place from its watched file
-    # (even with a stored original, #859), else storage, else source_path.
-    # A failed lookup is a 503, never the stored original: for a document that also
-    # carries one, that would serve the wrong bytes.
+    # Read as the extract stage does (watched_source): a document read in place from
+    # its watched file (even with a stored original, #859), else its stored original.
+    # A failed lookup is a 503 and a missing watched file a 404, never the stored
+    # original: for a document that also carries one, that would serve the wrong
+    # bytes. An unverified source_path is never read.
     try:
         in_place = await in_place_path_async(session, doc)
     except SQLAlchemyError:
@@ -867,11 +868,12 @@ async def download_document(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Source file temporarily unavailable; try again.",
         )
-    if in_place is not None and not os.path.exists(in_place):
-        in_place = None
     content_type = doc.mime_type or "application/octet-stream"
     if in_place is not None:
-        file_bytes = Path(in_place).read_bytes()
+        try:
+            file_bytes = await asyncio.to_thread(Path(in_place).read_bytes)
+        except FileNotFoundError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file is missing")
         filename = posixpath.basename(in_place)
         # doc.mime_type is what the extract stage set from this file and its magic
         # bytes; the extension is the fallback when it is unset.
@@ -881,10 +883,6 @@ async def download_document(
         obj = storage.get_object(doc.original_bucket, doc.original_object_key)
         file_bytes = obj.read()
         filename = posixpath.basename(doc.original_object_key)
-    elif doc.source_path and os.path.exists(doc.source_path):
-        # Watched folder file — no stored object, read from original location
-        file_bytes = Path(doc.source_path).read_bytes()
-        filename = posixpath.basename(doc.source_path)
     else:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file unavailable")
 

@@ -1,7 +1,6 @@
 """Extract stage — pull text from documents, spreadsheets, and images via Tika."""
 
 import logging
-import os
 import re
 import uuid
 from pathlib import Path
@@ -16,8 +15,7 @@ from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS, 
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
 from harbor_clerk.models import Document, DocumentHeading, DocumentLink, DocumentPage
 from harbor_clerk.models.enums import JobStage
-from harbor_clerk.storage import get_storage
-from harbor_clerk.watched_source import in_place_path
+from harbor_clerk.watched_source import read_document_bytes
 from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
 from harbor_clerk.worker.markdown_extract import MarkdownExtractResult, extract_markdown
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
@@ -244,23 +242,12 @@ def run_extract(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         if worker_seq is None:
             worker_seq = doc.pipeline_seq
 
-        # A document read in place is read from its watched file, even when it also
-        # carries a stored original (#859); otherwise from storage, falling back to
-        # source_path for a watched document whose path did not verify. The metadata
-        # extractors get the in-place path only when the body came from it.
-        in_place = in_place_path(session, doc)
-        if in_place is not None and not os.path.exists(in_place):
-            in_place = None
-        if in_place is not None:
-            data = Path(in_place).read_bytes()
-        elif doc.original_object_key:
-            storage = get_storage()
-            response = storage.get_object(doc.original_bucket, doc.original_object_key)
-            data = response.read()
-        elif doc.source_path and os.path.exists(doc.source_path):
-            data = Path(doc.source_path).read_bytes()
-        else:
-            raise RuntimeError(f"No source for doc {doc_id}: source_path and original_object_key both empty")
+        # From the watched file when the document is read in place (even with a stored
+        # original, #859), else from the stored original (watched_source). A missing
+        # watched file, a document with neither, or a failed lookup fails the stage.
+        # The metadata extractors get the in-place path, so only when the body came
+        # from it.
+        data, in_place = read_document_bytes(session, doc)
 
         if in_place is not None:
             # The bytes are the file's, so is the type: never the stored original's

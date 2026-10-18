@@ -26,9 +26,12 @@ async def _ocr_watched_scan(
     stored_name: str = "scan.png",
     mime_type: str = "image/png",
     raises: type[BaseException] | None = None,
+    watched: bool = True,
+    stored: bool = True,
 ) -> tuple[list[bytes], str]:
-    """OCR a watched image whose file holds b"edited on disk" and whose stored
-    original holds b"stale stored". Returns (bytes OCR saw, page text)."""
+    """OCR an image whose file holds b"edited on disk", mapped to a watched file
+    unless ``watched`` is false, with a stored original holding b"stale stored"
+    unless ``stored`` is false. Returns (bytes OCR saw, page text)."""
     from harbor_clerk.worker.stages import ocr
 
     seen: list[bytes] = []
@@ -41,8 +44,9 @@ async def _ocr_watched_scan(
 
     src = tmp_path / "scan.png"
     src.write_bytes(b"edited on disk")
-    key = f"originals/docs/{uuid.uuid4()}/{stored_name}"
-    get_storage().put_object("originals", key, io.BytesIO(b"stale stored"), len(b"stale stored"), "image/png")
+    key = f"originals/docs/{uuid.uuid4()}/{stored_name}" if stored else None
+    if key:
+        get_storage().put_object("originals", key, io.BytesIO(b"stale stored"), len(b"stale stored"), "image/png")
 
     doc = Document(
         title="scan",
@@ -52,7 +56,7 @@ async def _ocr_watched_scan(
         pipeline_status=PipelineStatus.queued,
         mime_type=mime_type,
         source_path=str(src),
-        original_bucket="originals",
+        original_bucket="originals" if key else None,
         original_object_key=key,
         needs_ocr=True,
     )
@@ -60,16 +64,17 @@ async def _ocr_watched_scan(
     folder = WatchedFolder(path=str(tmp_path), display_name=tmp_path.name)
     db_session.add(folder)
     await db_session.flush()
-    db_session.add(
-        WatchedFile(
-            folder_id=folder.folder_id,
-            relative_path=src.name,
-            bookmark_data=b"",
-            sha256=doc.sha256,
-            doc_id=doc.doc_id,
-            status=WatchedFileStatus.active,
+    if watched:
+        db_session.add(
+            WatchedFile(
+                folder_id=folder.folder_id,
+                relative_path=src.name,
+                bookmark_data=b"",
+                sha256=doc.sha256,
+                doc_id=doc.doc_id,
+                status=WatchedFileStatus.active,
+            )
         )
-    )
     db_session.add(DocumentPage(doc_id=doc.doc_id, page_num=1, page_text=""))
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.ocr, status=JobStatus.queued))
     await db_session.commit()
@@ -84,7 +89,8 @@ async def _ocr_watched_scan(
             with pytest.raises(raises):
                 ocr.run_ocr(doc_id)
     finally:
-        get_storage().remove_object("originals", key)
+        if key:
+            get_storage().remove_object("originals", key)
 
     sync_session = get_sync_session()
     try:
@@ -104,10 +110,25 @@ async def test_ocr_reads_a_watched_doc_from_disk_despite_a_stale_stored_original
 
 
 @pytest.mark.asyncio
-async def test_ocr_reads_storage_when_the_watched_file_is_gone(db_session, tmp_path: Path, monkeypatch):
-    seen, text = await _ocr_watched_scan(db_session, tmp_path, monkeypatch, delete_file=True)
-    assert seen == [b"stale stored"]
-    assert text == "stale stored"
+async def test_ocr_fails_when_the_watched_file_is_missing(db_session, tmp_path: Path, monkeypatch):
+    """A missing watched file fails the stage; its stored original (maybe an older upload) is not OCRed."""
+    from harbor_clerk.watched_source import WatchedFileMissing
+
+    seen, text = await _ocr_watched_scan(db_session, tmp_path, monkeypatch, delete_file=True, raises=WatchedFileMissing)
+    assert seen == []
+    assert text == ""
+
+
+@pytest.mark.asyncio
+async def test_ocr_never_reads_an_unverified_source_path(db_session, tmp_path: Path, monkeypatch):
+    """Not read in place and no stored original: the stage fails, without reading source_path."""
+    from harbor_clerk.watched_source import NoReadableSource
+
+    seen, text = await _ocr_watched_scan(
+        db_session, tmp_path, monkeypatch, delete_file=False, watched=False, stored=False, raises=NoReadableSource
+    )
+    assert seen == []
+    assert text == ""
 
 
 @pytest.mark.asyncio

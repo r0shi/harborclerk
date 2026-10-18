@@ -7,7 +7,7 @@ from sqlalchemy import text
 
 from harbor_clerk.models import Chunk, Document, Entity, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
-from tests.conftest import auth_header
+from tests.conftest import auth_header, watch_document
 
 # Minimal required fields for a Document row (sha256 NOT NULL, pipeline_status NOT NULL)
 _DOC_DEFAULTS = {
@@ -493,6 +493,7 @@ async def test_download_returns_bytes_when_enabled(client, admin_user, admin_tok
     doc = Document(title="Permitted", status="active", source_path=str(src), **_DOC_DEFAULTS)
     db_session.add(doc)
     await db_session.flush()
+    await watch_document(db_session, doc, src)
 
     s = get_settings()
     original = s.allow_source_download
@@ -601,13 +602,35 @@ async def test_download_is_a_503_when_the_watched_file_lookup_fails(
     assert b"stale stored" not in resp.content
 
 
-async def test_download_serves_storage_when_the_watched_file_is_gone(
+async def test_download_is_a_404_when_the_watched_file_is_missing(
     client, admin_user, admin_token, db_session, tmp_path
 ):
+    """A missing watched file is a 404, never its stored original (maybe an older upload)."""
     resp = await _download_watched_doc(client, admin_token, db_session, tmp_path, delete_file=True)
-    assert resp.status_code == 200
-    assert resp.content == b"stale stored"
-    assert resp.headers["content-type"].startswith("application/pdf")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Source file is missing"
+    assert b"stale stored" not in resp.content
+
+
+async def test_download_never_reads_an_unverified_source_path(client, admin_user, admin_token, db_session, tmp_path):
+    """No watched file and no stored original: a 404, without reading the file at source_path."""
+    from harbor_clerk.config import get_settings
+
+    src = tmp_path / "label.txt"
+    src.write_bytes(b"a file at the label")
+    doc = Document(title="Label", status="active", source_path=str(src), **_DOC_DEFAULTS)
+    db_session.add(doc)
+    await db_session.flush()
+
+    s = get_settings()
+    original = s.allow_source_download
+    s.allow_source_download = True
+    try:
+        resp = await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
+    finally:
+        s.allow_source_download = original
+    assert resp.status_code == 404
+    assert b"a file at the label" not in resp.content
 
 
 async def test_download_403_fires_before_doc_existence_check(client, admin_user, admin_token):

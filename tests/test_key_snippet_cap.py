@@ -33,7 +33,7 @@ from harbor_clerk.payload_bounds import (
     TRUNCATED_KEY,
 )
 from harbor_clerk.search import _brief_snippet
-from tests.conftest import auth_header
+from tests.conftest import auth_header, watch_document
 
 ELLIPSIS = "…"
 # Every response field that carries corpus passage text, on MCP and REST.
@@ -313,6 +313,7 @@ async def test_rest_download_still_serves_an_uncapped_key(client, db_session, co
     from harbor_clerk.config import get_settings
 
     get_settings().allow_source_download = True
+    await watch_document(db_session, corpus.paged_doc, corpus.paged_doc.source_path)
     raw = await _make_key(db_session, None)
     resp = await client.get(f"/api/docs/{corpus.paged_doc.doc_id}/download", headers=auth_header(raw))
     assert resp.status_code == 200, resp.text[:300]

@@ -303,6 +303,39 @@ def auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def watch_document(db_session, doc, source) -> None:
+    """Map a flushed ``doc`` to an active watched file at ``source``, as the watcher
+    does, so it verifies as read in place (``harbor_clerk.watched_source``). The
+    folder is ``source``'s parent, reused when already watched. Not committed."""
+    from pathlib import Path
+
+    from sqlalchemy import select
+
+    from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+
+    source = Path(source)
+    folder = (
+        (await db_session.execute(select(WatchedFolder).where(WatchedFolder.path == str(source.parent))))
+        .scalars()
+        .first()
+    )
+    if folder is None:
+        folder = WatchedFolder(path=str(source.parent), display_name=source.parent.name)
+        db_session.add(folder)
+        await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=folder.folder_id,
+            relative_path=source.name,
+            bookmark_data=b"",
+            sha256=doc.sha256,
+            doc_id=doc.doc_id,
+            status=WatchedFileStatus.active,
+        )
+    )
+    await db_session.flush()
+
+
 import pytest_asyncio  # noqa: E402
 
 

@@ -40,16 +40,20 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
 
         for doc in docs:
             processed += 1
-            # Load raw bytes as the extract stage does: in place from the watched file
-            # (harbor_clerk.watched_source), else from storage when the original is
-            # stored (uploads, mail; their source_path is only a label), else from
-            # source_path.
+            # Load raw bytes as the extract stage does (harbor_clerk.watched_source): in
+            # place from the watched file, else from the stored original (uploads, mail;
+            # their source_path is only a label). A missing watched file, or a document
+            # with neither, is skipped: never the stored original for a file read in
+            # place, never an unverified source_path.
             raw_bytes: bytes | None = None
             in_place = await in_place_path_async(session, doc)
-            if in_place is not None and not Path(in_place).is_file():
-                in_place = None
             if in_place is not None:
-                raw_bytes = Path(in_place).read_bytes()
+                try:
+                    raw_bytes = Path(in_place).read_bytes()
+                except FileNotFoundError:
+                    log.warning("doc %s: its watched file is missing; skipping", doc.doc_id)
+                    skipped += 1
+                    continue
             elif doc.original_object_key:
                 try:
                     response = storage.get_object(doc.original_bucket, doc.original_object_key)
@@ -58,10 +62,8 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
                     log.warning("storage fetch failed for doc %s: %s", doc.doc_id, exc)
                     skipped += 1
                     continue
-            elif doc.source_path and Path(doc.source_path).is_file():
-                raw_bytes = Path(doc.source_path).read_bytes()
             else:
-                log.info("doc %s has no source_path or storage object; skipping", doc.doc_id)
+                log.info("doc %s has no stored original and is not read in place; skipping", doc.doc_id)
                 skipped += 1
                 continue
 

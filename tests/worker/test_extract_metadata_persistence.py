@@ -14,6 +14,7 @@ from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.models import Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+from tests.conftest import watch_document
 
 
 async def _watch(
@@ -128,8 +129,21 @@ async def test_extract_stage_reads_the_sidecar_of_a_paused_folders_document(db_s
 
 @pytest.mark.asyncio
 async def test_extract_stage_reads_no_sidecar_for_a_removed_watched_file(db_session, tmp_path: Path):
-    out = await _extract_watched_doc(db_session, tmp_path, status=WatchedFileStatus.removed)
+    """A removed watched file does not verify: the stored original is read, and no sidecar."""
+    out = await _extract_watched_doc(db_session, tmp_path, status=WatchedFileStatus.removed, stored=b"Stored body text")
+    assert "Stored body text" in out.text, out.text
     assert "sidecar" not in out.metadata, f"no sidecar expected, got: {out.metadata}"
+
+
+@pytest.mark.asyncio
+async def test_extract_stage_never_reads_an_unverified_source_path(db_session, tmp_path: Path):
+    """With no verified watched file and no stored original there is nothing to read:
+    the stage fails, rather than reading the file at source_path."""
+    from harbor_clerk.watched_source import NoReadableSource
+
+    out = await _extract_watched_doc(db_session, tmp_path, status=WatchedFileStatus.removed, raises=NoReadableSource)
+    assert out.chars is None
+    assert out.text == ""
 
 
 @pytest.mark.asyncio
@@ -143,11 +157,16 @@ async def test_extract_stage_reads_a_watched_doc_from_disk_despite_a_stale_store
 
 
 @pytest.mark.asyncio
-async def test_extract_stage_reads_storage_when_the_watched_file_is_gone(db_session, tmp_path: Path):
-    """With its file missing, a watched document with a stored original is read
-    from storage, and no sidecar is read beside the missing file."""
-    out = await _extract_watched_doc(db_session, tmp_path, stored=b"Stored body text", delete_file=True)
-    assert "Stored body text" in out.text, out.text
+async def test_extract_stage_fails_when_the_watched_file_is_missing(db_session, tmp_path: Path):
+    """With its file missing (mid atomic save, or gone), a watched document fails the
+    stage instead of being read from its stored original, which may be an older upload."""
+    from harbor_clerk.watched_source import WatchedFileMissing
+
+    out = await _extract_watched_doc(
+        db_session, tmp_path, stored=b"Stored body text", delete_file=True, raises=WatchedFileMissing
+    )
+    assert "Stored body text" not in out.text, out.text
+    assert out.chars is None
     assert "sidecar" not in out.metadata, f"no sidecar expected, got: {out.metadata}"
 
 
@@ -456,6 +475,7 @@ async def test_extract_stage_backfills_email_columns_on_legacy_eml(db_session, t
     )
     db_session.add(doc)
     await db_session.flush()
+    await watch_document(db_session, doc, source)
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
     await db_session.commit()
     doc_id = doc.doc_id
@@ -518,6 +538,7 @@ async def test_extract_stage_does_not_clobber_existing_email_columns(db_session,
     )
     db_session.add(doc)
     await db_session.flush()
+    await watch_document(db_session, doc, source)
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
     await db_session.commit()
     doc_id = doc.doc_id
@@ -538,3 +559,48 @@ async def test_extract_stage_does_not_clobber_existing_email_columns(db_session,
     assert refreshed.email_subject == "IMAP set this subject"
     assert refreshed.email_label_path == "INBOX/Work"
     assert refreshed.title == "IMAP set this"
+
+
+@pytest.mark.asyncio
+async def test_mark_stage_done_commits_when_the_display_name_lookup_fails(db_session, tmp_path: Path, monkeypatch):
+    """The display-name lookup runs in a savepoint: its failure costs the name, not
+    the job and document writes that mark_stage_done commits."""
+    import uuid
+
+    from sqlalchemy import text
+
+    import harbor_clerk.watched_source as watched_source
+    from harbor_clerk.worker.pipeline import mark_stage_done
+
+    source = tmp_path / "0004_doc.txt"
+    source.write_text("body")
+    doc = Document(
+        title="0004_doc",
+        canonical_filename="0004_doc.txt",
+        status="active",
+        sha256=hashlib.sha256(b"body 0004").digest(),
+        pipeline_status=PipelineStatus.finalizing,
+        mime_type="text/plain",
+        source_path=str(source),
+        original_bucket="originals",
+        original_object_key=f"originals/docs/{uuid.uuid4()}/0004_doc.txt",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.running))
+    await db_session.commit()
+    doc_id = doc.doc_id
+
+    monkeypatch.setattr(watched_source, "watched_paths_query", lambda doc_id: text("SELECT * FROM no_such_table_603"))
+    mark_stage_done(doc_id, JobStage.finalize)
+
+    sync_session = get_sync_session()
+    try:
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc_id, IngestionJob.stage == JobStage.finalize)
+        ).scalar_one()
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        assert job.status == JobStatus.done
+        assert refreshed.pipeline_status == PipelineStatus.ready
+    finally:
+        sync_session.close()
