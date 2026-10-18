@@ -1421,7 +1421,17 @@ class ServiceManager: ObservableObject {
     /// logged; a read-only data path into the bundle is kept and logged. Then
     /// the runtime cache variables, resolved once per app run, are laid over
     /// the result. Neither the shared dict nor a service's own overrides can
-    /// point a cache into the signed bundle (#846).
+    /// point a cache into the signed bundle (#846): any file a process adds
+    /// under `Contents/` breaks `codesign --verify --deep --strict`.
+    ///
+    /// The rule for every Python process the app launches, so every launch
+    /// path calls this last: `PythonService.launchEnvironment()` (what
+    /// `start()` hands the process) and `MigrationRunner.environment` (what
+    /// `run()` hands Alembic). Where the numba cache goes, and what happens
+    /// when no directory is writable, is in `runtimeCacheEnvironment`.
+    /// `tests/test_numba_cache_env.py` runs the real `import umap` under
+    /// these variables, and `docs/releasing.md` checks the seal on an
+    /// installed copy after a smoke run.
     nonisolated static func applyingRuntimeCacheRules(
         to env: [String: String],
         bundle: URL = Bundle.main.bundleURL

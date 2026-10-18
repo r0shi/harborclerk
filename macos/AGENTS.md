@@ -38,28 +38,9 @@ which is why macOS gets variables like `LLAMA_SERVER_URL` for free. Docker
 Compose has no equivalent — each service opts in individually, and forgetting
 one there caused summarize to silently produce extractive summaries. When adding
 a variable a worker needs, check whether the Compose side needs it too.
-
-**Nothing a launched process runs may write into the bundle.** Any file added
-under `Contents/` breaks the signature seal (`codesign --verify --deep
---strict`). numba did, caching JIT output beside umap's sources in the venv
-(#846). Caches go under "Harbor Clerk" in the user's Caches folder
-(`~/Library/Caches/` for an unsandboxed app) via
-`ServiceManager.applyingRuntimeCacheRules`, which each launch path applies
-last, over everything else (`PythonService.launchEnvironment()` and
-`MigrationRunner.environment`). It drops any write-cache variable (a cache or
-download directory, Hugging Face's included) that points into the bundle,
-keeps read-only data paths such as `NLTK_DATA` (logged), sets
-`NUMBA_CACHE_DIR`, resolved once per app run, and limits numba to that directory
-(`NUMBA_CACHE_LOCATOR_CLASSES=UserProvidedCacheLocator`), because numba's own
-fallback is the bundle. If the Caches directory cannot be written, the next
-writable one of Application Support, `$TMPDIR` and a fresh `mkdtemp` directory
-under `/tmp` is used. If none can be, numba gets no directory: it refuses to
-cache, `import umap` raises, and topic computation fails, which is logged.
-That is deliberate. With the locked numba 0.64 no locator or variable
-(`NUMBA_DISABLE_JIT` included) imports umap without a writable directory, and
-the alternative is the bundle. `tests/test_numba_cache_env.py` runs the real
-import under this environment. `docs/releasing.md` checks the seal after a
-smoke run.
+**Nothing a launched process runs may write into the bundle**: it breaks the code
+seal (numba did, #846). Every launch path ends with `applyingRuntimeCacheRules`
+in `ServiceManager`, whose comments hold the cache rules; never bypass it.
 
 ## Networking
 
@@ -85,19 +66,12 @@ hardened-runtime and JIT policy can all change behavior with no source change at
 all. So an SDK bump is a behavioral change, not housekeeping.
 
 **The bump has already happened**, and nothing recorded it: the deployment
-target is still 15.0, but the SDK follows whatever Xcode is on the build machine,
-so installing Xcode 26 silently moved it, and Xcode 27 moved it again. The
-release machine runs Xcode 27.1 with the macOS 27.0 SDK (`xcodebuild -version`,
-`xcrun --sdk macosx --show-sdk-version`); measured on the bundles built there on
-2026-10-17 with
-`vtool -show-build /Applications/HarborClerkServer.app/Contents/MacOS/HarborClerkServer`
-(and the same for `HarborClerk.app`): `minos 15.0`, `sdk 27.0`.
-
-So the stricter rules are **already live in every build since those Xcode
-upgrades**. The SDK 26.5 builds went through a full field test (an
-11,436-document corpus, IMAP sync, search and Research) with no observed
-breakage; the SDK 27.0 builds have not had one yet. The `#561` ATS gap
-is therefore running *under* the stricter regime today, not waiting for it.
+target is still 15.0, but the SDK follows whatever Xcode is on the build machine:
+Xcode 26 moved it, then the release machine's Xcode 27.1 (SDK 27.0): `vtool
+-show-build` on both apps' executables, built 2026-10-17, gives `minos 15.0`, `sdk
+27.0`. The stricter rules are **already live in every build**: SDK 26.5 builds passed
+a full field test (11,436 documents, IMAP sync, search, Research), 27.0 builds have
+not had one yet. The `#561` ATS gap runs *under* the stricter regime today.
 
 Two consequences:
 
@@ -199,8 +173,7 @@ inside what is free. YaRN is off by default; use the app's defaults.
 `make apps` compiles PostgreSQL and pgvector from source. Where a macOS beta
 updated the Command Line Tools, the bare `cc` that `configure` runs resolves the
 **CLT** SDK (`/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`) even though `xcode-select -p` points at Xcode.app. When that SDK is
-newer than Xcode's linker (CLT 27.0 against Xcode 26.5, before the move to
-Xcode 27) every link fails with
+newer than Xcode's linker (CLT 27.0 against Xcode 26.5, pre-Xcode 27) every link fails with
 
 ```
 ld: tapi error: malformed file
