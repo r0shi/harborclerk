@@ -46,8 +46,10 @@ under `Contents/` breaks the signature seal (`codesign --verify --deep
 (`~/Library/Caches/` for an unsandboxed app) via
 `ServiceManager.applyingRuntimeCacheRules`, which each launch path applies
 last, over everything else (`PythonService.launchEnvironment()` and
-`MigrationRunner.environment`). It drops any cache variable that points into
-the bundle, sets `NUMBA_CACHE_DIR`, and limits numba to that directory
+`MigrationRunner.environment`). It drops any write-cache variable (a cache or
+download directory, Hugging Face's included) that points into the bundle,
+keeps read-only data paths such as `NLTK_DATA` (logged), sets
+`NUMBA_CACHE_DIR`, resolved once per app run, and limits numba to that directory
 (`NUMBA_CACHE_LOCATOR_CLASSES=UserProvidedCacheLocator`), because numba's own
 fallback is the bundle. If the Caches directory cannot be written, the next
 writable one of Application Support, `$TMPDIR` and a fresh `mkdtemp` directory

@@ -1397,35 +1397,66 @@ class ServiceManager: ObservableObject {
         return env
     }
 
-    /// Cache and data-path variables the venv's libraries honour. A launch
-    /// path drops any of them that points into the app bundle (see
-    /// `applyingRuntimeCacheRules`); the first two it also sets itself.
-    nonisolated static let cacheVariables = [
-        "NUMBA_CACHE_DIR", "PYTHONPYCACHEPREFIX", "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
-        "SENTENCE_TRANSFORMERS_HOME", "XDG_CACHE_HOME", "MPLCONFIGDIR", "TORCH_HOME", "NLTK_DATA",
+    /// Variables a library writes through: a cache it fills, or a directory it
+    /// downloads into. One pointing into the bundle is dropped at launch (see
+    /// `applyingRuntimeCacheRules`); the first two the launch also sets itself.
+    /// The Hugging Face variables (`HF_HOME`, `HF_HUB_CACHE`,
+    /// `TRANSFORMERS_CACHE`, `SENTENCE_TRANSFORMERS_HOME`) can name shipped,
+    /// read-only models, but the same libraries download into them whenever a
+    /// model is missing, so they count as write caches and are dropped too.
+    nonisolated static let writeCacheVariables = [
+        "NUMBA_CACHE_DIR", "PYTHONPYCACHEPREFIX", "XDG_CACHE_HOME", "MPLCONFIGDIR", "TORCH_HOME",
+        "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE", "SENTENCE_TRANSFORMERS_HOME",
     ]
 
+    /// Data search paths a library only reads. A bundle entry there is
+    /// legitimate (shipped data) and is left in place, only logged. NLTK
+    /// would download into the first writable entry if code called
+    /// `nltk.download()`; nothing does, and NLTK is not in the venv.
+    nonisolated static let readOnlyDataVariables = ["NLTK_DATA"]
+
     /// The cache rules every launched Python process gets, applied last over
-    /// everything else in `env`: any cache variable whose value (or any entry
-    /// of a colon-separated list) lies inside `bundle` is dropped and logged,
-    /// then `runtimeCacheEnvironment` is laid over the result. Neither the
-    /// shared dict nor a service's own overrides can point a cache into the
-    /// signed bundle (#846).
+    /// everything else in `env`. A write-cache variable whose value (or any
+    /// entry of a colon-separated list) lies inside `bundle` is dropped and
+    /// logged; a read-only data path into the bundle is kept and logged. Then
+    /// the runtime cache variables, resolved once per app run, are laid over
+    /// the result. Neither the shared dict nor a service's own overrides can
+    /// point a cache into the signed bundle (#846).
     nonisolated static func applyingRuntimeCacheRules(
         to env: [String: String],
         bundle: URL = Bundle.main.bundleURL
     ) -> [String: String] {
-        var result = env
-        for key in cacheVariables {
-            guard let value = env[key] else { continue }
-            let inBundle = value.split(separator: ":").contains { isPath(String($0), inside: bundle) }
-            if inBundle {
-                Log.logger("lifecycle").error(
-                    "Dropped \(key, privacy: .public)=\(value, privacy: .public): it points into the app bundle")
-                result.removeValue(forKey: key)
-            }
+        func pointsIntoBundle(_ value: String) -> Bool {
+            value.split(separator: ":").contains { isPath(String($0), inside: bundle) }
         }
-        return result.merging(runtimeCacheEnvironment()) { _, cache in cache }
+        var result = env
+        for key in writeCacheVariables {
+            guard let value = env[key], pointsIntoBundle(value) else { continue }
+            Log.logger("lifecycle").error(
+                "Dropped \(key, privacy: .public)=\(value, privacy: .public): it points into the app bundle")
+            result.removeValue(forKey: key)
+        }
+        for key in readOnlyDataVariables {
+            guard let value = env[key], pointsIntoBundle(value) else { continue }
+            Log.logger("lifecycle").notice(
+                "Kept \(key, privacy: .public)=\(value, privacy: .public): a read-only data path into the app bundle")
+        }
+        return result.merging(sharedRuntimeCacheEnvironment()) { _, cache in cache }
+    }
+
+    /// `runtimeCacheEnvironment()`, resolved once per app run (per Caches
+    /// folder) and reused by every launch. Resolving it on each launch made
+    /// every start and restart in the last-resort case call `mkdtemp` again:
+    /// a new directory each time, no cache reuse, and directories piling up
+    /// in `/tmp`.
+    nonisolated static func sharedRuntimeCacheEnvironment(cachesDir: URL = AppSettings.cachesDir) -> [String: String] {
+        RuntimeCacheResolution.resolved(for: cachesDir) {
+            runtimeCacheEnvironment(
+                cachesDir: cachesDir,
+                fallbackDirs: RuntimeCacheResolution.fallbackDirsOverride ?? runtimeCacheFallbackDirs,
+                makeTemporaryDir: RuntimeCacheResolution.makeTemporaryDirOverride ?? makeFreshTemporaryDir
+            )
+        }
     }
 
     /// Whether `path` is `root` or lies under it, whichever way either is
@@ -1578,5 +1609,36 @@ class ServiceManager: ObservableObject {
             // in api/routes/system.py.
             "BUNDLE_RESOURCES": bundle.path,
         ]
+    }
+}
+
+/// The memo behind `ServiceManager.sharedRuntimeCacheEnvironment`, and the
+/// hooks a test uses to drive the fallback without touching the live
+/// Application Support folder or `/tmp`.
+enum RuntimeCacheResolution {
+    private static let lock = NSLock()
+    private static var resolvedByCachesDir: [String: [String: String]] = [:]
+
+    /// Set by a test, in place of the production fallbacks.
+    static var fallbackDirsOverride: [URL]?
+    /// Set by a test, in place of `mkdtemp` under `/tmp`.
+    static var makeTemporaryDirOverride: (() -> URL?)?
+
+    static func resolved(for cachesDir: URL, compute: () -> [String: String]) -> [String: String] {
+        lock.lock()
+        defer { lock.unlock() }
+        if let known = resolvedByCachesDir[cachesDir.path] { return known }
+        let env = compute()
+        resolvedByCachesDir[cachesDir.path] = env
+        return env
+    }
+
+    /// Forget every resolution and test hook.
+    static func resetForTesting() {
+        lock.lock()
+        defer { lock.unlock() }
+        resolvedByCachesDir = [:]
+        fallbackDirsOverride = nil
+        makeTemporaryDirOverride = nil
     }
 }

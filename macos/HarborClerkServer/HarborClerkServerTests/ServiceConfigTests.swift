@@ -337,13 +337,15 @@ final class ServiceConfigTests: XCTestCase {
 
     // MARK: - Runtime caches stay out of the signed bundle (#846)
 
-    /// The cache and data-path variables the launch paths must keep out of the
-    /// bundle, written out here rather than read from the production list, so
+    /// The write-cache variables the launch paths must keep out of the bundle,
+    /// written out here rather than read from the production list, so
     /// shrinking that list fails a test.
-    private static let cacheVariables = [
-        "NUMBA_CACHE_DIR", "PYTHONPYCACHEPREFIX", "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
-        "SENTENCE_TRANSFORMERS_HOME", "XDG_CACHE_HOME", "MPLCONFIGDIR", "TORCH_HOME", "NLTK_DATA",
+    private static let writeCacheVariables = [
+        "NUMBA_CACHE_DIR", "PYTHONPYCACHEPREFIX", "XDG_CACHE_HOME", "MPLCONFIGDIR", "TORCH_HOME",
+        "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE", "SENTENCE_TRANSFORMERS_HOME",
     ]
+    /// Read-only data paths: a bundle entry there is shipped data, and stays.
+    private static let readOnlyDataVariables = ["NLTK_DATA"]
 
     private static func canonical(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path + "/"
@@ -412,8 +414,10 @@ final class ServiceConfigTests: XCTestCase {
         return envs
     }
 
-    func testTheProductionListCoversEveryCacheVariable() {
-        XCTAssertTrue(Set(ServiceManager.cacheVariables).isSuperset(of: Self.cacheVariables))
+    func testTheProductionListsSplitWriteCachesFromReadOnlyDataPaths() {
+        XCTAssertTrue(Set(ServiceManager.writeCacheVariables).isSuperset(of: Self.writeCacheVariables))
+        XCTAssertEqual(Set(ServiceManager.readOnlyDataVariables), Set(Self.readOnlyDataVariables))
+        XCTAssertTrue(Set(ServiceManager.writeCacheVariables).isDisjoint(with: ServiceManager.readOnlyDataVariables))
     }
 
     func testEveryLaunchedPythonProcessKeepsItsCachesOutOfTheBundle() throws {
@@ -437,16 +441,18 @@ final class ServiceConfigTests: XCTestCase {
                            "\(who): numba must never fall back to the in-tree locator")
             XCTAssertNil(env["NUMBA_DISABLE_JIT"], "\(who): the JIT stays on while a cache directory is usable")
 
-            for key in Self.cacheVariables {
+            for key in Self.writeCacheVariables {
                 guard let value = env[key] else { continue }
                 XCTAssertFalse(Self.pointsIntoBundle(value), "\(who): \(key)=\(value) is inside the app bundle")
             }
         }
 
         let overridden = try XCTUnwrap(launchedPythonEnvironments(scratch: scratch).first { $0.who == "BundleCacheOverride" })
-        for key in Self.cacheVariables where key != "NUMBA_CACHE_DIR" {
+        for key in Self.writeCacheVariables where key != "NUMBA_CACHE_DIR" {
             XCTAssertNil(overridden.env[key], "\(key) pointed into the bundle and must be dropped, not kept")
         }
+        XCTAssertEqual(overridden.env["NLTK_DATA"], BundleCacheOverrideService.bundleCaches["NLTK_DATA"],
+                       "a read-only data path into the bundle is shipped data and stays")
     }
 
     /// Only a bundle path is dropped; the same variable pointing elsewhere is
@@ -459,14 +465,42 @@ final class ServiceConfigTests: XCTestCase {
         let env = ServiceManager.applyingRuntimeCacheRules(to: [
             "HF_HOME": "/Users/someone/.cache/huggingface",
             "TORCH_HOME": inside,
+            "XDG_CACHE_HOME": "/Users/someone/.cache:\(inside)",
             "NLTK_DATA": "/usr/share/nltk_data:\(inside)",
             "DATABASE_URL": "kept",
         ])
 
         XCTAssertEqual(env["HF_HOME"], "/Users/someone/.cache/huggingface")
         XCTAssertNil(env["TORCH_HOME"])
-        XCTAssertNil(env["NLTK_DATA"], "one bundle entry in a path list is enough to drop it")
+        XCTAssertNil(env["XDG_CACHE_HOME"], "one bundle entry in a path list is enough to drop a write cache")
+        XCTAssertEqual(env["NLTK_DATA"], "/usr/share/nltk_data:\(inside)", "a read-only data path is left alone")
         XCTAssertEqual(env["DATABASE_URL"], "kept")
+    }
+
+    /// The last-resort directory is resolved once per app run: two launches
+    /// in the fallback case get the same one, and `mkdtemp` runs once.
+    func testTwoLaunchesInTheFallbackCaseShareOneDirectory() throws {
+        let scratch = makeScratch()
+        let locked = try lockedDir(in: scratch)
+        overrideCachesDir(locked.appendingPathComponent("Caches/Harbor Clerk"))
+        RuntimeCacheResolution.resetForTesting()
+        addTeardownBlock { RuntimeCacheResolution.resetForTesting() }
+        RuntimeCacheResolution.fallbackDirsOverride = [locked.appendingPathComponent("support")]
+        var made = 0
+        RuntimeCacheResolution.makeTemporaryDirOverride = {
+            made += 1
+            return scratch.appendingPathComponent("fresh-\(made)", isDirectory: true)
+        }
+
+        let first = WorkerService(queue: "io", index: 0).launchEnvironment()
+        let second = APIService().launchEnvironment()
+        let alembic = MigrationRunner.environment(
+            settings: AppSettings(configURL: scratch.appendingPathComponent("config.json")), bundle: Bundle.main.resourceURL!)
+
+        XCTAssertEqual(first["NUMBA_CACHE_DIR"], scratch.appendingPathComponent("fresh-1").path)
+        XCTAssertEqual(second["NUMBA_CACHE_DIR"], first["NUMBA_CACHE_DIR"])
+        XCTAssertEqual(alembic["NUMBA_CACHE_DIR"], first["NUMBA_CACHE_DIR"])
+        XCTAssertEqual(made, 1, "one temporary directory per app run, not one per launch")
     }
 
     // MARK: An unusable cache directory falls back outside the bundle
