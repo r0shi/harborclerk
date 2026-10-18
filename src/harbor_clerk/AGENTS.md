@@ -141,16 +141,19 @@ results (diluted), never from the forced call (it drops the tools); blended at
 half weight from the default, never replaced.
 The prose ratio is measured over every prompt with no tool row, accepted or
 refused (seed 1.2, replaced by the first measurement, blended after); once a
-conversation has searched, its later first prompts are tool-bearing and measure neither ratio. A count under
-`_ESTIMATE_RATIO_MIN` times the estimate is distrusted, in the loop and in the forced call. The one figure read bare,
-deliberately, is the per-result truncation cap `tool_result_max_chars` (a retrieval-quality knob, not a bound).
-llama-server (pin v0.4.1) sends usage only when the request carries `stream_options: {"include_usage": true}`, in a
-last chunk whose `choices` is an **empty array**: `chunk["choices"][0]` raises on it; read the last usage a stream
-carries, once, after it. A new estimate-derived figure takes the prediction or the weights; a new streamed call asks
-for usage, records it and tolerates the empty-choices chunk (`research.py`'s streaming reader does not ask for usage
-and still indexes `choices[0]`: asking without fixing the reader crashes it). History goes out as whole tool exchanges
-(`_whole_tool_exchanges`, #839): the window and the trim cut rows, and gpt-oss's template refuses a result with no
-call before it (the pin answers 500).
+conversation has searched, its later first prompts are tool-bearing and
+measure neither ratio. A count under
+`_ESTIMATE_RATIO_MIN` times the estimate is distrusted, in the loop and in the
+forced call. The one figure read bare, deliberately, is the per-result
+truncation cap `tool_result_max_chars` (a retrieval-quality knob, not a
+bound). llama-server (pin v0.4.1) sends usage only when the request carries
+`stream_options: {"include_usage": true}`, in a last chunk whose `choices` is
+an **empty array**: `chunk["choices"][0]` raises on it; read the last usage a
+stream carries, once, after it. A new estimate-derived figure takes the
+prediction or the weights; a new streamed call asks for usage, records it and
+tolerates the empty-choices chunk (`research.py`'s streaming reader does not
+ask for usage and still indexes `choices[0]`: asking without fixing the reader
+crashes it). Orphan tool results 500 on gpt-oss: `_whole_tool_exchanges` (#839).
 
 ## Paths over MCP
 

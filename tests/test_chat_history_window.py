@@ -90,6 +90,19 @@ def test_a_call_whose_results_were_cut_after_it_is_dropped_with_what_remains():
     assert chat_module._whole_tool_exchanges(partly) == [turn[0], partly[-1]]
 
 
+def test_an_id_less_call_whose_results_were_cut_is_dropped_with_what_remains():
+    """As above for a model that sends no ids: its calls are stored with empty ones and its results' messages carry
+    none, so there are no ids to match and the count alone says a result is missing."""
+    question = {"role": "user", "content": "q"}
+    call = {"role": "assistant", "content": "", "tool_calls": _calls("", "")}
+    first = {"role": "tool", "content": "{}"}
+    after = {"role": "user", "content": "next"}
+    assert chat_module._whole_tool_exchanges([question, call, first]) == [question]  # cut after the first result
+    assert chat_module._whole_tool_exchanges([question, call, first, after]) == [question, after]
+    whole = [question, call, first, {"role": "tool", "content": "{}"}, after]
+    assert chat_module._whole_tool_exchanges(whole) == whole
+
+
 def test_a_result_answering_another_call_is_dropped_with_the_call():
     history = [
         {"role": "user", "content": "q"},

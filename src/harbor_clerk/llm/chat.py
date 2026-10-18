@@ -809,8 +809,8 @@ async def chat_stream(
         whole = _whole_tool_exchanges(window)
         if len(whole) < len(window):
             logger.info(
-                "Dropped %d history message(s) whose tool call or result fell outside the %d-message window "
-                "(conversation=%s)",
+                "Dropped %d history message(s) of tool exchanges that were not whole: a call or result cut off by "
+                "the %d-message window, or results that do not answer their call (conversation=%s)",
                 len(window) - len(whole),
                 settings.max_history_messages,
                 conversation_id,
