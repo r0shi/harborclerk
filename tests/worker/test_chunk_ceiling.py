@@ -43,7 +43,15 @@ async def _make_doc(db_session, name: str, *, source: str = "watched"):
     await db_session.flush()
     db_session.add(DocumentPage(doc_id=doc.doc_id, page_num=1, page_text=PAGE_TEXT))
     # A stale chunk from the file's previous version.
-    db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="previous version", language="english"))
+    db_session.add(
+        Chunk(
+            doc_id=doc.doc_id,
+            chunk_num=0,
+            chunk_text="previous version",
+            language="english",
+            embedding=[0.01] * 768,
+        )
+    )
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.chunk, status=JobStatus.running))
     await db_session.commit()
     return doc.doc_id
@@ -88,7 +96,15 @@ async def test_a_document_over_the_ceiling_fails_with_a_clear_reason(db_session,
     assert "MAX_CHUNKS_PER_DOCUMENT" in doc_error
     assert "max_chunks_per_document in the Mac app's config.json" in doc_error, "the Mac app's knob must be named too"
     assert job_error == doc_error
-    assert chunks == 0, "no chunks may reach the embedder, and the previous version's must go"
+    # The existing index is left alone: an over-limit document reprocessed after
+    # an upgrade keeps being found while the error says why it was not re-indexed.
+    assert chunks == 1, f"the existing chunks were touched: {chunks}"
+    session = get_sync_session()
+    try:
+        kept = session.execute(select(Chunk).where(Chunk.doc_id == doc_id)).scalar_one()
+        assert kept.chunk_text == "previous version" and kept.embedding is not None
+    finally:
+        session.close()
 
 
 @pytest.mark.asyncio

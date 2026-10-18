@@ -75,9 +75,13 @@ def stage_run_is_current(session, doc_id: uuid.UUID, stage: JobStage, worker_seq
     exists at ``worker_seq`` and its job row for ``stage`` exists at that
     generation and has not been set to ``error``. Column reads, not ORM
     objects, so the session's identity map cannot hand back a stale status.
+    Under execute_job it also checks the row is still this worker's claim
+    (``claimed_run``): a cancel followed by a same-generation re-enqueue puts
+    the row back to ``queued``, which no longer reads as cancelled, and the
+    old run would otherwise carry on and complete the new one.
     """
     row = session.execute(
-        select(Document.pipeline_seq, IngestionJob.pipeline_seq, IngestionJob.status)
+        select(Document.pipeline_seq, IngestionJob.pipeline_seq, IngestionJob.status, IngestionJob.started_at)
         .select_from(Document)
         .outerjoin(
             IngestionJob,
@@ -87,12 +91,41 @@ def stage_run_is_current(session, doc_id: uuid.UUID, stage: JobStage, worker_seq
     ).first()
     if row is None:
         return False
-    doc_seq, job_seq, job_status = row
+    doc_seq, job_seq, job_status, job_started_at = row
     if (doc_seq or 0) != worker_seq:
         return False
     if job_status is None or job_seq != worker_seq:
         return False
-    return job_status != JobStatus.error
+    if job_status == JobStatus.error:
+        return False
+    return not claim_superseded(doc_id, stage, job_started_at)
+
+
+# The claim the main thread's running stage made (worker/entry.py execute_job):
+# (doc_id, stage, the job row's started_at as claimed). claim_next_job stamps
+# started_at on every claim and enqueue_stage clears it on every re-enqueue, so
+# the timestamp identifies one claim of a row. Thread-local: a stage runs on
+# the thread that claimed it; a stage run outside execute_job has no claim and
+# is not checked.
+_claims = threading.local()
+
+
+@contextmanager
+def claimed_run(doc_id: uuid.UUID, stage: JobStage, started_at):
+    """Mark the enclosed stage run as the claim whose row had ``started_at``."""
+    _claims.current = (doc_id, stage, started_at)
+    try:
+        yield
+    finally:
+        _claims.current = None
+
+
+def claim_superseded(doc_id: uuid.UUID, stage: JobStage, job_started_at) -> bool:
+    """Whether the job row now belongs to a different claim than the run in progress."""
+    claim = getattr(_claims, "current", None)
+    if claim is None or claim[0] != doc_id or claim[1] != stage:
+        return False
+    return job_started_at != claim[2]
 
 
 # stage → (queue_name, timeout_seconds, pipeline_status_while_running)
@@ -759,6 +792,15 @@ def _mark_stage_done(
                 stage.value,
                 doc_id,
                 job.error,
+            )
+            return
+        if claim_superseded(doc_id, stage, job.started_at):
+            # Re-enqueued (or re-claimed) since this run claimed it: the row is
+            # a newer run's, which must not be completed by this one.
+            logger.info(
+                "mark_stage_done: %s for doc %s was re-enqueued while this run ran, leaving it to the new claim",
+                stage.value,
+                doc_id,
             )
             return
         job.status = JobStatus.done

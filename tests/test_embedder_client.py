@@ -419,3 +419,36 @@ def test_request_and_config_failures_are_not_unavailable(httpx_mock: HTTPXMock, 
     with pytest.raises(EmbedderError) as excinfo:
         embed_texts(["hello"], task="passage")
     assert not isinstance(excinfo.value, EmbedderUnavailableError)
+
+
+def test_a_rejection_carries_the_embedders_reason(httpx_mock: HTTPXMock):
+    """A failed document read only "HTTP 422": the embedder's own detail is the why."""
+    detail = [{"type": "string_type", "loc": ["body", "texts", 0], "msg": "Input should be a valid string"}]
+    httpx_mock.add_response(url=EMBED_URL, status_code=422, json={"detail": detail})
+
+    with pytest.raises(EmbedderError) as excinfo:
+        embed_texts(["hello"], task="passage")
+
+    assert "HTTP 422: " in str(excinfo.value)
+    assert "Input should be a valid string" in str(excinfo.value)
+
+
+def test_an_exhausted_5xx_carries_the_last_reason_bounded(httpx_mock: HTTPXMock):
+    for _ in range(2):
+        httpx_mock.add_response(
+            url=EMBED_URL, status_code=500, json={"detail": "encode failed: RuntimeError: " + "x" * 2000}
+        )
+
+    with pytest.raises(EmbedderError) as excinfo:
+        embed_texts(["hello"], task="passage", max_attempts=2)
+
+    message = str(excinfo.value)
+    assert "HTTP 500: encode failed: RuntimeError" in message
+    assert len(message) < 500 and message.endswith("…"), f"unbounded detail: {len(message)} chars"
+
+
+def test_a_non_json_error_body_is_carried_as_text(httpx_mock: HTTPXMock):
+    httpx_mock.add_response(url=EMBED_URL, status_code=400, text="Bad Request: proxy refused")
+
+    with pytest.raises(EmbedderError, match="HTTP 400: Bad Request: proxy refused"):
+        embed_texts(["hello"], task="passage")

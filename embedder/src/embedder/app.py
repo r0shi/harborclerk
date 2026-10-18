@@ -42,29 +42,30 @@ TASK_PREFIXES = {"query": "query: ", "passage": "passage: "}
 MAX_CONCURRENCY = _positive_int_env("EMBED_MAX_CONCURRENCY", 1)
 
 
-class InputError(ValueError):
-    """The request's texts are unusable, as detected by _validate_input before any encode.
-
-    The only failure answered 422. Classifying encode exceptions by type
-    instead turned a TypeError from a library bug (a #685-style version skew)
-    into a 422, which the worker treats as final, failing every document
-    permanently. Wrong types are refused earlier still, by the request model.
-    """
-
-
-# Longest single text accepted. Chunks are ~1,000 characters (a code fence can
-# stretch one) and queries are short; the model truncates at its own sequence
-# length anyway, so anything this long is a caller bug, not a document.
-MAX_TEXT_CHARS = 200_000
+# Longest text handed to the tokenizer, in characters. Content is never
+# rejected: the worker treats a 4xx as "fail this document forever", so a 422
+# for an over-long chunk turned an ingestible document into a permanent
+# failure (an unterminated code fence once made a 350k-character chunk). The
+# model truncates to its token window anyway (8,192 tokens for Granite-R2,
+# roughly 30k characters); this bound only keeps tokenizing a pathological
+# text from costing memory and time first. Empty and whitespace-only texts are
+# encoded as they are: the tokenizer yields only its special tokens.
+MAX_ENCODE_CHARS = 100_000
 
 
-def _validate_input(texts: list[str]) -> None:
-    """Raise InputError for texts the embedder will not encode: empty or oversized."""
-    for i, text in enumerate(texts):
-        if not text.strip():
-            raise InputError(f"text {i} is empty")
-        if len(text) > MAX_TEXT_CHARS:
-            raise InputError(f"text {i} is {len(text):,} characters, over the {MAX_TEXT_CHARS:,} limit")
+def _bound_texts(texts: list[str]) -> list[str]:
+    """``texts`` with any over MAX_ENCODE_CHARS cut to it (logged); never rejected."""
+    long_ones = [i for i, text in enumerate(texts) if len(text) > MAX_ENCODE_CHARS]
+    if not long_ones:
+        return texts
+    logger.warning(
+        "truncating %d of %d texts to %d characters before encoding (longest %d)",
+        len(long_ones),
+        len(texts),
+        MAX_ENCODE_CHARS,
+        max(len(texts[i]) for i in long_ones),
+    )
+    return [text[:MAX_ENCODE_CHARS] if len(text) > MAX_ENCODE_CHARS else text for text in texts]
 
 
 _model: SentenceTransformer | None = None
@@ -145,12 +146,9 @@ async def embed(request: EmbedRequest):
         finally:
             release_gpu_cache()
 
-    # The one 422: input this service checks for itself, before any encode.
-    try:
-        _validate_input(texts)
-    except InputError as exc:
-        logger.warning("embed rejected %d texts: %s", len(texts), exc)
-        raise HTTPException(status_code=422, detail=f"input rejected: {exc}") from exc
+    # A 422 comes only from the request model (wrong types, missing fields).
+    # Content is bounded, never refused.
+    texts = _bound_texts(texts)
 
     async with slots:
         try:

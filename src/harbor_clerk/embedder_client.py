@@ -132,6 +132,31 @@ def _is_retryable_transport(exc: httpx.TransportError) -> bool:
     return isinstance(exc, _RETRYABLE_TRANSPORT)
 
 
+# How much of an error response's body an EmbedderError carries. It ends up in
+# ingestion_jobs.error and documents.error, so bounded.
+_DETAIL_MAX_CHARS = 300
+
+
+def _status_detail(resp: httpx.Response) -> str:
+    """ "HTTP 422: <the response's detail>", truncated; "HTTP 422" when the body says nothing.
+
+    A bare "HTTP 422" on a failed document told the operator nothing: the
+    embedder's own explanation (FastAPI's ``detail``) is the reason.
+    """
+    detail = ""
+    try:
+        body = resp.json()
+        detail = body.get("detail", "") if isinstance(body, dict) else ""
+        if not isinstance(detail, str):
+            detail = str(detail)
+    except ValueError:
+        detail = resp.text
+    detail = " ".join(detail.split())
+    if len(detail) > _DETAIL_MAX_CHARS:
+        detail = detail[:_DETAIL_MAX_CHARS].rstrip() + "…"
+    return f"HTTP {resp.status_code}: {detail}" if detail else f"HTTP {resp.status_code}"
+
+
 def _parse(resp: httpx.Response, expected: int) -> list[list[float]]:
     """Turn a non-retryable response into vectors, or raise EmbedderError.
 
@@ -151,7 +176,7 @@ def _parse(resp: httpx.Response, expected: int) -> list[list[float]]:
     try:
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise EmbedderError(f"embedder rejected request: HTTP {resp.status_code}") from exc
+        raise EmbedderError(f"embedder rejected request: {_status_detail(resp)}") from exc
     try:
         data = resp.json()
     except ValueError as exc:
@@ -233,7 +258,7 @@ def embed_texts(
             if not _is_retryable_status(resp.status_code):
                 # Every 2xx and every non-429 4xx: succeed or fail, never retry.
                 return _parse(resp, len(texts))
-            last_detail = f"HTTP {resp.status_code}"
+            last_detail = _status_detail(resp)
 
         if attempt == max_attempts or time.monotonic() - started >= deadline_seconds:
             break
@@ -282,7 +307,7 @@ async def embed_texts_async(
             else:
                 if not _is_retryable_status(resp.status_code):
                     return _parse(resp, len(texts))
-                last_detail = f"HTTP {resp.status_code}"
+                last_detail = _status_detail(resp)
 
             if attempt == max_attempts or time.monotonic() - started >= deadline_seconds:
                 break

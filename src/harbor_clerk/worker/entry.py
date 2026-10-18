@@ -37,6 +37,7 @@ from harbor_clerk.worker.pipeline import (
     EMBED_RETRY_REASON,
     STAGE_CONFIG,
     alarm_is_deferred,
+    claimed_run,
     without_embed_retry_schedule,
 )
 from harbor_clerk.worker.stages import STAGE_FUNCTIONS
@@ -571,6 +572,17 @@ def _record_embed_unavailable_job(
         session.close()
 
 
+def _claim_identity(doc_id: uuid.UUID, stage: JobStage):
+    """The job row's started_at as this run starts: claim_next_job stamps it on every claim."""
+    session = get_sync_session()
+    try:
+        return session.execute(
+            select(IngestionJob.started_at).where(IngestionJob.doc_id == doc_id, IngestionJob.stage == stage)
+        ).scalar()
+    finally:
+        session.close()
+
+
 def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = None) -> None:
     """Run a stage function with timeout enforcement via signal.alarm() and heartbeat."""
     _, timeout, _ = STAGE_CONFIG[stage]
@@ -583,6 +595,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
             pipeline_seq = pipeline_seq or 0
         finally:
             session.close()
+    claimed_started_at = _claim_identity(doc_id, stage)
 
     logger.info("Starting %s for doc %s (timeout=%ds)", stage.value, doc_id, timeout)
     publish_job_event(doc_id, stage.value, "running", filename=filename)
@@ -623,7 +636,10 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
         _arm_shutdown_deadline()
     try:
         try:
-            func(doc_id, worker_seq=pipeline_seq)
+            # Scoped to this claim: stage_run_is_current and mark_stage_done
+            # decline once the row is re-enqueued or re-claimed under us.
+            with claimed_run(doc_id, stage, claimed_started_at):
+                func(doc_id, worker_seq=pipeline_seq)
         finally:
             # Disarm before any bookkeeping below: the deadline bounds the stage,
             # not the recording of its outcome.
@@ -788,8 +804,11 @@ def _defer_unavailable_embed(doc_id: uuid.UUID, pipeline_seq: int, error_msg: st
 def _requeue_after_shutdown(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, filename: str | None = None) -> None:
     """Hand a job abandoned at the shutdown deadline back to the queue.
 
-    Interrupted, not failed: the next worker runs it again. Stages are
-    idempotent, and embed keeps the batches it stored. A row no longer
+    Interrupted, not failed: the next worker runs it again. Every stage's
+    writes are safe to repeat (extract, chunk and entities replace what they
+    wrote; OCR's per-page merge replaces its own earlier output instead of
+    appending, see ocr._merge_ocr_text), and embed keeps the batches it stored.
+    A row no longer
     `running` at our generation (cancelled meanwhile, or superseded) is left
     as it is. Announced the way enqueue_stage announces a job: a pg_notify on
     the stage's queue channel, so a waiting worker claims it now rather than at

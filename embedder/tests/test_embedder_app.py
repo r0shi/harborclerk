@@ -394,17 +394,32 @@ def test_any_exception_from_encode_is_a_500_never_a_422(stub_model, exc):
     assert r.status_code == 500, f"{type(exc).__name__} -> {r.status_code}"
 
 
-@pytest.mark.parametrize(
-    "texts,reason",
-    [(["fine", ""], "empty"), (["   \n"], "empty"), (["x" * 200_001], "over the")],
-    ids=["empty", "whitespace", "oversized"],
-)
-def test_input_the_embedder_rejects_itself_is_a_422_without_an_encode(stub_model, texts, reason):
+@pytest.mark.parametrize("texts", [["fine", ""], ["   \n"]], ids=["empty", "whitespace"])
+def test_empty_and_whitespace_texts_are_embedded_not_refused(stub_model, texts):
+    """Content is never a 4xx: the worker would fail the document for good."""
     r = _post(stub_model, texts)
 
-    assert r.status_code == 422, r.status_code
-    assert reason in r.json()["detail"]
-    stub_model.encode.assert_not_called()
+    assert r.status_code == 200, r.text
+    assert len(r.json()["embeddings"]) == len(texts)
+    assert stub_model.encode.call_args[0][0] == texts
+
+
+def test_an_over_long_text_is_truncated_and_embedded_not_refused(stub_model, caplog):
+    """A 422 for an over-long chunk turned an ingestible document (an unterminated
+    code fence, 350k characters in one chunk) into a permanent failure."""
+    import logging
+
+    from embedder.app import MAX_ENCODE_CHARS
+
+    long_text = "x" * (MAX_ENCODE_CHARS + 250_000)
+    with caplog.at_level(logging.WARNING, logger="embedder.app"):
+        r = _post(stub_model, ["short", long_text])
+
+    assert r.status_code == 200, r.text
+    encoded = stub_model.encode.call_args[0][0]
+    assert encoded[0] == "short"
+    assert len(encoded[1]) == MAX_ENCODE_CHARS, "the over-long text must reach the model truncated"
+    assert any("truncating 1 of 2 texts" in rec.getMessage() for rec in caplog.records)
 
 
 def test_wrong_types_in_the_request_are_a_422(stub_model):

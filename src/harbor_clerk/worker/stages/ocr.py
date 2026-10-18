@@ -48,6 +48,30 @@ def _ocr_image_bytes(image_data: bytes, lang: str) -> tuple[str, float]:
     return text.strip(), avg_conf
 
 
+OCR_MARKER = "\n\n--- OCR ---\n\n"
+
+
+def _merge_ocr_text(existing: str | None, ocr_text: str, *, already_ocrd: bool) -> str:
+    """The page text with ``ocr_text`` merged in, the same however many times OCR runs.
+
+    The first run appends the OCR text after OCR_MARKER to the page's extracted
+    text (or uses it alone on a page with none). A rerun of the stage (a
+    shutdown requeue, a retry) starts again from page 1 while pages already
+    written carry the previous run's OCR: appending again doubled it. So on a
+    page already OCR'd, everything from the marker on is replaced, and a page
+    that held only OCR text is replaced whole.
+    """
+    existing = existing or ""
+    if already_ocrd:
+        if OCR_MARKER in existing:
+            existing = existing.split(OCR_MARKER, 1)[0]
+        else:
+            existing = ""  # the whole text was the previous run's OCR
+    if existing and ocr_text:
+        return existing + OCR_MARKER + ocr_text
+    return ocr_text or existing
+
+
 def _pdf_to_images(data: bytes) -> list[Image.Image]:
     """Convert PDF pages to PIL Images using pypdfium2."""
     pdf = pdfium.PdfDocument(data)
@@ -203,10 +227,7 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                     session.flush()
 
                 # Merge OCR text with existing text
-                if page.page_text and text:
-                    page.page_text = page.page_text + "\n\n--- OCR ---\n\n" + text
-                elif text:
-                    page.page_text = text
+                page.page_text = _merge_ocr_text(page.page_text, text, already_ocrd=bool(page.ocr_used))
 
                 page.ocr_used = True
                 page.ocr_confidence = confidence

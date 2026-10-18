@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 # Sentence boundary pattern
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
+# No chunk is longer than this many times the target size, code fence or not
+# (4,000 characters at the default 1,000): a whole fenced function or table
+# still fits in one chunk, an unterminated fence running to EOF does not.
+CHUNK_HARD_MAX_FACTOR = 4
+
 
 class DocumentTooLargeError(RuntimeError):
     """A document would produce more chunks than max_chunks_per_document allows.
@@ -171,6 +176,17 @@ def _split_text(
                     # that exceeds the target by up to one fence's length.
                     end = fend
 
+            # ...up to a point. An unterminated fence runs to the end of the
+            # document (an odd number of ``` or ~~~ lines in any file), and a
+            # huge fenced sample is no better: one chunk of 350k characters
+            # once reached the embedder. Past the hard maximum, split anyway,
+            # at the last line break after the target, else at the maximum.
+            hard_max = target * CHUNK_HARD_MAX_FACTOR
+            if end - start > hard_max:
+                limit = start + hard_max
+                line_break = text.rfind("\n", start + target, limit)
+                end = line_break + 1 if line_break != -1 else limit
+
         chunks.append((start, end))
 
         next_start = end - overlap
@@ -288,19 +304,13 @@ def run_chunk(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             mark_stage_done(doc_id, JobStage.chunk, worker_seq=worker_seq)  # declines: seq moved on
             return
 
-        # Delete existing chunks (idempotency)
-        existing = session.execute(select(Chunk).where(Chunk.doc_id == doc_id)).scalars().all()
-        for c in existing:
-            session.delete(c)
-        session.flush()
-
         ceiling = settings.max_chunks_per_document
         if ceiling > 0 and len(chunk_ranges) > ceiling:
             # Every source: uploads (200 MB is ~235k chunks) and IMAP
-            # attachments were as unbounded as watched folders. The old chunks
-            # go too: they are the previous version's text, and the pages they
-            # cite were just replaced by extract.
-            session.commit()
+            # attachments were as unbounded as watched folders. Checked before
+            # anything is touched: an existing over-limit document reprocessed
+            # after an upgrade keeps its chunks and embeddings, so search keeps
+            # finding it while the error explains why it was not re-indexed.
             raise DocumentTooLargeError(
                 f"Document too large to index: it splits into {len(chunk_ranges):,} chunks, over the "
                 f"per-document limit of {ceiling:,} (the max_chunks_per_document setting: MAX_CHUNKS_PER_DOCUMENT "
@@ -308,6 +318,12 @@ def run_chunk(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                 f"limit and reprocess to index it, or leave files like this (dataset or database dumps) out of the "
                 f"library."
             )
+
+        # Delete existing chunks (idempotency)
+        existing = session.execute(select(Chunk).where(Chunk.doc_id == doc_id)).scalars().all()
+        for c in existing:
+            session.delete(c)
+        session.flush()
 
         for i, (char_start, char_end) in enumerate(chunk_ranges):
             chunk_text = full_text[char_start:char_end]

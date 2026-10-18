@@ -101,6 +101,59 @@ async def test_an_uncancelled_ocr_run_still_writes_every_page(db_session, monkey
 
 
 @pytest.mark.asyncio
+async def test_rerunning_ocr_does_not_double_the_text_on_pages_already_written(db_session, monkeypatch, tmp_path):
+    """A shutdown requeue reruns OCR from page 1, and the write loop commits page by
+    page: appending "--- OCR ---" + text again doubled it on pages the first run
+    had written. Page 1 has extracted text (OCR is appended after the marker);
+    page 2 has none (OCR is the whole text)."""
+    from harbor_clerk.worker.stages import ocr as ocr_stage
+
+    doc_id = await _make_doc(db_session, JobStage.ocr, tmp_path, pages=2)
+    session = get_sync_session()
+    try:
+        page1 = session.execute(
+            select(DocumentPage).where(DocumentPage.doc_id == doc_id, DocumentPage.page_num == 1)
+        ).scalar_one()
+        page1.page_text = "Extracted heading"
+        session.commit()
+    finally:
+        session.close()
+    monkeypatch.setattr(ocr_stage, "_pdf_to_images", lambda data: [Image.new("RGB", (8, 8)) for _ in range(2)])
+    monkeypatch.setattr(ocr_stage, "_ocr_image_bytes", lambda image_bytes, lang: ("recognised", 90.0))
+    monkeypatch.setattr("harbor_clerk.worker.pipeline.advance_pipeline", lambda _doc_id: None)
+
+    ocr_stage.run_ocr(doc_id)
+    first = sorted(_read(doc_id, JobStage.ocr)[2])
+    # The requeue: the same job runs the stage again.
+    session = get_sync_session()
+    try:
+        job = session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc_id, IngestionJob.stage == JobStage.ocr)
+        ).scalar_one()
+        job.status = JobStatus.running
+        session.commit()
+    finally:
+        session.close()
+    ocr_stage.run_ocr(doc_id)
+    second = sorted(_read(doc_id, JobStage.ocr)[2])
+
+    assert first == sorted(["Extracted heading\n\n--- OCR ---\n\nrecognised", "recognised"]), first
+    assert second == first, f"the rerun changed the pages: {second}"
+
+
+def test_the_ocr_merge_is_idempotent():
+    from harbor_clerk.worker.stages.ocr import OCR_MARKER, _merge_ocr_text
+
+    once = _merge_ocr_text("Extracted", "ocr text", already_ocrd=False)
+    twice = _merge_ocr_text(once, "ocr text", already_ocrd=True)
+    assert once == twice == f"Extracted{OCR_MARKER}ocr text"
+
+    only_ocr = _merge_ocr_text("", "ocr text", already_ocrd=False)
+    assert _merge_ocr_text(only_ocr, "ocr text", already_ocrd=True) == "ocr text"
+    assert _merge_ocr_text("Extracted", "", already_ocrd=False) == "Extracted"
+
+
+@pytest.mark.asyncio
 async def test_a_cancel_stops_summarize_between_map_calls(db_session, monkeypatch, tmp_path):
     from harbor_clerk.worker.stages import summarize as summarize_stage
 
@@ -128,6 +181,51 @@ async def test_a_cancel_stops_summarize_between_map_calls(db_session, monkeypatc
     assert not classified, "the classification LLM call ran for a cancelled document"
     assert doc.summary is None and doc.doc_type is None
     assert job.status == JobStatus.error and job.error == "Cancelled by user"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_does_not_complete_a_re_enqueued_one(db_session, monkeypatch, tmp_path):
+    """Cancel, then Resummarize (a same-generation re-enqueue) before the next yield
+    check: the row is "queued" again, which no longer reads as cancelled, so the old
+    run carried on and its mark_stage_done marked the new queued row done. A run
+    now only counts as current, and only completes, the claim it made."""
+    from datetime import UTC, datetime
+
+    from harbor_clerk.worker import entry as entry_mod
+    from harbor_clerk.worker.pipeline import enqueue_stage
+    from harbor_clerk.worker.stages import summarize as summarize_stage
+
+    doc_id = await _make_doc(db_session, JobStage.summarize, tmp_path, chunks=3)
+    session = get_sync_session()
+    try:
+        job = session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        job.started_at = datetime.now(UTC)  # as claim_next_job stamps it
+        session.commit()
+    finally:
+        session.close()
+    llm_calls: list[str] = []
+
+    def _generate_summary(chunks, *, yield_check=None, progress_callback=None):
+        yield_check()
+        llm_calls.append("map 1")
+        assert cancel_doc_jobs(doc_id) == 1
+        enqueue_stage(doc_id, JobStage.summarize)  # Resummarize: same generation, row queued again
+        yield_check()
+        llm_calls.append("map 2")
+        return "A summary from the cancelled run", "model"
+
+    monkeypatch.setattr(summarize_stage, "_wait_for_idle_llm", lambda *a, **k: None)
+    monkeypatch.setattr(summarize_stage, "generate_summary", _generate_summary)
+    monkeypatch.setattr(summarize_stage, "classify_doc_type", lambda *a, **k: None)
+
+    entry_mod.execute_job(doc_id, JobStage.summarize, 0)
+
+    job, doc, _ = _read(doc_id, JobStage.summarize)
+    assert llm_calls == ["map 1"], f"the cancelled run carried on into the re-enqueued one: {llm_calls}"
+    assert job.status == JobStatus.queued, f"the old run completed the new claim: {job.status}"
+    assert doc.summary is None
 
 
 @pytest.mark.asyncio
