@@ -93,3 +93,18 @@ Sonnet row is the same answers.
 The rescore reads stored answers only; nobody re-read the Harpoon clauses behind key-17, key-19 and key-20 for this
 note (#815 cites 8, 16 and 2 keyword hits in its text). Phase-4 scores in each run's `metrics.csv` and the reports
 rendered from it are left as recorded, over 79.
+
+## Addendum: under the scorer after #840
+
+The figures above use the scorer at `e1401ff`. #840 (merged 2026-10-18, before this change) counts hedged sections such as
+"Mentions / borderline" as listed. Rescored with the current scorer, the three cloud runs move as follows between the old
+key and the new one:
+
+| run | changed questions | lists, old key → new key |
+|---|---|---|
+| bench-20261014-2328-cuad-fable | key-18 0.667 → 0.690 | 0.825 → 0.829 |
+| bench-20261015-0011-cuad-astra | key-18 0.741 → 0.759; key-19 0.977 → 0.978 | 0.862 → 0.865 |
+| bench-20261015-2259-cuad-fable-rerun | key-18 0.828 → 0.800; key-19 0.977 → 0.978 | 0.873 → 0.868 |
+
+The first Fable run now gains Harpoon on key-18, because its "Mentions / borderline" section counts. The rerun still loses
+it, because its "Reviewed and excluded" section still rejects. The local runs are not affected by #840.
