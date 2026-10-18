@@ -176,8 +176,6 @@ async def test_client_route_serves_the_index(app, raw_path):
         "/api",
         "/api/",
         "/api/../secret.txt",
-        "/mcp",
-        "/t",
         "/oauth/nope",
         "/.well-known/openid-configuration",
     ],

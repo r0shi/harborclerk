@@ -495,6 +495,11 @@ def create_app() -> FastAPI:
     # Mount MCP Streamable HTTP endpoints
     app.mount("/mcp", _mcp_asgi)  # Header-based auth (Authorization: Bearer <key>)
     app.mount("/t", _mcp_token_asgi)  # URL-token auth for authless MCP clients (/t/<api_key>)
+    # A mount matches only below its prefix, so the bare paths (the URL the
+    # Integrations page shows is `/mcp`) would fall to the GET-only SPA route and
+    # get a 405. Route them, every method, to the same apps; no redirect.
+    app.add_route("/mcp", _mcp_asgi, include_in_schema=False)
+    app.add_route("/t", _mcp_token_asgi, include_in_schema=False)
 
     # Serve SPA static files (must be last — catches all unmatched routes)
     settings = get_settings()
