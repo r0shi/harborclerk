@@ -406,6 +406,16 @@ def test_an_ambiguous_inexact_match_is_refused_and_logged(caplog):
             f"cuad key: {amendment!r} not matched (the row's name is a prefix of the title): row {KALLO!r} is "
             "another contract's"
         ]
+        caplog.clear()
+        # Two titles reaching one row by different rules: one by its identifiers, one (named with spaces, so it has
+        # none) by prefix. Each rule alone finds one title for the row; neither title gets it.
+        row = "FooInc_20200101_10-K_EX-10.1_123_EX-10.1_Supply"
+        by_ids = "FooInc_20200101_10-K_EX-10.1_123_EX-10.1_Distribution Agreement"
+        by_prefix = "FooInc 20200101 10-K EX-10.1 123 EX-10.1 Supply Agreement"
+        assert cuad_key.annotation_rows([by_ids, by_prefix], [_row(row)]) == {}
+        assert [r.message for r in caplog.records] == [
+            f"cuad key: row {row!r} not matched: it fits {[by_ids, by_prefix]}"
+        ]
 
 
 def test_an_exact_match_is_unaffected_by_rows_that_would_match_it_inexactly(caplog):
