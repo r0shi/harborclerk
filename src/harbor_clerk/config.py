@@ -254,15 +254,14 @@ COMPOSE_DEFAULT_CONTEXT_TOKENS = 8192
 
 
 def _check_compose_context(settings: Settings) -> None:
-    """Under Compose, LLM_CONTEXT_TOKENS=0 is a mistake: llama-server reads `-c 0` as the model's training context
-    (262,144 for Qwen3.5: a KV cache the container likely cannot hold), while the app would budget from the memory
-    arithmetic, so the two would diverge. Compose interpolation cannot refuse a 0, so the app says so and budgets
-    to the compose default instead, the smaller and safer of the two."""
+    """Under Compose, LLM_CONTEXT_TOKENS=0 is a mistake: llama-server would read `-c 0` as the model's training
+    context (262,144 for Qwen3.5). Compose interpolation cannot refuse a 0, so the entrypoint replaces it with the
+    compose default and the app budgets to the same, so the two agree."""
     if is_compose(settings) and settings.llm_context_tokens <= 0:
         if not _context_tokens_rejected:  # a malformed value was already logged, naming it
             logger.error(
-                "LLM_CONTEXT_TOKENS=0 under Docker Compose: llama-server runs `-c 0` at the model's full training "
-                "context; set LLM_CONTEXT_TOKENS in .env. Budgeting prompts to %d tokens.",
+                "LLM_CONTEXT_TOKENS=0 is not supported under Docker Compose; the llama-server entrypoint replaces "
+                "it with %d and prompts are budgeted to the same. Set LLM_CONTEXT_TOKENS in .env to change it.",
                 COMPOSE_DEFAULT_CONTEXT_TOKENS,
             )
         settings.llm_context_tokens = COMPOSE_DEFAULT_CONTEXT_TOKENS

@@ -158,7 +158,7 @@ def test_a_zero_context_under_compose_is_refused_for_the_compose_default(
     config._settings = None
     with caplog.at_level(logging.ERROR, logger="harbor_clerk.config"):
         assert config.get_settings().llm_context_tokens == config.COMPOSE_DEFAULT_CONTEXT_TOKENS == 8192
-    assert "LLM_CONTEXT_TOKENS=0 under Docker Compose" in caplog.text
+    assert "LLM_CONTEXT_TOKENS=0 is not supported under Docker Compose" in caplog.text
     assert effective_context(model, False, ram_bytes=32 * GIB) == 8192
 
 
