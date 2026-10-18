@@ -8,7 +8,8 @@ import { Card } from '../components/Card'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
 import EmailSection from '../components/EmailSection'
-import { WATCHED_FOLDERS_DOCKER_GUIDE_URL } from '../data/docsLinks'
+import { watchedFoldersDockerGuideUrl } from '../data/docsLinks'
+import { useSystemConfig } from '../hooks/useSystemConfig'
 
 interface FolderInfo {
   folder_id: string
@@ -105,6 +106,7 @@ function AddFolderButton({ onClick }: { onClick: () => void }) {
 
 export default function FoldersPage() {
   const { isAdmin } = useAuth()
+  const { version } = useSystemConfig()
   const [system, setSystem] = useState<SystemInfo | null>(null)
   const [folders, setFolders] = useState<FolderInfo[]>([])
   const [progress, setProgress] = useState<Record<string, ProgressInfo>>({})
@@ -246,7 +248,12 @@ export default function FoldersPage() {
       {system.picker === 'none' && (
         <div className="mb-4 rounded-md bg-blue-50 dark:bg-blue-900/20 p-3 text-xs text-blue-700 dark:text-blue-400">
           Folders are managed by mounting them under <code>{system.watch_root}</code> in your Docker setup.{' '}
-          <a href={WATCHED_FOLDERS_DOCKER_GUIDE_URL} target="_blank" rel="noopener noreferrer" className="underline">
+          <a
+            href={watchedFoldersDockerGuideUrl(version)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline"
+          >
             How to add a folder →
           </a>
         </div>

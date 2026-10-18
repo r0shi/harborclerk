@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { get } from '../api'
-import { WATCHED_FOLDERS_DOCKER_GUIDE_URL } from '../data/docsLinks'
+import { useSystemConfig, type SystemConfig } from '../hooks/useSystemConfig'
 import FoldersPage from './FoldersPage'
 
 vi.mock('../api', () => ({
@@ -15,8 +15,24 @@ vi.mock('../api', () => ({
 
 vi.mock('../auth', () => ({ useAuth: () => ({ isAdmin: false }) }))
 vi.mock('../hooks/useFolderProgress', () => ({ useFolderProgress: () => {} }))
+vi.mock('../hooks/useSystemConfig', () => ({ useSystemConfig: vi.fn() }))
 
 const getMock = vi.mocked(get)
+const useSystemConfigMock = vi.mocked(useSystemConfig)
+
+function systemConfig(version: string | null): SystemConfig {
+  return {
+    healthStatus: 'healthy',
+    allowSourceDownload: false,
+    enableCliAccess: false,
+    cliShimInstallStatus: null,
+    localMcpUrl: null,
+    version,
+    loaded: true,
+  }
+}
+
+const MAIN_GUIDE = 'https://github.com/r0shi/harborclerk/blob/main/docs/watched-folders-docker.md'
 
 const DOCKER_FOLDER = {
   folder_id: 'f1',
@@ -58,6 +74,7 @@ function renderPage() {
 describe('FoldersPage on Docker', () => {
   beforeEach(() => {
     getMock.mockReset()
+    useSystemConfigMock.mockReturnValue(systemConfig('0.9.3+unstamped'))
   })
 
   it('links the mount guide on GitHub in a new tab, not an SPA /docs route', async () => {
@@ -65,10 +82,21 @@ describe('FoldersPage on Docker', () => {
     renderPage()
 
     const link = await screen.findByRole('link', { name: /How to add a folder/ })
-    expect(link).toHaveAttribute('href', WATCHED_FOLDERS_DOCKER_GUIDE_URL)
+    expect(link).toHaveAttribute('href', MAIN_GUIDE)
     expect(link).toHaveAttribute('target', '_blank')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
-    expect(WATCHED_FOLDERS_DOCKER_GUIDE_URL).toMatch(/^https:\/\/github\.com\/.+\/watched-folders-docker\.md$/)
+  })
+
+  it('links the guide at the release tag on a release build', async () => {
+    useSystemConfigMock.mockReturnValue(systemConfig('0.9.3'))
+    mockApi([DOCKER_FOLDER])
+    renderPage()
+
+    const link = await screen.findByRole('link', { name: /How to add a folder/ })
+    expect(link).toHaveAttribute(
+      'href',
+      'https://github.com/r0shi/harborclerk/blob/v0.9.3/docs/watched-folders-docker.md',
+    )
   })
 
   it('has no Add Folder button and keeps an active mount from being deleted', async () => {

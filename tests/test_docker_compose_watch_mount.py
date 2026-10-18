@@ -12,14 +12,21 @@ queue that claims extract or OCR. Workers claim by QUEUE_STAGES
 (`claim_next_job` in worker/entry.py), so that is what the readers are derived
 from; moving a stage to another queue moves the requirement with it.
 
-Sources are never modified (AGENTS.md), so every bind of the watch root, the
-watcher's included, is read-only.
+Sources are never modified (AGENTS.md), so every bind of the watch directory,
+the watcher's included, is read-only, and so is any bind of a directory that
+contains it.
 
-WATCH_ROOT is configurable (#871): the bind target is taken from it, so every
-check runs both with it unset (compose's default) and set to another path.
+WATCH_ROOT (#871) is the discovery path, not the mount target: the target is
+fixed at /data/watch, and WATCH_ROOT must be that directory or one under it.
+Taking the target from WATCH_ROOT moved every source_path on an upgrade
+(`WATCH_ROOT=/data/watch/library` re-ingested everything), could shadow
+another volume (`/models`) or the image's WORKDIR (`/app`). Every check runs
+with WATCH_ROOT unset and set to a directory under the mount.
 """
 
+import copy
 import io
+import posixpath
 import re
 import sys
 import tokenize
@@ -40,10 +47,12 @@ BYTE_READING_STAGES = (JobStage.extract, JobStage.ocr)
 # Reads source_path for GET /api/docs/{id}/download, and WATCH_ROOT for the watch API.
 APP_SERVICE = "app"
 
-# Compose's environment for each run: WATCH_ROOT unset, and set to a non-default path.
+# Compose's environment for each run: WATCH_ROOT unset, and set to a directory under the mount.
+UNSET = {}
+LIBRARY = {"WATCH_ROOT": "/data/watch/library"}
 ENVIRONMENTS = [
-    pytest.param({}, "/data/watch", id="WATCH_ROOT-unset"),
-    pytest.param({"WATCH_ROOT": "/srv/docs"}, "/srv/docs", id="WATCH_ROOT=/srv/docs"),
+    pytest.param(UNSET, "/data/watch", id="WATCH_ROOT-unset"),
+    pytest.param(LIBRARY, "/data/watch/library", id="WATCH_ROOT=/data/watch/library"),
 ]
 
 _VARIABLE = re.compile(r"\$\{(?P<var>[A-Za-z_][A-Za-z0-9_]*)(?:(?P<op>:?-)(?P<default>[^}]*))?\}")
@@ -63,8 +72,18 @@ def _resolve(value: str, env: dict[str, str]) -> str:
     return _VARIABLE.sub(substitute, value)
 
 
+def _norm(path: str) -> str:
+    """`./data/watch/` and `./data/watch` are the same source; `/data/watch/` the same target."""
+    return posixpath.normpath(path)
+
+
+def _strict_true(value: object) -> bool:
+    """Compose's `read_only`: YAML true or the string "true". `bool("false")` is True, so never bool()."""
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+
+
 def _bind_mounts(service: dict, env: dict[str, str]) -> dict[tuple[str, str], bool]:
-    """Map each host bind mount (source, target) to whether it is read-only.
+    """Map each host bind mount (source, target), normalised, to whether it is read-only.
 
     Handles the short syntax (`src:dst[:mode]`, interpolated before it is split,
     since `${VAR:-default}` contains a colon) and the long syntax
@@ -77,7 +96,7 @@ def _bind_mounts(service: dict, env: dict[str, str]) -> dict[tuple[str, str], bo
             if volume.get("type") != "bind":
                 continue
             source, target = _resolve(str(volume["source"]), env), _resolve(str(volume["target"]), env)
-            read_only = bool(volume.get("read_only", False))
+            read_only = _strict_true(volume.get("read_only", False))
         else:
             parts = _resolve(str(volume), env).split(":")
             if len(parts) < 2 or "/" not in parts[0]:
@@ -85,50 +104,63 @@ def _bind_mounts(service: dict, env: dict[str, str]) -> dict[tuple[str, str], bo
             source, target = parts[0], parts[1]
             modes = parts[2].split(",") if len(parts) > 2 else []
             read_only = "ro" in modes
-        mounts[(source, target.rstrip("/") or "/")] = read_only
+        mounts[(_norm(source), _norm(target))] = read_only
     return mounts
 
 
-def _under(target: str, root: str) -> bool:
-    target, root = target.rstrip("/"), root.rstrip("/")
-    return target == root or target.startswith(root + "/")
+def _under(path: str, root: str) -> bool:
+    """`path` is `root` or inside it."""
+    path, root = _norm(path), _norm(root)
+    return path == root or path.startswith(root.rstrip("/") + "/")
 
 
-def _watcher() -> tuple[str, dict]:
+def _overlaps(a: str, b: str) -> bool:
+    return _under(a, b) or _under(b, a)
+
+
+def _watcher(services: dict) -> tuple[str, dict]:
     watchers = [
         (name, service)
-        for name, service in _load_services().items()
+        for name, service in services.items()
         if WATCHER_ENTRYPOINT in " ".join(map(str, service.get("command") or []))
     ]
     assert len(watchers) == 1, f"expected exactly one {WATCHER_ENTRYPOINT} service, found {[n for n, _ in watchers]}"
     return watchers[0]
 
 
-def _watch_root(env: dict[str, str]) -> str:
-    watcher_name, watcher = _watcher()
+def _watch_root(services: dict, env: dict[str, str]) -> str:
+    watcher_name, watcher = _watcher(services)
     raw = (watcher.get("environment") or {}).get("WATCH_ROOT")
     assert raw, f"{watcher_name} does not set WATCH_ROOT"
-    return _resolve(str(raw), env).rstrip("/")
+    return _norm(_resolve(str(raw), env))
 
 
-def _watch_binds(env: dict[str, str]) -> set[tuple[str, str]]:
-    """The watcher's binds of WATCH_ROOT or a path under it."""
-    watcher_name, watcher = _watcher()
-    root = _watch_root(env)
-    binds = {(s, t) for s, t in _bind_mounts(watcher, env) if _under(t, root)}
-    assert any(t == root for _, t in binds), (
-        f"{watcher_name} binds nothing at WATCH_ROOT ({root}); its binds: {sorted(_bind_mounts(watcher, env))}"
+def _watch_mount(services: dict, env: dict[str, str]) -> tuple[str, str]:
+    """The watcher's bind that holds WATCH_ROOT: its target is WATCH_ROOT or the nearest ancestor."""
+    watcher_name, watcher = _watcher(services)
+    root = _watch_root(services, env)
+    holding = [(s, t) for s, t in _bind_mounts(watcher, env) if _under(root, t)]
+    assert holding, (
+        f"{watcher_name} has no bind at WATCH_ROOT ({root}) or above it; WATCH_ROOT must be the watch mount "
+        f"or a directory under it. Its binds: {sorted(_bind_mounts(watcher, env))}"
     )
-    return binds
+    return max(holding, key=lambda bind: len(bind[1]))
 
 
-def _reader_services() -> set[str]:
+def _watch_binds(services: dict, env: dict[str, str]) -> set[tuple[str, str]]:
+    """The watcher's binds a reader needs: the one holding WATCH_ROOT, and any nested under WATCH_ROOT."""
+    _, watcher = _watcher(services)
+    root = _watch_root(services, env)
+    nested = {(s, t) for s, t in _bind_mounts(watcher, env) if _under(t, root)}
+    return nested | {_watch_mount(services, env)}
+
+
+def _reader_services(services: dict) -> set[str]:
     reading_queues = {q for q, stages in QUEUE_STAGES.items() if set(stages) & set(BYTE_READING_STAGES)}
     claimed = {s for q in reading_queues for s in QUEUE_STAGES[q]}
     assert set(BYTE_READING_STAGES) <= claimed, (
         f"no queue in QUEUE_STAGES claims {sorted(s.value for s in set(BYTE_READING_STAGES) - claimed)}"
     )
-    services = _load_services()
     readers = {name for name, service in services.items() if _queues_for_service(service) & reading_queues}
     # Not vacuous: a reading queue nobody subscribes to would leave nothing to check.
     covered = set().union(*(_queues_for_service(services[name]) for name in readers), set())
@@ -136,25 +168,47 @@ def _reader_services() -> set[str]:
     return readers | {APP_SERVICE}
 
 
+def _missing_reader_binds(services: dict, env: dict[str, str]) -> list[str]:
+    watch_binds = _watch_binds(services, env)
+    problems = []
+    for name in sorted(_reader_services(services)):
+        mounts = _bind_mounts(services[name], env)
+        for source, target in sorted(watch_binds):
+            if (source, target) not in mounts:
+                problems.append(f"{name} does not mount {source}:{target}")
+    return problems
+
+
+def _writable_watch_binds(services: dict, env: dict[str, str]) -> list[str]:
+    """Writable binds of the watch directory, of anything inside it, or of anything containing it."""
+    source, target = _watch_mount(services, env)
+    return [
+        f"{name}: {s}:{t}"
+        for name, service in sorted(services.items())
+        for (s, t), read_only in sorted(_bind_mounts(service, env).items())
+        if not read_only and (_overlaps(s, source) or _overlaps(t, target))
+    ]
+
+
 @pytest.mark.parametrize(("env", "expected_root"), ENVIRONMENTS)
-def test_watch_root_follows_the_variable(env: dict[str, str], expected_root: str) -> None:
-    """The watcher's WATCH_ROOT, and so every bind target, is the variable's value (#871)."""
-    assert _watch_root(env) == expected_root
+def test_watch_root_is_the_mount_or_under_it(env: dict[str, str], expected_root: str) -> None:
+    services = _load_services()
+    assert _watch_root(services, env) == expected_root
+    _, target = _watch_mount(services, env)
+    assert _under(expected_root, target)
+
+
+def test_watch_mount_target_does_not_follow_watch_root() -> None:
+    """The target is fixed: a WATCH_ROOT under it must not move every source_path (#871)."""
+    services = _load_services()
+    assert _watch_mount(services, UNSET) == _watch_mount(services, LIBRARY)
+    assert _watch_mount(services, UNSET)[1] == "/data/watch"
 
 
 @pytest.mark.parametrize(("env", "expected_root"), ENVIRONMENTS)
 def test_document_readers_bind_the_watchers_mounts_at_the_same_path(env: dict[str, str], expected_root: str) -> None:
-    """Presence and path only; read-only is checked by test_every_bind_of_the_watch_root_is_read_only."""
-    watch_binds = _watch_binds(env)
-    services = _load_services()
-    problems = []
-    for name in sorted(_reader_services()):
-        mounts = _bind_mounts(services[name], env)
-        if not any(t == expected_root for _, t in mounts):
-            problems.append(f"{name} binds nothing at WATCH_ROOT ({expected_root})")
-        for source, target in sorted(watch_binds):
-            if (source, target) not in mounts:
-                problems.append(f"{name} does not mount {source}:{target}")
+    """Presence and path only; read-only is checked by test_every_bind_of_the_watch_dir_is_read_only."""
+    problems = _missing_reader_binds(_load_services(), env)
     assert not problems, (
         "Watched documents are read in place from the path the watcher recorded, so every "
         "service that reads document bytes must mount the watcher's host directory at the same "
@@ -163,23 +217,59 @@ def test_document_readers_bind_the_watchers_mounts_at_the_same_path(env: dict[st
 
 
 @pytest.mark.parametrize(("env", "expected_root"), ENVIRONMENTS)
-def test_every_bind_of_the_watch_root_is_read_only(env: dict[str, str], expected_root: str) -> None:
+def test_every_bind_of_the_watch_dir_is_read_only(env: dict[str, str], expected_root: str) -> None:
     """Sources are never modified; a read-only mount enforces it, the watcher included."""
-    watch_sources = {s for s, _ in _watch_binds(env)}
-    writable = [
-        f"{name}: {source}:{target}"
-        for name, service in sorted(_load_services().items())
-        for (source, target), read_only in sorted(_bind_mounts(service, env).items())
-        if (_under(target, expected_root) or source in watch_sources) and not read_only
-    ]
-    assert not writable, "bind(s) of the watch root are writable; they must be :ro:\n  " + "\n  ".join(writable)
+    writable = _writable_watch_binds(_load_services(), env)
+    assert not writable, "bind(s) of the watch directory are writable; they must be :ro:\n  " + "\n  ".join(writable)
+
+
+# The parser's blind spots, each pinned on a copy of the real compose file.
+
+
+def _services_with(name: str, volumes: list) -> dict:
+    services = copy.deepcopy(_load_services())
+    services[name]["volumes"] = volumes
+    return services
+
+
+def test_long_syntax_read_only_string_false_is_writable() -> None:
+    services = _services_with(
+        APP_SERVICE, [{"type": "bind", "source": "./data/watch", "target": "/data/watch", "read_only": "false"}]
+    )
+    assert _writable_watch_binds(services, UNSET) == ["app: data/watch:/data/watch"]
+
+
+def test_long_syntax_read_only_true_counts() -> None:
+    for value in (True, "true"):
+        services = _services_with(
+            APP_SERVICE, [{"type": "bind", "source": "./data/watch", "target": "/data/watch", "read_only": value}]
+        )
+        assert _writable_watch_binds(services, UNSET) == []
+        assert _missing_reader_binds(services, UNSET) == []
+
+
+def test_writable_bind_of_an_ancestor_fails() -> None:
+    """`./data:/data` exposes the watch directory writable at /data/watch on any service."""
+    services = _services_with("worker-llm", ["./data:/data"])
+    assert _writable_watch_binds(services, UNSET) == ["worker-llm: data:/data"]
+
+
+def test_writable_bind_inside_the_watch_target_fails() -> None:
+    services = _services_with("worker-llm", ["/srv/elsewhere:/data/watch/extra"])
+    assert _writable_watch_binds(services, UNSET) == ["worker-llm: /srv/elsewhere:/data/watch/extra"]
+
+
+def test_trailing_slash_in_the_source_is_the_same_bind() -> None:
+    services = _services_with("worker-io", ["./data/watch/:/data/watch/:ro"])
+    assert _missing_reader_binds(services, UNSET) == []
+    assert _writable_watch_binds(services, UNSET) == []
 
 
 def test_watch_root_env_matches_the_watcher() -> None:
     """The app's watch API reads WATCH_ROOT (Docker vs native picker, folder confinement)."""
-    watcher_name, watcher = _watcher()
-    watcher_root = (watcher.get("environment") or {}).get("WATCH_ROOT")
     services = _load_services()
+    watcher_name, watcher = _watcher(services)
+    watcher_root = (watcher.get("environment") or {}).get("WATCH_ROOT")
     assert "WATCH_ROOT" in (services[APP_SERVICE].get("environment") or {}), (
         f"{APP_SERVICE} does not set WATCH_ROOT: the app would offer the native folder picker on Docker"
     )

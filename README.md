@@ -229,7 +229,7 @@ Open **https://localhost/** and accept the self-signed certificate. Create your 
 |---|---|---|
 | `SECRET_KEY` | `change-me-in-production` | JWT signing key — **change this** |
 | `DATABASE_URL` | `postgresql+asyncpg://harbor_clerk:...` | PostgreSQL connection string |
-| `WATCH_ROOT` | `/data/watch` | Container path whose top-level subdirs become watched folders |
+| `WATCH_ROOT` | `/data/watch` | Container path whose top-level subdirs become watched folders. Must be `/data/watch` (where `./data/watch` is mounted) or a directory under it; see the [guide](docs/watched-folders-docker.md) |
 | `MINIO_ENDPOINT` | `minio:9000` | MinIO endpoint (currently used by legacy upload API; watched-folder originals are read in place from `./data/watch`) |
 | `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
 | `MINIO_SECRET_KEY` | `minioadmin123` | MinIO secret key |

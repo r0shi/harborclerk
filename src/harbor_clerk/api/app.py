@@ -309,6 +309,13 @@ async def lifespan(app: FastAPI):
     if settings.secret_key == "change-me-in-production":
         logger.warning("SECRET_KEY is set to the default value. Change it to a random string for production use.")
 
+    # Docker: the watch API (folder list, downloads of watched files) reads under
+    # WATCH_ROOT, so a root that is missing or not on the mount is an error, not a
+    # silent empty folder list. Empty on macOS native, where this is a no-op.
+    from harbor_clerk.watcher.discovery import log_watch_root_problem
+
+    log_watch_root_problem(settings.watch_root, "api")
+
     # Ensure storage bucket exists
     get_storage().ensure_bucket(settings.minio_bucket)
 

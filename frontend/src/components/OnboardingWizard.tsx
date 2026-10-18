@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { get, patch, post, ApiError } from '../api'
 import { Card } from './Card'
-import { WATCHED_FOLDERS_DOCKER_GUIDE_URL } from '../data/docsLinks'
+import { watchedFoldersDockerGuideUrl } from '../data/docsLinks'
+import { useSystemConfig } from '../hooks/useSystemConfig'
 
 interface SystemInfo {
   platform: 'macos' | 'docker'
@@ -54,6 +55,7 @@ interface Props {
  */
 export default function OnboardingWizard({ onComplete }: Props) {
   const navigate = useNavigate()
+  const { version } = useSystemConfig()
   const [page, setPage] = useState(1)
   const [system, setSystem] = useState<SystemInfo | null>(null)
   // Neither is true until /api/watch/system answers (or if it fails): render
@@ -65,15 +67,27 @@ export default function OnboardingWizard({ onComplete }: Props) {
   const [languages, setLanguages] = useState<LanguageRow[]>([])
   const [selectedLangs, setSelectedLangs] = useState<Set<string>>(new Set())
   const [installingLangs, setInstallingLangs] = useState(false)
+  // Set when /api/watch/system fails: page 1 offers a Retry instead of a
+  // button stuck on "Loading…".
+  const [systemError, setSystemError] = useState('')
+
+  const loadSystem = useCallback(() => {
+    get<SystemInfo>('/api/watch/system')
+      .then((info) => {
+        setSystem(info)
+        setSystemError('')
+      })
+      .catch((e) => {
+        setSystemError(e instanceof ApiError || e instanceof Error ? e.message : 'request failed')
+      })
+  }, [])
 
   useEffect(() => {
-    get<SystemInfo>('/api/watch/system')
-      .then(setSystem)
-      .catch(() => {})
+    loadSystem()
     get<LanguagesListResponse>('/api/languages')
       .then((data) => setLanguages(data.languages))
       .catch(() => {})
-  }, [])
+  }, [loadSystem])
 
   const installAndContinue = useCallback(async () => {
     setError('')
@@ -221,13 +235,26 @@ export default function OnboardingWizard({ onComplete }: Props) {
                 </button>
               ) : system?.picker === 'none' ? (
                 <a
-                  href={WATCHED_FOLDERS_DOCKER_GUIDE_URL}
+                  href={watchedFoldersDockerGuideUrl(version)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-block rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
                 >
                   Read folder setup docs
                 </a>
+              ) : systemError ? (
+                <div role="alert" className="flex items-center gap-3 text-xs text-red-700 dark:text-red-400">
+                  <span>Couldn&apos;t load folder setup ({systemError}).</span>
+                  <button
+                    onClick={() => {
+                      setSystemError('')
+                      loadSystem()
+                    }}
+                    className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-(--color-text-primary) hover:bg-black/5 dark:hover:bg-white/5"
+                  >
+                    Retry
+                  </button>
+                </div>
               ) : (
                 // System info still loading
                 <button disabled className="rounded-lg bg-gray-300 dark:bg-gray-700 px-4 py-2 text-sm text-white">
