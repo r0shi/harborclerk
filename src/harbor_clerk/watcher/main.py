@@ -21,6 +21,7 @@ import unicodedata
 import uuid
 from datetime import UTC, datetime
 
+import psycopg2
 from sqlalchemy import case, null, update
 from sqlalchemy.exc import DBAPIError, IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.orm import sessionmaker
@@ -90,8 +91,12 @@ class _FolderGone(Exception):
 
 
 def _is_db_unreachable(exc: BaseException) -> bool:
-    """A connectivity failure, not this file's: an outage, a dropped or invalidated connection."""
-    if isinstance(exc, (OperationalError, InterfaceError)):
+    """A connectivity failure, not this file's: an outage, a dropped or invalidated connection.
+
+    SQLAlchemy wraps a driver error raised while a statement runs; one raised
+    around it (connection checkout, a cursor hook) arrives as psycopg2's own.
+    """
+    if isinstance(exc, (OperationalError, InterfaceError, psycopg2.OperationalError, psycopg2.InterfaceError)):
         return True
     return isinstance(exc, DBAPIError) and bool(exc.connection_invalidated)
 
@@ -118,6 +123,35 @@ def _listable(path: str) -> bool:
             return True
     except OSError:
         return False
+
+
+def _dir_device(path: str) -> int | None:
+    try:
+        return os.stat(path).st_dev
+    except OSError:
+        return None
+
+
+def _held_subtrees(
+    dir_devs: dict[str, "int | None"], dir_admitted: dict[str, int], root_dev: "int | None"
+) -> list[str]:
+    """Walked directories below the root whose missing rows a reconcile must not retire (#868).
+
+    A directory on another device than the root (a mount point below it), or
+    one whose whole subtree holds no admitted file (an unmounted mount point
+    is an empty directory). The root itself has its own guard.
+    """
+    subtree = dict.fromkeys(dir_admitted, 0)
+    for directory, count in dir_admitted.items():
+        if not count:
+            continue
+        subtree[""] = subtree.get("", 0) + count
+        parts = directory.split("/") if directory else []
+        for depth in range(1, len(parts) + 1):
+            ancestor = "/".join(parts[:depth])
+            if ancestor in subtree:
+                subtree[ancestor] += count
+    return sorted(d for d in dir_admitted if d and (dir_devs.get(d) != root_dev or subtree.get(d, 0) == 0))
 
 
 def _under(relative_path: str, directories: list[str]) -> bool:
@@ -177,6 +211,8 @@ class WatcherDaemon:
         # A pass that ended early is retried with backoff, whatever the periodic interval.
         self._retry_at: dict[uuid.UUID, float] = {}
         self._retry_delay: dict[uuid.UUID, float] = {}
+        # Per folder, the subtrees whose missing files a reconcile left alone (logged once each).
+        self._left_alone: dict[uuid.UUID, set[str]] = {}
         self._stop = threading.Event()
         # Set by an observer that lost its root, so the monitor checks now.
         self._wake = threading.Event()
@@ -351,7 +387,11 @@ class WatcherDaemon:
                 # A root that was missing or unreadable and is back (inotify keeps
                 # watching a root moved aside and back) is compared now, which
                 # clears the reason, rather than at the next periodic pass or never.
-                if self._reasons.get(fid) in (ROOT_MISSING, ROOT_UNREADABLE) and _listable(obs.root):
+                if (
+                    self._reasons.get(fid) in (ROOT_MISSING, ROOT_UNREADABLE)
+                    and fid not in self._retry_at  # an aborted pass's retry has its own backoff
+                    and _listable(obs.root)
+                ):
                     self._request_reconcile(fid)
                 continue
             backoff = self._reattach_failures.get(fid)
@@ -553,17 +593,25 @@ class WatcherDaemon:
         for path in sorted(active):
             active_by_fold.setdefault(_fold(path), []).append(path)
         respelled: list[tuple[str, str]] = []
+        # Paths this pass found that the index does not know: created after the
+        # walk, once each can be paired with a vanished row of the same content.
+        new_files: list[tuple[str, str, StatKey | None]] = []
+        # Per walked directory: its device and how many admitted files it holds.
+        root_dev = _dir_device(root)
+        dir_devs: dict[str, int | None] = {}
+        dir_admitted: dict[str, int] = {}
         for dirpath, dirnames, filenames in os.walk(root, onerror=walk_errors.append):
             # Prune dotfile / __MACOSX directories so we don't recurse
             # into them — both for speed and to avoid the cost of
             # invoking _on_event for every file in a .git tree.
             dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "__MACOSX"]
+            rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
+            rel_dir = "" if rel_dir == "." else rel_dir
+            dir_devs[rel_dir] = _dir_device(dirpath)
+            dir_admitted[rel_dir] = 0
             # A folder deleted or disabled meanwhile ends the pass, checked
             # per directory and at most every FOLDER_CHECK_INTERVAL_SECS.
-            if time.monotonic() - last_alive_check >= FOLDER_CHECK_INTERVAL_SECS:
-                last_alive_check = time.monotonic()
-                if not self._folder_alive(folder_id):
-                    raise _FolderGone
+            last_alive_check = self._check_folder_alive(folder_id, last_alive_check)
             # One index per directory: each `.json` looks its siblings up
             # instead of folding the whole listing (quadratic, every pass).
             siblings = SiblingIndex(filenames)
@@ -608,6 +656,7 @@ class WatcherDaemon:
                     continue
 
                 admitted += 1
+                dir_admitted[rel_dir] += 1
                 stat = _stat_key(abs_path)
                 if stat is not None and rel_path in active and seen.get(rel_path) == stat:
                     continue
@@ -615,6 +664,9 @@ class WatcherDaemon:
                     # Decided after the walk, once it is known whether the
                     # other spelling is still on disk too.
                     respelled.append((rel_path, abs_path))
+                    continue
+                if rel_path not in active:
+                    new_files.append((rel_path, abs_path, stat))
                     continue
                 handled = self._on_event(
                     FileEvent(
@@ -671,6 +723,27 @@ class WatcherDaemon:
             count += 1
 
         missing = sorted(p for p in active - present - moved_from if not _under(p, unlisted))
+        # A subtree the reconcile must not empty (#868): a mount point below the
+        # root (another device), or a directory that is there but holds no
+        # admitted file while indexed rows sit under it, as an unmounted mount
+        # point does. The reconcile is the backstop for missed deletes, not the
+        # delete path: live delete events still retire files there.
+        held = _held_subtrees(dir_devs, dir_admitted, root_dev)
+        left_alone = sorted({d for d in held for p in missing if p.startswith(d + "/")})
+        self._note_left_alone(folder_id, root, left_alone)
+        missing = [p for p in missing if not _under(p, held)]
+
+        # A file moved while the watcher was down shows up as one new path and
+        # one missing row with the same content: a move, so it keeps its
+        # document (#847). Several candidates on either side are not paired.
+        missing, new_files = self._pair_moves_while_down(folder_id, root, missing, new_files, moved_from, seen)
+        for rel_path, abs_path, stat in new_files:
+            last_alive_check = self._check_folder_alive(folder_id, last_alive_check)
+            handled = self._on_event(FileEvent(EventKind.created, folder_id, rel_path, abs_path), in_pass=True)
+            if handled and stat is not None:
+                seen[rel_path] = stat
+            count += 1
+
         removed = 0
         empty = bool(missing) and admitted == 0
         if empty:
@@ -766,10 +839,95 @@ class WatcherDaemon:
             sess.rollback()
             if _is_db_unreachable(exc):
                 self._note_db_failure(exc)
-            else:
-                logger.exception("watcher: failed to update last_scan_at for %s", folder_id)
+                # Not stamped: the pass did not complete, and is retried.
+                raise _DatabaseUnavailable from exc
+            logger.exception("watcher: failed to update last_scan_at for %s", folder_id)
         finally:
             sess.close()
+
+    def _pair_moves_while_down(
+        self,
+        folder_id: uuid.UUID,
+        root: str,
+        missing: list[str],
+        new_files: list[tuple[str, str, "StatKey | None"]],
+        moved_from: set[str],
+        seen: dict[str, "StatKey"],
+    ) -> tuple[list[str], list[tuple[str, str, "StatKey | None"]]]:
+        """Apply each missing row whose content matches exactly one new path, and no other row, as a move.
+
+        Returns the rows still missing and the new paths still to create.
+        """
+        if not missing or not new_files:
+            return missing, new_files
+        sess = self._session_factory()
+        try:
+            rows = (
+                sess.query(WatchedFile.relative_path, WatchedFile.sha256)
+                .filter(WatchedFile.folder_id == folder_id, WatchedFile.relative_path.in_(missing))
+                .all()
+            )
+        finally:
+            sess.close()
+        missing_by_sha: dict[bytes, list[str]] = {}
+        for rel, sha in rows:
+            missing_by_sha.setdefault(bytes(sha), []).append(rel)
+        new_by_sha: dict[bytes, list[tuple[str, str, StatKey | None]]] = {}
+        for entry in new_files:
+            try:
+                new_by_sha.setdefault(sha256_of(entry[1]), []).append(entry)
+            except OSError:
+                continue
+        paired_old: set[str] = set()
+        paired_new: set[str] = set()
+        for sha, olds in missing_by_sha.items():
+            news = new_by_sha.get(sha, [])
+            if len(olds) != 1 or len(news) != 1:
+                continue
+            old, (new_rel, new_abs, stat) = olds[0], news[0]
+            event = FileEvent(
+                EventKind.moved,
+                folder_id,
+                old,
+                os.path.join(root, old),
+                dest_relative_path=new_rel,
+                dest_absolute_path=new_abs,
+            )
+            if self._on_event(event, in_pass=True):
+                paired_old.add(old)
+                paired_new.add(new_rel)
+                moved_from.add(old)
+                seen.pop(old, None)
+                if stat is not None:
+                    seen[new_rel] = stat
+                logger.info("watcher: %s was moved to %s while the watcher was down; document kept", old, new_rel)
+        return (
+            [p for p in missing if p not in paired_old],
+            [entry for entry in new_files if entry[0] not in paired_new],
+        )
+
+    def _check_folder_alive(self, folder_id: uuid.UUID, last_check: float) -> float:
+        """End the pass (`_FolderGone`) if the folder was deleted or disabled; checked at most every
+        FOLDER_CHECK_INTERVAL_SECS. Returns the time of the last check."""
+        if time.monotonic() - last_check < FOLDER_CHECK_INTERVAL_SECS:
+            return last_check
+        if not self._folder_alive(folder_id):
+            raise _FolderGone
+        return time.monotonic()
+
+    def _note_left_alone(self, folder_id: uuid.UUID, root: str, subtrees: list[str]) -> None:
+        """Log, once per subtree until it is no longer held, that the reconcile left its missing files alone."""
+        logged = self._left_alone.setdefault(folder_id, set())
+        for subtree in subtrees:
+            if subtree not in logged:
+                logger.warning(
+                    "watcher: reconcile of %s left %s alone: it is a mount point or holds no files while files "
+                    "are indexed under it (an unmounted volume looks the same); live deletes still apply",
+                    root,
+                    subtree,
+                )
+        logged.intersection_update(subtrees)
+        logged.update(subtrees)
 
     def _same_file_or_content(self, folder_id: uuid.UUID, root: str, old: str, new_abs: str) -> bool:
         """Whether a re-spelled path may inherit the vanished one's document.
@@ -865,18 +1023,30 @@ class WatcherDaemon:
             self._wake.clear()
             if self._stop.is_set():
                 break
-            try:
-                self._check_roots()
-                self._run_due_retries()
-                if interval > 0 and time.monotonic() >= next_rescan:
-                    next_rescan = time.monotonic() + interval
-                    self._sync_observers()
-                    with self._observers_lock:
-                        folder_ids = list(self._observers)
-                    for fid in folder_ids:
-                        self._request_reconcile(fid)
-            except Exception:
+            next_rescan = self._monitor_tick(interval, next_rescan)
+
+    def _monitor_tick(self, interval: float, next_rescan: float) -> float:
+        """One monitor round: root checks, due retries, and the periodic pass. Returns the next rescan time.
+
+        An unreachable database is logged once per outage (the daemon-wide
+        streak), not with a traceback every interval.
+        """
+        try:
+            self._check_roots()
+            self._run_due_retries()
+            if interval > 0 and time.monotonic() >= next_rescan:
+                next_rescan = time.monotonic() + interval
+                self._sync_observers()
+                with self._observers_lock:
+                    folder_ids = list(self._observers)
+                for fid in folder_ids:
+                    self._request_reconcile(fid)
+        except Exception as exc:
+            if _is_db_unreachable(exc):
+                self._note_db_failure(exc)
+            else:
                 logger.exception("watcher: monitor pass failed")
+        return next_rescan
 
     def _discovery_loop(self) -> None:
         watch_root = get_settings().watch_root

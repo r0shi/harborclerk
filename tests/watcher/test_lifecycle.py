@@ -1464,3 +1464,238 @@ def test_an_unchanged_sidecar_is_not_read_again_on_the_next_pass(factory, tmp_pa
     daemon._reconcile_folder(folder_id, str(root))
     assert reads == [str(root / "INV-2.json")]
     assert len(_state(factory, folder_id)) == 5, "the sidecars are still sidecars"
+
+
+# ---------------------------------------------------------------------------
+# Eighth review of #860
+# ---------------------------------------------------------------------------
+
+
+def _seed_subtree(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "top.txt").write_text("top")
+    (root / "sub").mkdir()
+    (root / "sub" / "deep").mkdir()
+    (root / "sub" / "a.txt").write_text("alpha")
+    (root / "sub" / "deep" / "b.txt").write_text("beta")
+    folder_id = _reconcile_once(factory, root)
+    return root, folder_id
+
+
+def test_a_mount_point_below_the_root_is_left_alone(factory, tmp_path, monkeypatch, caplog):
+    """#868: the reconcile never retires rows under a directory on another
+    device than the root; a delete there is for live events to report."""
+    import logging
+
+    root, folder_id = _seed_subtree(factory, tmp_path)
+    (root / "sub" / "a.txt").unlink()
+    real_device = watcher_main._dir_device
+    monkeypatch.setattr(
+        watcher_main,
+        "_dir_device",
+        lambda path: (real_device(path) or 0) + 1 if os.path.basename(path) == "sub" else real_device(path),
+    )
+    daemon = WatcherDaemon(factory)
+    with caplog.at_level(logging.WARNING, logger="harbor_clerk.watcher"):
+        daemon._reconcile_folder(folder_id, str(root))
+        daemon._reconcile_folder(folder_id, str(root))
+    assert _state(factory, folder_id)["sub/a.txt"][0:3:2] == (ACTIVE, "active")
+    held = [r for r in caplog.records if "left sub alone" in r.getMessage()]
+    assert len(held) == 1, "logged once, not every pass"
+
+    monkeypatch.setattr(watcher_main, "_dir_device", real_device)
+    daemon._reconcile_folder(folder_id, str(root))
+    assert _state(factory, folder_id)["sub/a.txt"][0:3:2] == (REMOVED, "removed"), (
+        "an ordinary subdirectory is not held"
+    )
+
+
+def test_an_emptied_subdirectory_is_left_alone_but_a_removed_one_is_not(factory, tmp_path):
+    """An unmounted mount point is an empty directory: its rows stay. A
+    subdirectory that is gone altogether is reconciled as before."""
+    root, folder_id = _seed_subtree(factory, tmp_path)
+    (root / "gone").mkdir()
+    (root / "gone" / "c.txt").write_text("gamma")
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+
+    (root / "sub" / "a.txt").unlink()
+    (root / "sub" / "deep" / "b.txt").unlink()
+    (root / "gone" / "c.txt").unlink()
+    (root / "gone").rmdir()
+    daemon = WatcherDaemon(factory)
+    daemon._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert st["sub/a.txt"][0:3:2] == (ACTIVE, "active")
+    assert st["sub/deep/b.txt"][0:3:2] == (ACTIVE, "active")
+    assert st["gone/c.txt"][0:3:2] == (REMOVED, "removed")
+    assert st["top.txt"][0:3:2] == (ACTIVE, "active")
+
+    daemon._on_event(
+        watcher_main.FileEvent(watcher_main.EventKind.deleted, folder_id, "sub/a.txt", str(root / "sub" / "a.txt"))
+    )
+    assert _state(factory, folder_id)["sub/a.txt"][0:3:2] == (REMOVED, "removed"), "live deletes still retire"
+
+
+def test_a_database_outage_while_recording_the_pass_retries_it(factory, _sync_engine, tmp_path):
+    import psycopg2
+    from sqlalchemy import event as sa_event
+
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    failed = []
+
+    def fail_the_first_stamp(conn, cursor, statement, parameters, context, executemany):
+        if not failed and statement.lstrip().upper().startswith("UPDATE WATCHED_FOLDERS"):
+            failed.append(statement)
+            raise psycopg2.OperationalError("server closed the connection unexpectedly")
+
+    sa_event.listen(_sync_engine, "before_cursor_execute", fail_the_first_stamp)
+    try:
+        daemon._reconcile_folder(folder_id, str(root))
+    finally:
+        sa_event.remove(_sync_engine, "before_cursor_execute", fail_the_first_stamp)
+    assert failed, "the hook fired"
+    assert _last_scan_at(factory, folder_id) is None
+    assert folder_id in daemon._retry_at, "an unrecorded pass is an aborted one: retried"
+
+    daemon._reconcile_folder(folder_id, str(root))
+    assert _last_scan_at(factory, folder_id) is not None
+    assert folder_id not in daemon._retry_at
+
+
+def test_a_move_while_down_keeps_its_document(factory, tmp_path):
+    """#847: `mv a.txt sub/a.txt` while the watcher was down is one missing row
+    and one new path of the same content: a move, not retire plus create."""
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    (root / "keep.txt").write_text("keep")
+    folder_id = _reconcile_once(factory, root)
+    doc_id = _state(factory, folder_id)["a.txt"][1]
+    (root / "sub").mkdir()
+    (root / "a.txt").rename(root / "sub" / "a.txt")
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert "a.txt" not in st
+    assert st["sub/a.txt"] == (ACTIVE, doc_id, "active", _sha("alpha"), 0)
+
+
+def test_a_copy_while_down_is_not_paired(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _reconcile_once(factory, root)
+    doc_id = _state(factory, folder_id)["a.txt"][1]
+    (root / "copy.txt").write_text("alpha")
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert st["a.txt"][:3] == (ACTIVE, doc_id, "active")
+    assert st["copy.txt"][0] == ACTIVE and st["copy.txt"][1] != doc_id
+
+
+@pytest.mark.parametrize("side", ["two-new-paths", "two-missing-rows"])
+def test_an_ambiguous_same_content_set_is_not_paired(factory, tmp_path, side):
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    (root / "keep.txt").write_text("keep")
+    if side == "two-missing-rows":
+        (root / "a2.txt").write_text("alpha")
+    folder_id = _reconcile_once(factory, root)
+    old_ids = {k: v[1] for k, v in _state(factory, folder_id).items()}
+    (root / "a.txt").unlink()
+    if side == "two-missing-rows":
+        (root / "a2.txt").unlink()
+        (root / "new.txt").write_text("alpha")
+    else:
+        (root / "new1.txt").write_text("alpha")
+        (root / "new2.txt").write_text("alpha")
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert st["a.txt"][0:3:2] == (REMOVED, "removed")
+    new_paths = [k for k in st if k.startswith("new")]
+    assert all(st[k][0] == ACTIVE and st[k][1] not in old_ids.values() for k in new_paths), st
+
+
+def test_a_root_that_is_back_is_not_re_passed_while_a_retry_is_pending(factory, tmp_path):
+    from harbor_clerk.watcher.observer import RootState
+
+    folder_id = uuid.uuid4()
+    daemon = WatcherDaemon(factory)
+
+    class Steady:
+        root = str(tmp_path)
+
+        def health(self):
+            return RootState.ok
+
+    daemon._observers[folder_id] = Steady()
+    daemon._reasons[folder_id] = watcher_main.ROOT_MISSING
+    daemon._retry_at[folder_id] = time.monotonic() + 60
+    requested = []
+    daemon._request_reconcile = requested.append
+    daemon._check_roots()
+    assert requested == [], "the pending retry's backoff applies"
+    daemon._retry_at.pop(folder_id)
+    daemon._check_roots()
+    assert requested == [folder_id]
+
+
+def test_an_unreadable_root_is_not_re_passed_every_check(factory, tmp_path):
+    from harbor_clerk.watcher.observer import RootState
+
+    root = _root(tmp_path)
+    folder_id = uuid.uuid4()
+    daemon = WatcherDaemon(factory)
+
+    class Steady:
+        def __init__(self, path):
+            self.root = path
+
+        def health(self):
+            return RootState.ok
+
+    daemon._observers[folder_id] = Steady(str(root))
+    daemon._reasons[folder_id] = watcher_main.ROOT_UNREADABLE
+    requested = []
+    daemon._request_reconcile = requested.append
+    root.chmod(0o300)
+    try:
+        if os.access(root, os.R_OK):
+            pytest.skip("running with privileges that read a write-only directory")
+        for _ in range(3):
+            daemon._check_roots()
+        assert requested == [], "still unreadable: nothing to compare"
+    finally:
+        root.chmod(0o755)
+    daemon._check_roots()
+    assert requested == [folder_id], "readable again: compared at once"
+
+
+def test_the_monitor_logs_a_database_outage_once(factory, monkeypatch, caplog):
+    import logging
+
+    daemon = WatcherDaemon(factory)
+
+    def unreachable():
+        raise _outage()
+
+    monkeypatch.setattr(daemon, "_sync_observers", unreachable)
+    with caplog.at_level(logging.DEBUG, logger="harbor_clerk.watcher"):
+        for _ in range(4):
+            daemon._monitor_tick(interval=0.001, next_rescan=0.0)
+    loud = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(loud) == 1 and "unreachable" in loud[0].getMessage(), [r.getMessage() for r in loud]
+    assert not any("monitor pass failed" in r.getMessage() for r in caplog.records)
+
+
+def test_an_invalidated_connection_counts_as_the_database_unreachable():
+    from sqlalchemy.exc import DBAPIError
+
+    invalidated = DBAPIError("SELECT 1", {}, Exception("connection reset"), connection_invalidated=True)
+    other = DBAPIError("SELECT 1", {}, Exception("syntax error"), connection_invalidated=False)
+    assert watcher_main._is_db_unreachable(invalidated)
+    assert not watcher_main._is_db_unreachable(other)
+    assert not watcher_main._is_db_unreachable(ValueError("not a database error"))
