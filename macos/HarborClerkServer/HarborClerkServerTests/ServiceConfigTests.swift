@@ -707,3 +707,34 @@ final class BundleCacheOverrideService: PythonService {
     override var executableName: String { "harbor-clerk-none" }
     override var extraEnvironment: [String: String] { Self.bundleCaches }
 }
+
+/// The test host must start nothing: two independent guards stand between a
+/// launch under `XCTestConfigurationFilePath` and the live stack (Keychain,
+/// the live app's child pids, its ports and its launchd agents). Each guard is
+/// tested with a stand-in for what it protects, so breaking one fails a test
+/// without the other ever letting anything live run.
+@MainActor
+final class TestHostGuardTests: XCTestCase {
+    private static let switchSet = ["XCTestConfigurationFilePath": "/dev/null"]
+
+    /// This very process: the runner set the switch, and the launch stopped
+    /// at the first guard. Breaking the first guard moves it to the second.
+    func testThisTestHostStoppedAtTheLaunchGuard() {
+        XCTAssertNotNil(ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"])
+        XCTAssertEqual(AppDelegate.launchOutcome, .stoppedAtLaunchGuard)
+    }
+
+    func testTheLaunchGuardNeverCallsBootUnderTheSwitch() {
+        var booted = false
+        AppDelegate.launch(environment: Self.switchSet) { booted = true }
+        XCTAssertFalse(booted)
+
+        AppDelegate.launch(environment: [:]) { booted = true }
+        XCTAssertTrue(booted, "without the switch the stand-in boot runs")
+    }
+
+    func testTheBootGuardRefusesUnderTheSwitch() {
+        XCTAssertFalse(AppDelegate.mayBootLiveStack(environment: Self.switchSet))
+        XCTAssertTrue(AppDelegate.mayBootLiveStack(environment: [:]))
+    }
+}

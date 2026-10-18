@@ -39,7 +39,10 @@ struct ContentView: View {
                     .ignoresSafeArea()
             }
         }
-        .onAppear { detector.startPolling() }
+        .onAppear {
+            RootViewLog.liveAppeared = true
+            detector.startPolling()
+        }
         .onDisappear { detector.stopPolling() }
         .onChange(of: detector.isAvailable) { _, available in
             if available {

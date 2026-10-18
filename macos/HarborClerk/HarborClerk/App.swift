@@ -4,7 +4,11 @@ import SwiftUI
 struct HarborClerkApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            if Self.showsLiveRoot(environment: ProcessInfo.processInfo.environment) {
+                ContentView()
+            } else {
+                InertHostView()
+            }
         }
         .defaultSize(width: 1200, height: 800)
         .commands {
@@ -43,6 +47,36 @@ struct HarborClerkApp: App {
                 .keyboardShortcut("0", modifiers: .command)
             }
         }
+    }
+}
+
+extension HarborClerkApp {
+    /// The first of two start-nothing guards: with `XCTestConfigurationFilePath`
+    /// set (the XCTest runner, notarize.sh's launch probe) the window holds
+    /// `InertHostView`, never `ContentView`, which polls the server, and
+    /// whose AuthManager reads the Keychain, logs in and writes the session
+    /// cookie into the WebKit store. AuthManager checks the same switch again
+    /// (the second guard), so breaking either one alone reaches nothing live.
+    static func showsLiveRoot(environment: [String: String]) -> Bool {
+        environment["XCTestConfigurationFilePath"] == nil
+    }
+}
+
+/// Which root views have appeared in this process. Read by the test that the
+/// test host shows the inert one; nothing in the app uses it.
+@MainActor
+enum RootViewLog {
+    static var inertAppeared = false
+    static var liveAppeared = false
+}
+
+/// The whole window under the start-nothing switch: no polling, no Keychain,
+/// no network, no WebKit.
+struct InertHostView: View {
+    var body: some View {
+        Text("Harbor Clerk")
+            .frame(minWidth: 200, minHeight: 100)
+            .onAppear { RootViewLog.inertAppeared = true }
     }
 }
 

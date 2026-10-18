@@ -104,6 +104,8 @@ final class AuthManager: ObservableObject {
     // MARK: - Server became available
 
     func onServerBecameAvailable() async {
+        // The second guard: HarborClerkApp already shows an inert root under
+        // this switch, so this is reached only if that one is broken.
         // Same start-nothing switch the server's AppDelegate honours. The
         // signing launch probe in notarize.sh execs this app for two seconds and
         // kills it; without this, that ran the real path below, and the catch-all

@@ -346,6 +346,33 @@ final class AuthManagerTests: XCTestCase {
     }
 }
 
+/// The client's first start-nothing guard: under the switch the window holds
+/// `InertHostView`, so even a broken AuthManager guard cannot reach the
+/// Keychain, the server or the WebKit store from the test host.
+@MainActor
+final class TestHostRootTests: XCTestCase {
+
+    func testTheSwitchSelectsTheInertRoot() {
+        XCTAssertFalse(HarborClerkApp.showsLiveRoot(environment: ["XCTestConfigurationFilePath": "/dev/null"]))
+        XCTAssertTrue(HarborClerkApp.showsLiveRoot(environment: [:]))
+    }
+
+    /// This very process: its window shows the inert root, and ContentView
+    /// never appeared.
+    func testThisTestHostShowsTheInertRoot() async {
+        let appeared = expectation(description: "InertHostView appeared within 10s")
+        let wait = Task { @MainActor in
+            while !RootViewLog.inertAppeared && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+            appeared.fulfill()
+        }
+        await fulfillment(of: [appeared], timeout: 10)
+        wait.cancel()
+
+        XCTAssertTrue(RootViewLog.inertAppeared)
+        XCTAssertFalse(RootViewLog.liveAppeared, "ContentView must never appear in the test host")
+    }
+}
+
 /// Holds a request until the test opens it.
 actor Gate {
     private var isOpen = false

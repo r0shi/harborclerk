@@ -13,22 +13,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var restartTask: Task<Void, Never>?
     private var isQuitting = false
 
+    /// How far this process's launch got. Read by the test that the test host
+    /// started nothing; nothing in the app uses it.
+    enum LaunchOutcome: Equatable {
+        case notLaunched, stoppedAtLaunchGuard, stoppedAtBootGuard, booted
+    }
+    private(set) static var launchOutcome: LaunchOutcome = .notLaunched
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Under XCTest the app is only a host for the test bundle. Booting the
-        // real stack here reaches the Keychain and launches PostgreSQL, Tika and
-        // the Python services, and the runner times out before the test bundle
-        // ever connects ("The test runner hung before establishing connection").
-        // That is why none of these tests have ever run. Checked via the
-        // environment rather than NSClassFromString("XCTestCase") because the
-        // runner exports it before launch, so it is already set here.
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        let environment = ProcessInfo.processInfo.environment
+        Self.launch(environment: environment) { self.bootLiveStack(environment: environment) }
+    }
+
+    /// The first of two start-nothing guards: with `XCTestConfigurationFilePath`
+    /// set, `boot` is never called.
+    ///
+    /// Under XCTest the app is only a host for the test bundle, and
+    /// notarize.sh's launch probe sets the same switch. Booting the real stack
+    /// reaches the Keychain, kills the processes named in the live app's
+    /// child-pids.txt and whatever holds its ports (8100, 8102, 8443, ...),
+    /// and boots out and reloads its launchd agents. It also made the runner
+    /// time out before the test bundle connected ("The test runner hung before
+    /// establishing connection"). Checked via the environment rather than
+    /// NSClassFromString("XCTestCase") because the runner exports it before
+    /// launch, so it is already set here.
+    static func launch(environment: [String: String], boot: () -> Void) {
+        if environment["XCTestConfigurationFilePath"] != nil {
             // Logged rather than returning silently: if this ever fires outside
             // a test run (an inherited environment, `launchctl setenv`), the
             // symptom is a menubar app that starts no services and shows no
             // status item, and this line is the only thing that would explain it.
             Log.logger("lifecycle").notice("XCTest host launch — skipping service startup")
+            launchOutcome = .stoppedAtLaunchGuard
             return
         }
+        boot()
+    }
+
+    /// The second guard, checked again where the live stack starts, so a
+    /// change that breaks the first one (a mutation test, a refactor of the
+    /// launch path) still cannot reach anything live from a test host.
+    static func mayBootLiveStack(environment: [String: String]) -> Bool {
+        environment["XCTestConfigurationFilePath"] == nil
+    }
+
+    private func bootLiveStack(environment: [String: String]) {
+        guard Self.mayBootLiveStack(environment: environment) else {
+            Log.logger("lifecycle").notice("XCTest host launch — the boot guard stopped service startup")
+            Self.launchOutcome = .stoppedAtBootGuard
+            return
+        }
+        Self.launchOutcome = .booted
 
         // First-launch master key bootstrap. Idempotent — generates the key in
         // Keychain only on the very first launch; subsequent launches just read.
