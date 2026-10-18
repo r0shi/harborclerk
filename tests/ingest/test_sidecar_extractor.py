@@ -173,3 +173,17 @@ def test_sidecar_extractor_handles_utf8_bom(tmp_path: Path):
         source_path=str(tmp_path / "0001_invoice.txt"),
     )
     assert out == {"vendor": "Acme"}
+
+
+def test_verified_in_place_path_touches_no_disk_on_a_plain_match(monkeypatch):
+    """realpath (which can block on a stalled mount) runs only when the plain path misses."""
+    import os
+
+    from harbor_clerk.watched_source import verified_in_place_path
+
+    def no_realpath(path, *args, **kwargs):
+        raise AssertionError(f"realpath called for {path}")
+
+    monkeypatch.setattr(os.path, "realpath", no_realpath)
+    rows = [("/srv/watched", "sub/a.txt")]
+    assert verified_in_place_path(rows, "/srv/watched/sub/a.txt") == "/srv/watched/sub/a.txt"
