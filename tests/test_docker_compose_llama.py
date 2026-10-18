@@ -318,3 +318,48 @@ def test_the_compose_default_context_is_the_apps() -> None:
     from harbor_clerk.config import COMPOSE_DEFAULT_CONTEXT_TOKENS
 
     assert int(CONTEXT_EXPR.match(_flag(_llama_args(), "-c")).group(1)) == COMPOSE_DEFAULT_CONTEXT_TOKENS
+
+
+needs_dash = pytest.mark.skipif(shutil.which("dash") is None, reason="needs dash, the /bin/sh of Debian images")
+
+
+@needs_dash
+@pytest.mark.parametrize(
+    ("given", "passed"),
+    [
+        (["-c", "0"], ["-c", "8192"]),
+        (["--ctx-size", "0"], ["--ctx-size", "8192"]),
+        (["-c=0"], ["-c=8192"]),
+        (["--ctx-size=0"], ["--ctx-size=8192"]),
+    ],
+)
+def test_entrypoint_replaces_a_zero_context_with_the_compose_default(tmp_path: Path, given, passed) -> None:
+    # LLM_CONTEXT_TOKENS=0 renders `-c 0`, which llama-server reads as the full training context: an OOM loop in a
+    # container. The entrypoint passes the compose default instead, as the app budgets, and says why.
+    fake, out = _fake_server(tmp_path)
+    model = tmp_path / "Qwen3.5-4B-Q4_K_M.gguf"
+    model.write_bytes(b"GGUF")
+    args = ["-m", str(model), "-ngl", "0", *given, "--port", "8080"]
+    result = subprocess.run(["dash", str(ENTRYPOINT), *args], env=_env(fake), capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert out.read_text().splitlines() == ["-m", str(model), "-ngl", "0", *passed, "--port", "8080"]
+    assert b"LLM_CONTEXT_TOKENS=0 is not supported under Compose" in result.stderr
+
+
+@needs_dash
+def test_entrypoint_leaves_a_real_context_alone(tmp_path: Path) -> None:
+    fake, out = _fake_server(tmp_path)
+    model = tmp_path / "Qwen3.5-4B-Q4_K_M.gguf"
+    model.write_bytes(b"GGUF")
+    args = ["-m", str(model), "-ngl", "0", "-c", "16384", "--cache-ram", "0"]
+    result = subprocess.run(["dash", str(ENTRYPOINT), *args], env=_env(fake), capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert out.read_text().splitlines() == args
+    assert b"LLM_CONTEXT_TOKENS" not in result.stderr
+
+
+def test_the_entrypoints_default_context_is_the_apps() -> None:
+    from harbor_clerk.config import COMPOSE_DEFAULT_CONTEXT_TOKENS
+
+    match = re.search(r"^COMPOSE_DEFAULT_CONTEXT=(\d+)$", ENTRYPOINT.read_text(), re.M)
+    assert match and int(match.group(1)) == COMPOSE_DEFAULT_CONTEXT_TOKENS

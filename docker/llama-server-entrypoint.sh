@@ -18,6 +18,34 @@
 # (docker-init is PID 1, from `init: true`, and forwards the signal here.)
 set -eu
 
+# What docker-compose.yml passes as -c when LLM_CONTEXT_TOKENS is unset; the app's
+# COMPOSE_DEFAULT_CONTEXT_TOKENS (tests/test_docker_compose_llama.py holds the two together).
+COMPOSE_DEFAULT_CONTEXT=8192
+
+# LLM_CONTEXT_TOKENS=0 reaches here as `-c 0`, which llama-server reads as the model's full training context
+# (262,144 tokens for Qwen3.5: a KV cache a container likely cannot hold, then an OOM restart loop). Compose
+# interpolation cannot refuse a 0, so it is replaced with the compose default, which the app budgets to as well.
+prev=""
+rewrite=""
+for arg in "$@"; do
+    if [ -z "$rewrite" ]; then
+        set --
+        rewrite=1
+    fi
+    orig="$arg"
+    case "$arg" in
+    -c=0 | --ctx-size=0) arg="${arg%=0}=$COMPOSE_DEFAULT_CONTEXT" ;;
+    0) if [ "$prev" = "-c" ] || [ "$prev" = "--ctx-size" ]; then arg="$COMPOSE_DEFAULT_CONTEXT"; fi ;;
+    esac
+    if [ "$arg" != "$orig" ]; then
+        echo "llama-server-entrypoint: LLM_CONTEXT_TOKENS=0 is not supported under Compose (llama-server would" \
+            "allocate the model's full training context); using $COMPOSE_DEFAULT_CONTEXT. Set LLM_CONTEXT_TOKENS in" \
+            ".env to change it." >&2
+    fi
+    set -- "$@" "$arg"
+    prev="$orig"
+done
+
 # The model as llama-server would read it: `-m PATH`, `--model PATH`, `--model=PATH`, or LLAMA_ARG_MODEL
 # (llama.cpp's environment form of -m). A flag on the command line wins over the environment.
 model="${LLAMA_ARG_MODEL:-}"
