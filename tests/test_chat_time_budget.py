@@ -3909,9 +3909,9 @@ def test_a_conversation_reads_its_own_prose_ratio_then_the_models():
         assert chat_module._conversation_prose_ratio("b", "m") == pytest.approx(1.8), "not measured: the model's"
         assert chat_module._record_conversation_prose_ratio("b", "m", 1000, 1000) == pytest.approx(1.0)
         assert chat_module._conversation_prose_ratio("a", "m") == pytest.approx(1.8), "its own, not the model's"
+        assert chat_module._conversation_prose_ratio("a", "other") == seed, "another model's tokenizer: its table"
         assert chat_module._prose_ratio("m") == pytest.approx(1.4), "the model's blends both"
         assert chat_module._record_conversation_prose_ratio("a", "m", 1200, 1000) == pytest.approx(1.2), "replaced"
-        assert chat_module._conversation_prose_ratio("a", "other") == seed, "another model's tokenizer: its table"
         assert chat_module._record_conversation_prose_ratio("a", "m", 0, 1000) is None
         assert chat_module._conversation_prose_ratio("a", "m") == pytest.approx(1.2)
         assert chat_module._record_conversation_prose_ratio("c", None, 10_000_000, 1) == chat_module._ESTIMATE_RATIO_MAX
