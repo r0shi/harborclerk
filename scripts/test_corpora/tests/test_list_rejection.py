@@ -859,6 +859,13 @@ def test_a_contrast_that_affirms_qualification_does_not_reject(label, rejects):
         # review 7: an indented bold lead-in over a paragraph is not read (an accepted false keep: read, an indented
         # "**Excluded:**" inside a list item would take the rest of the section).
         (f"One.\n\n- `{SID}`\n\n  **Not counted:**\n  eDiets (`{EID}`) warranty only.\n", {STAAR, EDIETS}),
+        # A heading that says "none" after its own colon rejects nothing (review 5; "Exclusions" no longer rejects, so
+        # the probe is "Excluded").
+        (
+            f"Found two.\n\n## Matches\n\n- `{SID}`\n\n## Excluded: none\n\n- `{PID}` also qualifies (§9)\n",
+            {STAAR, PAPA},
+        ),
+        (f"Found two.\n\n## Matches\n\n- `{SID}`\n\n## Excluded: eDiets\n\n- `{EID}`\n", {STAAR}),
         # review 7: the rest.
         (
             f"Two.\n\n| Contract | Note |\n|---|---|\n| Staar (`{SID}`) | ok |\n| Excluded: | `{EID}` |\n",
