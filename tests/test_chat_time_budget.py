@@ -4115,6 +4115,51 @@ async def test_once_a_turn_has_searched_the_ui_figure_reads_the_models_prose_tab
     assert done[0]["context_pct"] == shown(1.6)
 
 
+@pytest.mark.asyncio
+async def test_a_forced_call_before_any_search_allows_for_the_conversations_own_density(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The time budget runs out in round 0, before the first call's usage arrives: nothing was searched and nothing
+    counted. The forced call's outer deadline allows for the prompt's read as predicted with the conversation's own
+    prose ratio (1.8, a dense conversation), not the model's table (1.0): the turn has not searched, so its rule
+    still applies, as for the trim."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    db_session.add_all(_history(conv.conversation_id, _stored_exchanges(5)))
+    await db_session.commit()
+    clock = _Clock()
+    client, _ = _mock_client(
+        [[_tool_call_chunk(), "data: [DONE]"], [_chunk(content="I could not search."), "data: [DONE]"]],
+        on_send=lambda n: setattr(clock, "now", 301.0) if n == 0 else None,
+    )
+    predictions: list[int] = []
+    real_deadline = chat_module._forced_call_outer_deadline
+
+    def recording(stopped_at: float, predicted_prompt_tokens: int) -> float:
+        predictions.append(predicted_prompt_tokens)
+        return real_deadline(stopped_at, predicted_prompt_tokens)
+
+    monkeypatch.setattr(chat_module, "_forced_call_outer_deadline", recording)
+    text, done, tool_calls = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        context_tokens=32768,
+        prose_ratios={_MODEL_KEY: 1.0},
+        conversation_prose=OrderedDict({(str(conv.conversation_id), _MODEL_KEY): 1.8}),
+    )
+    assert tool_calls == [] and done["stop_reason"] == "time_budget", "the scenario: cut in round 0, unsearched"
+    forced = client.stream.call_args.kwargs["json"]["messages"]
+    tool = chat_module._ESTIMATE_RATIO_DEFAULT
+    own = chat_module._predict_prompt_tokens(forced, None, 0, 0, tool, 1.8)
+    assert own != chat_module._predict_prompt_tokens(forced, None, 0, 0, tool, 1.0), "the scenario: they differ"
+    assert predictions == [own], "the deadline read the prompt at the conversation's own density"
+
+
 def _stored_exchanges(n: int) -> list[dict]:
     """The first ``n`` English exchanges (``_exchange``) as stored rows, for ``_history``."""
     return [

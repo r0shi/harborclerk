@@ -124,8 +124,9 @@ _FINAL_ANSWER_THINKING_SECONDS = 120.0
 # at 1.05 where the model's table, fed by other CJK conversations, said 1.8; the review of #844). Such a turn, and
 # every read after a turn has searched, takes the model's table as before #810, and the entry is dropped
 # (``_forget_conversation_prose_ratio``), so a history whose tool rows have left the window starts again from the
-# model's table until its first tool-less prompt measures it. The context-budget stop and the forced call's
-# deadline read the model's table outright: they act once a turn has searched. The tool ratio stays per model:
+# model's table until its first tool-less prompt measures it. The context-budget stop reads the model's table
+# outright: it acts once a turn has searched (the forced call's deadline goes by the turn's rule, for a time budget
+# spent before any result). The tool ratio stays per model:
 # results are the corpus's passages in the tools' JSON, whatever the conversation's language, and it is re-measured
 # inside every searching turn. The entries live as long as the process (the oldest past _CONVERSATION_PROSE_MAX go):
 # the stored rows cannot rebuild one, since ``tokens_used`` adds every completion, reasoning included, to the count,
@@ -1136,11 +1137,12 @@ async def chat_stream(
                                         conversation_id, active_model_id, counted, sent_estimate
                                     )
                                     logger.debug(
-                                        "Prose prompt counted at %d tokens against %d estimated; prose ratio now %.2f "
-                                        "(model=%s, conversation=%s)",
+                                        "Prose prompt counted at %d tokens against %d estimated; conversation's prose "
+                                        "ratio now %.2f, model's table %.2f (model=%s, conversation=%s)",
                                         counted,
                                         sent_estimate,
                                         prose_now if prose_now is not None else float("nan"),
+                                        _prose_ratio(active_model_id),
                                         active_model_id,
                                         conversation_id,
                                     )
@@ -1314,15 +1316,16 @@ async def chat_stream(
             forced_messages = [*messages, {"role": "user", "content": search_over}]
             forced_estimate = _estimate_messages_tokens(forced_messages)
             # What the outer deadline reads the prompt at: predicted from the server's last count (#805), which held
-            # the tools this prompt does not, so the allowance errs long, not short. Prose at the model's table, as for
-            # the budget stop: a forced call follows a search, but for a time budget spent before any result.
+            # the tools this prompt does not, so the allowance errs long, not short. Prose by the turn's rule: the
+            # model's table once the turn has searched, the conversation's own for a time budget spent before any
+            # result.
             deadline_prediction = _predict_prompt_tokens(
                 forced_messages,
                 prompt_tokens_last,
                 counted_upto,
                 0,
                 _estimate_ratio(active_model_id),
-                _prose_ratio(active_model_id),
+                turn_prose_ratio(),
             )
             if deadline is not None:
                 outer_deadline = _forced_call_outer_deadline(stopped_at, deadline_prediction)

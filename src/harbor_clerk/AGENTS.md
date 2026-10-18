@@ -131,9 +131,9 @@ once the turn has searched ends the search like the context budget, and the
 forced call's retry shrinks the results (the history trim would keep the
 latest tool row as the question); a first prompt refused twice is the error.
 An increment under `_INCREMENT_FLOOR_TOKENS` raw tokens is not measured.
-Prose is also kept per conversation (#810, `_conversation_prose_ratios`, in
-process, replaced by each measurement), read first until its history holds a
-tool row or the turn searches; then the model's table, and the entry is dropped.
+Prose is also kept per conversation (#810, `_conversation_prose_ratios`, in process,
+replaced per measurement), read first; dropped at the start of a turn whose loaded history
+holds a tool row; a searched turn reads the model's table; a prompt trimmed tool-less is measured.
 The tool ratio is measured only as the **increment** between two counted prompts
 of one turn's loop (the result and its call, nothing else): never from a
 tool-less prompt, never from a turn's first prompt even when the history holds
