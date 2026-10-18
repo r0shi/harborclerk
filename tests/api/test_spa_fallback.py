@@ -52,7 +52,8 @@ def app(static_layout):
 
 
 async def _get(app, raw_path: str) -> tuple[int, dict[str, str], bytes]:
-    """GET ``raw_path`` (the request target as sent on the wire)."""
+    """GET ``raw_path`` (the request target as sent on the wire, query string included)."""
+    raw_path, _, query = raw_path.partition("?")
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -61,7 +62,7 @@ async def _get(app, raw_path: str) -> tuple[int, dict[str, str], bytes]:
         "scheme": "http",
         "path": unquote(raw_path),
         "raw_path": raw_path.encode("latin-1"),
-        "query_string": b"",
+        "query_string": query.encode("latin-1"),
         "root_path": "",
         "headers": [(b"host", b"test")],
         "client": ("127.0.0.1", 0),
@@ -194,3 +195,42 @@ async def test_real_api_route_is_still_routed(app):
     status, headers, body = await _get(app, "/api/system/ping")
     assert status == 200
     assert json.loads(body) == {"status": "ok"}
+
+
+@pytest.mark.parametrize(
+    ("raw_path", "location"),
+    [
+        ("/api/system/ping/", "/api/system/ping"),
+        ("/api/watch/folders/", "/api/watch/folders"),
+        ("/api/system/ping/?a=1&b=two", "/api/system/ping?a=1&b=two"),
+    ],
+)
+async def test_get_of_an_api_route_with_a_trailing_slash_redirects_to_it(app, raw_path, location):
+    """As without the SPA catch-all (development): a 307 to the route without the slash."""
+    status, headers, _ = await _get(app, raw_path)
+    assert status == 307
+    assert headers["location"] == location
+
+
+@pytest.mark.parametrize(
+    "raw_path",
+    [
+        "//evil.example/",
+        "//evil.example/api/system/ping/",
+        "/api//evil.example/",
+        "/api/%2f%2fevil.example/",
+        "/api/%5c%5cevil.example/",
+        "/%5c%5cevil.example/",
+        "/api/..//evil.example/",
+        "/api/system/ping//",
+        "/api///system/ping/",
+    ],
+)
+async def test_a_trailing_slash_redirect_never_leaves_the_host(app, raw_path):
+    """Whatever the path, a redirect target starts with exactly one slash."""
+    status, headers, _ = await _get(app, raw_path)
+    if status in (301, 302, 303, 307, 308):
+        location = headers["location"]
+        assert location.startswith("/") and not location.startswith(("//", "/\\")), location
+    else:
+        assert status == 404

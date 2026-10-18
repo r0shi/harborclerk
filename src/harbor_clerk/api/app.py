@@ -8,8 +8,9 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.routing import Match
 
 from harbor_clerk.api.routes.api_keys import router as api_keys_router
 from harbor_clerk.api.routes.auth import router as auth_router
@@ -422,6 +423,32 @@ def _is_api_path(full_path: str) -> bool:
     return full_path.split("/", 1)[0] in _API_PREFIXES
 
 
+_SPA_FALLBACK_PATH = "/{full_path:path}"
+
+
+def _slashless_redirect(request: Request) -> str | None:
+    """Where a GET to an API path with a trailing slash redirects, or None.
+
+    Without the SPA catch-all (no static dir, as in development) Starlette answers
+    such a request with a 307 to the path without the slash when that path is a
+    route; the catch-all would otherwise turn it into a 404. The target is built
+    from the path alone, starts with exactly one slash (never ``//host``), and
+    keeps the query string.
+    """
+    path = request.scope["path"]
+    if not path.endswith("/"):
+        return None
+    target = "/" + path.rstrip("/").lstrip("/\\")
+    probe = {**request.scope, "path": target, "raw_path": target.encode()}
+    for route in request.app.router.routes:
+        if getattr(route, "path", None) == _SPA_FALLBACK_PATH:
+            continue
+        if route.matches(probe)[0] != Match.NONE:
+            query = request.scope.get("query_string", b"").decode("latin-1")
+            return f"{target}?{query}" if query else target
+    return None
+
+
 def _static_file(static_root: Path, full_path: str) -> str | object | None:
     """The file inside ``static_root`` that ``full_path`` names.
 
@@ -517,9 +544,12 @@ def create_app() -> FastAPI:
         static_root = static_dir.resolve()
         index_html = static_root / "index.html"
 
-        @app.get("/{full_path:path}", include_in_schema=False)
-        async def spa_fallback(full_path: str):
+        @app.get(_SPA_FALLBACK_PATH, include_in_schema=False)
+        async def spa_fallback(full_path: str, request: Request):
             if _is_api_path(full_path):
+                target = _slashless_redirect(request)
+                if target is not None:
+                    return RedirectResponse(target, status_code=307)
                 return _not_found()
             if not full_path:
                 return FileResponse(index_html)
