@@ -15,9 +15,16 @@ from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 
 
-async def _watch(db_session, doc: Document, source: Path) -> None:
+async def _watch(
+    db_session,
+    doc: Document,
+    source: Path,
+    *,
+    enabled: bool = True,
+    status: WatchedFileStatus = WatchedFileStatus.active,
+) -> None:
     """Map ``doc`` to a watched file, as the watcher does for a document it reads in place."""
-    folder = WatchedFolder(path=str(source.parent), display_name=source.parent.name)
+    folder = WatchedFolder(path=str(source.parent), display_name=source.parent.name, enabled=enabled)
     db_session.add(folder)
     await db_session.flush()
     db_session.add(
@@ -27,9 +34,50 @@ async def _watch(db_session, doc: Document, source: Path) -> None:
             bookmark_data=b"",
             sha256=doc.sha256,
             doc_id=doc.doc_id,
-            status=WatchedFileStatus.active,
+            status=status,
         )
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enabled", "status"),
+    [(False, WatchedFileStatus.active), (True, WatchedFileStatus.removed)],
+    ids=["folder-disabled", "file-removed"],
+)
+async def test_extract_stage_reads_no_sidecar_without_an_active_watched_file(
+    db_session, tmp_path: Path, enabled, status
+):
+    """The watched file must be active and its folder enabled for the document to be read in place."""
+    source = tmp_path / "0003_doc.txt"
+    source.write_text("Body text")
+    (tmp_path / "0003_doc.json").write_text(json.dumps({"vendor": "Acme"}))
+    doc = Document(
+        title="0003_doc",
+        canonical_filename="0003_doc.txt",
+        status="active",
+        sha256=hashlib.sha256(source.read_bytes()).digest(),
+        pipeline_status=PipelineStatus.queued,
+        mime_type="text/plain",
+        source_path=str(source),
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    await _watch(db_session, doc, source, enabled=enabled, status=status)
+    db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
+    await db_session.commit()
+    doc_id = doc.doc_id
+
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    run_extract(doc_id)
+
+    sync_session = get_sync_session()
+    try:
+        metadata = sync_session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one().doc_metadata
+    finally:
+        sync_session.close()
+    assert "sidecar" not in (metadata or {}), f"no sidecar expected, got: {metadata}"
 
 
 @pytest.mark.asyncio
