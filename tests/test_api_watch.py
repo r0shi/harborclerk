@@ -683,3 +683,77 @@ async def test_rename_stores_the_canonical_path_for_an_aliased_source_path(clien
     )
     assert resp.status_code == 200, resp.text
     assert await _source_path_of(db_session, created.json()["doc_id"]) == str(real / "c.txt")
+
+
+async def test_ingest_of_an_unchanged_file_canonicalizes_an_aliased_source_path(
+    client, admin_token, db_session, tmp_path
+):
+    """The skip branch (same sha) repairs a source_path an older client stored as an alias."""
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc = Document(
+        title="a",
+        status="active",
+        sha256=bytes.fromhex(sha),
+        pipeline_status=PipelineStatus.ready,
+        source_path=str(link / "a.txt"),
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=uuid.UUID(folder_id),
+            relative_path="a.txt",
+            bookmark_data=b"",
+            sha256=bytes.fromhex(sha),
+            doc_id=doc.doc_id,
+            status=WatchedFileStatus.active,
+        )
+    )
+    await db_session.commit()
+    doc_id = str(doc.doc_id)
+
+    resp = await client.post(
+        "/api/watch/ingest",
+        headers=auth_header(admin_token),
+        json={
+            "folder_id": folder_id,
+            "relative_path": "a.txt",
+            "sha256": sha,
+            "bookmark_data": "",
+            "source_path": str(link / "a.txt"),
+            "mime_type": "text/plain",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"] == "skipped"
+    assert await _source_path_of(db_session, doc_id) == str(real / "a.txt")
+
+
+async def test_ingest_refuses_a_relative_path_that_is_not_plain(client, admin_token, db_session, tmp_path):
+    """A ./ segment or an absolute relative_path is a 400, even when source_path names the file."""
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+
+    dotted = await _ingest(client, admin_token, folder_id, "./a.txt", str(real / "a.txt"))
+    assert dotted.status_code == 400, dotted.text
+    assert "plain path" in dotted.json()["detail"]
+
+    absolute = await _ingest(client, admin_token, folder_id, str(real / "a.txt"), str(real / "a.txt"))
+    assert absolute.status_code == 400, absolute.text
+    assert "plain path" in absolute.json()["detail"]
+
+
+async def test_ingest_refuses_a_symlink_in_the_folder_pointing_outside(client, admin_token, db_session, tmp_path):
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+    (real / "out.txt").symlink_to(outside)
+
+    via_source = await _ingest(client, admin_token, folder_id, "out.txt", str(real / "out.txt"))
+    assert via_source.status_code == 400, via_source.text
+
+    via_relative = await _ingest(client, admin_token, folder_id, "out.txt", str(real / "a.txt"))
+    assert via_relative.status_code == 400, via_relative.text

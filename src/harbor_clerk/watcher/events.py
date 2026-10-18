@@ -31,7 +31,8 @@ from harbor_clerk.models.document_page import DocumentPage
 from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
-from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
+from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+from harbor_clerk.watched_source import repaired_source_path
 
 logger = logging.getLogger(__name__)
 
@@ -284,8 +285,11 @@ def handle_event(session: Session, event: FileEvent) -> None:
         if load_sidecar(sidecar, owner=event.absolute_path, quiet=True) is not None:
             _retire_sidecar_row(session, event.folder_id, _sidecar_relative_path(event.relative_path))
 
-    # Branch 1: existing+active+same → no-op
+    # Branch 1: existing+active+same → no-op, but for an aliased source_path, which is
+    # canonicalized so the document verifies as read in place (the startup scan
+    # visits every file, so this heals rows older clients stored).
     if existing is not None and existing.status == WatchedFileStatus.active and existing.sha256 == sha:
+        _repair_source_path(session, existing)
         return
 
     # Branch 2: existing+active+different → reprocess in place
@@ -299,6 +303,7 @@ def handle_event(session: Session, event: FileEvent) -> None:
         existing.status = WatchedFileStatus.active
         existing.removed_at = None
         _unhide_document(session, existing.doc_id)
+        _repair_source_path(session, existing)
         return
 
     # Branch 4: existing+removed+different → resurrect + reprocess
@@ -312,6 +317,21 @@ def handle_event(session: Session, event: FileEvent) -> None:
 
     # No existing row → create Document + WatchedFile + extract job
     _create_doc_and_enqueue(session, event, sha)
+
+
+def _repair_source_path(session: Session, watched_file: WatchedFile) -> None:
+    """Rewrite the document's source_path to the canonical form when it is an alias
+    of this watched file's path (``watched_source.repaired_source_path``)."""
+    if watched_file.doc_id is None:
+        return
+    folder = session.get(WatchedFolder, watched_file.folder_id)
+    doc = session.get(Document, watched_file.doc_id)
+    if folder is None or doc is None:
+        return
+    repaired = repaired_source_path(doc.source_path, folder.path, watched_file.relative_path)
+    if repaired is not None:
+        logger.info("watcher: canonicalized the source_path of doc %s", doc.doc_id)
+        doc.source_path = repaired
 
 
 def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path: str) -> None:

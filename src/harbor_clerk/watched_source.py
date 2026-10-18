@@ -50,8 +50,8 @@ def watched_paths_query(doc_id) -> Select:
 def verified_in_place_path(rows, source_path: str | None) -> str | None:
     """The watched path, computed from ``rows``, that ``source_path`` is exactly; or None.
 
-    A relative path that is not already normal (a ``..`` or ``.`` segment, a
-    doubled slash) matches nothing.
+    A relative path that is absolute, or not already normal (a ``..`` or ``.``
+    segment, a doubled slash), matches nothing.
     """
     if not source_path:
         return None
@@ -74,8 +74,45 @@ def verified_in_place_path(rows, source_path: str | None) -> str | None:
 
 
 def _normal_join(root: str, relative_path: str) -> str | None:
+    """``root`` joined with ``relative_path``, or None when the relative path is not
+    plain: absolute (``os.path.join`` would discard ``root``), with a ``..`` component,
+    or not already normal."""
+    if not relative_path or os.path.isabs(relative_path) or ".." in relative_path.split("/"):
+        return None
     joined = os.path.join(root, relative_path)
     return joined if os.path.normpath(joined) == joined else None
+
+
+def canonical_source_path(folder_path: str, relative_path: str) -> str | None:
+    """The ``source_path`` a watched file is stored under: its folder's path joined
+    with its relative path; None when the relative path is not plain."""
+    return _normal_join(folder_path, relative_path)
+
+
+def repaired_source_path(current: str | None, folder_path: str, relative_path: str) -> str | None:
+    """The canonical ``source_path`` to store in place of ``current``, or None to leave it.
+
+    Self-repair for a watched document whose stored ``source_path`` is an alias of
+    its watched file's path (a symlinked directory, ``/var`` vs ``/private/var``,
+    another Unicode normalization), as older clients stored whatever they sent:
+    such a document does not verify as read in place, so it could not be read.
+    Returns the canonical path when ``current`` differs from it and both name the
+    same file on disk. Returns None when it is already canonical, when the
+    relative path is not plain, or when the two do not name the same file (logged;
+    the row is left alone).
+    """
+    canonical = canonical_source_path(folder_path, relative_path)
+    if canonical is None or current == canonical:
+        return None
+    if current:
+        try:
+            same = os.path.realpath(current) == os.path.realpath(canonical) or os.path.samefile(current, canonical)
+        except OSError:
+            same = False
+        if same:
+            return canonical
+    logger.warning("watched file %s: the document's source_path does not name it; left unchanged", relative_path)
+    return None
 
 
 class SourceUnavailable(RuntimeError):

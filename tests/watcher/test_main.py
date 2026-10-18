@@ -624,3 +624,99 @@ def test_listener_logs_a_changed_error_and_a_heartbeat(monkeypatch, caplog):
     assert "error changed" in warned[1] and "password authentication failed" in warned[1]
     assert "failure 10, same error" in warned[2]
     assert "failure 20, same error" in warned[3]
+
+
+def _aliased_watched_doc(factory, tmp_path, *, stored_source: str) -> tuple[uuid.UUID, uuid.UUID, Path]:
+    """A watched folder at its realpath with one file, doc.txt, already ingested: its
+    WatchedFile is active with the file's sha, and the document's source_path is
+    ``stored_source`` (what an older client sent). No stored original.
+    Returns (folder_id, doc_id, real folder path)."""
+    import hashlib
+
+    from harbor_clerk.models.document import Document
+    from harbor_clerk.models.enums import PipelineStatus
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "doc.txt").write_text("on disk body")
+    (real / "other.txt").write_text("another file")
+    sha = hashlib.sha256(b"on disk body").digest()
+    sess = factory()
+    try:
+        folder = WatchedFolder(path=str(real), display_name="real", bookmark_data=None)
+        doc = Document(
+            title="doc",
+            canonical_filename="doc.txt",
+            status="active",
+            sha256=sha,
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+            source_path=stored_source,
+        )
+        sess.add_all([folder, doc])
+        sess.flush()
+        sess.add(
+            WatchedFile(
+                folder_id=folder.folder_id,
+                relative_path="doc.txt",
+                bookmark_data=b"",
+                sha256=sha,
+                doc_id=doc.doc_id,
+                status=WatchedFileStatus.active,
+            )
+        )
+        sess.commit()
+        return folder.folder_id, doc.doc_id, real
+    finally:
+        sess.close()
+
+
+def _read(factory, doc_id: uuid.UUID) -> tuple[str | None, bytes | None]:
+    """(source_path, bytes read_document_bytes returns, or None if it raised NoReadableSource)."""
+    from harbor_clerk.models.document import Document
+    from harbor_clerk.watched_source import NoReadableSource, read_document_bytes
+
+    sess = factory()
+    try:
+        doc = sess.get(Document, doc_id)
+        try:
+            data, _ = read_document_bytes(sess, doc)
+        except NoReadableSource:
+            data = None
+        return doc.source_path, data
+    finally:
+        sess.close()
+
+
+def test_startup_scan_canonicalizes_an_aliased_source_path(factory, tmp_path, monkeypatch):
+    """A watched document whose source_path is an alias of its file's path (a symlinked
+    directory) and that has no stored original is unreadable until one scan repairs it."""
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+    tmp_path = tmp_path.resolve()
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "real", target_is_directory=True)
+    folder_id, doc_id, real = _aliased_watched_doc(factory, tmp_path, stored_source=str(link / "doc.txt"))
+    try:
+        assert _read(factory, doc_id) == (str(link / "doc.txt"), None)
+
+        WatcherDaemon(factory)._scan_folder(folder_id, str(real))
+
+        assert _read(factory, doc_id) == (str(real / "doc.txt"), b"on disk body")
+    finally:
+        _truncate_watched(factory)
+
+
+def test_startup_scan_leaves_a_source_path_naming_another_file(factory, tmp_path, monkeypatch):
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+    tmp_path = tmp_path.resolve()
+    other = str(tmp_path / "real" / "other.txt")
+    folder_id, doc_id, real = _aliased_watched_doc(factory, tmp_path, stored_source=other)
+    try:
+        WatcherDaemon(factory)._scan_folder(folder_id, str(real))
+
+        source_path, _ = _read(factory, doc_id)
+        assert source_path == other
+    finally:
+        _truncate_watched(factory)

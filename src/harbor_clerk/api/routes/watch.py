@@ -26,6 +26,7 @@ from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus, Uploa
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+from harbor_clerk.watched_source import canonical_source_path, repaired_source_path
 from harbor_clerk.watcher.notify import notify_folder_change_async
 from harbor_clerk.worker.pipeline import queue_extract_for_current_pipeline, reset_and_queue_extract_for_doc
 
@@ -138,8 +139,8 @@ def _canonical_source_path(source_path: str, relative_path: str, folder_path: st
     plain, is a 400.
     """
     real_source = _validate_source_path(source_path, folder_path)
-    canonical = os.path.join(folder_path, relative_path)
-    if os.path.isabs(relative_path) or os.path.normpath(canonical) != canonical:
+    canonical = canonical_source_path(folder_path, relative_path)
+    if canonical is None:
         raise HTTPException(status_code=400, detail="relative_path must be a plain path inside the watched folder")
     real_folder = os.path.realpath(folder_path)
     real_canonical = os.path.realpath(canonical)
@@ -570,8 +571,18 @@ async def ingest_file(
     )
     wf = wf_result.scalar_one_or_none()
 
-    # Case 1: active + same SHA256 → skip
+    # Case 1: active + same SHA256 → skip, but for an aliased source_path, which is
+    # canonicalized so the document verifies as read in place.
     if wf and wf.status == WatchedFileStatus.active and wf.sha256 == sha256_bytes:
+        if wf.doc_id:
+            doc = (await session.execute(select(Document).where(Document.doc_id == wf.doc_id))).scalar_one_or_none()
+            if doc is not None:
+                repaired = await asyncio.to_thread(
+                    repaired_source_path, doc.source_path, folder.path, body.relative_path
+                )
+                if repaired is not None:
+                    doc.source_path = repaired
+                    await session.commit()
         return {"action": "skipped", "doc_id": str(wf.doc_id)}
 
     # Case 2: removed file at same path — resurrect (bookmark may differ after Trash restore)

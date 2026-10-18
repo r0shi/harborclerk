@@ -187,3 +187,15 @@ def test_verified_in_place_path_touches_no_disk_on_a_plain_match(monkeypatch):
     monkeypatch.setattr(os.path, "realpath", no_realpath)
     rows = [("/srv/watched", "sub/a.txt")]
     assert verified_in_place_path(rows, "/srv/watched/sub/a.txt") == "/srv/watched/sub/a.txt"
+
+
+def test_an_absolute_or_dot_dot_relative_path_verifies_nothing():
+    """os.path.join would discard the folder for an absolute relative path; neither it
+    nor a ``..`` component may produce a path that verifies."""
+    from harbor_clerk.watched_source import canonical_source_path, verified_in_place_path
+
+    assert verified_in_place_path([("/srv/watched", "/etc/hosts")], "/etc/hosts") is None
+    assert verified_in_place_path([("/srv/watched", "a/../../etc/hosts")], "/srv/watched/a/../../etc/hosts") is None
+    assert canonical_source_path("/srv/watched", "/etc/hosts") is None
+    assert canonical_source_path("/srv/watched", "../hosts") is None
+    assert canonical_source_path("/srv/watched", "sub/a.txt") == "/srv/watched/sub/a.txt"
