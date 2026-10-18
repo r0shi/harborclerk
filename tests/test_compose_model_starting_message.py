@@ -213,6 +213,11 @@ async def test_outside_compose_research_keeps_its_advice(
 
 
 def test_which_failure_reads_as_starting_and_which_as_stopped(compose) -> None:
+    # Stopped covers a slow CPU prompt as well as memory: a 120 s read timeout is often just a long prompt.
+    assert MODEL_STOPPED_MESSAGE == (
+        "The local model stopped answering or took too long; check `docker compose logs llama-server` "
+        "(it may be overloaded, or need more memory than the container has)."
+    )
     assert server_unready_message("raw", exc=httpx.ConnectError("refused")) == MODEL_STARTING_MESSAGE
     assert server_unready_message("raw", exc=httpx.ConnectTimeout("nothing")) == MODEL_STARTING_MESSAGE
     assert server_unready_message("LLM error (503)", status_code=503) == MODEL_STARTING_MESSAGE
