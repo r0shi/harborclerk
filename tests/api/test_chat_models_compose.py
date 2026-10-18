@@ -237,3 +237,13 @@ async def test_a_source_run_still_gets_the_memory_check(
     resp = await client.put("/api/chat/models/qwen35-4b/activate", headers=auth_header(admin_token))
     assert resp.status_code == 409
     assert "GB of memory" in resp.json()["detail"]
+
+
+async def test_compose_deactivate_reads_the_active_model_fresh(
+    client, admin_user, admin_token, compose, models_dir: Path
+) -> None:
+    # The settings were built while the file was there; it has gone since (removed in the volume by hand).
+    assert config.get_settings().llm_model_id == "qwen35-4b"
+    (models_dir / SERVED).unlink()
+    resp = await client.put("/api/chat/models/deactivate", headers=auth_header(admin_token))
+    assert resp.status_code == 200, "deactivate judged a model active that the volume no longer holds"
