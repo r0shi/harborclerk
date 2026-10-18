@@ -137,10 +137,18 @@ def test_failed_for_a_missing_source_matches_the_pre_upgrade_error_exactly(error
     assert failed_for_a_missing_source(doc) is expected
 
 
-def test_exists_exact_case(tmp_path):
-    from harbor_clerk.watched_source import exists_exact_case
+def test_is_file_exact_case(tmp_path):
+    """A regular file (or a symlink to one) under exactly that name; not a dangling
+    symlink, not a directory, not another case."""
+    from harbor_clerk.watched_source import is_file_exact_case
 
     (tmp_path / "note.txt").write_text("x")
-    assert exists_exact_case(str(tmp_path / "note.txt"))
-    assert not exists_exact_case(str(tmp_path / "Note.txt"))
-    assert not exists_exact_case(str(tmp_path / "gone.txt"))
+    (tmp_path / "link.txt").symlink_to(tmp_path / "note.txt")
+    (tmp_path / "dangling.txt").symlink_to(tmp_path / "nowhere.txt")
+    (tmp_path / "dir.txt").mkdir()
+    assert is_file_exact_case(str(tmp_path / "note.txt"))
+    assert is_file_exact_case(str(tmp_path / "link.txt"))
+    assert not is_file_exact_case(str(tmp_path / "Note.txt"))
+    assert not is_file_exact_case(str(tmp_path / "gone.txt"))
+    assert not is_file_exact_case(str(tmp_path / "dangling.txt"))
+    assert not is_file_exact_case(str(tmp_path / "dir.txt"))

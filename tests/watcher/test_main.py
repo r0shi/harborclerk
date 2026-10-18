@@ -707,17 +707,25 @@ def test_startup_scan_canonicalizes_an_aliased_source_path(factory, tmp_path, mo
         _truncate_watched(factory)
 
 
-def test_startup_scan_leaves_a_source_path_naming_another_file(factory, tmp_path, monkeypatch):
+@pytest.mark.parametrize("label", ["none", "relative", "other-file"])
+def test_startup_scan_heals_a_source_path_that_is_a_label(factory, tmp_path, monkeypatch, label):
+    """The watched file is authoritative: a source_path that is None, a relative name,
+    or another existing file (a client's label from a #859-shaped new version) is
+    replaced by the watched file's path on one scan visit, and the document reads."""
     _truncate_watched(factory)
     monkeypatch.setenv("WATCH_ROOT", "")
     tmp_path = tmp_path.resolve()
-    other = str(tmp_path / "real" / "other.txt")
-    folder_id, doc_id, real = _aliased_watched_doc(factory, tmp_path, stored_source=other)
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "doc.txt").write_text("a different file")
+    stored = {"none": None, "relative": "doc.txt", "other-file": str(downloads / "doc.txt")}[label]
+    folder_id, doc_id, real = _aliased_watched_doc(factory, tmp_path, stored_source=stored)
     try:
+        assert _read(factory, doc_id) == (stored, None)
+
         WatcherDaemon(factory)._scan_folder(folder_id, str(real))
 
-        source_path, _ = _read(factory, doc_id)
-        assert source_path == other
+        assert _read(factory, doc_id) == (str(real / "doc.txt"), b"on disk body")
     finally:
         _truncate_watched(factory)
 

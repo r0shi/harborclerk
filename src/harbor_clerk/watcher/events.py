@@ -33,8 +33,8 @@ from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.watched_source import (
-    exists_exact_case,
     failed_for_a_missing_source,
+    is_file_exact_case,
     repaired_source_path,
     watched_state,
 )
@@ -219,8 +219,9 @@ def handle_event(session: Session, event: FileEvent) -> None:
 
     # An atomic save on macOS can end with a delete event for a file that is still
     # there (the replaced inode's flag): marking it removed would make the document
-    # unreadable. A delete for a file present under that exact name is a modify.
-    if event.kind == EventKind.deleted and exists_exact_case(event.absolute_path):
+    # unreadable. A delete for a regular file present under that exact name is a
+    # modify; a dangling symlink or a directory in its place is a delete.
+    if event.kind == EventKind.deleted and is_file_exact_case(event.absolute_path):
         logger.debug("watcher: delete event for %s, but the file is present; treated as a modify", event.relative_path)
         event = replace(event, kind=EventKind.modified)
 
@@ -334,8 +335,8 @@ def handle_event(session: Session, event: FileEvent) -> None:
 
 
 def _repair_source_path(session: Session, watched_file: WatchedFile) -> None:
-    """Rewrite the document's source_path to the canonical form when it is an alias
-    of this watched file's path (``watched_source.repaired_source_path``)."""
+    """Rewrite the document's source_path to this watched file's canonical path when
+    it is anything else and that file is present (``watched_source.repaired_source_path``)."""
     if watched_file.doc_id is None:
         return
     folder = session.get(WatchedFolder, watched_file.folder_id)

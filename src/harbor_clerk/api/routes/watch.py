@@ -28,9 +28,10 @@ from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.watched_source import (
     canonical_source_path,
-    exists_exact_case,
     failed_for_a_missing_source,
+    is_file_exact_case,
     repaired_source_path,
+    watched_state_async,
 )
 from harbor_clerk.watcher.notify import notify_folder_change_async
 from harbor_clerk.worker.pipeline import queue_extract_for_current_pipeline, reset_and_queue_extract_for_doc
@@ -551,9 +552,6 @@ async def ingest_file(
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
 
-    # Security: validate source_path is within folder
-    _validate_source_path(body.source_path, folder.path)
-
     # Validate extension
     if is_excalidraw(body.relative_path):
         raise HTTPException(status_code=400, detail="Excalidraw drawings are not ingested")
@@ -561,7 +559,7 @@ async def ingest_file(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file extension: {ext}")
     # Stored in the canonical form, so the document verifies as read in place.
-    source_path = _canonical_source_path(body.source_path, body.relative_path, folder.path)
+    source_path = await asyncio.to_thread(_canonical_source_path, body.source_path, body.relative_path, folder.path)
 
     sha256_bytes = _parse_hex(body.sha256, "sha256")
     bookmark_bytes = _parse_base64(body.bookmark_data, "bookmark_data")
@@ -588,7 +586,9 @@ async def ingest_file(
                 )
                 if repaired is not None:
                     doc.source_path = repaired
-                if failed_for_a_missing_source(doc):
+                # As the watcher does: only a document that now verifies as read in
+                # place is queued again (one whose repair was declined would fail again).
+                if failed_for_a_missing_source(doc) and (await watched_state_async(session, doc)).path is not None:
                     await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
                 await session.commit()
         return {"action": "skipped", "doc_id": str(wf.doc_id)}
@@ -703,11 +703,11 @@ async def remove_file(
     if not wf:
         raise HTTPException(status_code=404, detail="Watched file not found")
 
-    # A remove for a file still present under that exact name (an atomic save's
-    # trailing delete) is not a removal: a removed watched file is unreadable.
+    # A remove for a regular file still present under that exact name (an atomic
+    # save's trailing delete) is not a removal: a removed watched file is unreadable.
     folder = (await session.execute(select(WatchedFolder).where(WatchedFolder.folder_id == fid))).scalar_one_or_none()
     canonical = canonical_source_path(folder.path, body.relative_path) if folder is not None else None
-    if canonical is not None and await asyncio.to_thread(exists_exact_case, canonical):
+    if canonical is not None and await asyncio.to_thread(is_file_exact_case, canonical):
         return {"action": "skipped", "doc_id": str(wf.doc_id)}
 
     wf.status = WatchedFileStatus.removed
@@ -737,7 +737,7 @@ async def rename_file(
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
 
-    source_path = _canonical_source_path(body.source_path, body.new_relative_path, folder.path)
+    source_path = await asyncio.to_thread(_canonical_source_path, body.source_path, body.new_relative_path, folder.path)
 
     result = await session.execute(
         select(WatchedFile).where(

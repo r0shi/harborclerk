@@ -1370,29 +1370,56 @@ def test_a_delete_event_for_a_file_present_only_under_another_case_still_removes
     assert sync_session.query(WatchedFile).filter_by(relative_path="Note.txt").one().status == WatchedFileStatus.removed
 
 
-def test_an_errored_doc_whose_path_does_not_verify_is_not_queued_again(sync_session, real_folder, tmp_path):
-    """A document whose source_path names another file (a repair the watcher declines)
-    is not queued again on every scan, even with a missing-source error."""
+def test_an_errored_doc_whose_path_does_not_verify_is_not_queued_again(sync_session, tmp_path):
+    """A document whose repair the watcher declines (its watched file is a symlink
+    resolving outside the folder) is not queued again on every scan, even with a
+    missing-source error."""
     from harbor_clerk.watched_source import WatchedFileMissing
 
-    f = tmp_path / "doc.txt"
-    f.write_text("body")
-    other = tmp_path / "other.txt"
-    other.write_text("another file")
-    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    folder_dir = tmp_path / "w"
+    folder_dir.mkdir()
+    folder = WatchedFolder(path=str(folder_dir), display_name="w", bookmark_data=None)
+    sync_session.add(folder)
+    sync_session.commit()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("body")
+    f = folder_dir / "doc.txt"
+    f.symlink_to(outside)
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.txt", str(f)))
     sync_session.commit()
     doc = sync_session.query(Document).one()
     doc_id, seq = doc.doc_id, doc.pipeline_seq
-    doc.source_path = str(other)
+    doc.source_path = "doc.txt"
     sync_session.commit()
     _fail_like_the_worker(sync_session, doc_id, WatchedFileMissing("the watched file is missing"))
 
-    handle_event(sync_session, FileEvent(EventKind.modified, real_folder.folder_id, "doc.txt", str(f)))
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "doc.txt", str(f)))
     sync_session.commit()
 
     sync_session.expire_all()
     doc = sync_session.get(Document, doc_id)
-    assert doc.source_path == str(other)
+    assert doc.source_path == "doc.txt"
     assert doc.pipeline_status == PipelineStatus.error
     assert doc.pipeline_seq == seq
     assert _queued_extract_jobs(sync_session, doc_id) == 0
+
+
+@pytest.mark.parametrize("replacement", ["dangling-symlink", "directory"])
+def test_a_delete_event_for_a_path_no_longer_a_regular_file_removes_it(
+    sync_session, real_folder, tmp_path, replacement
+):
+    """A delete whose path now holds a dangling symlink or a directory is a delete."""
+    f = tmp_path / "doc.txt"
+    f.write_text("body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    f.unlink()
+    if replacement == "dangling-symlink":
+        f.symlink_to(tmp_path / "nowhere.txt")
+    else:
+        f.mkdir()
+
+    handle_event(sync_session, FileEvent(EventKind.deleted, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.removed

@@ -1000,3 +1000,76 @@ async def test_remove_of_a_file_that_is_gone_removes_it(client, admin_token, db_
     wf = (await db_session.execute(select(WatchedFile).where(WatchedFile.relative_path == "gone.txt"))).scalar_one()
     assert wf.status == WatchedFileStatus.removed
     assert (await _doc_row(db_session, doc_id)).status == "removed"
+
+
+async def test_remove_of_a_path_now_a_dangling_symlink_removes_it(client, admin_token, db_session, tmp_path):
+    """Only a regular file present under that name keeps a /remove from removing."""
+    from sqlalchemy import select
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").symlink_to(tmp_path / "nowhere.txt")
+    sha = uuid.uuid4().hex * 2
+    await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path=str(real / "a.txt"))
+
+    resp = await client.post(
+        "/api/watch/remove",
+        headers=auth_header(admin_token),
+        json={"folder_id": folder_id, "relative_path": "a.txt"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"] == "removed"
+    db_session.expire_all()
+    wf = (await db_session.execute(select(WatchedFile).where(WatchedFile.relative_path == "a.txt"))).scalar_one()
+    assert wf.status == WatchedFileStatus.removed
+
+
+async def test_ingest_of_unchanged_bytes_does_not_requeue_a_doc_that_does_not_verify(
+    client, admin_token, db_session, tmp_path
+):
+    """Case 1: a document with a missing-source error whose repair is declined (its
+    watched path is a directory, not a file) is not queued again."""
+    from harbor_clerk.error_text import describe_error
+    from harbor_clerk.watched_source import WatchedFileMissing
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").mkdir()
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(
+        db_session,
+        folder_id,
+        "a.txt",
+        sha=sha,
+        source_path="a.txt",
+        pipeline_status=PipelineStatus.error,
+        error=describe_error(WatchedFileMissing("the watched file is missing")),
+    )
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    row = await _doc_row(db_session, doc_id)
+    assert row.source_path == "a.txt"
+    assert row.pipeline_status == PipelineStatus.error
+    assert await _queued_extracts(db_session, doc_id) == 0
+
+
+@pytest.mark.parametrize("label", ["none", "relative", "other-file"])
+async def test_ingest_of_an_unchanged_file_heals_a_source_path_that_is_a_label(
+    client, admin_token, db_session, tmp_path, label
+):
+    """Case 1 replaces a label source_path (None, a relative name, another file) with
+    the watched file's path when that file is present."""
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "a.txt").write_text("another file")
+    stored = {"none": None, "relative": "a.txt", "other-file": str(downloads / "a.txt")}[label]
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path=stored)
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    assert (await _doc_row(db_session, doc_id)).source_path == str(real / "a.txt")

@@ -121,27 +121,42 @@ def canonical_source_path(folder_path: str, relative_path: str) -> str | None:
 def repaired_source_path(current: str | None, folder_path: str, relative_path: str) -> str | None:
     """The canonical ``source_path`` to store in place of ``current``, or None to leave it.
 
-    Self-repair for a watched document whose stored ``source_path`` is an alias of
-    its watched file's path (a symlinked directory, ``/var`` vs ``/private/var``,
-    another Unicode normalization), as older clients stored whatever they sent:
-    such a document does not verify as read in place, so it could not be read.
-    Returns the canonical path when ``current`` differs from it and both name the
-    same file on disk. Returns None when it is already canonical, when the
-    relative path is not plain, or when the two do not name the same file (logged;
-    the row is left alone).
+    The active watched file (folder, relative path) is authoritative and
+    ``source_path`` is a label. Self-repair for a watched document whose stored
+    label is not its watched file's canonical path, whatever it is: an alias (a
+    symlinked directory, ``/var`` vs ``/private/var``, another Unicode
+    normalization), as older clients stored whatever they sent, or a client's
+    label (None, a relative name, some other file) from a new version confirmed
+    before that was refused (#859). Such a document does not verify as read in
+    place, so it could not be read.
+
+    Returns the canonical path when ``current`` differs from it and the canonical
+    path is a regular file under exactly that name, inside the folder (its
+    realpath under the folder's). Returns None when it is already canonical, or
+    when the canonical path is not plain, not inside the folder, or not present.
     """
     canonical = canonical_source_path(folder_path, relative_path)
     if canonical is None or current == canonical:
         return None
-    if current:
-        try:
-            same = os.path.realpath(current) == os.path.realpath(canonical) or os.path.samefile(current, canonical)
-        except OSError:
-            same = False
-        if same:
-            return canonical
-    logger.warning("watched file %s: the document's source_path does not name it; left unchanged", relative_path)
-    return None
+    try:
+        real_folder = os.path.realpath(folder_path)
+        inside = os.path.realpath(canonical).startswith(real_folder + os.sep)
+    except (OSError, ValueError):
+        inside = False
+    if not inside or not is_file_exact_case(canonical):
+        logger.warning("watched file %s is not present inside its folder; source_path left unchanged", relative_path)
+        return None
+    try:
+        alias = bool(current) and (
+            os.path.realpath(current) == os.path.realpath(canonical) or os.path.samefile(current, canonical)
+        )
+    except (OSError, ValueError):
+        alias = False
+    if not alias:
+        logger.info(
+            "watched file %s: replacing a source_path that did not name it with its canonical path", relative_path
+        )
+    return canonical
 
 
 class SourceUnavailable(RuntimeError):
@@ -165,16 +180,17 @@ _MISSING_SOURCE_ERRORS = frozenset(cls.__name__ for cls in (WatchedFileMissing, 
 _LEGACY_MISSING_SOURCE_PREFIX = "RuntimeError: No source for doc "
 
 
-def exists_exact_case(path: str) -> bool:
-    """True when ``path`` exists (a broken symlink counts) under exactly that name.
+def is_file_exact_case(path: str) -> bool:
+    """True when ``path`` is a regular file (a symlink to one counts) under exactly
+    that name. A dangling symlink or a directory is not.
 
-    On a case-insensitive filesystem ``lexists`` also answers for a name that
+    On a case-insensitive filesystem ``isfile`` also answers for a name that
     differs only in case; the listing of the parent settles it.
     """
     try:
-        if not os.path.lexists(path):
+        if os.path.basename(path) not in os.listdir(os.path.dirname(path) or "."):
             return False
-        return os.path.basename(path) in os.listdir(os.path.dirname(path) or ".")
+        return os.path.isfile(path)
     except OSError:
         return False
 
