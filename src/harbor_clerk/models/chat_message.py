@@ -1,7 +1,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, Integer, SmallInteger, String, Text
+from sqlalchemy import BigInteger, ForeignKey, Identity, Index, Integer, SmallInteger, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,5 +26,9 @@ class ChatMessage(Base):
     model_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
     context_pct: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[created_at]
+    # Insertion order (#809). created_at is now(), the transaction's start, and a chat turn writes all its rows in
+    # one transaction, so they tie on it; the identity hands each row a strictly increasing value as it is inserted.
+    # Every reader orders by (created_at, seq), never by created_at alone (tests/test_chat_message_order.py).
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), nullable=False)
 
-    __table_args__ = (Index("idx_messages_conv", "conversation_id", "created_at"),)
+    __table_args__ = (Index("idx_messages_conv", "conversation_id", "created_at", "seq"),)

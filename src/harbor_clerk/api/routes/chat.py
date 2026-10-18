@@ -147,13 +147,15 @@ async def get_conversation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
     msgs_result = await session.execute(
-        select(ChatMessage).where(ChatMessage.conversation_id == conv_id).order_by(ChatMessage.created_at)
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conv_id)
+        .order_by(ChatMessage.created_at, ChatMessage.seq)
     )
     all_msgs = msgs_result.scalars().all()
 
     # Build a lookup of tool_call_id → result summary for enrichment.
     # This uses the already-fetched message set (no extra query), and the
-    # idx_messages_conv(conversation_id, created_at) index covers the query.
+    # idx_messages_conv(conversation_id, created_at, seq) index covers the query.
     tool_results_by_id: dict[str, tuple[str, str]] = {}
     for m in all_msgs:
         if m.role == "tool" and m.tool_call_id and m.content:
@@ -216,7 +218,9 @@ async def export_conversation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
     msgs_result = await session.execute(
-        select(ChatMessage).where(ChatMessage.conversation_id == conv_id).order_by(ChatMessage.created_at)
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conv_id)
+        .order_by(ChatMessage.created_at, ChatMessage.seq)
     )
     msgs = msgs_result.scalars().all()
 

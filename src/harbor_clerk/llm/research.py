@@ -1383,6 +1383,18 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
+async def _first_user_question(session: AsyncSession, conversation_id: uuid.UUID) -> str | None:
+    """The conversation's first user message, in insertion order: ``created_at`` is the transaction's start, so rows
+    one transaction writes tie on it and ``seq`` breaks the tie (#809)."""
+    result = await session.execute(
+        select(ChatMessage.content)
+        .where(ChatMessage.conversation_id == conversation_id, ChatMessage.role == "user")
+        .order_by(ChatMessage.created_at, ChatMessage.seq)
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def research_stream(
     conversation_id: uuid.UUID,
     user_id: uuid.UUID | None = None,
@@ -1419,13 +1431,7 @@ async def research_stream(
             yield _sse({"type": "error", "message": "Conversation not found"})
             return
 
-        q_result = await session.execute(
-            select(ChatMessage.content)
-            .where(ChatMessage.conversation_id == conversation_id, ChatMessage.role == "user")
-            .order_by(ChatMessage.created_at)
-            .limit(1)
-        )
-        user_question = q_result.scalar_one_or_none()
+        user_question = await _first_user_question(session, conversation_id)
         if not user_question:
             yield _sse({"type": "error", "message": "No user question found"})
             return

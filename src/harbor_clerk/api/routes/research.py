@@ -101,7 +101,9 @@ async def get_research(
 
     # Load messages
     msgs_result = await session.execute(
-        select(ChatMessage).where(ChatMessage.conversation_id == conv_id).order_by(ChatMessage.created_at)
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conv_id)
+        .order_by(ChatMessage.created_at, ChatMessage.seq)
     )
     all_msgs = msgs_result.scalars().all()
 

@@ -169,13 +169,12 @@ def _history(conversation_id, rows: list[dict]) -> list:
     """Stored history rows for ``conversation_id``, from ``rows`` of ChatMessage fields, in that order: each stamped
     a second after the one before, the first a day back, so before anything the turn under test stores.
 
-    Rows added in one transaction otherwise share ``created_at`` (it defaults to ``now()``, the transaction's start),
-    and ``chat_stream`` loads the history ordered by ``created_at`` alone: tied rows come back in whatever order the
-    heap holds them, which, once ``db_session``'s cleanup has deleted earlier tests' rows and a vacuum has freed the
-    space, is not the order they were added. A history read out of order trims differently: an old search's result
-    sorted early was trimmed away from the retry, or the first prompt, and the refused-first tests failed at random
-    (#826). The rows ``chat_stream`` itself stores for one turn still share one ``created_at``: that is the product
-    defect #809, not something a test can stamp away."""
+    Rows added in one transaction otherwise share ``created_at`` (it defaults to ``now()``, the transaction's start).
+    Until #809, ``chat_stream`` loaded the history ordered by ``created_at`` alone, so tied rows came back in heap
+    order, which, once ``db_session``'s cleanup has deleted earlier tests' rows and a vacuum has freed the space, is
+    not the order they were added: an old search's result sorted early was trimmed away from the retry, or the first
+    prompt, and the refused-first tests failed at random (#826). The loader now breaks the tie on ``seq``, the
+    insertion order (tests/test_chat_message_order.py); the distinct stamps keep these scenarios independent of it."""
     from datetime import UTC, datetime, timedelta
 
     from harbor_clerk.models.chat_message import ChatMessage
@@ -435,7 +434,13 @@ async def test_text_streamed_beside_a_dropped_tool_call_stays_in_front_of_the_fo
     from harbor_clerk.models.chat_message import ChatMessage
 
     rows = (
-        (await db_session.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id)))
+        (
+            await db_session.execute(
+                select(ChatMessage)
+                .where(ChatMessage.conversation_id == conv.conversation_id)
+                .order_by(ChatMessage.created_at, ChatMessage.seq)
+            )
+        )
         .scalars()
         .all()
     )
@@ -591,7 +596,13 @@ async def test_the_watched_prefix_is_stored_even_when_the_forced_call_yields_not
     from harbor_clerk.models.chat_message import ChatMessage
 
     rows = (
-        (await db_session.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id)))
+        (
+            await db_session.execute(
+                select(ChatMessage)
+                .where(ChatMessage.conversation_id == conv.conversation_id)
+                .order_by(ChatMessage.created_at, ChatMessage.seq)
+            )
+        )
         .scalars()
         .all()
     )
@@ -696,9 +707,9 @@ async def test_a_reset_mid_stream_ends_the_chat_like_a_lost_server(
     stored = (
         (
             await db_session.execute(
-                select(ChatMessage).where(
-                    ChatMessage.conversation_id == conv.conversation_id, ChatMessage.role == "assistant"
-                )
+                select(ChatMessage)
+                .where(ChatMessage.conversation_id == conv.conversation_id, ChatMessage.role == "assistant")
+                .order_by(ChatMessage.created_at, ChatMessage.seq)
             )
         )
         .scalars()
@@ -783,7 +794,13 @@ async def _assistant_rows(db_session, conv_id) -> list[str]:
 
     from harbor_clerk.models.chat_message import ChatMessage
 
-    rows = (await db_session.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv_id))).scalars()
+    rows = (
+        await db_session.execute(
+            select(ChatMessage)
+            .where(ChatMessage.conversation_id == conv_id)
+            .order_by(ChatMessage.created_at, ChatMessage.seq)
+        )
+    ).scalars()
     return [r.content for r in rows if r.role == "assistant" and r.content]
 
 
@@ -1504,7 +1521,13 @@ async def test_the_forced_prompt_goes_as_it_stands_and_the_stored_row_is_the_ful
     assert forced == [*loop_messages, {"role": "user", "content": chat_module._SEARCH_OVER_MESSAGE}]
 
     rows = (
-        (await db_session.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id)))
+        (
+            await db_session.execute(
+                select(ChatMessage)
+                .where(ChatMessage.conversation_id == conv.conversation_id)
+                .order_by(ChatMessage.created_at, ChatMessage.seq)
+            )
+        )
         .scalars()
         .all()
     )
@@ -2514,7 +2537,9 @@ async def test_tokens_used_is_the_last_prompt_plus_every_completion(
     forced = client.stream.call_args.kwargs["json"]["messages"]
     last_prompt = int(2.0 * chat_module._estimate_messages_tokens(forced))
     rows = await db_session.execute(
-        select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id).order_by(ChatMessage.created_at)
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conv.conversation_id)
+        .order_by(ChatMessage.created_at, ChatMessage.seq)
     )
     stored = [r for r in rows.scalars() if r.role == "assistant" and r.content][-1]
     assert stored.tokens_used == last_prompt + 5 * (len(sent) + 1), (
@@ -2582,7 +2607,9 @@ async def test_tokens_used_without_a_forced_call_is_the_loops_last_prompt(
     assert text == "Answered on my own." and "stop_reason" not in done and len(sent) == 3
     last_prompt = int(2.0 * chat_module._estimate_payload_tokens(sent[-1]["messages"], sent[-1]["tools"]))
     rows = await db_session.execute(
-        select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id).order_by(ChatMessage.created_at)
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conv.conversation_id)
+        .order_by(ChatMessage.created_at, ChatMessage.seq)
     )
     stored = [r for r in rows.scalars() if r.role == "assistant" and r.content][-1]
     assert stored.tokens_used == last_prompt + 5 * 3, f"{stored.tokens_used} != {last_prompt} + 15"
@@ -2878,7 +2905,9 @@ async def test_a_count_below_the_clamp_is_distrusted(db_session, admin_user, cha
     assert chat_module._prose_ratios == {}, "a distrusted count measures nothing, prose included"
     assert "count distrusted" in caplog.text
     rows = await db_session.execute(
-        select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id).order_by(ChatMessage.created_at)
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conv.conversation_id)
+        .order_by(ChatMessage.created_at, ChatMessage.seq)
     )
     stored = [r for r in rows.scalars() if r.role == "assistant" and r.content][-1]
     assert stored.tokens_used is None, "a distrusted count is not stored"
@@ -3028,7 +3057,9 @@ async def test_the_forced_calls_count_is_distrusted_below_the_clamp_too(
     loops_last = int(2.0 * chat_module._estimate_payload_tokens(sent[-1]["messages"], sent[-1]["tools"]))
     assert done["context_pct"] == round(min((loops_last + 5) / ctx, 1.0) * 100) and done["context_pct"] > 10
     rows = await db_session.execute(
-        select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id).order_by(ChatMessage.created_at)
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conv.conversation_id)
+        .order_by(ChatMessage.created_at, ChatMessage.seq)
     )
     stored = [r for r in rows.scalars() if r.role == "assistant" and r.content][-1]
     assert stored.tokens_used == loops_last + 5 * (len(sent) + 1), "the loop's last count, every completion"
@@ -3174,7 +3205,9 @@ async def test_a_refusal_later_in_the_loop_ends_the_search_and_the_forced_call_k
     high = chat_module._TOOL_LOOP_BUDGET * ctx - chat_module._predict_messages_tokens([call, result], 1.0, 1.2)
     assert low < high, f"the scenario: a band for round zero's count ({low}, {high})"
     rows = await db_session.execute(
-        select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id).order_by(ChatMessage.created_at)
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conv.conversation_id)
+        .order_by(ChatMessage.created_at, ChatMessage.seq)
     )
     history = [{"role": r.role, "content": r.content} for r in rows.scalars()]
     question = "What did the Q3 contract cost?"
@@ -3213,7 +3246,9 @@ async def test_a_refusal_later_in_the_loop_ends_the_search_and_the_forced_call_k
     assert table[_MODEL_KEY] == pytest.approx(1.6, abs=0.05), "the refusal's count, measured as an increment"
     assert done["context_pct"] == round(min((counts[1] + 5) / ctx, 1.0) * 100), "the UI reads the refusal's count"
     rows = await db_session.execute(
-        select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id).order_by(ChatMessage.created_at)
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conv.conversation_id)
+        .order_by(ChatMessage.created_at, ChatMessage.seq)
     )
     stored = [r for r in rows.scalars() if r.role == "assistant" and r.content][-1]
     assert stored.tokens_used == counts[1] + 5, "the refusal's count plus round zero's completion"

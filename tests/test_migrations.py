@@ -1,5 +1,6 @@
 """Tests for Alembic migration round-trips."""
 
+import json
 import os
 import threading
 import time
@@ -541,7 +542,7 @@ def test_concurrent_runs_are_serialised_and_rewrite_once(alembic_cfg, sync_engin
             ).scalar()
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
         assert rewrites == 1
-        assert version == "0009_fts_over_folded_text"
+        assert version == "0010_chat_message_seq"
         assert _index_state(sync_engine, "ix_chunks_chunk_text_ws_trgm")[0] is True
         # The second run polled: idle between tries (no open transaction), no lock wait, no snapshot.
         state, wait_type, _, _, xmin = second_while_waiting
@@ -596,3 +597,209 @@ def test_0009_fails_fast_when_chunks_is_held(alembic_cfg, sync_engine):
         blocker.close()
         command.upgrade(alembic_cfg, "head")
     assert "hc_fold_whitespace" in _fts_expressions(sync_engine)["fts_en"]
+
+
+# ---------------------------------------------------------------------------
+# 0010: chat_messages.seq (#809)
+# ---------------------------------------------------------------------------
+
+_SEQ_USER = "00000000-0000-0000-0000-00000000a809"
+_SEQ_CONV_A = "00000000-0000-0000-0000-00000000c001"
+_SEQ_CONV_B = "00000000-0000-0000-0000-00000000c002"
+
+
+def _msg_id(n: int) -> str:
+    return f"00000000-0000-0000-0000-{n:012d}"
+
+
+def _seed_chat_owner(conn) -> None:
+    conn.execute(
+        text(
+            "INSERT INTO users (user_id, email, password_hash, role) VALUES (:u, 'seq-migration@test.com', 'x', 'user')"
+        ),
+        {"u": _SEQ_USER},
+    )
+    for conv in (_SEQ_CONV_A, _SEQ_CONV_B):
+        conn.execute(
+            text("INSERT INTO conversations (conversation_id, user_id, title) VALUES (:c, :u, 'seq')"),
+            {"c": conv, "u": _SEQ_USER},
+        )
+
+
+def _seed_unordered_chat(engine) -> int:
+    """Rows written at 0009, without seq, in a physical order unlike the order chat_stream stored them in. Returns
+    how many.
+
+    Conversation A: its first question alone at T0 (the title commit), then a turn at T1 holding a call with two ids
+    (the second id's result stored first), a second call and its result, a result that answers no call, and the
+    answer; a second turn at T2. Conversation B ties with A's T1 turn. Message ids are fixed, so the backfill's
+    message_id tie-break (between the calls of one turn) is known."""
+
+    def calls(*ids: str) -> str:
+        return json.dumps(
+            [{"id": i, "type": "function", "function": {"name": "search_documents", "arguments": "{}"}} for i in ids]
+        )
+
+    t0, t1, t2 = "2026-10-01 10:00:00+00", "2026-10-01 10:00:05+00", "2026-10-01 10:01:00+00"
+    # (message_id, conversation, role, content, tool_calls, tool_call_id, created_at), in insertion (physical) order.
+    rows = [
+        (_msg_id(19), _SEQ_CONV_A, "assistant", "answer 1", None, None, t1),
+        (_msg_id(11), _SEQ_CONV_A, "tool", "orphan", None, "nobody", t1),
+        (_msg_id(18), _SEQ_CONV_A, "tool", "result b_1", None, "b_1", t1),
+        (_msg_id(13), _SEQ_CONV_A, "tool", "result a_2", None, "a_2", t1),
+        (_msg_id(12), _SEQ_CONV_A, "assistant", "", calls("b_1"), None, t1),
+        (_msg_id(14), _SEQ_CONV_A, "tool", "result a_1", None, "a_1", t1),
+        (_msg_id(10), _SEQ_CONV_A, "assistant", "", calls("a_1", "a_2"), None, t1),
+        (_msg_id(21), _SEQ_CONV_A, "assistant", "answer 2", None, None, t2),
+        (_msg_id(20), _SEQ_CONV_A, "user", "question 2", None, None, t2),
+        (_msg_id(1), _SEQ_CONV_A, "user", "question 1", None, None, t0),
+        (_msg_id(31), _SEQ_CONV_B, "assistant", "answer b", None, None, t1),
+        (_msg_id(30), _SEQ_CONV_B, "user", "question b", None, None, t1),
+    ]
+    with engine.begin() as conn:
+        _seed_chat_owner(conn)
+        for message_id, conv, role, content, tool_calls, tool_call_id, created_at in rows:
+            conn.execute(
+                text(
+                    "INSERT INTO chat_messages (message_id, conversation_id, role, content, tool_calls, tool_call_id, "
+                    "created_at) VALUES (:m, :c, :r, :content, CAST(:tc AS jsonb), :tcid, CAST(:at AS timestamptz))"
+                ),
+                {
+                    "m": message_id,
+                    "c": conv,
+                    "r": role,
+                    "content": content,
+                    "tc": tool_calls,
+                    "tcid": tool_call_id,
+                    "at": created_at,
+                },
+            )
+    return len(rows)
+
+
+def _delete_seeded_chat(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM conversations WHERE user_id = :u"), {"u": _SEQ_USER})
+        conn.execute(text("DELETE FROM users WHERE user_id = :u"), {"u": _SEQ_USER})
+
+
+def _contents_by_seq(engine, conv: str) -> list[str]:
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT content, role FROM chat_messages WHERE conversation_id = :c ORDER BY seq"), {"c": conv}
+        )
+        return [content or role for content, role in rows]
+
+
+def _chat_columns(engine) -> set[str]:
+    return {c["name"] for c in inspect(engine).get_columns("chat_messages")}
+
+
+def test_0010_backfills_seq_and_round_trips(alembic_cfg, sync_engine):
+    """Upgrade numbers existing rows in the stated best-effort order (question, each call followed by its results in
+    the order of its ids, unmatched results, answer), continues the identity above them; downgrade drops it."""
+    command.upgrade(alembic_cfg, "head")
+    try:
+        command.downgrade(alembic_cfg, "0009_fts_over_folded_text")
+        with sync_engine.connect() as conn:
+            existing = conn.execute(text("SELECT count(*) FROM chat_messages")).scalar()
+        seeded = _seed_unordered_chat(sync_engine)
+
+        command.upgrade(alembic_cfg, "head")
+
+        assert _contents_by_seq(sync_engine, _SEQ_CONV_A) == [
+            "question 1",
+            "assistant",  # the call with ids a_1, a_2 (message id 10, before 12)
+            "result a_1",
+            "result a_2",
+            "assistant",  # the call b_1
+            "result b_1",
+            "orphan",
+            "answer 1",
+            "question 2",
+            "answer 2",
+        ]
+        assert _contents_by_seq(sync_engine, _SEQ_CONV_B) == ["question b", "answer b"]
+        with sync_engine.connect() as conn:
+            seqs = conn.execute(text("SELECT seq FROM chat_messages ORDER BY seq")).scalars().all()
+            identity = conn.execute(
+                text(
+                    "SELECT attidentity, attnotnull FROM pg_attribute "
+                    "WHERE attrelid = 'public.chat_messages'::regclass AND attname = 'seq'"
+                )
+            ).one()
+        total = existing + seeded
+        assert seqs == list(range(1, total + 1))
+        assert tuple(identity) == ("a", True)
+        assert "(conversation_id, created_at, seq)" in _index_state(sync_engine, "idx_messages_conv")[1]
+        with sync_engine.begin() as conn:
+            new_seq = conn.execute(
+                text("INSERT INTO chat_messages (conversation_id, role) VALUES (:c, 'user') RETURNING seq"),
+                {"c": _SEQ_CONV_A},
+            ).scalar()
+        assert new_seq == total + 1
+
+        command.downgrade(alembic_cfg, "0009_fts_over_folded_text")
+
+        assert "seq" not in _chat_columns(sync_engine)
+        assert "(conversation_id, created_at)" in _index_state(sync_engine, "idx_messages_conv")[1]
+        with sync_engine.connect() as conn:
+            assert conn.execute(text("SELECT count(*) FROM chat_messages")).scalar() == total + 1
+    finally:
+        _delete_seeded_chat(sync_engine)
+        command.upgrade(alembic_cfg, "head")
+    assert "seq" in _chat_columns(sync_engine)
+
+
+def test_0010_upgrade_of_an_empty_table_starts_seq_at_one(alembic_cfg, sync_engine):
+    command.upgrade(alembic_cfg, "head")
+    try:
+        command.downgrade(alembic_cfg, "0009_fts_over_folded_text")
+        with sync_engine.connect() as conn:
+            if conn.execute(text("SELECT count(*) FROM chat_messages")).scalar():
+                pytest.skip("chat_messages is not empty in this database")
+        command.upgrade(alembic_cfg, "head")
+        with sync_engine.begin() as conn:
+            _seed_chat_owner(conn)
+            first = conn.execute(
+                text("INSERT INTO chat_messages (conversation_id, role) VALUES (:c, 'user') RETURNING seq"),
+                {"c": _SEQ_CONV_A},
+            ).scalar()
+        assert first == 1
+    finally:
+        _delete_seeded_chat(sync_engine)
+        command.upgrade(alembic_cfg, "head")
+
+
+def test_0010_fails_fast_when_chat_messages_is_held(alembic_cfg, sync_engine):
+    """Beside a live API a chat turn holds chat_messages for its whole answer; 0010 waits at most 10 s for its lock
+    (lock_timeout) rather than queueing every chat read behind it, says so, and leaves 0009 stamped."""
+    import subprocess
+
+    command.upgrade(alembic_cfg, "head")
+    command.downgrade(alembic_cfg, "0009_fts_over_folded_text")
+    blocker = sync_engine.connect()
+    blocker_tx = blocker.begin()
+    try:
+        blocker.execute(text("LOCK TABLE public.chat_messages IN ACCESS SHARE MODE"))
+        started = time.monotonic()
+        # A subprocess with a bound: without the lock_timeout the upgrade would wait for the blocker forever.
+        run = subprocess.run(
+            ["alembic", "upgrade", "head"], env=dict(os.environ), capture_output=True, text=True, timeout=60
+        )
+        elapsed = time.monotonic() - started
+        assert run.returncode != 0
+        assert "0010 could not lock public.chat_messages within 10s: another transaction holds it" in run.stderr, (
+            run.stderr[-800:]
+        )
+        blocker_tx.rollback()
+        with sync_engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0009_fts_over_folded_text"
+        assert "seq" not in _chat_columns(sync_engine)
+        assert 9 < elapsed < 30, elapsed
+    finally:
+        if blocker_tx.is_active:
+            blocker_tx.rollback()
+        blocker.close()
+        command.upgrade(alembic_cfg, "head")
+    assert "seq" in _chat_columns(sync_engine)

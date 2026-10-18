@@ -33,6 +33,16 @@ edit — a dimension change invalidates every stored vector.
 Single-tenant by design. No tenant table, no tenant column, not in a migration,
 not "for later".
 
+## `created_at` is not an insertion order
+
+`server_default=now()` is the **transaction's** start, so every row one
+transaction writes ties on it, and the ids are random UUIDs. Ordering by
+`created_at` alone returns ties in heap order. `chat_stream` writes a whole turn
+in one transaction, which sent tool results before their calls (#809):
+`chat_messages.seq` (0010) is an identity, and every reader orders by
+`(created_at, seq)`; `tests/test_chat_message_order.py` guards both. A new
+table whose readers need the order rows were written in needs the same key.
+
 ## Log-table conventions
 
 Audit and request logs follow a shape established by `imap_command_log`, and new

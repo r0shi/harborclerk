@@ -677,7 +677,9 @@ async def chat_stream(
 
         # Load conversation history
         history_result = await session.execute(
-            select(ChatMessage).where(ChatMessage.conversation_id == conversation_id).order_by(ChatMessage.created_at)
+            select(ChatMessage)
+            .where(ChatMessage.conversation_id == conversation_id)
+            .order_by(ChatMessage.created_at, ChatMessage.seq)
         )
         history_rows = history_result.scalars().all()
 

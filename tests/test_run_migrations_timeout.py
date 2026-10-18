@@ -31,7 +31,7 @@ from harbor_clerk.models.audit_log import AuditLog
 from tests.conftest import auth_header
 
 _SYNC_DSN = os.environ["DATABASE_URL"].replace("+asyncpg", "")
-HEAD = "0009_fts_over_folded_text"
+HEAD = "0010_chat_message_seq"
 
 
 @pytest.fixture(autouse=True)
