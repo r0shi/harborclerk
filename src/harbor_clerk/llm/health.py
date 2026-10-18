@@ -104,8 +104,9 @@ POLL_SECONDS = 2.0
 # What one document may spend, in all, waiting for the server to be ready: every wait at every call site
 # (the checks before a summary or a doc type, and the retries after a refused connection or a 503) draws on
 # it. A load or a restart (an edited command and `up -d`, a crash) is waited out within it; a document
-# whose budget runs out falls back. Bounded per document, so a server that keeps failing (a model too big,
-# crash-looping through its load) cannot hold a document anywhere near the stage's 900 s timeout.
+# whose budget runs out falls back. Only waiting is charged, never inference or idle yields. Bounded per
+# document, so a server that keeps failing (a model too big, crash-looping through its load) adds at most
+# this much to a document, far inside the stage's 900 s timeout.
 DOCUMENT_WAIT_SECONDS = 90.0
 # How long the "server failing" flag lasts unless a READY probe clears it first. Then the next document
 # waits its normal budget again, which sets the flag again if the server is still broken: a server that
@@ -175,14 +176,22 @@ def server_is_probed() -> bool:
 
 
 class WaitBudget:
-    """The time one document may still spend waiting for the server, and whether it has seen it READY."""
+    """The time one document may still spend waiting for the server, and whether it has seen it READY.
+
+    Charged only with time spent waiting (`wait_for_server`'s sleeps and probes), never with elapsed time:
+    inference and the long tier's idle yields can take minutes on a CPU-only container, and a restart late
+    in such a document must still be waited out, as the summarize retries would have."""
 
     def __init__(self, seconds: float) -> None:
-        self.deadline = time.monotonic() + seconds
+        self.seconds = seconds
+        self.spent = 0.0
         self.saw_ready = False
 
     def remaining(self) -> float:
-        return max(0.0, self.deadline - time.monotonic())
+        return max(0.0, self.seconds - self.spent)
+
+    def charge(self, seconds: float) -> None:
+        self.spent += max(0.0, seconds)
 
 
 _document_budget: contextvars.ContextVar[WaitBudget | None] = contextvars.ContextVar(
@@ -212,16 +221,19 @@ def wait_for_server(*, fresh: bool = False) -> str:
     """The server's state once it is READY, or once the document's wait budget is spent (then not READY).
 
     While the server is flagged as failing, nothing is waited: one probe, and its answer. A budget spent
-    without ever seeing READY sets that flag, for at most `FAILING_FLAG_TTL_SECONDS`. Outside a `document_wait_budget` the call gets a budget of its
-    own. READY at once, unprobed, outside Compose."""
+    without ever seeing READY sets that flag, for at most `FAILING_FLAG_TTL_SECONDS`. Only the time spent in
+    this loop is charged to the budget. Outside a `document_wait_budget` the call gets a budget of its own.
+    READY at once, unprobed, outside Compose."""
     global _failing_since
     failing = server_failing()
     state = llm_server_state(fresh=fresh or failing)
     budget = _document_budget.get() or WaitBudget(DOCUMENT_WAIT_SECONDS)
     if state != READY and not failing:
         while state != READY and budget.remaining() > 0:
+            started = time.monotonic()
             time.sleep(min(POLL_SECONDS, budget.remaining()))
             state = llm_server_state(fresh=True)
+            budget.charge(time.monotonic() - started)
         if state != READY and not budget.saw_ready:
             with _lock:
                 _failing_since = time.monotonic()
@@ -233,3 +245,21 @@ def wait_for_server(*, fresh: bool = False) -> str:
     if state == READY:
         budget.saw_ready = True
     return state
+
+
+# What Ask and Research say under Docker Compose when llama-server refuses the connection or answers 503
+# (#654). The model counts as active as soon as its file is in the volume; llama-server starts a few seconds
+# later and then loads, and in that gap the raw "not running, activate a model" advice would be wrong.
+MODEL_STARTING_MESSAGE = (
+    "The local model is starting; try again in a moment. If this persists, check `docker compose logs llama-server`."
+)
+
+
+def server_unready_message(default: str, *, status_code: int | None = None) -> str:
+    """The user-facing text for a chat or research request llama-server did not serve.
+
+    Under Compose, a refused connection (`status_code` None) or a 503 means it is starting or loading its
+    model: `MODEL_STARTING_MESSAGE`. Anything else, and everything outside Compose, keeps `default`."""
+    if server_is_probed() and status_code in (None, 503):
+        return MODEL_STARTING_MESSAGE
+    return default

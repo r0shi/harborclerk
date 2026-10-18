@@ -16,6 +16,7 @@ or a probe that timed out) and UNAVAILABLE (nothing listening) apart, and `wait_
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 import httpx
@@ -30,6 +31,8 @@ CHUNKS = ["A short invoice from Acme for three widgets."]
 SUMMARY = "Acme invoices three widgets."
 PDF = "application/pdf"
 STAGE_TIMEOUT_SECONDS = 900  # worker/pipeline.py: summarize's
+INFERENCE_SECONDS = 30.0  # one LLM call on a CPU-only container
+YIELD_SECONDS = 10.0  # one idle yield between map calls
 
 
 class Clock:
@@ -109,12 +112,14 @@ def compose(monkeypatch, tmp_path: Path, clock: Clock) -> None:
 
 
 @pytest.fixture
-def llm(monkeypatch) -> list[str]:
-    """The model, answering every call; records the phases it was asked for."""
+def llm(monkeypatch, clock: Clock) -> list[str]:
+    """The model, answering every call after INFERENCE_SECONDS of fake time; records the phases asked for.
+    Inference takes time so that no test can pass on a budget that elapsed time, not waiting, would spend."""
     calls: list[str] = []
 
     def answer(system_prompt, user_content, **kwargs):
         calls.append(kwargs.get("phase", ""))
+        clock.now += INFERENCE_SECONDS
         return SUMMARY if kwargs.get("response_key") == "summary" else "Invoice"
 
     monkeypatch.setattr(summarize, "_call_llm", answer)
@@ -347,7 +352,6 @@ def test_outside_compose_nothing_is_probed_or_waited_for(monkeypatch, clock) -> 
 
 
 def test_the_stage_holds_one_budget_for_the_summary_and_the_type(monkeypatch) -> None:
-    import uuid
 
     from harbor_clerk.worker.stages import summarize as stage
 
@@ -423,3 +427,98 @@ def test_a_document_that_saw_the_server_ready_does_not_flag_it(compose, clock, m
     text, model_used, _ = _document()
     assert (text, model_used) == (SUMMARY, "qwen35-4b")
     assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS
+
+
+# --- the budget is waiting time, not elapsed time ---
+
+LONG_CHUNKS = ["A long contract clause about termination, notice and the obligations that survive it. " * 12] * 120
+
+
+def _is_reduce(payload: dict) -> bool:
+    """The long tier's reduce call: its user message is the numbered section summaries."""
+    return payload["messages"][-1]["content"].startswith("1. ")
+
+
+def test_a_restart_late_in_a_long_document_is_waited_out_through_the_stage(compose, clock, monkeypatch) -> None:
+    # A map-reduce document on a CPU-only container: every call takes 30 s and every map call yields 10 s,
+    # so it is well past the 90 s budget in elapsed time when llama-server restarts under its reduce call,
+    # and again as its type is asked for. Neither restart may find the budget spent: only waiting counts.
+    from harbor_clerk.worker.stages import summarize as stage
+
+    server = Server(clock, up_at=clock.now)
+    monkeypatch.setattr(health.httpx, "get", server)
+    started = clock.now
+    reduce_restarted_at: list[float] = []
+
+    def post(url, **kwargs):
+        if server.state() is None:
+            raise httpx.ConnectError("refused", request=httpx.Request("POST", url))
+        if _is_reduce(kwargs["json"]) and not reduce_restarted_at:
+            reduce_restarted_at.append(clock.now)
+            server.up_at = clock.now + 5  # the restart takes the request down with it
+            raise httpx.ConnectError("refused", request=httpx.Request("POST", url))
+        clock.now += INFERENCE_SECONDS
+        return _completion(json.dumps({"summary": SUMMARY, "document_type": "Invoice"}))
+
+    def idle_yield(*args, **kwargs):
+        clock.now += YIELD_SECONDS
+
+    real_classify = stage.classify_doc_type
+
+    def classify_during_a_restart(*args, **kwargs):
+        server.up_at = clock.now + 5  # restarts again just as the type is asked for
+        return real_classify(*args, **kwargs)
+
+    monkeypatch.setattr(summarize.httpx, "post", post)
+    monkeypatch.setattr(stage, "_wait_for_idle_llm", idle_yield)
+    monkeypatch.setattr(stage, "classify_doc_type", classify_during_a_restart)
+    summary, model_used, doc_type = stage._summary_and_type(uuid.uuid4(), LONG_CHUNKS, PDF)
+    assert reduce_restarted_at and reduce_restarted_at[0] - started > 200, "the document was not long yet"
+    assert (summary, model_used) == (SUMMARY, "qwen35-4b"), "a restart late in a long document lost the summary"
+    assert doc_type == "Invoice", "the type after a long summary got no wait budget"
+    assert 10 <= clock.waited() < 2 * 5 + 2 * health.POLL_SECONDS + 1
+
+
+@pytest.mark.parametrize("after", ["crash-loop", "gone"])
+def test_after_long_work_a_failing_server_costs_one_budget_of_waiting(compose, clock, monkeypatch, after) -> None:
+    # Ready for the first 150 s of a long document (calls take 30 s each), then the server crash-loops or is
+    # gone for good. That document waits at most one budget in all, however long it has run; the next one,
+    # which never sees it ready, waits one budget and flags it; the ones after fall back at once.
+    switch_at = clock.now + 150
+    loop = CrashLoop(clock)
+
+    def code() -> int | None:
+        if clock.now < switch_at:
+            return 200
+        return loop.state() if after == "crash-loop" else None
+
+    def get(url, **kwargs):
+        c = code()
+        if c is None:
+            raise httpx.ConnectError("refused", request=httpx.Request("GET", url))
+        return httpx.Response(c, request=httpx.Request("GET", url))
+
+    def post(url, **kwargs):
+        c = code()
+        if c is None:
+            raise httpx.ConnectError("refused", request=httpx.Request("POST", url))
+        if c == 503:
+            return httpx.Response(503, request=httpx.Request("POST", url))
+        clock.now += INFERENCE_SECONDS
+        return _completion(json.dumps({"summary": SUMMARY, "document_type": "Invoice"}))
+
+    monkeypatch.setattr(health.httpx, "get", get)
+    monkeypatch.setattr(summarize.httpx, "post", post)
+    started = clock.now
+    _document(LONG_CHUNKS)
+    assert clock.now - started > health.DOCUMENT_WAIT_SECONDS + INFERENCE_SECONDS  # long in elapsed time
+    assert clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS, "more than one budget waited"
+    assert not health.server_failing()  # it saw the server ready
+    clock.slept.clear()
+    assert _document()[1] == "extractive"
+    assert health.DOCUMENT_WAIT_SECONDS <= clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS
+    assert health.server_failing()
+    for _ in range(3):
+        clock.slept.clear()
+        clock.now += 5
+        assert _document()[1] == "extractive" and clock.slept == []

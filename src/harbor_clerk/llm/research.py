@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.api.scope import UserScope, apply_folder_scope, build_user_scope
 from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
-from harbor_clerk.llm.health import report_llm_error, report_llm_success
+from harbor_clerk.llm.health import report_llm_error, report_llm_success, server_unready_message
 from harbor_clerk.llm.models import context_budget, get_model
 from harbor_clerk.llm.research_prompts import (
     REVISION_SYSTEM,
@@ -1963,7 +1963,15 @@ async def research_stream(
                 state.error = f"Synthesis failed: LLM error ({exc.response.status_code})"
                 state.notes = notes
                 await session.commit()
-                yield _sse({"type": "error", "message": f"Synthesis failed: LLM error ({exc.response.status_code})"})
+                yield _sse(
+                    {
+                        "type": "error",
+                        "message": server_unready_message(
+                            f"Synthesis failed: LLM error ({exc.response.status_code})",
+                            status_code=exc.response.status_code,
+                        ),
+                    }
+                )
                 return
             except httpx.TransportError as exc:
                 # A reset mid-stream (server swapped or crashed while writing) must land here too: escaping to the
@@ -1974,7 +1982,12 @@ async def research_stream(
                 state.notes = notes
                 await session.commit()
                 yield _sse(
-                    {"type": "error", "message": "LLM server is not running. Select and activate a model in Settings."}
+                    {
+                        "type": "error",
+                        "message": server_unready_message(
+                            "LLM server is not running. Select and activate a model in Settings."
+                        ),
+                    }
                 )
                 return
 
