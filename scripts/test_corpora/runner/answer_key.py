@@ -15,53 +15,29 @@ Agreement (doc_id `ebbbd23d-...`)" and never the filename stem the key holds; be
 four such lists at 0 named). The citations themselves are still not counted: the map is a dictionary for the ids
 the answer wrote out, nothing more.
 
-A list answer is read for what its own words say about an item before the item is counted (#814, #816). Frontier
-models write their reasoning into the answer and name what they reject; local models mostly do not, so a scorer that
-cannot read a rejection costs the strong models precision the weak ones never pay. But a false drop silently lowers
-recall on a right answer, while a false keep only lowers precision, which the reports already read as a floor for a
-narrating model. So an item is dropped only on a rejection that is explicit and attached to it, and wherever the two
-pull apart the rule keeps. Two readings:
+A list answer's labels are read before its items are counted (#814, #816), and nothing else is. A heading (`#` line)
+or bold lead-in (`**...**` opening a line) that rejects takes its section out, to the next heading of its level or
+higher (a lead-in's to the next lead-in or heading); the answer's first section is never dropped
+(`without_excluded_sections`). A line or bullet that opens with a rejecting label naming no item ("- **Excluded
+near-misses:** ... `0050` ...", "Not counted: X") loses the rest of its line. A label rejects only when it opens
+with a reject phrase ("excluded", "exclusions", "not counted", "not included", "not a match", "non-match",
+"near-miss", "false positive", "rejected", "ruled out", "does not qualify", and the French) or with a denial of the
+category ("Not a non-disparagement clause"), or when its leading clause ends with one ("Reviewed and excluded",
+"Context on what was excluded"); `rejecting_label` has the exceptions (a negation, a condition, a denied degree or
+form, "excluded from the cap").
 
-Sections. A heading (`#` line) or bold lead-in (`**...**` opening a line) that rejects membership takes its section
-out (`without_excluded_sections`, `rejecting_label`); a heading's section runs to the next heading of its level or
-higher, a lead-in's to the next lead-in or heading, and the answer's first section is never dropped. A label rejects
-only on an explicit reject phrase ("excluded", "exclusions", "not counted", "not included", "not a match",
-"non-match", "near-miss", "false positive", "rejected", "does not qualify", "ruled out"; French "exclu", "écarté",
-"non retenu", "faux positif", "ne correspond pas") that no negation just before it cancels ("Nothing excluded", "No
-false positives", "Not a near-miss"), or when it opens by denying the category ("Not a non-disparagement clause",
-unless what it denies is a degree or a form: "Not a classic covenant"). Nothing else rejects. Not a hedge:
-"Borderline / related", "Related but narrower", "Mentions / borderline (… not operative ROFRs …)" all count, which
-is the decision #816 made; #814 read "borderline" as a reject and so dropped the Borderline section of
-bench-20261015-2259-cuad-fable-rerun's cuad-key-16, three CUAD positives in it (0.43, where the first run, the same
-contracts under other headings, scored 0.67). And not a negation elsewhere in a label: the clauses a list question
-asks for are prohibitions, and a heading that describes them ("Licenses that may not be revoked", "Contracts in
-which a party shall not disparage the other", "(not mutual)", "(amount not specified)") is not rejecting its items
-(review of #816, whose first version read any unqualified "not" as a rejection). The costs, accepted: "(NOT Customer
-Solicitation Bans)" and "Limited to Employees (Not Customers)" keep their items, which the answers meant as rejects;
-and a hedged section the answer itself does not count is counted (rerun cuad-key-19's "Borderline / special case",
-one contract the answer calls "an insurance arrangement itself rather than a covenant", 1.00 to 0.98), because a
-heading vocabulary cannot tell a weaker match from a rejected one.
-
-Prose. Outside the dropped sections, a mention is dropped only on a verdict attached to that one name
-(`_rejections`), within one sentence: what `_SENTENCE_END` ends, also before a backtick or a lower-case word, and at
-a semicolon, a line break or a table cell's bar. The verdicts: after the name and what trails it (an id, a
-parenthesis, a citation, the rest of its title), "is not a match", "is not one", "does not qualify / match / count /
-apply", "does not contain one", "is excluded", "is a false positive", "— excluded", "(excluded)", "is not an Acme
-campaign" (a denied category, unless a degree or a form is denied), and the French; before the name, with only
-markup, a colon or two filler words between, "excluded", "excluding", "not counted:", "rather than", "except",
-"sauf", and "not" ("Harbour Lights, not Skylight"); and, when the sentence names one item and no colon or contrast
-word stands between, "so I'll exclude it" or a sentence-final "— excluded". A sentence that opens with a "Label:"
-naming no item is read as a heading over that sentence ("- **Excluded near-misses:** ... `0050` ..."). A negation
-just before a verdict cancels it ("was not excluded", "I did not exclude"), quoted text is the document's words and
-is not read, "not only" and "not to" are not verdicts, and a verdict never reaches back over a clause, a colon or a
-contrast word to an earlier name. A bare negated predicate ("does not target", "is not stated", "isn't optional") is
-not a verdict: it is as often a description of the clause (review of #816: "if the offer is rejected, STAAR may
-sell", "consequential losses excluded from cover", "the amount is not specified" each dropped a positive under the
-first version). An item is named when at least one of its mentions survives. The costs, accepted: "Skylight does not
-target Acme Corp", "X matches and Y does not", "but these are dispute mechanisms rather than ROFRs" and "the search
-did not find one in X" keep their names; in the stored answers that is fourteen contracts the answers rejected, all
-unlabelled, all kept; and a lead-in followed by `###` items ("**Not counted:**", then "### 1. Rand") excludes
-nothing but itself, because a heading ends a lead-in's section.
+Why so little: a false drop silently lowers recall on a right answer, while a false keep lowers only precision,
+which the reports already read as a floor for a narrating model. Two reviewed versions of #816 read negation in
+headings and verdicts in prose; each review found true matches dropped on plausible answers ("Irrevocable licenses
+(may not be revoked)", "if the offer is rejected, STAAR may sell", "is not a Delaware corporation"), and across the
+154 stored list answers the prose rule had made two drops. So a reject word later in a label does nothing, prose is
+not read, and hedges count ("Borderline / related": the decision #816 made, since #814 read "borderline" as a reject
+and dropped three CUAD positives from bench-20261015-2259-cuad-fable-rerun's cuad-key-16). The costs, accepted and
+pinned in the tests: an item rejected only in prose ("so I'll exclude it") or under a label whose reject word comes
+late ("One additional keyword match, not counted above") is counted; a hedged section the answer itself does not
+count is counted (the rerun's "Borderline / special case"); a leading clause that ends in a reject participle about
+something else ("Clauses with consequential damages excluded") rejects; and a lead-in followed by `###` items
+excludes nothing but itself, because a heading ends a lead-in's section.
 
 The fact matcher accepts negation ("New York law, not Delaware" finds "Delaware"); a key is one phrase, so this has
 not mattered yet, and is stated so that a score of 1.0 is read as "the phrase is present", nothing more. The one
@@ -255,54 +231,66 @@ _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t#]*$")
 _BOLD_LEAD = re.compile(r"^[ \t]*\*\*([^*\r\n]+?)\*\*")
 _LEAD_IN_LEVEL = 7  # below any heading: a heading's section takes its lead-ins with it, not the other way round
 
-# What an answer's own words say about membership, read lower-cased, accents folded and with typographic apostrophes
-# straightened (`_cue_view`). The module docstring says why each list is what it is.
-#
-# Reject phrases: what takes an item, or a section, out of the answer's list. "excluded" and "exclusions", never
-# "exclusive", "excluding" or "excludes" (which have objects: "excluding duplicates"). Read in a label (heading,
-# lead-in, or a "Label:" opening a sentence) unless a negation stands just before it ("Nothing excluded", "No false
-# positives", "Not a near-miss").
-_REJECTS = re.compile(
-    r"\bexclu(?:ded|sions?|es?|s)?\b"
-    r"|\bnot (?:counted|included|listed|retained|selected)\b|\bnot (?:an? )?match(?:es)?\b"
-    r"|\bnon[- ]?match(?:es)?\b|\bnear[- ]?miss(?:es)?\b|\bfalse positives?\b|\brejected\b"
-    r"|\b(?:does|do|did) not qualify\b|\b(?:doesn|don|didn)'t qualify\b|\bnot qualifying\b|\bdisqualified\b"
-    r"|\bruled out\b"
-    r"|\becarte(?:e|s|es)?\b|\bnon retenu(?:e|s|es)?\b|\bfaux positifs?\b|\bne correspond(?:ent)? pas\b"
+# What a label says about the items it heads, read in its own words, lower-cased and accents folded (`_label_view`).
+# A reject phrase is one of these, in English or French:
+_REJECT_PHRASE = (
+    r"(?:excluded|exclusions?|not counted|not included|not (?:an? )?match(?:es)?|non[- ]?match(?:es)?"
+    r"|near[- ]?miss(?:es)?|false positives?|rejected|ruled out|(?:does|do) not qualify|(?:doesn|don)'t qualify"
+    r"|exclue?s?|ecartee?s?|rejetee?s?|non retenue?s?|faux positifs?|ne correspond(?:ent)? pas)"
 )
-_NEGATOR = re.compile(r"\b(?:not|no|nothing|none|never|without|neither|nor|pas|aucune?|rien|ni)\b|n't\b")
-_NEGATOR_WORDS = 2  # how far before a reject phrase a negation cancels it: "nothing was excluded"
-# A heading that opens by denying the category ("Not a non-disparagement clause", "Ce n'est pas une clause ...") is a
-# reject phrase of its own, unless what it denies is a degree or a form ("Not a classic covenant, but ...") or itself
-# a rejection ("Not a near-miss").
+# ...or a denial of the category ("Not a non-disparagement clause"), unless what is denied is a degree or a form
+# ("Not a classic covenant") or the denial goes on ("Not a party but bound").
 _QUALIFIER = (
     r"(?:classic(?:al)?|typical|standard|true|genuine|pure|strict|formal|traditional|conventional|general|stand"
     r"|standalone|full|complete|exhaustive|separate|express|explicit|mutual|reciprocal|one|two|bilateral|unilateral"
-    r"|perpetual|irrevocable|exclusive|broad|narrow|written|specific|single|direct|false|near|match"
+    r"|perpetual|irrevocable|exclusive|broad|narrow|written|specific|single|direct"
     r"|classique|typique|explicite|expresse|formelle|exhaustive|mutuelle|reciproque|exclusive)\b"
 )
-_NOT_A = re.compile(rf"^[^a-z0-9]*(?:not an?|(?:ce )?n'est pas une?)\s+(?!{_QUALIFIER})[a-z0-9]")
+_DENIAL = rf"(?:not an?|(?:ce )?n'est pas une?|pas une?)\s+(?!{_QUALIFIER})[a-z0-9]"
+_OPENS = re.compile(rf"(?:{_REJECT_PHRASE}\b|{_DENIAL})")
+_CLOSES = re.compile(rf"\b{_REJECT_PHRASE}$")
+_GOES_ON = re.compile(r"\b(?:but|though|although|yet|however|mais|pourtant)\b")
+# "Excluded from the cap: ..." describes the clause; "Excluded from the list: ..." is a verdict.
+_DESCRIBES = re.compile(
+    r"\s+(?:from|by|under|in|for|on|of|du|de|par)\s+"
+    r"(?!(?:the |my |this |la |le |les )?(?:list|count|answer|results?|matches|table|tally|total|liste|decompte)\b)"
+)
+# A leading clause that opens with a negation and holds a reject word does not reject: "No contracts were excluded",
+# "None of these were excluded", "Nothing excluded", "No false positives", "Not a near-miss".
+_NEGATION = re.compile(r"(?:no|not|none|nothing|never|neither|aucune?|rien|jamais)\b")
+_REJECT_WORD = re.compile(
+    r"\b(?:excluded|exclusions?|rejected|ruled out|near[- ]?miss(?:es)?|false positives?|non[- ]?match(?:es)?"
+    r"|exclue?s?|ecartee?s?|rejetee?s?|faux positifs?)\b"
+)
+# A leading clause that opens as a condition is not a verdict: "If the first offer is rejected: ...".
+_CONDITION = re.compile(r"(?:if|when|whenever|once|unless|after|where|si|lorsque|quand|une fois)\b")
+_CLAUSE_END = re.compile(r"[(,;:—–]| - ")
 
 
-def _cue_view(text: str) -> str:
-    """`text` folded, lower-cased and with straight apostrophes, one character for each of `text`'s, so that an
-    offset in one is an offset in the other."""
-    return "".join((fold(ch).lower() or " ")[0] for ch in text).replace("’", "'").replace("‘", "'")
-
-
-def _negated_before(view: str, at: int) -> bool:
-    return bool(_NEGATOR.search(" ".join(view[:at].split()[-_NEGATOR_WORDS:])))
+def _label_view(label: str) -> str:
+    """The label lower-cased, accents folded, apostrophes straightened, and without what may stand in front of its
+    words: markup, emoji, numbering ("1.", "A.", "(a)")."""
+    low = fold(label).lower().replace("’", "'").replace("‘", "'")
+    low = re.sub(r"^[^a-z]+", "", low)
+    return re.sub(r"^[a-z][.)]\s+", "", low)
 
 
 def rejecting_label(label: str) -> bool:
-    """Whether a heading, lead-in or sentence label says its items are not in the answer's list: it holds a reject
-    phrase no negation cancels (`_REJECTS`), or it opens by denying the category (`_NOT_A`). Nothing else rejects:
-    not a hedge ("Borderline / related"), and not a negation elsewhere in the label, because the clauses a list
-    question asks for are themselves prohibitions ("Licenses that may not be revoked", "shall not disparage")."""
-    low = _cue_view(label)
-    if any(not _negated_before(low, m.start()) for m in _REJECTS.finditer(low)):
-        return True
-    return bool(_NOT_A.match(low))
+    """Whether a heading, lead-in or line label says the items it heads are not in the answer's list: the label opens
+    with a reject phrase or a denial of the category (`_OPENS`), or its leading clause, the words before the first
+    parenthesis, comma, colon, semicolon or dash, ends with a reject phrase (`_CLOSES`: "Reviewed and excluded",
+    "Context on what was excluded"). A reject phrase anywhere else does nothing ("Insurance required (limits not
+    listed)", "ROFR (seller may sell once the offer is rejected)"); nor does a leading clause that opens with a
+    negation ("No contracts were excluded") or a condition ("If the offer is rejected")."""
+    low = _label_view(label)
+    clause = re.sub(r"[^a-z0-9']+$", "", _CLAUSE_END.split(low, maxsplit=1)[0])
+    if (_NEGATION.match(clause) and _REJECT_WORD.search(clause)) or _CONDITION.match(clause):
+        return False
+    if opened := _OPENS.match(low):
+        if opened.group().startswith(("not a", "n'est", "ce n'est", "pas un")):
+            return not _GOES_ON.search(low)
+        return not _DESCRIBES.match(low, opened.end())
+    return bool(_CLOSES.search(clause))
 
 
 def without_excluded_sections(text: str) -> str:
@@ -329,229 +317,30 @@ def without_excluded_sections(text: str) -> str:
     return "\n".join(kept)
 
 
-# ── rejection in prose ──
-#
-# A false drop silently lowers recall on a correct answer; a false keep lowers precision, which the reports already
-# read as a floor for a narrating model. So the prose drops a name only on a verdict attached to that one name, in
-# a tight pattern, and never reaches over a clause, a colon or a contrast to an earlier name. A sentence is what
-# `_SEGMENT_END` ends: `_SENTENCE_END`'s ends, also before a backtick or a lower-case word, and a semicolon, a line
-# break or a table cell's bar. Quoted text is the document's words, not the answer's verdict, and is not read.
-_SEGMENT_END = re.compile(r"[.!?][*_)\]\"'”’]*(?=\s+[A-Za-z0-9\"“*(\[`]|\s*$)|\r?\n|[;|]")
-_QUOTED = re.compile(r"“[^”\n]*”|«[^»\n]*»|\"[^\"\n]*\"")
-# After a name (and what may trail it: an id in backticks, a parenthesis, a citation in brackets, bold marks, the
-# rest of its title in capitalised words), a verdict on it: "<name> is not a match", "does not qualify", "is
-# excluded", "— excluded", "(excluded)", "is not one", "is not an Acme campaign" (a denied category, unless what is
-# denied is a degree or a form), and the French. A bare negated predicate ("does not target", "is not stated") is
-# not a verdict: it is as often a description of the clause.
-_POST_VERDICT = re.compile(
-    r"[ \t]*,?[ \t]*(?:"
-    r"(?:is|are|was|were|has been|have been)\s+(?:also\s+)?(?:excluded|rejected|ruled out|disqualified|not counted"
-    r"|not included|not listed|(?:an?\s+)?false positives?|(?:an?\s+)?near[- ]miss(?:es)?)\b"
-    r"|(?:is|are|was|were)\s+not\s+(?:an?\s+)?(?:match(?:es)?|one|among them)\b"
-    r"|(?:isn't|aren't|wasn't|weren't)\s+(?:an?\s+)?(?:match(?:es)?|one)\b"
-    r"|(?:(?:does|do|did)\s+not|doesn't|don't|didn't)\s+(?:qualify|match|count|apply|contain\s+(?:one|any|such))\b"
-    rf"|(?:(?:is|are)\s+not|isn't|aren't)\s+an?\s+(?!{_QUALIFIER})[a-z0-9]"
-    r"|[—–-]+\s*(?:excluded|rejected|not counted|not included|not a match|ruled out|false positive|near[- ]miss"
-    r"|does not qualify|doesn't qualify|exclue?s?|ecartee?s?)\b"
-    r"|\(\s*(?:excluded|rejected|not counted|not included|not a match|false positive|near[- ]miss|exclue?s?)\b"
-    r"|:\s*(?:excluded|rejected|not counted|not included|not a match|false positive|does not qualify)\b"
-    r"|(?:est|sont|a ete|ont ete)\s+(?:exclue?s?|ecartee?s?|rejetee?s?)\b"
-    r"|n'est pas (?:retenue?|une correspondance|pertinente?)\b|ne (?:correspond(?:ent)?|qualifie(?:nt)?) pas\b"
-    rf"|n'est pas une?\s+(?!{_QUALIFIER})[a-z0-9]"
-    r")"
-)
-_TAIL_UNIT = re.compile(
-    r"[ \t]*(?:[`*_)\]\"”’]+|\([^()\n]{0,120}\)|`[^`\n]{0,80}`|\[[^\]\n]{0,160}\]|【[^】\n]{0,160}】"
-    r"|[A-Z0-9][\w.&'’/-]*(?=[ \t`*(\[,—–-]|$))"
-)
-_TAIL_UNITS = 8
-# Before a name, a verdict whose object it is: "excluded 0048", "Excluded: Skylight", "not counted: X", "rather than
-# Skylight", "except Skylight", "sauf Skylight", "Harbour Lights, not Skylight". Between the verdict and the name:
-# markup, a colon, and at most two of `_FILLER`; a negation just before the verdict cancels it ("I did not exclude").
-_PRE_VERDICT = re.compile(
-    r"\b(?:excluded?|excluding|rejected?|rejecting|ruled out|not counted|not included|not listed|rather than"
-    r"|instead of|except|excepting|sauf|hormis|a l'exception de|plutot que|au lieu de|exclue?s?|excluant|not)\b"
-)
-_PRE_GAP = re.compile(r"[ \t]*:?[ \t*_`\"“(\[]*")
-_FILLER = re.compile(
-    r"(?:the|a|an|la|le|les|l'|un|une|de|du|des|for|both|invoices?|factures?|contracts?|contrats?|agreements?"
-    r"|campaigns?|campagnes?|briefs?|documents?)\b"
-)
-_FILLERS = 2
-# "<name> ... so I'll exclude it": a verdict by pronoun, read only when the sentence names one item before it.
-_SO_EXCLUDE = re.compile(
-    r"\b(?:so|and|therefore|thus|hence)\s+i(?:'ll| will| have| am|'ve)?\s+(?:excluded?|excluding|rejected?|rejecting"
-    r"|omit(?:ted)?|dropp?(?:ed)?)\s+(?:it|them)\b"
-)
-# "<name> is a July 2025 invoice — excluded.": a verdict that ends its sentence after a dash, read like "so I'll
-# exclude it". Neither reaches over a colon or a contrast word to the name.
-_FINAL_VERDICT = re.compile(
-    r"[—–-]+\s*(?:excluded|rejected|not counted|not included|not a match|ruled out|exclue?s?)[\s*_.!)]*$"
-)
-_BREAK = re.compile(r":|\b(?:but|whereas|while|although|though|however|yet|mais|alors que|tandis que|cependant)\b")
-# A sentence that opens with a short label and a colon ("Excluded near-misses: ...", "- **Not counted:** ...") is
-# read as a heading would be, over that sentence, when the label names no item; one that names its item ("eDiets —
-# excluded: ...") is read by the patterns above.
-_SENTENCE_LABEL = re.compile(
-    r"^\s*(?:(?:[-*•]|\d+[.)])\s+)?(?:\*\*|__)?(?P<label>[^:\n*_]{1,80}?)(?:\*\*|__)?\s*:(?:\*\*|__)?(?=\s|$)"
+# A line label: a line or bullet that opens with bold text, or with a short colon-terminated label, before its items
+# ("- **Excluded near-misses:** ... `0050` ...", "Not counted: X"). A label that rejects (`rejecting_label`) and names
+# no item itself takes the rest of its line out.
+_LINE_LABEL = re.compile(
+    r"^[ \t]*(?:(?:[-*•+]|\d+[.)])[ \t]+)?(?:\*\*(?P<bold>[^*\n]+)\*\*|__(?P<under>[^_\n]+)__|(?P<plain>[^:*\n]{1,80}):(?=\s|$))"
 )
 _LABEL_MAX_WORDS = 8
 
 
-def _mapped(text: str, keep, gap: str | None = None) -> tuple[str, list[int]]:
-    """`text` folded and lower-cased character by character, keeping what `keep` accepts, with the offset in `text`
-    of every character kept; `gap`, when given, stands once for each run of what is not kept (as `_words` does)."""
-    out: list[str] = []
-    offsets: list[int] = []
-    for i, ch in enumerate(text):
-        for c in fold(ch).lower():
-            if keep(c):
-                out.append(c)
-                offsets.append(i)
-            elif gap is not None and (not out or out[-1] != gap):
-                out.append(gap)
-                offsets.append(i)
-    return "".join(out), offsets
-
-
-def _alnum(c: str) -> bool:
-    return "a" <= c <= "z" or "0" <= c <= "9"
-
-
-def _find_all(haystack: str, needle: str) -> Iterable[int]:
-    start = haystack.find(needle)
-    while needle and start >= 0:
-        yield start
-        start = haystack.find(needle, start + 1)
-
-
-_AMOUNT_TOKEN = re.compile(r"\d+(?:(?:[.,]|[ \u00a0\u202f'](?=\d{3}(?!\d)))\d+)*")
-
-
-def _amount_spans(text: str) -> list[tuple[Decimal, int, int]]:
-    """Every number `amounts_in` reads, with where it is in `text`."""
-    folded, offsets = _mapped(text, lambda c: True)
-    found = []
-    for m in _AMOUNT_TOKEN.finditer(folded):
-        value = _parse_amount(re.sub(r"[ \u00a0\u202f']", "", m.group()))
-        if value is not None:
-            found.append((value, offsets[m.start()], offsets[m.end() - 1] + 1))
-    return found
-
-
-def _mention_spans(
-    text: str,
-    universe: list[str],
-    aliases: dict[str, list[str]] | None,
-    doc_ids: dict[str, str] | None,
-    filers: dict[str, list[str]],
-) -> list[tuple[str, int, int]]:
-    """Where in `text` each item is named, by the same tests `named_contracts` applies to the whole text: (title,
-    start, end) for every occurrence of its whole title, its filer's name (when that names it), an alias, or an id
-    the map resolves to it."""
-    squeezed, sq_at = _mapped(text, _alnum)
-    words, w_at = _mapped(text, _alnum, gap=" ")
-    amounts = _amount_spans(text) if aliases else []
-
-    def span(at: list[int], start: int, end: int) -> tuple[int, int]:
-        return at[start], at[end - 1] + 1
-
-    spans: list[tuple[str, int, int]] = []
+def _found(text: str, universe: list[str], aliases: dict[str, list[str]] | None, doc_ids: dict[str, str] | None) -> set:
+    """The items `text` names, by title, filer, alias or id (`named_contracts` says how)."""
+    squeezed, words = normalize(text), _words(text)
+    amounts = amounts_in(text) if aliases else set()
+    filers: dict[str, list[str]] = {}
     for title in universe:
-        forms = [normalize(title)]
-        filer = company(title)
-        if len(filer) >= 8 and len(filers[filer]) == 1:
-            forms.append(filer)
-        for form in forms:
-            spans += [(title, *span(sq_at, i, i + len(form))) for i in _find_all(squeezed, form)]
-        for alias in (aliases or {}).get(title, ()):
-            if re.fullmatch(r"\d+(?:\.\d+)?", alias):
-                spans += [(title, a, b) for value, a, b in amounts if value == Decimal(alias)]
-            elif form := normalize(alias):
-                pattern = rf"(?<![a-z0-9])(?:{_spaced(form)})(?![a-z0-9])"
-                spans += [(title, *span(w_at, m.start(), m.end())) for m in re.finditer(pattern, words)]
-    by_title = {normalize(title): title for title in universe}
-    for doc_id, title in (doc_ids or {}).items():
-        squeezed_id = normalize(str(doc_id or ""))
-        hit = by_title.get(normalize(str(title or "")))
-        if len(squeezed_id) >= 8 and hit:
-            spans += [(hit, *span(sq_at, i, i + len(squeezed_id))) for i in _find_all(squeezed, squeezed_id)]
-    return spans
-
-
-def _segments(text: str) -> list[tuple[int, int]]:
-    out, start = [], 0
-    for m in _SEGMENT_END.finditer(text):
-        out.append((start, m.end()))
-        start = m.end()
-    out.append((start, len(text)))
-    return [(a, b) for a, b in out if text[a:b].strip()]
-
-
-def _rejections(text: str, mentions: list[tuple[str, int, int]]) -> dict[int, str]:
-    """{index into `mentions`: why it is rejected} for the mentions the answer's prose rejects (the module
-    docstring has the rule)."""
-    why: dict[int, str] = {}
-    for seg_start, seg_end in _segments(text):
-        local = {i: (a - seg_start, b - seg_start) for i, (_, a, b) in enumerate(mentions) if seg_start <= a < seg_end}
-        if local:
-            sentence = text[seg_start:seg_end]
-            titles = {i: mentions[i][0] for i in local}
-            why |= _sentence_rejections(sentence, local, titles)
-    return why
-
-
-def _sentence_rejections(sentence: str, local: dict[int, tuple[int, int]], titles: dict[int, str]) -> dict[int, str]:
-    view = _cue_view(sentence)
-    for q in _QUOTED.finditer(view):  # the document's words, not the answer's verdict
-        view = view[: q.start()] + " " * (q.end() - q.start()) + view[q.end() :]
-    said = sentence.strip()
-    why: dict[int, str] = {}
-    label = _SENTENCE_LABEL.match(sentence)
-    if (
-        label
-        and len(label.group("label").split()) <= _LABEL_MAX_WORDS
-        and not any(a < label.end() for a, _ in local.values())
-        and rejecting_label(label.group("label"))
-    ):
-        return {i: f"label '{label.group('label').strip()}': {said}" for i in local}
-    for i, (_, end) in local.items():
-        pos = end
-        for _ in range(_TAIL_UNITS + 1):
-            verdict = _POST_VERDICT.match(view, pos)
-            if verdict:
-                why[i] = f"after '{view[verdict.start() : verdict.end()].strip()}': {said}"
-                break
-            unit = _TAIL_UNIT.match(sentence, pos)
-            if not unit or unit.end() == pos:
-                break
-            pos = unit.end()
-    for m in _PRE_VERDICT.finditer(view):
-        if _negated_before(view, m.start()):
-            continue
-        pos = _PRE_GAP.match(view, m.end()).end()
-        for _ in range(_FILLERS + 1):
-            hits = [i for i, (a, _) in local.items() if a == pos]  # a name may be found twice there
-            if hits:
-                if m.group() != "not" or not _NOT_ONLY.match(view, m.end()):
-                    for i in hits:
-                        why.setdefault(i, f"before '{m.group()}': {said}")
-                break
-            filler = _FILLER.match(view, pos)
-            if not filler:
-                break
-            pos = _PRE_GAP.match(view, filler.end()).end()
-    for m in [*_SO_EXCLUDE.finditer(view), *_FINAL_VERDICT.finditer(view)]:
-        before = [i for i, (a, _) in local.items() if a < m.start()]
-        between = view[max((local[i][1] for i in before), default=0) : m.start()]
-        if len({titles[i] for i in before}) == 1 and not _BREAK.search(between):
-            for i in before:
-                why.setdefault(i, f"'{m.group()}': {said}")
-    return why
-
-
-# Right after "not", these make it no verdict: "not only X but also Y", "not to be confused with X".
-_NOT_ONLY = re.compile(r"\s+(?:only|just|merely|simply|necessarily|limited|to|seulement|uniquement)\b")
+        filers.setdefault(company(title), []).append(title)
+    found = set()
+    for title in universe:
+        whole, filer = normalize(title), company(title)
+        by_filer = len(filer) >= 8 and len(filers[filer]) == 1 and filer in squeezed
+        by_alias = any(_mentions(words, amounts, alias) for alias in (aliases or {}).get(title, ()))
+        if whole in squeezed or by_filer or by_alias:
+            found.add(title)
+    return found | _named_by_id(squeezed, universe, doc_ids)
 
 
 def named_contracts(
@@ -566,11 +355,10 @@ def named_contracts(
     as a number the answer states, to the value ("$1,200.80" does not state 20080; review of #812), or if its
     document id appears and `doc_ids` maps that id to its title. The synthetic key names an invoice by its file
     stem and aliases it by its invoice number and its total, where unique in the corpus; `corpora/synthetic_key.py`
-    says which. Two readings of the answer's own words come first: the sections its headings and lead-ins mark as
-    rejected are not read (`without_excluded_sections`), and a name the prose rejects where it stands ("0048 is a
-    July 2025 invoice — excluded") does not count there (`_rejections`). An item is named when at least one of its
-    mentions survives both: a sentence that rejects it does not cancel another that lists it. It misses an item
-    referred to only by paraphrase ("the Papa John's deal").
+    says which. The answer's labels are read first: a section whose heading or lead-in rejects is not read
+    (`without_excluded_sections`), and neither is the rest of a line whose label rejects and names no item
+    (`_LINE_LABEL`). Prose is not read for rejection at all. It misses an item referred to only by paraphrase ("the
+    Papa John's deal").
 
     `doc_ids` is document id -> title, built by the scoring site from the citations the answer's tools returned
     (`titles_by_doc_id` for a phase-4 response; a baseline's `cited_doc_ids` zipped with its `cited_doc_titles`).
@@ -584,27 +372,19 @@ def named_contracts(
     list answer here), not what the answer refers to. Counting them would score search volume, and an answer
     saying "none" after one search would score like one that listed the hits (review of #697). The map only
     resolves ids the answer itself wrote out."""
-    text = without_excluded_sections(text)
-    squeezed, words = normalize(text), _words(text)
-    amounts = amounts_in(text) if aliases else set()
-    filers: dict[str, list[str]] = {}
-    for title in universe:
-        filers.setdefault(company(title), []).append(title)
-    found = set()
-    for title in universe:
-        whole, filer = normalize(title), company(title)
-        by_filer = len(filer) >= 8 and len(filers[filer]) == 1 and filer in squeezed
-        by_alias = any(_mentions(words, amounts, alias) for alias in (aliases or {}).get(title, ()))
-        if whole in squeezed or by_filer or by_alias:
-            found.add(title)
-    found |= _named_by_id(squeezed, universe, doc_ids)
-    mentions = _mention_spans(text, universe, aliases, doc_ids, filers)
-    rejected = _rejections(text, mentions)
-    located = {title for title, _, _ in mentions}
-    standing = {title for i, (title, _, _) in enumerate(mentions) if i not in rejected}
-    # A name the whole-text test finds and no span locates (a form split by a boundary only `normalize` crosses) is
-    # counted, as it was before the prose was read: the prose rule only ever takes a located name away.
-    return found & (standing | (found - located))
+    kept = []
+    for line in without_excluded_sections(text).splitlines():
+        label = _LINE_LABEL.match(line)
+        words = label and (label.group("bold") or label.group("under") or label.group("plain"))
+        if (
+            words
+            and len(words.split()) <= _LABEL_MAX_WORDS
+            and rejecting_label(words)
+            and not _found(words, universe, aliases, doc_ids)
+        ):
+            line = line[: label.end()]
+        kept.append(line)
+    return _found("\n".join(kept), universe, aliases, doc_ids)
 
 
 def _named_by_id(squeezed: str, universe: list[str], doc_ids: dict[str, str] | None) -> set[str]:

@@ -690,6 +690,9 @@ def test_an_item_under_a_heading_or_lead_in_that_marks_exclusion_is_not_named():
         f"**One additional keyword match, not counted above:** [eDiets.com](doc_id:{ID_EDIETS}), content warranties.\n\n"
         "I searched the corpus for the stem **“disparag”**.\n"
     )
+    # Its reject phrase comes after the leading clause, so since #816 it does not reject: an accepted false keep.
+    assert named_contracts(not_counted, UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS}
+    not_counted = not_counted.replace("One additional keyword match, not counted above:", "Not counted above:")
     assert named_contracts(not_counted, UNIVERSE, None, DOC_IDS) == {STAAR}
     # Mid-line bold is not a lead-in, so the excluded lead-in's drop runs over the trailing prose to the end...
     assert "searched the corpus" not in without_excluded_sections(not_counted)
