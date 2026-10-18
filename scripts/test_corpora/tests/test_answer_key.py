@@ -223,10 +223,11 @@ def test_a_contract_is_named_by_its_document_id_when_the_map_resolves_it():
     assert named_contracts(f"Staar Surgical Company; and `{ID_EDIETS}`", UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS}
     assert named_contracts(f"| *{EDIETS}* |", UNIVERSE, None, DOC_IDS) == {EDIETS}
     assert named_contracts("", UNIVERSE, None, DOC_IDS) == set() and named_contracts(by_id, UNIVERSE, None, {}) == set()
-    # Negation is not read, for an id as for a title: the rule's stated cost.
-    assert named_contracts(
-        f"Not included: `{ID_EDIETS}` (the word appears only in warranties)", UNIVERSE, None, DOC_IDS
-    ) == {EDIETS}
+    # The prose is read for an id as for a title (#816): a sentence opening "Not included:" names nothing.
+    assert (
+        named_contracts(f"Not included: `{ID_EDIETS}` (the word appears only in warranties)", UNIVERSE, None, DOC_IDS)
+        == set()
+    )
 
 
 def test_a_list_scored_with_the_map_counts_an_item_named_by_id_and_without_it_scores_as_before():
@@ -663,7 +664,8 @@ def test_an_item_under_a_heading_or_lead_in_that_marks_exclusion_is_not_named():
         "pp. 13–14) — the word appears only in content warranties.\n"
     )
     assert named_contracts(false_positive, UNIVERSE, None, DOC_IDS) == {STAAR}
-    # Fable key-18: bulleted items under a hedged heading, then a second excluded section.
+    # Fable key-18: bulleted items under a hedged heading that also denies outright ("not operative ROFRs"): the
+    # denial wins (#816), then a second excluded section.
     borderline = (
         f"## Contracts with an operative right of first refusal\n\n- **Staar** (`{ID_STAAR}`), §4\n\n"
         "## Mentions / borderline (included for completeness, not operative ROFRs in the document itself)\n\n"
@@ -721,7 +723,8 @@ def test_a_dropped_heading_takes_its_sub_headings_and_lead_ins_and_the_first_sec
     assert named_contracts(text, UNIVERSE, None, DOC_IDS) == {STAAR}
     assert without_excluded_sections(text).endswith("## Summary\n\nOne contract: Staar Surgical Company.")
     # A lead-in's section ends at the next lead-in or heading; a heading's does not end at a lead-in.
-    assert named_contracts(f"**Not a match:** `{ID_EDIETS}`\n**Match:** `{ID_STAAR}`\n", UNIVERSE, None, DOC_IDS) == {
+    # (The item is on the lead-in's next line: on the lead-in's own line the sentence-label rule would read it.)
+    assert named_contracts(f"**Not a match**\n`{ID_EDIETS}`\n**Match:** `{ID_STAAR}`\n", UNIVERSE, None, DOC_IDS) == {
         EDIETS,
         STAAR,
     }, "the first section is never dropped, even when it opens with a marked lead-in"
@@ -729,8 +732,8 @@ def test_a_dropped_heading_takes_its_sub_headings_and_lead_ins_and_the_first_sec
         f"Two.\n**Not a match:** `{ID_EDIETS}`\n**Match:** `{ID_STAAR}`\n", UNIVERSE, None, DOC_IDS
     ) == {STAAR}
     assert named_contracts(f"Two.\n## Excluded\n**Match:** `{ID_STAAR}`\n", UNIVERSE, None, DOC_IDS) == set()
-    # Negation in prose is still not read: the rule reads headings and lead-ins only.
-    assert named_contracts(f"Not included: `{ID_EDIETS}` (warranties only)", UNIVERSE, None, DOC_IDS) == {EDIETS}
+    # A sentence that opens with a rejecting label is read as its heading would be (#816), first section or not.
+    assert named_contracts(f"Not included: `{ID_EDIETS}` (warranties only)", UNIVERSE, None, DOC_IDS) == set()
     # The shape it cannot read, stated as a cost in the module docstring: an excluded lead-in followed by `###`
     # items excludes only itself, because a heading ends a lead-in's section.
     unread = f"Found one: `{ID_STAAR}`.\n\n**Not counted:**\n### 1. Women.com\n**Doc ID:** `{ID_EDIETS}`\n"
