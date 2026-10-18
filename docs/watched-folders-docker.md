@@ -14,9 +14,9 @@ The `watcher` service watches `WATCH_ROOT` (default `/data/watch`) for new top-l
    mkdir -p ./data/watch/contracts
    ```
 
-2. The default `docker-compose.yml` already mounts `./data/watch` into the `watcher` container at `/data/watch`. New subdirectories of `./data/watch` are auto-discovered every 60 seconds — no restart needed.
+2. The default `docker-compose.yml` already mounts `./data/watch` at `/data/watch` in the `watcher` container, and read-only at the same path in `app`, `worker-io` and `worker-cpu`. New subdirectories of `./data/watch` are auto-discovered every 60 seconds — no restart needed.
 
-3. To mount a directory that lives elsewhere on the host, edit `docker-compose.yml` (or your `compose.override.yml`):
+3. To mount a directory that lives elsewhere on the host, edit `docker-compose.yml` (or your `compose.override.yml`). Add the same mount to `watcher` and, read-only, to every service that reads document bytes — `app` (downloads), `worker-io` (extract) and `worker-cpu` (OCR):
 
    ```yaml
    services:
@@ -24,12 +24,27 @@ The `watcher` service watches `WATCH_ROOT` (default `/data/watch`) for new top-l
        volumes:
          - ./data/watch:/data/watch
          - /Users/alice/Documents/Contracts:/data/watch/contracts
+     app:
+       volumes:
+         - llama_models:/models
+         - ./data/watch:/data/watch:ro
+         - /Users/alice/Documents/Contracts:/data/watch/contracts:ro
+     worker-io:
+       volumes:
+         - ./data/watch:/data/watch:ro
+         - /Users/alice/Documents/Contracts:/data/watch/contracts:ro
+     worker-cpu:
+       volumes:
+         - ./data/watch:/data/watch:ro
+         - /Users/alice/Documents/Contracts:/data/watch/contracts:ro
    ```
 
-   Restart the `watcher` service:
+   Watched documents are read in place from the path the watcher recorded, so a folder mounted only into `watcher` is discovered but every document in it fails extraction and cannot be downloaded. Use the same container path everywhere.
+
+   Recreate the services:
 
    ```bash
-   docker compose up -d --force-recreate watcher
+   docker compose up -d --force-recreate watcher app worker-io worker-cpu
    ```
 
 4. Within ~60 seconds, the new folder appears at `/folders` in the web UI with the **auto-discovered** badge.

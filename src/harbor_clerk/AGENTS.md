@@ -39,6 +39,11 @@ the filesystem directly. `STORAGE_BACKEND` selects the implementation.
 Watched-folder documents are read in place from `source_path` and are never
 written to. IMAP messages and attachments are the one case where content is
 fetched and stored, because there is no file on disk to reference.
+`source_path` is the path the watcher saw, so under Compose every service that
+reads it (`app`, and the workers on extract's and OCR's queues) mounts the
+watcher's host directory at the same container path, `:ro` (#869;
+`tests/test_docker_compose_watch_mount.py`). A new stage that reads document
+bytes goes in that test's `BYTE_READING_STAGES`.
 
 ## Retrieval
 

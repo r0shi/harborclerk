@@ -78,6 +78,16 @@ Docker:
 - Start with `docker compose up --build`.
 - Open `https://localhost` and accept the self-signed certificate.
 - Confirm admin account creation and watched-folder setup work.
+- Watched folder end to end: `mkdir -p ./data/watch/smoke`, copy in a
+  text-native PDF and a scanned (OCR-needed) PDF, and within ~60 seconds
+  confirm the folder appears under **Folders**, both documents finish every
+  stage (extract and OCR run in `worker-io` and `worker-cpu`, which read the
+  file in place), and a phrase from each is found by Search. Then set
+  `ALLOW_SOURCE_DOWNLOAD=true` in `.env` (download is off by default),
+  `docker compose up -d app`, and confirm **Download** on the document detail
+  page returns the original file (served by `app`). A watched document failing
+  with "No source for doc", or a download answering "Source file unavailable",
+  means that service cannot see the watch mount.
 - Confirm Docker setup docs explain mounted watched folders and self-signed TLS.
 
 Release blockers:
