@@ -1339,11 +1339,57 @@ class ServiceManager: ObservableObject {
 
     // MARK: - Environment
 
+    /// Where the Python processes may write caches, all outside the bundle.
+    ///
+    /// The bundle is signed and must stay byte-for-byte what was signed: any
+    /// file a process adds under `Contents/` breaks `codesign --verify --deep
+    /// --strict` and can draw a Gatekeeper or App Management prompt. numba did
+    /// exactly that, writing `*.nbi`/`*.nbc` into
+    /// `venv/.../{umap,pynndescent}/__pycache__/` (#846), because its default
+    /// is the source's own `__pycache__` whenever that is writable.
+    ///
+    /// Swept for other writers at the same time; none reach the bundle:
+    /// the dicts these processes get are closed (no `HOME`), so Python resolves
+    /// `~` from the password database and Hugging Face, torch, tokenizers and
+    /// any `XDG_CACHE_HOME` default land under the user's home; the embedder
+    /// and reranker load their models from bundle paths, read-only; matplotlib,
+    /// NLTK and tiktoken are not in the venv. Bytecode is the one other
+    /// writer, and `PYTHONDONTWRITEBYTECODE` has covered it for every process.
+    ///
+    /// Creates the directories, so the first process to start finds them.
+    nonisolated static func runtimeCacheEnvironment(cachesDir: URL) -> [String: String] {
+        let numba = cachesDir.appendingPathComponent("numba")
+        try? FileManager.default.createDirectory(at: numba, withIntermediateDirectories: true)
+        return [
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "NUMBA_CACHE_DIR": numba.path,
+        ]
+    }
+
     /// Build the full environment dict for Python services.
     nonisolated static func pythonEnvironment() -> [String: String] {
-        let settings = AppSettings.shared
-        let bundle = Bundle.main.resourceURL!
+        // Master encryption key for secret storage. See MasterKeyManager and the
+        // Python harbor_clerk.secrets module. Read from Keychain (the bootstrap
+        // call in AppDelegate.applicationDidFinishLaunching ensures it exists)
+        // and exported to subprocesses as the same env var Docker operators set
+        // directly — one Python code path on both deployments.
+        let masterKey = MasterKeyManager.production.loadOrGenerate()
+        return pythonEnvironment(
+            settings: AppSettings.shared,
+            bundle: Bundle.main.resourceURL!,
+            masterKeyB64: MasterKeyManager.production.base64Encoded(key: masterKey),
+            cachesDir: AppSettings.cachesDir
+        )
+    }
 
+    /// The environment for Python services from explicit inputs, so a test can
+    /// build it without the live settings, the Keychain or the app bundle.
+    nonisolated static func pythonEnvironment(
+        settings: AppSettings,
+        bundle: URL,
+        masterKeyB64: String,
+        cachesDir: URL
+    ) -> [String: String] {
         let hashFile = bundle.appendingPathComponent("venv/build-hash.txt")
         let buildHash = (try? String(contentsOf: hashFile, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
@@ -1356,18 +1402,9 @@ class ServiceManager: ObservableObject {
         let buildVersion = (try? String(contentsOf: versionFile, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        // Master encryption key for secret storage. See MasterKeyManager and the
-        // Python harbor_clerk.secrets module. Read from Keychain (the bootstrap
-        // call in AppDelegate.applicationDidFinishLaunching ensures it exists)
-        // and exported to subprocesses as the same env var Docker operators set
-        // directly — one Python code path on both deployments.
-        let masterKey = MasterKeyManager.production.loadOrGenerate()
-        let masterKeyB64 = MasterKeyManager.production.base64Encoded(key: masterKey)
-
-        return [
+        let env: [String: String] = [
             "BUILD_HASH": buildHash,
             "BUILD_VERSION": buildVersion,
-            "PYTHONDONTWRITEBYTECODE": "1",
             "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
             "STORAGE_BACKEND": "filesystem",
             "STORAGE_PATH": settings.originalsDir.path,
@@ -1402,5 +1439,7 @@ class ServiceManager: ObservableObject {
             // in api/routes/system.py.
             "BUNDLE_RESOURCES": bundle.path,
         ]
+        // Last, so nothing above can point a cache back into the bundle.
+        return env.merging(runtimeCacheEnvironment(cachesDir: cachesDir)) { _, cache in cache }
     }
 }

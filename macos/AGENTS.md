@@ -39,6 +39,13 @@ Compose has no equivalent — each service opts in individually, and forgetting
 one there caused summarize to silently produce extractive summaries. When adding
 a variable a worker needs, check whether the Compose side needs it too.
 
+**Nothing a launched process runs may write into the bundle.** Any file added
+under `Contents/` breaks the signature seal (`codesign --verify --deep
+--strict`). numba did, caching JIT output beside umap's sources in the venv
+(#846). Caches go under `~/Library/Caches/Harbor Clerk/` via
+`ServiceManager.runtimeCacheEnvironment`, which both the services' dict and
+Alembic's merge last; `docs/releasing.md` checks the seal after a smoke run.
+
 ## Networking
 
 The WKWebView app loads the SPA over **plain HTTP on loopback** at `api_port`
@@ -64,13 +71,17 @@ all. So an SDK bump is a behavioral change, not housekeeping.
 
 **The bump has already happened**, and nothing recorded it: the deployment
 target is still 15.0, but the SDK follows whatever Xcode is on the build machine,
-so installing Xcode 26 silently moved it. Measured on the shipped bundles with
-`vtool -show-build /Applications/HarborClerkServer.app/Contents/MacOS/HarborClerkServer`:
-`minos 15.0`, `sdk 26.5`.
+so installing Xcode 26 silently moved it, and Xcode 27 moved it again. The
+release machine runs Xcode 27.1 with the macOS 27.0 SDK (`xcodebuild -version`,
+`xcrun --sdk macosx --show-sdk-version`); measured on the bundles built there on
+2026-10-17 with
+`vtool -show-build /Applications/HarborClerkServer.app/Contents/MacOS/HarborClerkServer`
+(and the same for `HarborClerk.app`): `minos 15.0`, `sdk 27.0`.
 
-So the stricter rules are **already live in every build since that Xcode
-upgrade**, and have been through a full field test (an 11,436-document corpus,
-IMAP sync, search and Research) with no observed breakage. The `#561` ATS gap
+So the stricter rules are **already live in every build since those Xcode
+upgrades**. The SDK 26.5 builds went through a full field test (an
+11,436-document corpus, IMAP sync, search and Research) with no observed
+breakage; the SDK 27.0 builds have not had one yet. The `#561` ATS gap
 is therefore running *under* the stricter regime today, not waiting for it.
 
 Two consequences:
@@ -173,7 +184,8 @@ inside what is free. YaRN is off by default; use the app's defaults.
 `make apps` compiles PostgreSQL and pgvector from source. Where a macOS beta
 updated the Command Line Tools, the bare `cc` that `configure` runs resolves the
 **CLT** SDK (`/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`) even though `xcode-select -p` points at Xcode.app. When that SDK is
-newer than Xcode's linker (CLT 27.0 against Xcode 26.5 here) every link fails with
+newer than Xcode's linker (CLT 27.0 against Xcode 26.5, before the move to
+Xcode 27) every link fails with
 
 ```
 ld: tapi error: malformed file

@@ -57,20 +57,52 @@ Signing is a human step, so the sequence is split around it.
 4. **Sign by hand.** `make sign`. `notarize.sh` prints both the checkout's
    commit and what the bundle says about itself; if they differ, the bundle is
    stale (#687) — rebuild.
-5. **Publish.** `bash macos/scripts/release.sh vX.Y.Z --skip-build`. It
+5. **Smoke-run, then check the seal.** Install a copy of the signed apps (never
+   launch `build/output` in place; see `macos/AGENTS.md`), start the server,
+   let every service come up, and wait for the API's `Topic process pool
+   warmed up (numba JIT complete)` log line: that warm-up is the numba JIT,
+   the writer that broke the seal in #846. Recompute topics once from System
+   Maintenance as well, then open the client. Then both must pass:
+
+   ```bash
+   codesign --verify --deep --strict /Applications/HarborClerkServer.app
+   codesign --verify --deep --strict /Applications/HarborClerk.app
+   ```
+
+   A failure says `a sealed resource is missing or invalid`; add `-vvvv` to
+   list the files added since signing, and see
+   [The bundle stays sealed at runtime](#the-bundle-stays-sealed-at-runtime).
+6. **Publish.** `bash macos/scripts/release.sh vX.Y.Z --skip-build`. It
    re-runs the preflight, checks both apps' `Info.plist` and the venv stamp
    carry `X.Y.Z (0)`, pushes the tag, and creates the GitHub release with the
    DMG from `build/output` (the two app zips if no DMG exists). The
    `bump-release-badge` workflow then opens the README badge PR.
 
-Without `--skip-build`, `release.sh vX.Y.Z` does steps 3 and 5 itself with an
+Without `--skip-build`, `release.sh vX.Y.Z` does steps 3 and 6 itself with an
 unsigned build. A tag it created is deleted again on any exit before the push
 (an EXIT trap keyed on the status, so an explicit refusal, a failure inside the
 plist check and Ctrl-C during the build all clean up); nothing is pushed until
 the bundles carry the version. If the GitHub upload fails *after* the push —
-v0.9.2's DMG was over the 2 GiB asset limit — re-run step 5: a tag already on
+v0.9.2's DMG was over the 2 GiB asset limit — re-run step 6: a tag already on
 origin at HEAD with no release is resumed, not refused; one that already has a
 release is refused.
+
+## The bundle stays sealed at runtime
+
+`notarize.sh` runs `codesign --verify --deep --strict` when it signs, but that
+proves only that the bundle was sealed before anything ran it. The seal also has
+to survive use: any file a launched process writes under `Contents/` breaks it,
+and depending on the macOS version and quarantine state that surfaces as a
+Gatekeeper or App Management prompt, or as the write being blocked. numba did it
+(#846), caching JIT output into `venv/.../{umap,pynndescent}/__pycache__/`
+when the API warmed up its topic pool, until `ServiceManager.runtimeCacheEnvironment`
+pointed `NUMBA_CACHE_DIR` at `~/Library/Caches/Harbor Clerk/numba`.
+
+So the check in step 5 runs after a smoke run, on the installed copy. A failure
+there is a release blocker: find the writer from the `file added:` lines, point
+its cache at `~/Library/Caches/Harbor Clerk/` in `runtimeCacheEnvironment`, and
+rebuild. `release.sh` does not run this check itself: the bundle it publishes
+from is the one that must never have been launched.
 
 ## Why the tag and not the files
 

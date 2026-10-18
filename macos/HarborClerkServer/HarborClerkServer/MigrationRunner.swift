@@ -11,13 +11,7 @@ struct MigrationRunner {
         let bundle = Bundle.main.resourceURL!
         let python = bundle.appendingPathComponent("venv/bin/python")
 
-        let settings = AppSettings.shared
-        let env = [
-            "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
-            "PATH": bundle.appendingPathComponent("venv/bin").path + ":/usr/bin:/bin",
-            "PYTHONPATH": bundle.appendingPathComponent("venv/lib").path,
-            "PYTHONDONTWRITEBYTECODE": "1",
-        ]
+        let env = Self.environment(settings: AppSettings.shared, bundle: bundle, cachesDir: AppSettings.cachesDir)
 
         var lastError: Error?
 
@@ -38,6 +32,17 @@ struct MigrationRunner {
         }
 
         throw lastError ?? ServiceError.startFailed("Alembic", "all \(maxAttempts) attempts failed")
+    }
+
+    /// Alembic's environment. Its own closed dict, not the services' one, but
+    /// the same cache rule: nothing it imports may write into the bundle (#846).
+    static func environment(settings: AppSettings, bundle: URL, cachesDir: URL) -> [String: String] {
+        let env = [
+            "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
+            "PATH": bundle.appendingPathComponent("venv/bin").path + ":/usr/bin:/bin",
+            "PYTHONPATH": bundle.appendingPathComponent("venv/lib").path,
+        ]
+        return env.merging(ServiceManager.runtimeCacheEnvironment(cachesDir: cachesDir)) { _, cache in cache }
     }
 
     private func runAlembic(python: URL, workDir: URL, env: [String: String]) async throws {

@@ -334,4 +334,62 @@ final class ServiceConfigTests: XCTestCase {
             "AppDelegate.swift must call serviceManager.forceKillEverything() in the Force Stop All handler",
         )
     }
+
+    // MARK: - Runtime caches stay out of the signed bundle (#846)
+
+    /// Cache variables any library in the venv honours. Each one a launched
+    /// process sets must point outside the bundle; NUMBA_CACHE_DIR must be set,
+    /// because numba's default is the source's own `__pycache__`.
+    private static let cacheVariables = [
+        "NUMBA_CACHE_DIR", "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE", "SENTENCE_TRANSFORMERS_HOME",
+        "XDG_CACHE_HOME", "MPLCONFIGDIR", "TORCH_HOME", "NLTK_DATA", "PYTHONPYCACHEPREFIX",
+    ]
+
+    /// Every environment a Python process the server launches is given: the
+    /// services' shared dict (API, embedder, reranker, workers, watcher) and
+    /// Alembic's own. Built from scratch settings and a dummy key, so the test
+    /// reads neither the live config.json nor the Keychain.
+    private func launchedPythonEnvironments(cachesDir: URL, scratch: URL) -> [(who: String, env: [String: String])] {
+        let settings = AppSettings(configURL: scratch.appendingPathComponent("config.json"))
+        let resources = Bundle.main.resourceURL!
+        return [
+            ("Python services", ServiceManager.pythonEnvironment(
+                settings: settings, bundle: resources, masterKeyB64: "dGVzdA==", cachesDir: cachesDir)),
+            ("Alembic", MigrationRunner.environment(settings: settings, bundle: resources, cachesDir: cachesDir)),
+        ]
+    }
+
+    func testEveryLaunchedPythonProcessKeepsItsCachesOutOfTheBundle() throws {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-env-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: scratch) }
+        let cachesDir = scratch.appendingPathComponent("Caches/Harbor Clerk", isDirectory: true)
+        let bundleRoot = Bundle.main.bundleURL.standardizedFileURL.path + "/"
+
+        for (who, env) in launchedPythonEnvironments(cachesDir: cachesDir, scratch: scratch) {
+            XCTAssertEqual(env["PYTHONDONTWRITEBYTECODE"], "1", "\(who): bytecode would be written beside the bundled sources")
+
+            let numba = try XCTUnwrap(
+                env["NUMBA_CACHE_DIR"],
+                "\(who): without NUMBA_CACHE_DIR numba caches into venv/.../__pycache__ inside the signed bundle")
+            XCTAssertTrue(numba.hasPrefix(cachesDir.path + "/"), "\(who): NUMBA_CACHE_DIR is \(numba), not under \(cachesDir.path)")
+            var isDir: ObjCBool = false
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: numba, isDirectory: &isDir) && isDir.boolValue,
+                "\(who): the numba cache directory must exist before the process starts")
+
+            for key in Self.cacheVariables {
+                guard let value = env[key] else { continue }
+                let path = URL(fileURLWithPath: value).standardizedFileURL.path + "/"
+                XCTAssertFalse(path.hasPrefix(bundleRoot), "\(who): \(key)=\(value) is inside the app bundle")
+            }
+        }
+    }
+
+    func testTheCachesDirectoryIsNotInsideTheBundle() {
+        let bundleRoot = Bundle.main.bundleURL.standardizedFileURL.path + "/"
+        let caches = AppSettings.cachesDir.standardizedFileURL.path + "/"
+        XCTAssertFalse(caches.hasPrefix(bundleRoot), "\(caches) is inside \(bundleRoot)")
+        XCTAssertTrue(caches.contains("/Library/Caches/"), "expected the user's Caches folder, got \(caches)")
+    }
 }

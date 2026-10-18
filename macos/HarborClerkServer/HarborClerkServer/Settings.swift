@@ -176,6 +176,17 @@ final class AppSettings: @unchecked Sendable {
         return appSupport.appendingPathComponent("Harbor Clerk")
     }()
 
+    /// Where the backend's runtime caches go: the user's Caches folder, never
+    /// the app bundle. numba wrote its JIT cache next to umap's and
+    /// pynndescent's sources inside `Contents/Resources/venv`, which broke the
+    /// bundle's code-signature seal after the first topic computation (#846).
+    /// Caches rather than Application Support: everything here is rebuilt on
+    /// demand, so the system may purge it.
+    static let cachesDir: URL = {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        return caches.appendingPathComponent("Harbor Clerk")
+    }()
+
     var postgresDataDir: URL { Self.dataDir.appendingPathComponent("postgres-data") }
     var originalsDir: URL { Self.dataDir.appendingPathComponent("originals") }
     var logsDir: URL { Self.dataDir.appendingPathComponent("logs") }
