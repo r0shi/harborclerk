@@ -42,7 +42,7 @@ struct MigrationRunner {
             "PATH": bundle.appendingPathComponent("venv/bin").path + ":/usr/bin:/bin",
             "PYTHONPATH": bundle.appendingPathComponent("venv/lib").path,
         ]
-        return env.merging(ServiceManager.runtimeCacheEnvironment()) { _, cache in cache }
+        return ServiceManager.applyingRuntimeCacheRules(to: env)
     }
 
     private func runAlembic(python: URL, workDir: URL, env: [String: String]) async throws {

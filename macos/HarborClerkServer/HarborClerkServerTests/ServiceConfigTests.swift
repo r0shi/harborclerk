@@ -337,15 +337,26 @@ final class ServiceConfigTests: XCTestCase {
 
     // MARK: - Runtime caches stay out of the signed bundle (#846)
 
-    /// Cache variables any library in the venv honours. Each one a launched
-    /// process sets must point outside the bundle; NUMBA_CACHE_DIR must be set,
-    /// because numba's default is the source's own `__pycache__`.
+    /// The cache and data-path variables the launch paths must keep out of the
+    /// bundle, written out here rather than read from the production list, so
+    /// shrinking that list fails a test.
     private static let cacheVariables = [
-        "NUMBA_CACHE_DIR", "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE", "SENTENCE_TRANSFORMERS_HOME",
-        "XDG_CACHE_HOME", "MPLCONFIGDIR", "TORCH_HOME", "NLTK_DATA", "PYTHONPYCACHEPREFIX",
+        "NUMBA_CACHE_DIR", "PYTHONPYCACHEPREFIX", "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
+        "SENTENCE_TRANSFORMERS_HOME", "XDG_CACHE_HOME", "MPLCONFIGDIR", "TORCH_HOME", "NLTK_DATA",
     ]
 
-    private static var bundleRoot: String { Bundle.main.bundleURL.standardizedFileURL.path + "/" }
+    private static func canonical(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path + "/"
+    }
+
+    private static var bundleRoot: String { canonical(Bundle.main.bundleURL.path) }
+
+    /// Whether `value`, or any entry of it as a colon-separated list, lies in the bundle.
+    private static func pointsIntoBundle(_ value: String) -> Bool {
+        value.split(separator: ":").contains {
+            canonical(String($0)).hasPrefix(bundleRoot) || ServiceManager.isPath(String($0), inside: Bundle.main.bundleURL)
+        }
+    }
 
     /// A scratch folder for one test, removed afterwards (made writable first,
     /// since the fallback tests take write permission away).
@@ -376,18 +387,21 @@ final class ServiceConfigTests: XCTestCase {
 
     /// Every environment a Python process the server launches is given, built
     /// by the launch paths themselves: each service's `launchEnvironment()`
-    /// over the shared dict (scratch settings and a dummy key, so neither the
-    /// live config.json nor the Keychain is read), and Alembic's. The
-    /// override service sets every cache variable to a bundle path in both
-    /// its base dict and its own overrides, which the launch must beat.
+    /// over the shared dict, and Alembic's. Scratch settings and a dummy key
+    /// throughout (the embedder and reranker read theirs through
+    /// `settingsOverride`), so neither the live config.json nor the Keychain is
+    /// read. The override service sets all ten cache variables to bundle paths
+    /// in both its base dict and its own overrides.
     private func launchedPythonEnvironments(scratch: URL) -> [(who: String, env: [String: String])] {
         let settings = AppSettings(configURL: scratch.appendingPathComponent("config.json"))
         let resources = Bundle.main.resourceURL!
         let shared = ServiceManager.pythonEnvironment(settings: settings, bundle: resources, masterKeyB64: "dGVzdA==")
         let services: [PythonService] = [
-            APIService(), WorkerService(queue: "io", index: 0), WatcherService(), BundleCacheOverrideService(),
+            APIService(), EmbedderService(), RerankerService(), WorkerService(queue: "io", index: 0), WatcherService(),
+            BundleCacheOverrideService(),
         ]
         var envs: [(who: String, env: [String: String])] = services.map { svc in
+            svc.settingsOverride = settings
             svc.baseEnvironment = shared
             if svc is BundleCacheOverrideService {
                 svc.baseEnvironment.merge(BundleCacheOverrideService.bundleCaches) { _, bundle in bundle }
@@ -396,6 +410,10 @@ final class ServiceConfigTests: XCTestCase {
         }
         envs.append(("Alembic", MigrationRunner.environment(settings: settings, bundle: resources)))
         return envs
+    }
+
+    func testTheProductionListCoversEveryCacheVariable() {
+        XCTAssertTrue(Set(ServiceManager.cacheVariables).isSuperset(of: Self.cacheVariables))
     }
 
     func testEveryLaunchedPythonProcessKeepsItsCachesOutOfTheBundle() throws {
@@ -415,13 +433,40 @@ final class ServiceConfigTests: XCTestCase {
             XCTAssertTrue(
                 FileManager.default.fileExists(atPath: numba, isDirectory: &isDir) && isDir.boolValue,
                 "\(who): the numba cache directory must exist before the process starts")
+            XCTAssertEqual(env["NUMBA_CACHE_LOCATOR_CLASSES"], "UserProvidedCacheLocator",
+                           "\(who): numba must never fall back to the in-tree locator")
+            XCTAssertNil(env["NUMBA_DISABLE_JIT"], "\(who): the JIT stays on while a cache directory is usable")
 
             for key in Self.cacheVariables {
                 guard let value = env[key] else { continue }
-                let path = URL(fileURLWithPath: value).standardizedFileURL.path + "/"
-                XCTAssertFalse(path.hasPrefix(Self.bundleRoot), "\(who): \(key)=\(value) is inside the app bundle")
+                XCTAssertFalse(Self.pointsIntoBundle(value), "\(who): \(key)=\(value) is inside the app bundle")
             }
         }
+
+        let overridden = try XCTUnwrap(launchedPythonEnvironments(scratch: scratch).first { $0.who == "BundleCacheOverride" })
+        for key in Self.cacheVariables where key != "NUMBA_CACHE_DIR" {
+            XCTAssertNil(overridden.env[key], "\(key) pointed into the bundle and must be dropped, not kept")
+        }
+    }
+
+    /// Only a bundle path is dropped; the same variable pointing elsewhere is
+    /// the operator's choice and stays.
+    func testOnlyCachePathsInsideTheBundleAreDropped() {
+        let scratch = makeScratch()
+        overrideCachesDir(scratch.appendingPathComponent("Caches/Harbor Clerk", isDirectory: true))
+        let inside = Bundle.main.resourceURL!.appendingPathComponent("venv").path
+
+        let env = ServiceManager.applyingRuntimeCacheRules(to: [
+            "HF_HOME": "/Users/someone/.cache/huggingface",
+            "TORCH_HOME": inside,
+            "NLTK_DATA": "/usr/share/nltk_data:\(inside)",
+            "DATABASE_URL": "kept",
+        ])
+
+        XCTAssertEqual(env["HF_HOME"], "/Users/someone/.cache/huggingface")
+        XCTAssertNil(env["TORCH_HOME"])
+        XCTAssertNil(env["NLTK_DATA"], "one bundle entry in a path list is enough to drop it")
+        XCTAssertEqual(env["DATABASE_URL"], "kept")
     }
 
     // MARK: An unusable cache directory falls back outside the bundle
@@ -455,6 +500,26 @@ final class ServiceConfigTests: XCTestCase {
         XCTAssertEqual(env["NUMBA_CACHE_DIR"], fallback.path, "exists is not enough: numba's probe write would fail there")
     }
 
+    /// Neither directory usable: numba is not handed one it would fail to
+    /// write (it would raise at import with only the user-provided locator
+    /// allowed), and the JIT is turned off instead, so nothing is cached and
+    /// the in-tree locator is still never consulted.
+    func testWithNoUsableDirectoryTheJITIsTurnedOff() throws {
+        let scratch = makeScratch()
+        let locked = scratch.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: locked.path)
+
+        let env = ServiceManager.runtimeCacheEnvironment(
+            cachesDir: locked.appendingPathComponent("Caches/Harbor Clerk"),
+            fallbackDir: locked.appendingPathComponent("fallback"))
+
+        XCTAssertNil(env["NUMBA_CACHE_DIR"])
+        XCTAssertEqual(env["NUMBA_DISABLE_JIT"], "1")
+        XCTAssertEqual(env["NUMBA_CACHE_LOCATOR_CLASSES"], "UserProvidedCacheLocator")
+        XCTAssertEqual(env["PYTHONDONTWRITEBYTECODE"], "1")
+    }
+
     func testAWritableCacheDirectoryIsUsedAndLeftClean() throws {
         let scratch = makeScratch()
         let caches = scratch.appendingPathComponent("Caches/Harbor Clerk", isDirectory: true)
@@ -464,12 +529,13 @@ final class ServiceConfigTests: XCTestCase {
 
         let numba = caches.appendingPathComponent("numba")
         XCTAssertEqual(env["NUMBA_CACHE_DIR"], numba.path)
+        XCTAssertNil(env["NUMBA_DISABLE_JIT"])
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: numba.path), [], "the write probe is removed")
         XCTAssertFalse(FileManager.default.fileExists(atPath: fallback.path))
     }
 
     func testTheProductionFallbackIsOutsideTheBundle() {
-        let fallback = ServiceManager.runtimeCacheFallbackDir.standardizedFileURL.path + "/"
+        let fallback = Self.canonical(ServiceManager.runtimeCacheFallbackDir.path)
         XCTAssertFalse(fallback.hasPrefix(Self.bundleRoot), "\(fallback) is inside \(Self.bundleRoot)")
     }
 
@@ -481,12 +547,20 @@ final class ServiceConfigTests: XCTestCase {
     }
 }
 
-/// A service whose base dict and own overrides both point every cache
-/// variable into the bundle: the launch environment must still not (#846).
+/// A service whose base dict and own overrides both point all ten cache
+/// variables into the bundle (and turn bytecode writing back on): the launch
+/// environment must keep none of them (#846).
 final class BundleCacheOverrideService: PythonService {
     static let bundleCaches: [String: String] = {
-        let venv = Bundle.main.resourceURL!.appendingPathComponent("venv/lib/python3.12/site-packages").path
-        return ["NUMBA_CACHE_DIR": venv, "PYTHONDONTWRITEBYTECODE": "0"]
+        let resources = Bundle.main.resourceURL!
+        let venv = resources.appendingPathComponent("venv/lib/python3.12/site-packages").path
+        var env = ["PYTHONDONTWRITEBYTECODE": "0"]
+        for key in ["NUMBA_CACHE_DIR", "PYTHONPYCACHEPREFIX", "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
+                    "SENTENCE_TRANSFORMERS_HOME", "XDG_CACHE_HOME", "MPLCONFIGDIR", "TORCH_HOME"] {
+            env[key] = venv + "/" + key.lowercased()
+        }
+        env["NLTK_DATA"] = "/usr/share/nltk_data:" + resources.appendingPathComponent("nltk").path
+        return env
     }()
 
     init() { super.init(name: "BundleCacheOverride") }

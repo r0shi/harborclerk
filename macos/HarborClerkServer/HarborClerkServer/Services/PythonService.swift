@@ -8,6 +8,10 @@ class PythonService: ManagedService {
     var process: Process?
     var holdsLiveProcess: Bool { process?.isRunning == true }
     var baseEnvironment: [String: String] = [:]
+    /// The settings a service's own environment and health check read. A test
+    /// points it at a config file of its own; the default is the live app's.
+    var settingsOverride: AppSettings?
+    var settings: AppSettings { settingsOverride ?? AppSettings.shared }
 
     /// Seconds to wait after SIGTERM before sending SIGKILL.
     /// API server needs more time when mid-research (SSE streams, agent threads, DB sessions).
@@ -74,7 +78,7 @@ class PythonService: ManagedService {
         for (k, v) in extraEnvironment {
             env[k] = v
         }
-        return env.merging(ServiceManager.runtimeCacheEnvironment()) { _, cache in cache }
+        return ServiceManager.applyingRuntimeCacheRules(to: env)
     }
 
     /// Reset the restart counter. Called by ServiceManager after health check passes.

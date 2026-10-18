@@ -1356,44 +1356,109 @@ class ServiceManager: ObservableObject {
     /// NLTK and tiktoken are not in the venv. Bytecode is the one other
     /// writer, and `PYTHONDONTWRITEBYTECODE` has covered it for every process.
     ///
-    /// Applied last, over everything else, by each launch path: a Python
-    /// service's `launchEnvironment()` and Alembic's `MigrationRunner.environment`.
+    /// Applied by each launch path through `applyingRuntimeCacheRules`: a
+    /// Python service's `launchEnvironment()` and Alembic's
+    /// `MigrationRunner.environment`.
+    ///
+    /// numba (0.64) is held to the directory given here by
+    /// `NUMBA_CACHE_LOCATOR_CLASSES`: only its user-provided locator, so the
+    /// in-tree one (the source's `__pycache__`, in the bundle) is never
+    /// consulted, even if that directory later fails numba's own probe.
+    /// numba raises at import when no listed locator is usable, so when
+    /// neither the Caches folder nor the fallback can be written, the JIT is
+    /// turned off (`NUMBA_DISABLE_JIT`): umap and pynndescent then run as
+    /// plain Python, slowly, and nothing is cached anywhere.
     nonisolated static func runtimeCacheEnvironment(
         cachesDir: URL = AppSettings.cachesDir,
         fallbackDir: URL = runtimeCacheFallbackDir
     ) -> [String: String] {
-        [
+        var env = [
             "PYTHONDONTWRITEBYTECODE": "1",
-            "NUMBA_CACHE_DIR": usableCacheDirectory(
-                cachesDir.appendingPathComponent("numba"),
-                fallback: fallbackDir
-            ).path,
+            "NUMBA_CACHE_LOCATOR_CLASSES": "UserProvidedCacheLocator",
         ]
+        if let dir = usableCacheDirectory(cachesDir.appendingPathComponent("numba"), fallback: fallbackDir) {
+            env["NUMBA_CACHE_DIR"] = dir.path
+        } else {
+            Log.logger("lifecycle").error(
+                "No writable numba cache directory; JIT disabled (NUMBA_DISABLE_JIT=1), so topic computation runs slowly")
+            env["NUMBA_DISABLE_JIT"] = "1"
+        }
+        return env
+    }
+
+    /// Cache and data-path variables the venv's libraries honour. A launch
+    /// path drops any of them that points into the app bundle (see
+    /// `applyingRuntimeCacheRules`); the first two it also sets itself.
+    nonisolated static let cacheVariables = [
+        "NUMBA_CACHE_DIR", "PYTHONPYCACHEPREFIX", "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE",
+        "SENTENCE_TRANSFORMERS_HOME", "XDG_CACHE_HOME", "MPLCONFIGDIR", "TORCH_HOME", "NLTK_DATA",
+    ]
+
+    /// The cache rules every launched Python process gets, applied last over
+    /// everything else in `env`: any cache variable whose value (or any entry
+    /// of a colon-separated list) lies inside `bundle` is dropped and logged,
+    /// then `runtimeCacheEnvironment` is laid over the result. Neither the
+    /// shared dict nor a service's own overrides can point a cache into the
+    /// signed bundle (#846).
+    nonisolated static func applyingRuntimeCacheRules(
+        to env: [String: String],
+        bundle: URL = Bundle.main.bundleURL
+    ) -> [String: String] {
+        var result = env
+        for key in cacheVariables {
+            guard let value = env[key] else { continue }
+            let inBundle = value.split(separator: ":").contains { isPath(String($0), inside: bundle) }
+            if inBundle {
+                Log.logger("lifecycle").error(
+                    "Dropped \(key, privacy: .public)=\(value, privacy: .public): it points into the app bundle")
+                result.removeValue(forKey: key)
+            }
+        }
+        return result.merging(runtimeCacheEnvironment()) { _, cache in cache }
+    }
+
+    /// Whether `path` is `root` or lies under it, whichever way either is
+    /// spelled: as given, with symlinks resolved, and with or without the
+    /// `/private` that macOS puts in front of `/tmp`, `/var` and `/etc`
+    /// (`resolvingSymlinksInPath` drops it for a path that exists and keeps
+    /// it for one that does not yet).
+    nonisolated static func isPath(_ path: String, inside root: URL) -> Bool {
+        func forms(_ p: String) -> Set<String> {
+            let url = URL(fileURLWithPath: p)
+            var out: Set<String> = []
+            for s in [url.standardizedFileURL.path, url.resolvingSymlinksInPath().standardizedFileURL.path] {
+                out.insert(s)
+                if s.hasPrefix("/private/") {
+                    out.insert(String(s.dropFirst("/private".count)))
+                } else if ["/tmp/", "/var/", "/etc/"].contains(where: { s.hasPrefix($0) }) {
+                    out.insert("/private" + s)
+                }
+            }
+            return out
+        }
+        let roots = forms(root.path).map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        return forms(path).contains { p in
+            roots.contains { (p + "/").hasPrefix($0) }
+        }
     }
 
     /// Where the numba cache goes when the Caches folder cannot take it.
     nonisolated static let runtimeCacheFallbackDir = FileManager.default.temporaryDirectory
         .appendingPathComponent("harbor-clerk-numba", isDirectory: true)
 
-    /// `preferred` if it can be created and written, otherwise `fallback`.
-    ///
-    /// An unusable directory is not harmless: numba probes its cache directory
-    /// with a test write, and when that fails it falls back to the source's
-    /// own `__pycache__` — inside the bundle, the very thing this is for. So
-    /// a failure is logged and another directory outside the bundle is used.
-    /// If that one fails as well it is still returned: never nothing, and
-    /// never the bundle.
-    nonisolated static func usableCacheDirectory(_ preferred: URL, fallback: URL) -> URL {
-        if let problem = cacheDirectoryProblem(preferred) {
+    /// `preferred` if it can be created and written, otherwise `fallback` if
+    /// that can, otherwise nil. Probed with a write, as numba probes it: a
+    /// directory that exists but cannot be written is unusable too.
+    nonisolated static func usableCacheDirectory(_ preferred: URL, fallback: URL) -> URL? {
+        guard let problem = cacheDirectoryProblem(preferred) else { return preferred }
+        Log.logger("lifecycle").error(
+            "Cache directory \(preferred.path, privacy: .public) unusable (\(problem, privacy: .public)); trying \(fallback.path, privacy: .public)")
+        if let again = cacheDirectoryProblem(fallback) {
             Log.logger("lifecycle").error(
-                "Cache directory \(preferred.path, privacy: .public) unusable (\(problem, privacy: .public)); using \(fallback.path, privacy: .public)")
-            if let again = cacheDirectoryProblem(fallback) {
-                Log.logger("lifecycle").error(
-                    "Fallback cache directory \(fallback.path, privacy: .public) unusable too (\(again, privacy: .public))")
-            }
-            return fallback
+                "Fallback cache directory \(fallback.path, privacy: .public) unusable too (\(again, privacy: .public))")
+            return nil
         }
-        return preferred
+        return fallback
     }
 
     /// Why `dir` cannot serve as a cache directory, or nil if it can: it is

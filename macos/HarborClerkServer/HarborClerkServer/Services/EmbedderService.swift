@@ -17,17 +17,17 @@ final class EmbedderService: PythonService {
             // unreachable on this platform — and macOS is the only place the
             // MPS allocator code does anything at all.
             "EMBED_MODEL": modelPath,
-            "GPU_CACHE_HIGH_WATER_MB": String(AppSettings.shared.gpuCacheHighWaterMB),
+            "GPU_CACHE_HIGH_WATER_MB": String(settings.gpuCacheHighWaterMB),
             // The e5 rollback switch. Unreachable here otherwise — and macOS is
             // the platform whose rollback path the comment in app.py describes.
-            "EMBED_NEEDS_PREFIX": AppSettings.shared.embedNeedsPrefix ? "true" : "false",
+            "EMBED_NEEDS_PREFIX": settings.embedNeedsPrefix ? "true" : "false",
             "HOST": "127.0.0.1",
-            "PORT": String(AppSettings.shared.embedderPort),
+            "PORT": String(settings.embedderPort),
         ]
     }
 
     override func healthCheck() async -> Bool {
-        let port = AppSettings.shared.embedderPort
+        let port = settings.embedderPort
         guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
         return await httpProbeOK(url)
     }

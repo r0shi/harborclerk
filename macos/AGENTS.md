@@ -44,11 +44,15 @@ under `Contents/` breaks the signature seal (`codesign --verify --deep
 --strict`). numba did, caching JIT output beside umap's sources in the venv
 (#846). Caches go under "Harbor Clerk" in the user's Caches folder
 (`~/Library/Caches/` for an unsandboxed app) via
-`ServiceManager.runtimeCacheEnvironment`, which each launch path applies last,
-over everything else: `PythonService.launchEnvironment()` and
-`MigrationRunner.environment`. A directory that cannot be created or written
-falls back to one under the temporary directory, because numba's own fallback
-is the bundle. `docs/releasing.md` checks the seal after a smoke run.
+`ServiceManager.applyingRuntimeCacheRules`, which each launch path applies
+last, over everything else (`PythonService.launchEnvironment()` and
+`MigrationRunner.environment`). It drops any cache variable that points into
+the bundle, sets `NUMBA_CACHE_DIR`, and limits numba to that directory
+(`NUMBA_CACHE_LOCATOR_CLASSES=UserProvidedCacheLocator`), because numba's own
+fallback is the bundle. A Caches directory that cannot be written falls back to
+one under the temporary directory; if neither can, the JIT is turned off
+(`NUMBA_DISABLE_JIT=1`) instead. `docs/releasing.md` checks the seal after a
+smoke run.
 
 ## Networking
 
