@@ -16,16 +16,16 @@ four such lists at 0 named). The citations themselves are still not counted: the
 the answer wrote out, nothing more.
 
 A list answer's section labels are read before its items are counted (#814, #816), and nothing else is. A heading
-(`#` line) or a bold lead-in (`**...**` at the start of a line, judged on its whole label up to a colon) that
-rejects takes its section out, to the next heading of its level or higher (a lead-in's to the next lead-in or
-heading); the answer's first section is never dropped (`without_excluded_sections`). A label rejects when it opens
-with a reject phrase ("excluded", "not counted", "not included", "not a match", "non-match", "near-miss", "false
-positive", "rejected", "ruled out", "does not qualify", and the French), or when its leading clause, the words
-before the first parenthesis, comma, colon, semicolon or dash, ends with one after nothing but words for the items
-and framing ("Reviewed and excluded", "Context on what was excluded"; not "Punitive damages excluded"). It does not
-when what follows the label is only "none" or the like ("## Exclusions: none", never "None of these ..."), when it
-goes on to say the item qualifies ("Not counted above, but qualifies"), or in the narrower cases `rejecting_label`
-lists.
+(`#` line) or a bold lead-in at the margin (`**...**`, judged on its whole label: the bold text when a colon or a
+dash follows it, else the bold text and the words after it up to a colon) that rejects takes its section out, to the
+next heading of its level or higher, or, for a lead-in, to the next heading or line that opens bold, as under #814;
+the answer's first section is never dropped (`without_excluded_sections`). A label rejects when it opens with a
+reject phrase ("excluded", "not counted", "not included", "not a match", "non-match", "near-miss", "false positive",
+"rejected", "ruled out", "does not qualify", and the French), or when its leading clause, the words before the first
+parenthesis, comma, colon, semicolon or dash, ends with one after nothing but words for the items and framing
+("Reviewed and excluded", "Context on what was excluded"; not "Punitive damages excluded"). It does not when what
+follows the label is only "none" or the like ("## Exclusions: none", never "None of these ..."), when it goes on to
+say the item qualifies ("Not counted above, but qualifies"), or in the narrower cases `rejecting_label` lists.
 
 Why so little: a false drop silently lowers recall on a right answer, while a false keep lowers only precision,
 which the reports already read as a floor for a narrating model. Rules that read negation in headings, verdicts in
@@ -226,13 +226,18 @@ def company(title: str) -> str:
     return normalize(title.split("_")[0])
 
 
-# A markdown heading: one to six `#`, then its text. A bold lead-in: `**...**` opening a line at the margin, judged on
-# its whole label, the bold text and any words after it up to a colon ("**Excluded** from the cap: ..." is the label
-# "Excluded from the cap"). A bold span followed by running words with no colon ("**Rejected** offers revert to the
-# licensor under Staar, s4.", "**1. Staar – Distributor** (doc_id ...)") is a sentence, not a label. A bulleted bold
-# line ("- **Staar**") is not a lead-in, and nor is an indented one: "   **Excluded:**" inside a list item continues
-# that item, and read as a lead-in it would take the rest of the answer's section with it.
+# A markdown heading: one to six `#`, then its text. Two questions about a bold-led line are kept apart:
+#
+# - Where a section ends: at any heading and at any line that opens bold, indented or not, whatever follows the bold
+#   (`_BOLD_START`, #814's rule), so "**2. Papa John's** (...) — §9" ends the drop a "**Not counted:**" above it began.
+# - Whether a section rejects: only a heading, or a bold lead-in at the margin judged on its whole label (`_lead_in`):
+#   the bold text when a colon or a dash follows it ("**Excluded:** X", "**Excluded** — X"), else the bold text and any
+#   words after it up to a colon ("**Excluded** from the cap: ..." is the label "Excluded from the cap"). A bold span
+#   followed by running words with no colon ("**Rejected** offers revert to the licensor under Staar, s4.") is a
+#   sentence, not a label. An indented bold line ("   **Excluded:**" inside a list item) continues that item, and
+#   read as a lead-in it would take the rest of the answer's section with it.
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t#]*$")
+_BOLD_START = re.compile(r"^[ \t]*\*\*([^*\r\n]+?)\*\*")
 _BOLD_LEAD = re.compile(r"^\*\*([^*\r\n]+?)\*\*(.*)$")
 _LEAD_IN_LEVEL = 7  # below any heading: a heading's section takes its lead-ins with it, not the other way round
 
@@ -256,13 +261,18 @@ _ITEM_NOUN = frozenset((
     "agreements", "results", "entries", "ones", "near-misses", "near-miss", "after", "because", "as", "since",
     "here", "above", "below", "entirely", "outright", "also", "too", "due", "following", "per", "pending", "given",
     "contrats", "documents", "factures", "candidats", "campagnes", "car", "faute", "parce",
+    "but", "however", "though", "although", "yet", "mais",  # a contrast the affirming escape has already read
 ))  # fmt: skip
 _PARTICIPLE = re.compile(r"(?:excluded|rejected|included|counted|exclue?s?|ecartee?s?|rejetee?s?)$")
 _PREPOSITIONS = frozenset(("from", "by", "under", "in", "for", "on", "of", "toward", "towards", "du", "de", "par"))
 # "Excluded from the cap: ..." describes the clause; "Excluded from the (final) list / consideration: ..." is a verdict.
+# "Count", "total", "scope" and "review" are the answer's only when they end the label ("Excluded from the count",
+# "Not counted toward the total"); followed by more words they are the contract's ("the total liability cap", "the
+# count of business days", "the license scope", "the review period").
 _DESCRIBES = re.compile(
-    r"\s+\(?(?:from|by|under|in|for|on|of|toward|towards|du|de|par)\s+(?!(?:the |my |this |la |le |les )?(?:\w+ )?"
-    r"(?:list|count|answer|results?|matches|table|tally|total|consideration|scope|review|liste|decompte)\b)"
+    r"\s+\(?(?:from|by|under|in|for|on|of|toward|towards|du|de|par)\s+(?!(?:the |my |this |la |le |les )?(?:final )?"
+    r"(?:list|answer|results?|matches|table|tally|consideration|liste|decompte)\b"
+    r"|(?:the |my )?(?:final )?(?:count|total|scope|review)[\s:.)]*$)"
 )
 # A leading clause that ends with a reject phrase rejects only when every word before the phrase is one of these:
 # words for the items themselves, framing, and grammar ("Context on what was excluded", "Reviewed and excluded",
@@ -281,20 +291,24 @@ _FRAME = frozenset((
     "des", "ceux", "qui", "ont", "ete", "sont", "le", "la", "l'", "un", "une",
 ))  # fmt: skip
 _CLAUSE_END = re.compile(r"[(,;:—–]")
-# A label that goes on, after a contrast, to say the items qualify does not reject them: "Not included above but also
-# qualifies", "Not counted above, but qualifies". A negation after the contrast keeps it a rejection: "Close But Do
-# NOT Qualify".
+# A label whose leading clause goes on, after a contrast, to say the items qualify does not reject them: "Not included
+# above but also qualifies", "Not counted above, but qualifies" (the comma before the contrast word does not end the
+# clause). A negation after the contrast keeps it a rejection ("Close But Do NOT Qualify"), and so does a contrast
+# past the leading clause ("Excluded (but the keyword matches)", "Excluded: mentions Delaware, but New York law
+# applies"). What counts as saying so is narrow: the clause "applies" or the keyword "matches" is not the item
+# qualifying.
+_AFFIRM_END = re.compile(r"[(;:—–]|,(?!\s*(?:but|however|though|although|yet|mais)\b)")
 _CONTRAST = re.compile(r"\b(?:but|however|though|although|yet|mais)\b")
-_QUALIFIES = re.compile(r"\b(?:qualif(?:y|ies)|counts?|match(?:es)?|applies|apply|included)\b")
+_QUALIFIES = re.compile(r"\b(?:qualif(?:y|ies)|counts|is a match|also included|belongs)\b")
 _NEGATED = re.compile(r"\b(?:not|no|none|nothing|never|neither|nor|pas)\b|n't\b")
 
 
 def _label_view(label: str) -> str:
     """The label lower-cased, accents folded, apostrophes straightened, and without what may stand in front of its
-    words: markup, emoji, numbering ("1.", "A.", "(a)")."""
+    words: markup, emoji, numbering ("1.", "A.", "(a)", "III.")."""
     low = fold(label).lower().replace("’", "'").replace("‘", "'")
     low = re.sub(r"^[^a-z]+", "", low)
-    return re.sub(r"^[a-z][.)]\s+", "", low)
+    return re.sub(r"^(?:[a-z]|(?=[ivx]{2})x{0,2}(?:ix|iv|v?i{0,3}))[.)]\s+", "", low)
 
 
 def rejecting_label(label: str) -> bool:
@@ -305,8 +319,9 @@ def rejecting_label(label: str) -> bool:
     required (limits not listed)", "Punitive damages excluded", "No contracts were excluded")."""
     low = _label_view(label)
     clause = re.sub(r"[^a-z0-9']+$", "", _CLAUSE_END.split(low, maxsplit=1)[0])
-    affirmed = _CONTRAST.search(low)
-    if affirmed and _QUALIFIES.search(low, affirmed.end()) and not _NEGATED.search(low, affirmed.end()):
+    leading = _AFFIRM_END.split(low, maxsplit=1)[0]
+    affirmed = _CONTRAST.search(leading)
+    if affirmed and _QUALIFIES.search(leading, affirmed.end()) and not _NEGATED.search(leading, affirmed.end()):
         return False  # "Not included above but also qualifies"
     if opened := _OPENS.match(low):
         if not _PARTICIPLE.search(opened.group()):
@@ -336,13 +351,15 @@ def _says_nothing(after: str) -> bool:
 
 
 def _lead_in(line: str) -> tuple[str, str] | None:
-    """(label, what follows its colon) for a bold lead-in line, or None (see `_BOLD_LEAD`)."""
+    """(label, what follows it) for a bold lead-in at the margin, or None (see `_BOLD_LEAD`)."""
     bold = _BOLD_LEAD.match(line)
     if not bold:
         return None
     label, rest = bold.group(1), bold.group(2)
     if label.rstrip().endswith(":") or not rest.strip():
         return label, rest
+    if rest.lstrip()[:1] in (":", "—", "–"):  # "**Excluded** — Papa", "**Not counted**: X"
+        return label, rest.lstrip()[1:]
     if ":" in rest:
         before, after = rest.split(":", 1)
         return label + before, after
@@ -351,8 +368,8 @@ def _lead_in(line: str) -> tuple[str, str] | None:
 
 def without_excluded_sections(text: str) -> str:
     """`text` without the sections its headings or bold lead-ins mark as rejected (`rejecting_label`): the marked
-    line and everything to the next heading of the same or a higher level (for a heading) or to the next lead-in or
-    heading (for a lead-in). The first section, with or without a heading, is never dropped: an answer that opens
+    line and everything to the next heading of the same or a higher level (for a heading) or to the next heading or
+    bold-led line (for a lead-in). The first section, with or without a heading, is never dropped: an answer that opens
     with its rejects is not an answer this rule can read, and it is left whole rather than emptied. Nor is a section
     whose label says it rejects nothing, after its own colon ("## Exclusions: none") or in the words that follow it
     ("**Excluded:** none — both hits qualify", or "None." on the line under a heading)."""
@@ -361,15 +378,19 @@ def without_excluded_sections(text: str) -> str:
     dropping: int | None = None  # the level of the section being dropped
     first = True  # nothing kept yet: the section about to open is the answer's first
     for n, line in enumerate(lines):
-        heading, lead = _HEADING.match(line), _lead_in(line)
-        if heading or lead:
+        heading, bold = _HEADING.match(line), _BOLD_START.match(line)
+        if heading or bold:
             level = len(heading.group(1)) if heading else _LEAD_IN_LEVEL
-            label, after = (heading.group(2), next((x for x in lines[n + 1 :] if x.strip()), "")) if heading else lead
             if dropping is not None and level <= dropping:
                 dropping = None
+            if heading:
+                label, after = heading.group(2), next((x for x in lines[n + 1 :] if x.strip()), "")
+            else:
+                label, after = _lead_in(line) or ("", "")  # a bold-led line that is not a lead-in only ends sections
             own = label.split(":", 1)[1] if ":" in label else ""
             if (
-                dropping is None
+                label
+                and dropping is None
                 and not first
                 and rejecting_label(label)
                 and not _says_nothing(after)

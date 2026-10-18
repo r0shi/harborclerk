@@ -446,17 +446,21 @@ def test_invoice_details_keep_their_invoice(text):
 
 @pytest.mark.parametrize(
     "text",
-    [  # review 3: a rejecting label that says it rejects nothing keeps what follows it
-        f"I searched for non-disparagement language.\n\n**Excluded:** none — both hits, Staar (`{SID}`) and Papa John's (`{PID}`), contain a genuine covenant.",
-        f"Two contracts qualify.\n- **Exclusions:** none; Staar (`{SID}`) and Papa John's (`{PID}`) both qualify.",
-        f"Two contracts qualify.\nNot counted: nothing. The two are Staar (`{SID}`) and Papa John's (`{PID}`).",
-        f"Two contracts qualify.\nFalse positives: none, Staar (`{SID}`) and Papa John's (`{PID}`) are both real.",
-        f"Rejected: none. Matches: Staar (`{SID}`), Papa John's (`{PID}`).",
-        f"Two.\n\n## Results\n\n- **Rejected offers go to third parties:** Staar (`{SID}`), Papa John's (`{PID}`)",
-        f"Two.\n- Excluded: n/a. Staar (`{SID}`) and Papa John's (`{PID}`).",
-        f"Two.\n- Rejected: zero — Staar (`{SID}`), Papa John's (`{PID}`).",
-        f"Two.\n- Exclus : aucun. Staar (`{SID}`), Papa John's (`{PID}`).",
-        f"Two.\n\n## False positives\n\nNone. Staar (`{SID}`) and Papa John's (`{PID}`) both qualify.",
+    [  # review 3, rewritten in review 8 so that each case is a heading or margin lead-in the escape alone keeps
+        f"Two qualify.\n\n**Excluded:** none — both hits, Staar (`{SID}`) and Papa John's (`{PID}`), contain a genuine covenant.",
+        f"Two qualify.\n\n**Exclusions:** none; Staar (`{SID}`) and Papa John's (`{PID}`) both qualify.".replace(
+            "Exclusions", "Excluded"
+        ),
+        f"Two qualify.\n\n**Not counted:** nothing. The two are Staar (`{SID}`) and Papa John's (`{PID}`).",
+        f"Two qualify.\n\n**False positives:** none, Staar (`{SID}`) and Papa John's (`{PID}`) are both real.",
+        f"Two qualify.\n\n**Rejected:** none. Matches: Staar (`{SID}`), Papa John's (`{PID}`).",
+        f"Two qualify.\n\n**Excluded:** n/a. Staar (`{SID}`) and Papa John's (`{PID}`).",
+        f"Two qualify.\n\n**Rejected** — zero; Staar (`{SID}`), Papa John's (`{PID}`).",
+        f"Two qualify.\n\n**Exclus :** aucun. Staar (`{SID}`), Papa John's (`{PID}`).",
+        f"Two qualify.\n\n**Excluded:** nil, and Staar (`{SID}`) and Papa John's (`{PID}`) both qualify.",
+        f"Two qualify.\n\n## False positives\n\nNone. Staar (`{SID}`) and Papa John's (`{PID}`) both qualify.",
+        f"Two qualify.\n\n## Excluded: none\n\nStaar (`{SID}`) and Papa John's (`{PID}`) both qualify.",
+        f"Two qualify.\n\n## Rejected\n\nNothing, but Staar (`{SID}`) and Papa John's (`{PID}`) both qualify.",
     ],
 )
 def test_a_rejecting_label_followed_by_none_rejects_nothing(text):
@@ -784,9 +788,10 @@ def test_review_6_campaign_shapes():
     [
         ("Not included above but also qualifies", False),
         ("Not counted above, but qualifies", False),
-        ("Excluded, but it applies", False),
+        ("Excluded, but it applies", True),  # "applies" is said of the clause as readily as of the item (review 8)
         ("Rejected at first, though it counts", False),
-        ("Excluded, yet a match", False),
+        ("Excluded, yet it is a match", False),
+        ("Excluded, yet a match", True),  # "a match" alone is the keyword's (review 8)
         ("Not counted, mais it qualifies", False),
         ("Notable Contracts That Were Close But Do NOT Qualify", True),
         ("Not included above but does not qualify", True),
@@ -886,3 +891,97 @@ def test_a_contrast_that_affirms_qualification_does_not_reject(label, rejects):
 )
 def test_review_7_probes(text, expected):
     assert contracts(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # review 8: a section ends at any bold-led line, as on main, whether or not that line is a lead-in.
+        (
+            "I found two.\n\n"
+            f"**1. Staar Surgical** (`{SID}`) — §4 non-disparagement covenant\n\n"
+            f"**Not counted:** eDiets (`{EID}`) — the word appears only in warranties.\n\n"
+            f"**2. Papa John's** (`{PID}`) — §9 mutual non-disparagement\n",
+            {STAAR, PAPA},
+        ),
+        (
+            f"Two.\n\n**Staar** (`{SID}`): §4.\n\n**Not counted:** eDiets (`{EID}`), warranties only.\n\n"
+            f"**Also qualifying** — Papa John's (`{PID}`), §9.\n",
+            {STAAR, PAPA},
+        ),
+        (
+            f"Two.\n\n- Staar (`{SID}`)\n\n**Not counted:** eDiets (`{EID}`).\n\n  **Papa John's** (`{PID}`): §9 qualifies.\n",
+            {STAAR, PAPA},
+        ),
+        # ...while only a heading or a margin lead-in's whole label can reject one.
+        (f"Two.\n\n- Staar (`{SID}`)\n\n  **Not counted:**\n  eDiets (`{EID}`)\n", {STAAR, EDIETS}),
+        # review 8: a bold span followed by a colon or a dash is a whole label.
+        (f"Two.\n\n- `{SID}`\n\n**Excluded** — Papa John's (`{PID}`), recitals only.\n", {STAAR}),
+        (f"Two.\n\n- `{SID}`\n\n**Not counted** – eDiets (`{EID}`), warranties only.\n", {STAAR}),
+        (f"Two.\n\n- `{SID}`\n\n**Not counted**: eDiets (`{EID}`), warranties only.\n", {STAAR}),
+        (f"Two.\n\n- `{SID}`\n\n**Excluded** territories aside, eDiets (`{EID}`) bars soliciting.\n", {STAAR, EDIETS}),
+        # review 8: contract nouns after "from" are the contract's, not the list's.
+        (
+            "Two contracts carve indemnity out of the cap.\n\n"
+            f"**Excluded from the total liability cap:** indemnity under Staar (`{SID}`) and Papa John's (`{PID}`).\n\n"
+            f"**Capped:** eDiets (`{EID}`).\n",
+            {STAAR, EDIETS, PAPA},
+        ),
+        (
+            "Two licenses carve out trademarks.\n\n## Licensed IP\nSoftware and documentation.\n\n"
+            f"## Excluded from the license scope\n- Staar (`{SID}`): trademarks\n- Papa John's (`{PID}`): marks\n",
+            {STAAR, PAPA},
+        ),
+        # review 8: a contrast past the leading clause does not save it.
+        (
+            f"One.\n\n## Delaware-governed\n- Staar (`{SID}`)\n\n"
+            f"## Near-miss (Delaware is named, but only the forum clause applies)\n- eDiets (`{EID}`)\n",
+            {STAAR},
+        ),
+    ],
+)
+def test_review_8_probes(text, expected):
+    assert contracts(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("label", "rejects"),
+    [
+        # review 8: the affirming contrast is read in the leading clause only.
+        ("Not counted (Delaware forum, but New York law applies)", True),
+        ("Excluded: mentions Delaware, but New York law applies", True),
+        ("Near-misses (the keyword matches, but the clause applies only to employees)", True),
+        ("Excluded (but the keyword matches)", True),
+        ("Reviewed and excluded, though one match is close", True),
+        ("Excluded (non-solicit applies to employees but not customers)", True),
+        ("Rejected — the covenant applies only during the term, but the question asks post-term", True),
+        ("Excluded — but it counts toward the other list", True),
+        ("Excluded; however, the word appears", True),
+        ("Excluded, but it matches the keyword", True),
+        ("Excluded but included in the appendix", True),
+        ("Not included above but also qualifies", False),
+        ("Not counted above, but qualifies", False),
+        ("Not counted, but qualifies under a broader reading", False),
+        # review 8: "count", "total", "scope", "review" are the answer's only at the end of the label.
+        ("Excluded from the total liability cap", False),
+        ("Excluded from the license scope", False),
+        ("Excluded from the scope of the license", False),
+        ("Excluded from the review period", False),
+        ("Not included in the license scope", False),
+        ("Not counted toward the total purchase commitment", False),
+        ("Excluded from the count of business days", False),
+        ("Excluded from the final list", True),
+        ("Not included in the final count", True),
+        ("Excluded from the count", True),
+        ("Excluded from the count:", True),
+        ("Not counted toward the total", True),
+        ("Excluded from scope", True),
+        # review 8: roman numerals are read past.
+        ("III. Excluded contracts", True),
+        ("IV) Rejected", True),
+        ("I. Excluded contracts", True),
+        ("Iv. Excluded", True),
+    ],
+)
+def test_review_8_labels(label, rejects):
+    assert rejecting_label(label) is rejects

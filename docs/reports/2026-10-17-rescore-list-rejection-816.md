@@ -17,7 +17,8 @@
 
 Only section labels are read for rejection, as under #814: a heading, or a bold lead-in at the start of a line. A
 label that rejects takes its section out, a heading's to the next heading of its level or higher and a lead-in's to
-the next lead-in or heading; the answer's first section is never dropped. What changes is when a label rejects.
+the next heading or line that opens bold (main's rule, unchanged); the answer's first section is never dropped. What
+changes is when a label rejects.
 
 A label rejects when:
 - it **opens** with a reject phrase: excluded, not counted, not included, not a match, non-match, near-miss, false
@@ -32,18 +33,21 @@ A label does not reject when:
 - the words before a closing reject phrase describe something else ("Punitive damages excluded", "No contracts were
   excluded");
 - an opening participle describes something else ("Excluded from the cap", "Rejected offers go to third parties",
-  "Rejected-offer matching rights"), unless what it names is the list ("Excluded from the list / consideration /
-  tally", "Excluded due to scope");
-- after a contrast, it says the item qualifies with no negation ("Not counted above, but qualifies");
+  "Rejected-offer matching rights", "Excluded from the total liability cap"), unless what it names is the list
+  ("Excluded from the (final) list / consideration / tally", "Excluded from the count", "Excluded due to scope");
+- after a contrast in its leading clause, it says the item qualifies with no negation ("Not counted above, but
+  qualifies"); a contrast past the leading clause ("Excluded (but the keyword matches)") or one that says only that
+  a clause applies or a keyword matches does not count;
 - what follows it, after its own colon or on the next line, is only "none", "nothing", "n/a", "zero" or the like,
   alone or before punctuation or a conjunction ("## Exclusions: none"; not "None of these contains …", not
   "Zero-rated:");
 - it is a hedge ("Borderline / related", "Mentions / borderline (… not operative ROFRs …)");
 - it denies a category ("Not a non-disparagement clause").
 
-A lead-in is judged on its whole label, the bold words and any words after them up to a colon ("**Excluded** from
-the cap: …" is the label "Excluded from the cap"). A bold span followed by running words with no colon is a
-sentence, not a label. A bulleted or indented bold line is not a lead-in. "Exclusions" is not a reject phrase:
+A lead-in is judged on its whole label: the bold words when a colon or a dash follows them ("**Excluded** — Papa"),
+else the bold words and any words after them up to a colon ("**Excluded** from the cap: …" is the label "Excluded
+from the cap"). A bold span followed by running words with no colon is a sentence, not a label, and a bulleted or
+indented bold line is not a lead-in; either still ends the section above it, as on main. "Exclusions" is not a reject phrase:
 policy and liability exclusions are ordinary content.
 
 ## What the rule does not do
