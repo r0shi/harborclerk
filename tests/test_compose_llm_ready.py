@@ -33,6 +33,9 @@ PDF = "application/pdf"
 STAGE_TIMEOUT_SECONDS = 900  # worker/pipeline.py: summarize's
 INFERENCE_SECONDS = 30.0  # one LLM call on a CPU-only container
 YIELD_SECONDS = 10.0  # one idle yield between map calls
+# The decided per-document budget of waiting, stated here rather than read from health, so a changed budget
+# fails these tests instead of moving them with it.
+BUDGET_SECONDS = 90.0
 
 
 class Clock:
@@ -49,8 +52,8 @@ class Clock:
         self.slept.append(seconds)
         self.now += seconds
         # A wait that never ends would spin forever on a clock that sleeping moves: bound it.
-        if sum(self.slept) > 3600:
-            raise AssertionError("waited over an hour of fake time: the wait does not end")
+        if sum(self.slept) > 3600 or len(self.slept) > 10_000:
+            raise AssertionError("waited over an hour of fake time, or slept 10,000 times: the wait does not end")
 
     def waited(self) -> float:
         return sum(self.slept)
@@ -140,7 +143,7 @@ def test_a_restart_under_the_budget_gives_a_model_summary(compose, clock, monkey
     monkeypatch.setattr(health.httpx, "get", Server(clock, up_at=clock.now + 5))
     text, model_used, doc_type = _document()
     assert (text, model_used, doc_type) == (SUMMARY, "qwen35-4b", "Invoice")
-    assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS
+    assert 5 <= clock.waited() < BUDGET_SECONDS
 
 
 def test_a_load_under_the_budget_gives_a_model_summary(compose, clock, monkeypatch, llm) -> None:
@@ -217,7 +220,7 @@ def test_a_long_document_against_a_failing_server_stays_inside_the_stage_timeout
     started = clock.now
     _, model_used, _ = _document(chunks)
     assert model_used == "extractive"
-    assert clock.now - started <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS < STAGE_TIMEOUT_SECONDS
+    assert clock.now - started <= BUDGET_SECONDS + health.POLL_SECONDS < STAGE_TIMEOUT_SECONDS
 
 
 # --- the probe ---
@@ -339,7 +342,7 @@ def test_a_server_that_dies_on_every_prompt_costs_a_long_document_one_budget(com
     started = clock.now
     _, model_used, _ = _document(chunks)
     assert model_used == "extractive"
-    assert clock.now - started <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS < STAGE_TIMEOUT_SECONDS
+    assert clock.now - started <= BUDGET_SECONDS + health.POLL_SECONDS < STAGE_TIMEOUT_SECONDS
 
 
 # --- the budget is waiting time, not elapsed time ---
@@ -437,7 +440,7 @@ def test_a_failing_server_costs_each_document_at_most_its_own_budget(compose, cl
         clock.now += 7  # documents arrive at different points of the loop
         _, model_used, doc_type = _document()
         assert (model_used, doc_type) == ("extractive", summarize._mime_to_doc_type(PDF))
-        assert health.DOCUMENT_WAIT_SECONDS <= clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS
+        assert BUDGET_SECONDS <= clock.waited() <= BUDGET_SECONDS + health.POLL_SECONDS
 
 
 @pytest.mark.parametrize("after", ["crash-loop", "gone"])
@@ -471,8 +474,8 @@ def test_after_long_work_a_failing_server_costs_one_budget_of_waiting(compose, c
     monkeypatch.setattr(summarize.httpx, "post", post)
     started = clock.now
     _document(LONG_CHUNKS)
-    assert clock.now - started > health.DOCUMENT_WAIT_SECONDS + INFERENCE_SECONDS  # long in elapsed time
-    assert clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS, "more than one budget waited"
+    assert clock.now - started > BUDGET_SECONDS + INFERENCE_SECONDS  # long in elapsed time
+    assert clock.waited() <= BUDGET_SECONDS + health.POLL_SECONDS, "more than one budget waited"
 
 
 def test_a_lone_doc_type_call_gets_a_budget_of_its_own(compose, clock, monkeypatch) -> None:
@@ -481,4 +484,4 @@ def test_a_lone_doc_type_call_gets_a_budget_of_its_own(compose, clock, monkeypat
     monkeypatch.setattr(health.httpx, "get", Server(clock, up_at=clock.now + 5))
     monkeypatch.setattr(summarize, "_call_llm", lambda *a, **k: "Invoice")
     assert summarize.classify_doc_type(CHUNKS, PDF) == "Invoice"
-    assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS
+    assert 5 <= clock.waited() < BUDGET_SECONDS
