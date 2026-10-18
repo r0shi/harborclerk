@@ -168,9 +168,14 @@ async def list_documents(
         "created": Document.created_at,
         "title": Document.title,
     }[sort]
-    order = sort_column.asc() if sort_dir == "asc" else sort_column.desc()
+    # doc_id last: titles repeat and timestamps tie (one transaction shares now()), and each page is its own
+    # query, so without a total order the pages skip and repeat documents.
+    if sort_dir == "asc":
+        order = (sort_column.asc(), Document.doc_id.asc())
+    else:
+        order = (sort_column.desc(), Document.doc_id.desc())
 
-    query = base.order_by(order).offset(offset)
+    query = base.order_by(*order).offset(offset)
     if limit > 0:
         query = query.limit(limit)
 
@@ -700,7 +705,9 @@ async def get_document_entities(
 
     total = (await session.execute(select(func.count()).select_from(count_q.subquery()))).scalar() or 0
 
-    rows = (await session.execute(count_q.order_by(func.count().desc()).offset(offset).limit(limit))).all()
+    # Tie-broken on the group key: a total order, so the pages neither skip nor repeat entities.
+    paged = count_q.order_by(func.count().desc(), Entity.entity_text, Entity.entity_type)
+    rows = (await session.execute(paged.offset(offset).limit(limit))).all()
 
     entities = [EntityOut(entity_text=r[0], entity_type=r[1], mention_count=r[2]) for r in rows]
 

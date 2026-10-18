@@ -2,6 +2,9 @@
 
 import uuid
 
+import pytest
+from sqlalchemy import text
+
 from harbor_clerk.models import Chunk, Document, Entity, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from tests.conftest import auth_header
@@ -384,6 +387,67 @@ async def test_get_document_entities_happy(client, admin_user, admin_token, db_s
     names = {e["entity_text"] for e in data["entities"]}
     assert "John Smith" in names
     assert "Acme Corp" in names
+
+
+async def test_get_document_entities_pages_through_ties_without_skipping(client, admin_user, admin_token, db_session):
+    """Each page is its own LIMIT/OFFSET query. Ordered by mention count alone, 60 entities with one mention
+    each came back in a different order per page (Postgres's bounded sort depends on LIMIT + OFFSET), so
+    paging to the end skipped some and repeated others. The order now covers the group key (#763 sweep)."""
+    doc = Document(title="Tied Entity Doc", status="active", **_DOC_DEFAULTS)
+    db_session.add(doc)
+    await db_session.flush()
+    chunk = Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="Tiedco " * 60, language="en")
+    db_session.add(chunk)
+    await db_session.flush()
+    for i in range(60):
+        db_session.add(
+            Entity(
+                chunk_id=chunk.chunk_id,
+                doc_id=doc.doc_id,
+                entity_text=f"Tiedco {i:02d}",
+                entity_type="ORG",
+                start_char=i,
+                end_char=i + 6,
+            )
+        )
+    await db_session.flush()
+
+    seen: list[str] = []
+    for offset in range(0, 60, 7):
+        resp = await client.get(
+            f"/api/docs/{doc.doc_id}/entities?limit=7&offset={offset}", headers=auth_header(admin_token)
+        )
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 60
+        seen.extend(e["entity_text"] for e in resp.json()["entities"])
+    assert len(seen) == 60 and len(set(seen)) == 60, sorted(seen)
+
+
+@pytest.mark.parametrize("sort", ["title", "updated", "created"])
+@pytest.mark.parametrize("sort_dir", ["asc", "desc"])
+async def test_list_documents_pages_through_ties_without_skipping(
+    client, admin_user, admin_token, db_session, sort, sort_dir
+):
+    """The list sorted by one column, and titles repeat (mail subjects, "Untitled") while timestamps tie
+    (documents written in one transaction share now()). doc_id is now the last key of every sort, so the
+    pages partition the list (#763 sweep)."""
+    for _ in range(40):
+        db_session.add(Document(title="Same Title", status="active", **_DOC_DEFAULTS))
+    await db_session.flush()
+    # An index scan returns ties in a stable physical order and would hide the defect; a sort (what the
+    # planner picks once the filters or the table make the index unattractive) does not.
+    await db_session.execute(text("SET LOCAL enable_indexscan = off"))
+    await db_session.execute(text("SET LOCAL enable_bitmapscan = off"))
+
+    seen: list[str] = []
+    for offset in range(0, 40, 6):
+        resp = await client.get(
+            f"/api/docs?sort={sort}&sort_dir={sort_dir}&limit=6&offset={offset}", headers=auth_header(admin_token)
+        )
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 40
+        seen.extend(d["doc_id"] for d in resp.json()["items"])
+    assert len(seen) == 40 and len(set(seen)) == 40, sorted(seen)
 
 
 async def test_get_document_entities_empty(client, admin_user, admin_token, db_session):
