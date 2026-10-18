@@ -131,9 +131,9 @@ once the turn has searched ends the search like the context budget, and the
 forced call's retry shrinks the results (the history trim would keep the
 latest tool row as the question); a first prompt refused twice is the error.
 An increment under `_INCREMENT_FLOOR_TOKENS` raw tokens is not measured.
-The prose table is per model while density is per conversation, so alternating
-languages oscillate it (EN/CJK/EN measured 1.20, 1.64, 1.72, 1.46, 1.62);
-per-conversation keying is #810.
+Prose density is per conversation (#810): each prose measurement also replaces
+the conversation's own ratio (`_conversation_prose_ratios`), read before the
+model's table, in process only (a restart falls back to it); tool ratio per model.
 The tool ratio is measured only as the **increment** between two counted prompts
 of one turn's loop (the result and its call, nothing else): never from a
 tool-less prompt, never from a turn's first prompt even when the history holds

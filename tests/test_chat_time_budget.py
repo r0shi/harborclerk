@@ -8,6 +8,7 @@ faked, the model is a mock ``httpx.AsyncClient`` whose responses drive the loop,
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -145,10 +146,13 @@ async def _isolated_chat_state(monkeypatch):
     from harbor_clerk.llm import chat as chat_module
 
     process_estimate, process_prose = chat_module._estimate_ratios, chat_module._prose_ratios
+    process_conversations = chat_module._conversation_prose_ratios
     process_estimate.clear()
     process_prose.clear()
+    process_conversations.clear()
     monkeypatch.setattr(chat_module, "_estimate_ratios", {})
     monkeypatch.setattr(chat_module, "_prose_ratios", {})
+    monkeypatch.setattr(chat_module, "_conversation_prose_ratios", OrderedDict())
     monkeypatch.setattr(chat_module, "get_chat_tools", _fixed_chat_tools)
     monkeypatch.setattr(chat_module, "SYSTEM_PROMPT", _FIXED_SYSTEM_PROMPT)
 
@@ -160,8 +164,9 @@ async def _isolated_chat_state(monkeypatch):
     me = asyncio.current_task()
     left = [t for t in asyncio.all_tasks() if t is not me and not t.done()]
     assert not left, f"tasks still running after the test: {left}"
-    assert process_estimate == {} and process_prose == {}, (
-        f"the test wrote the process-wide ratio tables: tool {process_estimate}, prose {process_prose}"
+    assert process_estimate == {} and process_prose == {} and not process_conversations, (
+        f"the test wrote the process-wide ratio tables: tool {process_estimate}, prose {process_prose}, "
+        f"conversations {dict(process_conversations)}"
     )
 
 
@@ -221,10 +226,11 @@ async def _drive(
     prose_ratios: dict | None = None,
     events_out: list | None = None,
     question: str = "What did the Q3 contract cost?",
+    conversation_prose: OrderedDict | None = None,
 ):
-    """Drive one chat turn. ``ratios`` and ``prose_ratios`` are the process's tables of measured ratios for the run
-    (#805), empty unless given, so no test starts from another's measurements; the caller keeps the references to
-    read them after."""
+    """Drive one chat turn. ``ratios``, ``prose_ratios`` and ``conversation_prose`` are the process's tables of
+    measured ratios for the run (#805, #810), empty unless given, so no test starts from another's measurements; the
+    caller keeps the references to read them after (and shares one across runs to stand for one process)."""
     import asyncio
 
     from harbor_clerk.llm import chat as chat_module
@@ -233,6 +239,9 @@ async def _drive(
     monkeypatch.setattr(chat_module, "_now", clock)
     monkeypatch.setattr(chat_module, "_estimate_ratios", {} if ratios is None else ratios)
     monkeypatch.setattr(chat_module, "_prose_ratios", {} if prose_ratios is None else prose_ratios)
+    monkeypatch.setattr(
+        chat_module, "_conversation_prose_ratios", OrderedDict() if conversation_prose is None else conversation_prose
+    )
     _pin_no_model(monkeypatch)
     if context_tokens is not None:
         monkeypatch.setattr(chat_module, "context_budget", lambda model, yarn: context_tokens)
@@ -3612,3 +3621,281 @@ async def test_a_retry_trimmed_to_the_floor_is_still_sent_when_nothing_has_been_
     forced = client.stream.call_args.kwargs["json"]["messages"]
     assert forced[-1] == {"role": "user", "content": chat_module._SEARCH_OVER_MESSAGE}, "answered from a search"
     assert prose[_MODEL_KEY] == pytest.approx(1.8, abs=0.01)
+
+
+# The prose density is the conversation's (#810). The model's prose table followed whichever conversation ran last:
+# alternating twenty-exchange conversations at 1.8x and 1.0x on a 16,384 slot moved it 1.8, 1.4, 1.6, 1.3; the third
+# conversation's first prompt went at 89% of the slot and the English ones kept 6 and 8 exchanges where about 16 fit.
+
+
+def _has_cjk(text: str) -> bool:
+    return any("一" <= ch <= "鿿" for ch in text)
+
+
+def _exchange(i: int, cjk: bool = False) -> tuple[str, str]:
+    """The ``i``-th exchange of a prose conversation, question and answer, each about 710 characters: English, or
+    Chinese (each character an estimated token over 3.5, as the estimator reads any script)."""
+    if cjk:
+        return f"问题{i}：" + "费用是多少？" * 118, f"答复{i}：" + "费用如下。" * 141
+    return f"Question {i}: " + "fee? " * 140, f"Answer {i}: " + "fee. " * 140
+
+
+def _language_client(ctx: int, density_of, schema_density: float):
+    """A server that counts by a rule of its own, per message: characters over a chars-per-token figure of
+    ``density_of(message)`` times the estimate's, rounded up, a three-token wrapper, and the schema at
+    ``schema_density``. It refuses a prompt counted over ``ctx`` with the pin's 400; otherwise the model answers on its
+    own, the answer of the exchange whose question is the prompt's last message (``_exchange``), in the same chunks as
+    the pin (content, finish, usage, "[DONE]"). Returns the client, the loop's payloads, the server's count of each
+    and the counting function."""
+    import math
+
+    sent: list[dict] = []
+    counts: list[int] = []
+    answers = {_exchange(i, cjk)[0]: _exchange(i, cjk)[1] for i in range(60) for cjk in (False, True)}
+
+    def count(messages: list[dict], tools: list[dict] | None) -> int:
+        total = sum(math.ceil(len(m.get("content") or "") * density_of(m) / 3.5) + 3 for m in messages)
+        return total + (math.ceil(len(json.dumps(tools)) * schema_density / 3.5) if tools else 0)
+
+    def build(*_a, **_k):
+        payload = client.build_request.call_args.kwargs["json"]
+        sent.append({**payload, "messages": list(payload["messages"])})
+        counted = count(payload["messages"], payload.get("tools"))
+        counts.append(counted)
+        if counted > ctx:
+            return _refusal(counted, ctx)
+        answer = answers[payload["messages"][-1]["content"]]
+        return _lines_response([_chunk(content=answer), _finish_chunk("stop"), _usage_chunk(counted), "data: [DONE]"])
+
+    client = MagicMock()
+    client.build_request = MagicMock(return_value=MagicMock())
+    client.send = AsyncMock(side_effect=build)
+    client.aclose = AsyncMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    return client, sent, counts, count
+
+
+async def _prose_turn(conv_id, admin_user, client, monkeypatch, tables, question: str, ctx: int) -> str:
+    """One turn of a prose conversation in the process whose ratio ``tables`` (tool, prose, conversations) are given."""
+    ratios, prose, conversations = tables
+    events: list[dict] = []
+    text, done, tool_calls = await _drive(
+        conv_id,
+        admin_user,
+        client,
+        _Clock(),
+        monkeypatch,
+        budget=0.0,
+        context_tokens=ctx,
+        ratios=ratios,
+        prose_ratios=prose,
+        conversation_prose=conversations,
+        events_out=events,
+        question=question,
+    )
+    assert tool_calls == [] and not [e for e in events if e.get("type") == "error"], events
+    return text
+
+
+def _kept(prompt: list[dict]) -> int:
+    """How many exchanges of history a first prompt holds: everything between the system prompt and the question."""
+    return (len(prompt) - 2) // 2
+
+
+def _exchanges_that_fit(count, prompt: dict, history: list[tuple[str, str]], ctx: int) -> int:
+    """The most exchanges of ``history`` (newest kept) that the server's ``count`` puts within the trim's target with
+    ``prompt``'s system prompt, question and tools."""
+    from harbor_clerk.llm import chat as chat_module
+
+    system, question = prompt["messages"][0], prompt["messages"][-1]
+    fits = 0
+    for k in range(1, len(history) + 1):
+        rows = [
+            m
+            for q, a in history[len(history) - k :]
+            for m in ({"role": "user", "content": q}, {"role": "assistant", "content": a})
+        ]
+        if count([system, *rows, question], prompt["tools"]) > chat_module._TRIM_BUDGET_FRACTION * ctx:
+            break
+        fits = k
+    return fits
+
+
+def _dense_and_english_runs(densities: list[float], ctx: int):
+    """A server per conversation counting the whole prompt (its rows and the schema) at that conversation's density,
+    as #810's run did."""
+    return [_language_client(ctx, lambda m, d=d: d, d) for d in densities]
+
+
+@pytest.mark.asyncio
+async def test_each_conversation_trims_at_its_own_prose_density(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """#810's run: four conversations whose prose the server counts at 1.8x, 1.0x, 1.8x and 1.0x the estimate (CJK
+    under the Qwen tokenizers, English), a 16,384 slot that refuses a prompt over it, every conversation built to
+    twenty exchanges by its own turns in one process, a turn of each in turn, so the model's table is always last
+    measured on the other density. Then the twenty-first turns, in that order. Each conversation's first prompt is
+    trimmed at its own measurement: the dense ones go first time within the trim's target by the server's count (the
+    third conversation's went at 89% when the table was per model), and the English ones keep within one exchange of
+    what fits that target (6 and 8 kept before, where 18 fit with this file's system prompt and schema)."""
+    ctx = 16384
+    densities = [1.8, 1.0, 1.8, 1.0]
+    tables = ({}, {}, OrderedDict())
+    conversations = [await _conversation(db_session, admin_user) for _ in densities]
+    runs = _dense_and_english_runs(densities, ctx)
+    for i in range(21):
+        for conv, (client, sent, _counts, _count) in zip(conversations, runs, strict=True):
+            before = len(sent)
+            question, answer = _exchange(i)
+            text = await _prose_turn(conv.conversation_id, admin_user, client, monkeypatch, tables, question, ctx)
+            assert text == answer
+            assert len(sent) - before == 1, f"turn {i}: every prompt of the run accepted first time"
+    history = [_exchange(i) for i in range(20)]
+    for density, (_client, sent, counts, count) in zip(densities, runs, strict=True):
+        first, counted = sent[-1], counts[-1]
+        fits = _exchanges_that_fit(count, first, history, ctx)
+        if density > 1.0:
+            assert counted <= 0.70 * ctx, f"the dense conversation's first prompt: {counted / ctx:.1%} of the slot"
+        else:
+            assert fits >= 15, f"the scenario: most of the twenty exchanges fit at 1.0x ({fits})"
+            assert _kept(first["messages"]) >= fits - 1, f"kept {_kept(first['messages'])} of the {fits} that fit"
+    measured = {key[0]: ratio for key, ratio in tables[2].items()}
+    for conv, density in zip(conversations, densities, strict=True):
+        assert measured[str(conv.conversation_id)] == pytest.approx(density, abs=0.02), "each at its own density"
+    assert tables[0] == {}, "prose measures nothing of the tool ratio"
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_that_changes_language_follows_its_own_density(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """A conversation twenty exchanges in English, then twenty in Chinese, beside an English one taking turns with it,
+    on a server counting each message by its script (Chinese at 1.8x the estimate, English, the system prompt and the
+    schema at 1.0x) with a 16,384 slot. Each measurement replaces the conversation's ratio, so as the Chinese share
+    of its history grows its first prompts trail the density by one exchange: they stay under the context budget's
+    stop (75%) and are never refused, and once the history is all Chinese they sit at the trim's target. The English
+    conversation keeps what fits on every turn, while the model's table, fed by both, drifts above 1.0."""
+    from harbor_clerk.llm import chat as chat_module
+
+    ctx = 16384
+    tables = ({}, {}, OrderedDict())
+    switching, english = [await _conversation(db_session, admin_user) for _ in range(2)]
+    by_script = _language_client(ctx, lambda m: 1.8 if _has_cjk(m.get("content") or "") else 1.0, 1.0)
+    plain = _language_client(ctx, lambda m: 1.0, 1.0)
+    history: dict[str, list[tuple[str, str]]] = {"switching": [], "english": []}
+    for i in range(40):
+        for name, conv, (client, sent, counts, count) in (
+            ("switching", switching, by_script),
+            ("english", english, plain),
+        ):
+            cjk = name == "switching" and i >= 20
+            before = len(sent)
+            question, answer = _exchange(i, cjk)
+            text = await _prose_turn(conv.conversation_id, admin_user, client, monkeypatch, tables, question, ctx)
+            assert text == answer
+            assert len(sent) - before == 1, f"{name} turn {i}: accepted first time ({counts[before:]})"
+            if name == "switching" and cjk:
+                assert counts[before] <= chat_module._TOOL_LOOP_BUDGET * ctx, (
+                    f"turn {i}: {counts[before] / ctx:.1%} of the slot, over the budget's stop"
+                )
+            if name == "english" and i >= 18:
+                fits = _exchanges_that_fit(count, sent[before], history[name][-20:], ctx)
+                assert _kept(sent[before]["messages"]) >= fits - 1, f"turn {i}: kept fewer than fit ({fits})"
+            history[name].append((question, answer))
+    _client, sent, counts, _count = by_script
+    assert abs(counts[-1] / ctx - chat_module._TRIM_BUDGET_FRACTION) <= 0.02, f"settled: {counts[-1] / ctx:.1%}"
+    assert all(_has_cjk(m["content"]) for m in sent[-1]["messages"][1:]), "the scenario: the history is all Chinese"
+    own = tables[2][(str(switching.conversation_id), _MODEL_KEY)]
+    last_density = counts[-1] / chat_module._estimate_payload_tokens(sent[-1]["messages"], sent[-1]["tools"])
+    assert own == pytest.approx(last_density, abs=0.01), "the conversation stands at its last prompt's density"
+    assert tables[2][(str(english.conversation_id), _MODEL_KEY)] == pytest.approx(1.0, abs=0.01)
+    assert tables[1][_MODEL_KEY] > 1.1, "the scenario: the model's table drifted, and the English one did not read it"
+
+
+@pytest.mark.asyncio
+async def test_a_conversations_density_is_measured_again_after_a_restart(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The conversation's ratio lives as long as the process (the stored rows cannot rebuild it: ``tokens_used`` adds
+    every completion, reasoning included, and the rows a count covered depend on the trim of the time). A dense and
+    an English conversation, built to twenty exchanges taking turns; then a restart (every table empty). The dense
+    one's first turn after it is trimmed at the seed and refused, and the refusal measures it: it is retried within
+    the target. The English one's first turn reads the model's table, which that refusal just set to 1.8, and is
+    trimmed short (the one turn a restart costs it), then measured. The turn after, each is back at its own density."""
+    from harbor_clerk.llm import chat as chat_module
+
+    ctx = 16384
+    densities = [1.8, 1.0]
+    dense, english = [await _conversation(db_session, admin_user) for _ in densities]
+    runs = _dense_and_english_runs(densities, ctx)
+    tables = ({}, {}, OrderedDict())
+    turns: dict[tuple[int, int], tuple[list[dict], list[int]]] = {}
+    for i in range(22):
+        if i == 20:
+            tables = ({}, {}, OrderedDict())  # the restart
+        for n, (conv, (client, sent, counts, _count)) in enumerate(zip((dense, english), runs, strict=True)):
+            before = len(sent)
+            question, answer = _exchange(i)
+            text = await _prose_turn(conv.conversation_id, admin_user, client, monkeypatch, tables, question, ctx)
+            assert text == answer
+            turns[(i, n)] = (sent[before:], counts[before:])
+    target = chat_module._TRIM_BUDGET_FRACTION * ctx
+    restarted_dense, restarted_english = turns[(20, 0)], turns[(20, 1)]
+    assert len(restarted_dense[0]) == 2 and restarted_dense[1][0] > ctx, "after the restart: refused at the seed"
+    assert restarted_dense[1][1] <= target, "and retried within the target"
+    _client, _sent, _counts, count = runs[1]
+    fits = _exchanges_that_fit(count, restarted_english[0][0], [_exchange(i) for i in range(20)], ctx)
+    assert len(restarted_english[0]) == 1 and _kept(restarted_english[0][0]["messages"]) < fits - 1, (
+        "the English one's first turn after the restart read the model's table (the cost of not storing the ratio)"
+    )
+    (dense_sent, dense_counts), (english_sent, _) = turns[(21, 0)], turns[(21, 1)]
+    assert len(dense_sent) == 1 and dense_counts[0] <= target, "the next turn: first time, within the target"
+    history = [_exchange(i) for i in range(21)]
+    assert _kept(english_sent[0]["messages"]) >= _exchanges_that_fit(count, english_sent[0], history, ctx) - 1
+
+
+def test_a_conversation_reads_its_own_prose_ratio_then_the_models():
+    """A conversation's own measurement on a model is read first; a conversation not measured, or measured on another
+    model, reads that model's table (the seed when it has none). Each measurement replaces the conversation's ratio
+    and blends into the model's; a count that is not positive records nothing in either."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conversations: OrderedDict = OrderedDict()
+    with (
+        patch.object(chat_module, "_prose_ratios", {}),
+        patch.object(chat_module, "_conversation_prose_ratios", conversations),
+    ):
+        seed = chat_module._PROSE_RATIO_DEFAULT
+        assert chat_module._conversation_prose_ratio("a", "m") == seed
+        assert chat_module._record_conversation_prose_ratio("a", "m", 1800, 1000) == pytest.approx(1.8)
+        assert chat_module._conversation_prose_ratio("b", "m") == pytest.approx(1.8), "not measured: the model's"
+        assert chat_module._record_conversation_prose_ratio("b", "m", 1000, 1000) == pytest.approx(1.0)
+        assert chat_module._conversation_prose_ratio("a", "m") == pytest.approx(1.8), "its own, not the model's"
+        assert chat_module._prose_ratio("m") == pytest.approx(1.4), "the model's blends both"
+        assert chat_module._record_conversation_prose_ratio("a", "m", 1200, 1000) == pytest.approx(1.2), "replaced"
+        assert chat_module._conversation_prose_ratio("a", "other") == seed, "another model's tokenizer: its table"
+        assert chat_module._record_conversation_prose_ratio("a", "m", 0, 1000) is None
+        assert chat_module._conversation_prose_ratio("a", "m") == pytest.approx(1.2)
+        assert chat_module._record_conversation_prose_ratio("c", None, 10_000_000, 1) == chat_module._ESTIMATE_RATIO_MAX
+        assert chat_module._conversation_prose_ratio("c", "") == chat_module._ESTIMATE_RATIO_MAX, "None keyed as ''"
+
+
+def test_the_conversation_table_keeps_the_most_recently_measured():
+    """The table is bounded: past _CONVERSATION_PROSE_MAX the conversation measured longest ago goes (and reads the
+    model's table again); a measurement makes a conversation the most recent."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conversations: OrderedDict = OrderedDict()
+    with (
+        patch.object(chat_module, "_prose_ratios", {}),
+        patch.object(chat_module, "_conversation_prose_ratios", conversations),
+        patch.object(chat_module, "_CONVERSATION_PROSE_MAX", 3),
+    ):
+        for name, counted in (("a", 3000), ("b", 2000), ("c", 2000)):
+            chat_module._record_conversation_prose_ratio(name, "m", counted, 1000)
+        chat_module._record_conversation_prose_ratio("a", "m", 3000, 1000)  # "a" is the most recent now
+        chat_module._record_conversation_prose_ratio("d", "m", 1000, 1000)
+        assert len(conversations) == 3 and ("b", "m") not in conversations
+        assert chat_module._conversation_prose_ratio("b", "m") == chat_module._prose_ratio("m"), "gone: the model's"
+        assert chat_module._conversation_prose_ratio("a", "m") == pytest.approx(3.0)

@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
@@ -79,7 +80,7 @@ _FINAL_ANSWER_THINKING_SECONDS = 120.0
 # (``tool_result_max_chars``), deliberately: dividing it by the ratio halves the evidence a search returns, a
 # retrieval change for a benchmark to decide.
 #
-# Two ratios, per model, for the life of the process (a fresh conversation starts from the model's tables). The tool
+# Two ratios, per model, for the life of the process, and the prose ratio per conversation too (below). The tool
 # ratio is measured as the increment between two counted prompts of a turn's loop: the difference of the counts over
 # the estimate of the messages appended between them, which is the tool result and its call and nothing else. It is
 # never measured over a whole prompt: a tool-less prompt measures the wrong density (a ratio taken from one read the
@@ -105,12 +106,28 @@ _FINAL_ANSWER_THINKING_SECONDS = 120.0
 # history holds a tool row, every later first prompt of it is tool-bearing and measures neither ratio, so the prose
 # density is re-measured only by conversations (or turns) that have not searched.
 #
+# Prose density is a property of the conversation (its language, pasted logs or tables), not of the model: English
+# prose counts at about 1.0x the estimate, French 1.1x, CJK under the Qwen tokenizers 1.5 to 2.7x. Kept per model
+# alone, the table followed whichever conversation ran last: alternating twenty-exchange conversations at 1.8x and
+# 1.0x on a 16,384 slot moved it 1.8, 1.4, 1.6, 1.3, the third conversation's first prompt went at 89% of the slot and
+# the English ones kept 6 and 8 exchanges of the 16 that fit (#810). So every prose measurement is also kept for its
+# conversation and model (``_conversation_prose_ratios``), and every read of the prose ratio in a turn takes the
+# conversation's own (``_conversation_prose_ratio``) before the model's table, which is what a conversation this
+# process has not measured starts from. The conversation's entry is replaced by each measurement, not blended: the
+# next prompt is the measured one plus an exchange, so the last count is the nearest density there is, and a
+# conversation that changes language follows it a turn behind rather than at half a step a turn. The tool ratio stays
+# per model: results are the corpus's passages in the tools' JSON, whatever the conversation's language, and it is
+# re-measured inside every searching turn. The entries live as long as the process (the oldest past
+# _CONVERSATION_PROSE_MAX go): the stored rows cannot rebuild one, since ``tokens_used`` adds every completion,
+# reasoning included, to the count, and the rows a count covered depend on the trim of the time. After a restart a
+# conversation starts from the model's table, as every conversation did before, and its first prose prompt measures
+# it again (a refused one included, which is then retried as above).
+#
 # The tool ratio's default is the tool-heavy figure, 2.0: too high stops a search a round before the server would
 # have (soft); too low admits a prompt the server refuses (hard). It is never replaced: every measurement is blended
 # in at half weight from whatever stands, since the next increment is like the last and the half kept guards against
-# a single odd count. The tables are process-wide, so two conversations running at once blend their measurements;
-# every model runs one slot, so that is rare, and keying the tables by conversation, seeded from the model's, is the
-# change if it is not. A measurement is clamped before it is blended: a count the estimate cannot explain moves a
+# a single odd count. The tool table is process-wide, so two conversations running at once blend their measurements
+# in it; every model runs one slot, so that is rare. A measurement is clamped before it is blended: a count the estimate cannot explain moves a
 # ratio at most half way to the clamp, never off the scale. The clamp's top is 3.0: it covers the 2.31 observed on
 # tool results with margin.
 #
@@ -134,6 +151,10 @@ _ESTIMATE_RATIO_MAX = 3.0
 _PROSE_RATIO_DEFAULT = 1.2
 # Measured prose-density ratios by model id ("" when none is active), beside the tool table. Process-wide.
 _prose_ratios: dict[str, float] = {}
+# Measured prose-density ratios by (conversation id, model id), read before the model's table (#810). Process-wide,
+# the most recently measured _CONVERSATION_PROSE_MAX kept.
+_conversation_prose_ratios: OrderedDict[tuple[str, str], float] = OrderedDict()
+_CONVERSATION_PROSE_MAX = 1024
 _ESTIMATE_RATIO_SMOOTHING = 0.5  # the weight of the newest measurement, the first included
 # The history trim's target, as a fraction of the context: under the response reserve and under the tool-loop budget
 # by a margin, so a trimmed first call is not already at the budget when its first result comes back (the second
@@ -414,6 +435,31 @@ def _record_prose_ratio(model_id: str | None, counted: int, estimated: int) -> f
     previous = _prose_ratios.get(key)
     ratio = measured if previous is None else previous + _ESTIMATE_RATIO_SMOOTHING * (measured - previous)
     _prose_ratios[key] = ratio
+    return ratio
+
+
+def _conversation_prose_ratio(conversation_id: uuid.UUID | str, model_id: str | None) -> float:
+    """The prose ratio a turn of ``conversation_id`` reads: the conversation's own last measurement on ``model_id`` in
+    this process, or the model's table (``_prose_ratio``) when this process has not measured it (#810)."""
+    measured = _conversation_prose_ratios.get((str(conversation_id), model_id or ""))
+    return measured if measured is not None else _prose_ratio(model_id)
+
+
+def _record_conversation_prose_ratio(
+    conversation_id: uuid.UUID | str, model_id: str | None, counted: int, estimated: int
+) -> float | None:
+    """Record a prompt of ``conversation_id`` with no tool row in it: into the model's table, as
+    ``_record_prose_ratio`` does (what a conversation not yet measured starts from), and as the conversation's own
+    ratio, which the measurement replaces (module comment). Returns the conversation's ratio as it now stands; None
+    when the count or the estimate is not positive (nothing recorded). The oldest entry past _CONVERSATION_PROSE_MAX
+    goes."""
+    if _record_prose_ratio(model_id, counted, estimated) is None:
+        return None
+    key = (str(conversation_id), model_id or "")
+    _conversation_prose_ratios[key] = ratio = _clamped_ratio(counted, estimated)
+    _conversation_prose_ratios.move_to_end(key)
+    while len(_conversation_prose_ratios) > _CONVERSATION_PROSE_MAX:
+        _conversation_prose_ratios.popitem(last=False)
     return ratio
 
 
@@ -702,10 +748,15 @@ async def chat_stream(
                 entry["tool_call_id"] = msg.tool_call_id
             messages.append(entry)
 
-        # Trim history to fit within context budget, at the model's last measured ratio of tokenizer count to
-        # estimate (#805): a fresh conversation starts calibrated, a model not yet measured at the default.
+        # Trim history to fit within context budget, at the last measured ratios of tokenizer count to estimate
+        # (#805): prose at the conversation's own (#810), or the model's for a conversation not measured in this
+        # process; a model not yet measured at the defaults.
         messages = _trim_to_budget(
-            messages, context_tokens, model, _estimate_ratio(active_model_id), _prose_ratio(active_model_id)
+            messages,
+            context_tokens,
+            model,
+            _estimate_ratio(active_model_id),
+            _conversation_prose_ratio(conversation_id, active_model_id),
         )
 
         # Tool-calling loop — runs until the model produces a text response,
@@ -744,7 +795,7 @@ async def chat_stream(
             # searched, and a retry trimmed to the floor that the prediction puts over the budget must still be sent
             # (the server, not the prediction, says whether it fits; the fifth review of #808).
             estimate_ratio = _estimate_ratio(active_model_id)
-            prose_ratio = _prose_ratio(active_model_id)
+            prose_ratio = _conversation_prose_ratio(conversation_id, active_model_id)
             predicted = _predict_prompt_tokens(
                 messages, prompt_tokens_last, counted_upto, _get_tool_schema_tokens(model), estimate_ratio, prose_ratio
             )
@@ -843,8 +894,8 @@ async def chat_stream(
                             )
                             counted = None
                         if is_context_overflow and counted and not sent_tool_bearing:
-                            # A tool-less prompt's count is the model's prose density, exactly (module comment).
-                            _record_prose_ratio(active_model_id, counted, sent_estimate)
+                            # A tool-less prompt's count is the conversation's prose density, exactly (module comment).
+                            _record_conversation_prose_ratio(conversation_id, active_model_id, counted, sent_estimate)
                         server_context = _refused_context_tokens(detail) if is_context_overflow else None
                         if server_context and server_context < context_tokens:
                             # The slot the server runs at, which the registry's window need not be (#654): the rest
@@ -888,7 +939,8 @@ async def chat_stream(
                             # and it is the one retry: a second refusal is the error below. Without a count, the
                             # weights are doubled, which halves the history. Before the turn has searched the last
                             # message is the user's question, which the trim keeps.
-                            tool_ratio, prose_ratio = _estimate_ratio(active_model_id), _prose_ratio(active_model_id)
+                            tool_ratio = _estimate_ratio(active_model_id)
+                            prose_ratio = _conversation_prose_ratio(conversation_id, active_model_id)
                             if counted:
                                 at_least = counted / sent_estimate * _FORCED_CALL_RETRY_SAFETY
                                 tool_ratio, prose_ratio = max(tool_ratio, at_least), max(prose_ratio, at_least)
@@ -1054,14 +1106,17 @@ async def chat_stream(
                             else:
                                 if not sent_tool_bearing:
                                     # No tool row anywhere in it: the prose-and-schema density, exactly.
-                                    prose_now = _record_prose_ratio(active_model_id, counted, sent_estimate)
+                                    prose_now = _record_conversation_prose_ratio(
+                                        conversation_id, active_model_id, counted, sent_estimate
+                                    )
                                     logger.debug(
                                         "Prose prompt counted at %d tokens against %d estimated; prose ratio now %.2f "
-                                        "(model=%s)",
+                                        "(model=%s, conversation=%s)",
                                         counted,
                                         sent_estimate,
                                         prose_now if prose_now is not None else float("nan"),
                                         active_model_id,
+                                        conversation_id,
                                     )
                                 elif prompt_tokens_last is not None:
                                     # The increment over the last counted prompt of this turn: the tool result and
@@ -1240,7 +1295,7 @@ async def chat_stream(
                 counted_upto,
                 0,
                 _estimate_ratio(active_model_id),
-                _prose_ratio(active_model_id),
+                _conversation_prose_ratio(conversation_id, active_model_id),
             )
             if deadline is not None:
                 outer_deadline = _forced_call_outer_deadline(stopped_at, deadline_prediction)
@@ -1480,7 +1535,8 @@ async def chat_stream(
         if prompt_tokens_last is not None:
             used_tokens: float = prompt_tokens_last + completion_tokens_last
         else:
-            tool_ratio, prose_ratio = _estimate_ratio(active_model_id), _prose_ratio(active_model_id)
+            tool_ratio = _estimate_ratio(active_model_id)
+            prose_ratio = _conversation_prose_ratio(conversation_id, active_model_id)
             used_tokens = _predict_prompt_tokens(
                 messages, None, 0, _get_tool_schema_tokens(model), tool_ratio, prose_ratio
             )
