@@ -428,8 +428,10 @@ def _static_file(static_root: Path, full_path: str) -> Path | object | None:
     ``static_root`` is already resolved; ``full_path`` is the URL path after its
     leading slash, as the server decoded it. Returns the resolved file, None when
     nothing inside the directory has that name (a client-side route), or
-    ``_OUTSIDE`` when the path is malformed or resolves, symlinks followed, to
-    somewhere outside the directory.
+    ``_OUTSIDE`` when the path is malformed, resolves (symlinks followed) to
+    somewhere outside the directory, or cannot be looked up at all. Every
+    filesystem call is inside the ``try``: Python 3.12's ``is_file`` raises on a
+    name too long for the filesystem where 3.14's returns False.
     """
     if "\x00" in full_path or "\\" in full_path:
         return _OUTSIDE
@@ -438,11 +440,11 @@ def _static_file(static_root: Path, full_path: str) -> Path | object | None:
         return _OUTSIDE
     try:
         resolved = (static_root / full_path).resolve()
+        if not resolved.is_relative_to(static_root):
+            return _OUTSIDE
+        return resolved if resolved.is_file() else None
     except (OSError, RuntimeError, ValueError):
         return _OUTSIDE
-    if not resolved.is_relative_to(static_root):
-        return _OUTSIDE
-    return resolved if resolved.is_file() else None
 
 
 def create_app() -> FastAPI:

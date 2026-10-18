@@ -9,6 +9,7 @@ tests need to send.
 
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 from urllib.parse import unquote
@@ -122,6 +123,22 @@ async def test_symlink_out_of_static_dir_is_not_served(app, raw_path):
     status, _, body = await _get(app, raw_path)
     assert SECRET not in body
     assert status == 404
+
+
+async def test_lookup_error_is_a_404_not_a_500(app, monkeypatch):
+    """An OSError from the file lookup (a name too long, on Python 3.12) is a 404."""
+    long_segment = "x" * 300
+    real_is_file = Path.is_file
+
+    def is_file(self, *args, **kwargs):
+        if long_segment in self.name:
+            raise OSError(errno.ENAMETOOLONG, "File name too long", str(self))
+        return real_is_file(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    status, headers, body = await _get(app, "/" + long_segment)
+    assert status == 404
+    assert json.loads(body) == {"detail": "Not Found"}
 
 
 @pytest.mark.parametrize("raw_path", ["/..", "/docs/..", "/%2e%2e"])
