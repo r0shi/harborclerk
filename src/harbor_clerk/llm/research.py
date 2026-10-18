@@ -1959,36 +1959,27 @@ async def research_stream(
                 logger.error("LLM HTTP error during synthesis: %s", exc)
                 if exc.response.status_code >= 500:
                     report_llm_error(exc.response.status_code)
+                message = server_unready_message(
+                    f"Synthesis failed: LLM error ({exc.response.status_code})", status_code=exc.response.status_code
+                )
                 state.status = "interrupted"
-                state.error = f"Synthesis failed: LLM error ({exc.response.status_code})"
+                state.error = message  # what the stream shows, so a reload shows the same
                 state.notes = notes
                 await session.commit()
-                yield _sse(
-                    {
-                        "type": "error",
-                        "message": server_unready_message(
-                            f"Synthesis failed: LLM error ({exc.response.status_code})",
-                            status_code=exc.response.status_code,
-                        ),
-                    }
-                )
+                yield _sse({"type": "error", "message": message})
                 return
             except httpx.TransportError as exc:
                 # A reset mid-stream (server swapped or crashed while writing) must land here too: escaping to the
                 # outer handler called it an unexpected internal error and marked the task failed (#690).
                 logger.error("LLM transport error during synthesis: %s: %r", type(exc).__name__, exc)
+                message = server_unready_message(
+                    "LLM server is not running. Select and activate a model in Settings.", exc=exc
+                )
                 state.status = "interrupted"
-                state.error = "Synthesis failed: LLM server not reachable"
+                state.error = message  # what the stream shows, so a reload shows the same
                 state.notes = notes
                 await session.commit()
-                yield _sse(
-                    {
-                        "type": "error",
-                        "message": server_unready_message(
-                            "LLM server is not running. Select and activate a model in Settings.", exc=exc
-                        ),
-                    }
-                )
+                yield _sse({"type": "error", "message": message})
                 return
 
             # Verifier loop.

@@ -292,3 +292,29 @@ def test_entrypoint_waits_for_a_model_given_with_model_equals(tmp_path: Path) ->
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+@needs_sh
+def test_entrypoint_names_a_model_file_ending_in_a_slash(tmp_path: Path) -> None:
+    # LLM_MODEL_FILE=name.gguf/ renders -m /models/name.gguf/: a directory. The message names it, so the operator
+    # sees which value is wrong (the app refuses the same value: tests/test_compose_model_file.py).
+    fake, out = _fake_server(tmp_path)
+    bad = f"{tmp_path}/Qwen3.5-4B-Q4_K_M.gguf/"
+    proc = subprocess.Popen(
+        ["sh", str(ENTRYPOINT), "-m", bad, "--port", "8080"], env=_env(fake), stderr=subprocess.PIPE
+    )
+    try:
+        time.sleep(0.5)
+        assert proc.poll() is None and not out.exists()
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+    err = proc.stderr.read()
+    assert b"Qwen3.5-4B-Q4_K_M.gguf/ is a directory" in err and b"ends in '/'" in err, err
+
+
+def test_the_compose_default_context_is_the_apps() -> None:
+    # The app falls back to the compose default when LLM_CONTEXT_TOKENS is 0; it must be the same number.
+    from harbor_clerk.config import COMPOSE_DEFAULT_CONTEXT_TOKENS
+
+    assert int(CONTEXT_EXPR.match(_flag(_llama_args(), "-c")).group(1)) == COMPOSE_DEFAULT_CONTEXT_TOKENS

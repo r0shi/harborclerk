@@ -113,7 +113,8 @@ describe('ModelsPage under Docker Compose (#654)', () => {
       'LLM_MODEL_FILE my-finetune.gguf is not one of the models listed in Settings → Models; set it to one of their files in .env.'
     renderWith(rows('my-finetune.gguf', { active: false }), { state: 'deactivated', setup_hint: hint })
     expect(await screen.findByText(/is not one of the models listed in Settings → Models/)).toBeInTheDocument()
-    expect(screen.queryByText(/starts on its own/)).not.toBeInTheDocument()
+    // Not told to download a file the server already has (the missing-file advice).
+    expect(screen.queryByText(/Download my-finetune\.gguf/)).not.toBeInTheDocument()
   })
 
   it('with LLM_MODEL_FILE empty, says no model runs and how to run one', async () => {

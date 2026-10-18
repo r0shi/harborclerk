@@ -204,6 +204,7 @@ def get_settings() -> Settings:
         # observer), so one of them would silently get env-only values.
         settings = Settings()
         _apply_to(settings)
+        _check_compose_context(settings)
         configured_model_id = settings.llm_model_id
         _apply_model_file(settings)
         if configured_model_id and is_compose(settings) and configured_model_id != settings.llm_model_id:
@@ -214,6 +215,25 @@ def get_settings() -> Settings:
             )
         _settings = settings
     return _settings
+
+
+# What docker-compose.yml passes as `-c` when LLM_CONTEXT_TOKENS is unset (`${LLM_CONTEXT_TOKENS:-8192}`);
+# tests/test_docker_compose_llama.py holds the two together.
+COMPOSE_DEFAULT_CONTEXT_TOKENS = 8192
+
+
+def _check_compose_context(settings: Settings) -> None:
+    """Under Compose, LLM_CONTEXT_TOKENS=0 is a mistake: llama-server reads `-c 0` as the model's training context
+    (262,144 for Qwen3.5: a KV cache the container likely cannot hold), while the app would budget from the memory
+    arithmetic, so the two would diverge. Compose interpolation cannot refuse a 0, so the app says so and budgets
+    to the compose default instead, the smaller and safer of the two."""
+    if is_compose(settings) and settings.llm_context_tokens <= 0:
+        logger.error(
+            "LLM_CONTEXT_TOKENS=0 under Docker Compose: llama-server runs `-c 0` at the model's full training context; "
+            "set LLM_CONTEXT_TOKENS in .env. Budgeting prompts to %d tokens.",
+            COMPOSE_DEFAULT_CONTEXT_TOKENS,
+        )
+        settings.llm_context_tokens = COMPOSE_DEFAULT_CONTEXT_TOKENS
 
 
 def is_compose(settings: Settings) -> bool:
@@ -237,6 +257,11 @@ def no_model_message(settings: Settings) -> str:
     if not is_compose(settings):
         return NO_MODEL_MESSAGE
     filename = compose_model_file(settings)
+    if settings.llm_model_file.endswith("/"):
+        return (
+            f"No local model is configured: LLM_MODEL_FILE {settings.llm_model_file} ends in '/'; "
+            "set it to a model's file name in .env."
+        )
     if not filename:
         return "No local model is configured: LLM_MODEL_FILE is empty in .env."
     from harbor_clerk.llm.models import model_for_file  # llm.models imports nothing from this package
@@ -252,8 +277,9 @@ def no_model_message(settings: Settings) -> str:
 
 def _normalised_model_file(value: str) -> str:
     """LLM_MODEL_FILE as a file name in the models volume: `./name` is `name`, as llama-server reads
-    `/models/./name`. Anything with a directory left in it is kept as written: no curated file is in one."""
-    if not value:
+    `/models/./name`. Anything with a directory left in it is kept as written: no curated file is in one. A value
+    ending in "/" names a directory, which the entrypoint will not start llama-server on: no file ("")."""
+    if not value or value.endswith("/"):
         return ""
     normalised = os.path.normpath(value)
     return normalised if os.path.basename(normalised) == normalised else value
@@ -293,7 +319,13 @@ def _apply_model_file(settings: Settings) -> None:
     if not filename:
         if _model_file_reported != ("", "none"):
             _model_file_reported = ("", "none")
-            logger.info("LLM_MODEL_FILE is empty: no local model is configured, and LLM_MODEL_ID is ignored")
+            if settings.llm_model_file:
+                logger.error(
+                    "LLM_MODEL_FILE %r ends in '/', a directory: no local model is configured, and LLM_MODEL_ID is ignored",
+                    settings.llm_model_file,
+                )
+            else:
+                logger.info("LLM_MODEL_FILE is empty: no local model is configured, and LLM_MODEL_ID is ignored")
         settings.llm_model_id = ""
         return
     from harbor_clerk.llm.models import model_for_file  # llm.models imports nothing from this package

@@ -230,3 +230,32 @@ def test_outside_compose_every_failure_keeps_its_text() -> None:
     assert server_unready_message("raw", exc=httpx.ConnectError("refused")) == "raw"
     assert server_unready_message("raw", exc=httpx.ReadTimeout("slow")) == "raw"
     assert server_unready_message("LLM error (503)", status_code=503) == "LLM error (503)"
+
+
+@pytest.mark.parametrize(
+    ("send", "expected"),
+    [
+        pytest.param(AsyncMock(side_effect=httpx.ConnectError("refused")), MODEL_STARTING_MESSAGE, id="refused"),
+        pytest.param(AsyncMock(side_effect=httpx.ReadTimeout("slow")), MODEL_STOPPED_MESSAGE, id="read-timeout"),
+        pytest.param(AsyncMock(side_effect=lambda *a, **k: _loading()), MODEL_STARTING_MESSAGE, id="loading"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_research_stores_the_error_it_shows(
+    db_session,
+    admin_user,
+    unscoped_research_state,  # noqa: F811
+    mock_research_session_factory,  # noqa: F811
+    compose,
+    send,
+    expected,
+):
+    # A reload reads state.error: it must say what the stream said, not an older internal wording.
+    from harbor_clerk.models.research_state import ResearchState
+
+    conv, _ = unscoped_research_state
+    errors = await _research(conv, admin_user, send)
+    assert errors and errors[-1]["message"] == expected
+    async with research_module.async_session_factory() as session:
+        state = await session.get(ResearchState, conv.conversation_id)
+    assert state.error == expected

@@ -23,7 +23,7 @@ from enum import Enum
 
 import httpx
 
-from harbor_clerk.config import get_settings, refresh_llm_settings
+from harbor_clerk.config import get_settings, is_compose, no_model_message, refresh_llm_settings
 from harbor_clerk.llm.health import (
     DOCUMENT_WAIT_SECONDS,
     READY,
@@ -1105,8 +1105,8 @@ def generate_summary(
 
     if not settings.llm_model_id:
         logger.warning(
-            "No language model active and Apple Intelligence unavailable — "
-            "document summary will be lower quality. Activate a model in System Settings > Models."
+            "No language model active and Apple Intelligence unavailable — document summary will be lower quality. %s",
+            no_model_message(settings) if is_compose(settings) else "Activate a model in System Settings > Models.",
         )
 
     return _extractive_fallback(chunks, max_chars), "extractive"

@@ -6,25 +6,26 @@ in `docs/architecture.md#ingestion-pipeline-stages`.
 
 ## Ingestion pipeline
 
-- **Every stage is idempotent** and guarded by a row-level lock on `(doc_id, stage)` via `SELECT ... FOR UPDATE SKIP
-  LOCKED`.
-- **Always call `mark_stage_done` on every exit path, including early returns.** An early `return` on a pipeline-seq
-  race once skipped it, leaving the job row `running` until the reaper fired 20 minutes later — and re-enqueue is
+- **Every stage is idempotent** and guarded by a row-level lock on
+  `(doc_id, stage)` via `SELECT ... FOR UPDATE SKIP LOCKED`.
+- **Always call `mark_stage_done` on every exit path, including early returns.**
+  An early `return` on a pipeline-seq race once skipped it, leaving the job row
+  `running` until the reaper fired 20 minutes later — and re-enqueue is
   suppressed while a row is `running`, so the document simply stalled.
-- **Sequential prefix:** `extract` → `ocr` → `chunk`. Then `entities` and `embed` fan out and **gate `finalize`**.
-- **`summarize` is a background stage.** It runs on the `llm` queue and does **not** gate `finalize`; a document is
-  searchable before its summary exists. See the rationale comment in `worker/pipeline.py`.
-- **Three queues: `io`, `cpu`, `llm`.** A new stage must be assigned to one, and every queue must have a subscriber —
-  a queue nobody listens to silently swallows work (this shipped once; `tests/test_docker_compose_queues.py` now
-  guards it).
+- **Sequential prefix:** `extract` → `ocr` → `chunk`. Then `entities` and
+  `embed` fan out and **gate `finalize`**.
+- **`summarize` is a background stage.** It runs on the `llm` queue and does
+  **not** gate `finalize`; a document is searchable before its summary exists. See the rationale comment in `worker/pipeline.py`.
+- **Three queues: `io`, `cpu`, `llm`.** A new stage must be assigned to one, and
+  every queue must have a subscriber — a queue nobody listens to silently
+  swallows work (this shipped once; `tests/test_docker_compose_queues.py` now guards it).
 - **OCR is conditional** and runs in-process (pypdfium2 + Tesseract). It never calls Tika.
 
 ## Extraction
 
 Three paths, not two. Plain-text formats decode directly via
 `file_types.PLAIN_TEXT_EXTENSIONS`; markdown has its own branch preserving
-heading structure (`worker/markdown_extract.py`); everything else goes through
-Tika. Don't invent a fourth.
+heading structure (`worker/markdown_extract.py`); everything else goes through Tika. Don't invent a fourth.
 
 ## Storage
 
@@ -47,8 +48,7 @@ fetched and stored, because there is no file on disk to reference.
 ## Data model
 
 - The `documents` model is **flat**. There is no version table; reprocessing
-  updates the row in place. Same SHA on a known path is a no-op; a changed SHA
-  reprocesses.
+  updates the row in place. Same SHA on a known path is a no-op; a changed SHA reprocesses.
 - `chunks.embedding` is `vector(768)` (Granite-R2). `schema_metadata` records
   the embedding model and dimension, and startup refuses a mismatch — changing
   the model requires a migration, not just a config edit.
@@ -56,36 +56,39 @@ fetched and stored, because there is no file on disk to reference.
 
 ## The model registry states memory, and Swift mirrors it
 
-Every `ModelInfo` in `llm/models.py` carries `kv_bytes_per_token` (and `kv_fixed_bytes` for sliding-window or
-linear-attention layers), read from the GGUF header and checked against the file by `tests/test_llm_models.py` when it
-is downloaded. `memory_bytes`, `min_ram_gb` and `max_context` derive from them; the API reports them, activation
-refuses a model whose weights alone do not fit (no override: the launcher would refuse it too), and the macOS launcher
-clamps `-c` to what fits or refuses to launch. `context_window` is what the app passes as `-c`, so raising it is a
-memory change, not a documentation fix. Chat, research and summarize budget prompts through `context_budget()`, never
-the registry window: it is per request, `-c` divided by `-np`, because a slot divides the context rather than adding
-memory (every model runs one slot). A context is sized to leave a tenth of the Mac free (`FREE_MEMORY_DIVISOR`): the
-headroom is what the host *uses*, and filling the rest gave the mini's 35B a context Metal refused (#684). The margin
-never refuses a model; a tight fit runs at `TIGHT_FIT_CONTEXT`. **A pinned context is a claim until the model has been
-loaded at it.** The prompt cache (`--cache-ram`) gets what is left, up to 8 GiB: margin, then context, then cache
-(`prompt_cache_mib`, `MemoryBudget.promptCacheMiB`). That bound is safe only because the pin skips a state larger than
-the limit; a pin bump re-reads `server_prompt_cache::alloc` (`PROMPT_CACHE_SEMANTICS_READ_AT`). Context checkpoints
-(copies of a sliding-window cache or recurrent state, 32 per slot by default) are bounded at `LLAMA_CTX_CHECKPOINTS`
-and budgeted: `fixed_bytes(model)` is what every memory figure uses, never `kv_fixed_bytes` alone. A new model states
-its `checkpoint_bytes`, in the registry and in Swift. The Swift mirror (`Settings.swift`: filenames, slots, windows,
-`kvBytesPerToken`, `kvFixedBytes`, `MemoryBudget`) is held to the registry by a test; a new model needs all of them.
-`HC_GGUF_LIVE=1` checks headers from the Hub for models not downloaded.
+Every `ModelInfo` in `llm/models.py` carries `kv_bytes_per_token` (and
+`kv_fixed_bytes` for sliding-window or linear-attention layers), read from the
+GGUF header and checked against the file by `tests/test_llm_models.py` when it
+is downloaded. `memory_bytes`, `min_ram_gb` and `max_context` derive from them;
+the API reports them, activation refuses a model whose weights alone do not fit
+(no override: the launcher would refuse it too), and the macOS launcher clamps
+`-c` to what fits or refuses to launch. `context_window` is what the app passes
+as `-c`, so raising it is a memory change, not a documentation fix. Chat,
+research and summarize budget prompts through `context_budget()`, never the
+registry window: it is per request, `-c` divided by `-np`, because a slot
+divides the context rather than adding memory (every model runs one slot).
+A context is sized to leave a tenth of the Mac free (`FREE_MEMORY_DIVISOR`): the
+headroom is what the host *uses*, and filling the rest gave the mini's 35B a
+context Metal refused (#684). The margin never refuses a model; a tight fit runs
+at `TIGHT_FIT_CONTEXT`. **A pinned context is a claim until the model has been
+loaded at it.** The prompt cache (`--cache-ram`) gets what is left, up to 8 GiB:
+margin, then context, then cache (`prompt_cache_mib`, `MemoryBudget.promptCacheMiB`). That bound is
+safe only because the pin skips a state larger than the limit; a pin bump
+re-reads `server_prompt_cache::alloc` (`PROMPT_CACHE_SEMANTICS_READ_AT`). Context
+checkpoints (copies of a sliding-window cache or recurrent state, 32 per slot
+by default) are bounded at `LLAMA_CTX_CHECKPOINTS` and budgeted:
+`fixed_bytes(model)` is what every memory figure uses, never `kv_fixed_bytes`
+alone. A new model states its `checkpoint_bytes`, in the registry and in Swift. The Swift mirror
+(`Settings.swift`: filenames, slots, windows, `kvBytesPerToken`,
+`kvFixedBytes`, `MemoryBudget`) is held to the registry by a test; a new model
+needs all of them. `HC_GGUF_LIVE=1` checks headers from the Hub for models not downloaded.
 
 ## Docker Compose follows LLM_MODEL_FILE (#654)
 
-Every Compose behaviour is gated on `config.is_compose()`: `HC_DEPLOYMENT=compose` (set only by docker-compose.yml, so a
-copied `.env` cannot turn a source run into Compose) and no native config.json. llama-server runs one model, `-m
-/models/$LLM_MODEL_FILE`, at `-c $LLM_CONTEXT_TOKENS`; without `-m` this llama.cpp is a router that refuses every request
-the app sends. `llm_model_id` is that file's curated id while the file is in the volume (`_apply_model_file`, on every
-`refresh_llm_settings()`); Activate, Deactivate and deleting the served file are refused. Under Compose
-`effective_context` is `min(window without YaRN, LLM_CONTEXT_TOKENS)`. Summaries wait for the server within one budget of
-90 s of *waiting* per document (`health.document_wait_budget`: charged only inside `wait_for_server`, never with inference
-or yields), with no memory across documents: a "failed last time" flag once stored whole slow loads extractive.
-`tests/test_compose_llm_ready.py` and `tests/test_docker_compose_llama.py` hold this.
+Gated on `config.is_compose()` (HC_DEPLOYMENT=compose, set only by docker-compose.yml; no native config.json). llama-server
+runs `-m /models/$LLM_MODEL_FILE -c $LLM_CONTEXT_TOKENS` (without `-m` it is a router that refuses the app); `llm_model_id` is
+that file's curated id while it is in the volume; Activate, Deactivate and deleting it are refused; `effective_context` is
+min(window without YaRN, LLM_CONTEXT_TOKENS). Summaries wait at most 90 s of *waiting* per document, no cross-document memory.
 
 ## API keys over REST
 
@@ -165,8 +168,7 @@ while the human keeps the folder leaf in chat citations and the whole error text
 in a tool chip, exactly as the web app shows them. The test describes the
 credential, not the client: any JWT holder on the MCP port is the human, so a
 harness that wants the agent view (the eval runner, a scripted client) must
-authenticate with an API key — `answer_eval.py` warns when it falls back to a
-login.
+authenticate with an API key — `answer_eval.py` warns when it falls back to a login.
 
 Concretely, in `mcp_server.py`: `_human_session()` is the predicate; every tool
 loads its SourceRef context through `_source_context()`, which passes

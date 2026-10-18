@@ -148,11 +148,41 @@ def test_yarn_does_not_stretch_the_compose_context(compose_env: Path, monkeypatc
     assert context_budget(model, True) == 32768
 
 
-def test_without_a_server_context_the_memory_arithmetic_decides(compose_env: Path, monkeypatch) -> None:
+def test_a_zero_context_under_compose_is_refused_for_the_compose_default(
+    compose_env: Path, monkeypatch, caplog
+) -> None:
+    # llama-server reads `-c 0` as the model's training context; the app must not budget from anything else
+    # bigger than the compose default, and says so.
     model = get_model("qwen35-4b")
     monkeypatch.setenv("LLM_CONTEXT_TOKENS", "0")
     config._settings = None
+    with caplog.at_level(logging.ERROR, logger="harbor_clerk.config"):
+        assert config.get_settings().llm_context_tokens == config.COMPOSE_DEFAULT_CONTEXT_TOKENS == 8192
+    assert "LLM_CONTEXT_TOKENS=0 under Docker Compose" in caplog.text
+    assert effective_context(model, False, ram_bytes=32 * GIB) == 8192
+
+
+def test_outside_compose_a_zero_context_means_not_set(monkeypatch) -> None:
+    # Unset (0) is the macOS app's normal state: the launcher sizes -c, and the memory arithmetic budgets.
+    model = get_model("qwen35-4b")
+    monkeypatch.setenv("LLM_CONTEXT_TOKENS", "0")
+    config._settings = None
+    assert config.get_settings().llm_context_tokens == 0
     assert effective_context(model, False, ram_bytes=32 * GIB) == max_context(model, 32 * GIB)
+
+
+def test_a_model_file_ending_in_a_slash_is_not_configured(compose_env: Path, monkeypatch, caplog) -> None:
+    # `/models/name.gguf/` is a directory: the entrypoint will not start llama-server on it, so the app must not
+    # claim the model is active, and says why.
+    (compose_env / MODEL_FILE).write_bytes(b"GGUF")
+    monkeypatch.setenv("LLM_MODEL_FILE", f"{MODEL_FILE}/")
+    config._settings = None
+    with caplog.at_level(logging.ERROR, logger="harbor_clerk.config"):
+        assert config.get_settings().llm_model_id == ""
+    assert f"{MODEL_FILE}/" in caplog.text
+    assert config.no_model_message(config.get_settings()) == (
+        f"No local model is configured: LLM_MODEL_FILE {MODEL_FILE}/ ends in '/'; set it to a model's file name in .env."
+    )
 
 
 def test_the_macos_app_keeps_its_launchers_context(compose_env: Path, monkeypatch, tmp_path: Path) -> None:

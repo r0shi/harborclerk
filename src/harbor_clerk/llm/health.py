@@ -111,6 +111,9 @@ POLL_SECONDS = 2.0
 # stability check, a restart), so "it failed for the last document" cannot tell a crash loop from a slow
 # load, and treating a load as a failure stored every document claimed during it extractive (#654 review).
 DOCUMENT_WAIT_SECONDS = 90.0
+# Less than this left in a budget is spent: float residue (90 minus a run of 2 s charges) must not keep a wait
+# going on a sleep of 1e-14 s that a clock cannot even register.
+_BUDGET_EPSILON_SECONDS = 0.01
 _state_probe: tuple[float, str] | None = None
 
 
@@ -205,7 +208,7 @@ def wait_for_server(*, fresh: bool = False) -> str:
     budget of its own. READY at once, unprobed, outside Compose."""
     state = llm_server_state(fresh=fresh)
     budget = _document_budget.get() or WaitBudget(DOCUMENT_WAIT_SECONDS)
-    while state != READY and budget.remaining() > 0:
+    while state != READY and budget.remaining() > _BUDGET_EPSILON_SECONDS:
         started = time.monotonic()
         time.sleep(min(POLL_SECONDS, budget.remaining()))
         state = llm_server_state(fresh=True)

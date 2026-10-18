@@ -5,6 +5,7 @@ import { get } from '../api'
 import { useOptionalLLMStatus } from './LLMStatusBanner'
 import { LocalAISetupPrompt } from './LocalAISetupPrompt'
 import OnboardingWizard from './OnboardingWizard'
+import { composeSetupStep } from '../hooks/useLLMStatus'
 
 vi.mock('./LLMStatusBanner', () => ({ useOptionalLLMStatus: vi.fn() }))
 vi.mock('../api', () => ({
@@ -98,5 +99,27 @@ describe('local AI setup under Docker Compose (#654)', () => {
     useOptionalLLMStatusMock.mockReturnValue(null)
     renderWizardAtModels('macos')
     expect(screen.getByText('Download a model that fits this Mac.')).toBeInTheDocument()
+  })
+
+  it('onboarding on Docker once the status says it is not Compose keeps the Mac path', () => {
+    // WATCH_ROOT makes the platform "docker" in a source run or a plain `docker run` too, where Activate works.
+    useOptionalLLMStatusMock.mockReturnValue({
+      state: 'deactivated',
+      model_id: null,
+      model_name: null,
+      compose_model_file: null,
+    })
+    renderWizardAtModels('docker')
+    expect(screen.getByText('Download a model that fits this Mac.')).toBeInTheDocument()
+    expect(screen.queryByText(/LLM_MODEL_FILE/)).not.toBeInTheDocument()
+  })
+
+  it('composeSetupStep stands in for the status on Docker only until the status is known', () => {
+    expect(composeSetupStep(null, 'docker')).toMatch(/LLM_MODEL_FILE/)
+    expect(composeSetupStep({ state: 'unknown', model_id: null, model_name: null }, 'docker')).toMatch(/LLM_MODEL_FILE/)
+    expect(
+      composeSetupStep({ state: 'ready', model_id: 'x', model_name: 'X', compose_model_file: null }, 'docker'),
+    ).toBeNull()
+    expect(composeSetupStep(null, 'macos')).toBeNull()
   })
 })

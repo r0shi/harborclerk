@@ -369,6 +369,26 @@ def test_the_stage_still_classifies_when_the_summary_fails(monkeypatch) -> None:
     assert stage._summary_and_type(uuid.uuid4(), CHUNKS, PDF) == (None, None, "Invoice")
 
 
+def test_float_residue_in_the_budget_does_not_keep_a_wait_spinning(compose, clock, monkeypatch) -> None:
+    # The review's case: a connection cut mid-request (RemoteProtocolError) takes the jittered retry delay (seed 1),
+    # which leaves the clock at a fraction; every later 2 s charge is then (t + 2) - t, a hair under 2, and the
+    # budget ends at about 1e-14 s left. Waiting on that charged nothing and spun; less than 10 ms left is spent.
+    import random
+
+    random.seed(1)
+    monkeypatch.setattr(health.httpx, "get", Server(clock))  # nothing listening, ever
+    replies = iter([httpx.RemoteProtocolError("peer closed connection")])
+
+    def post(url, **kwargs):
+        exc = next(replies, None) or httpx.ConnectError("refused")
+        raise exc
+
+    monkeypatch.setattr(summarize.httpx, "post", post)
+    assert summarize._call_llm("system", "user", max_attempts=3, phase="test") is None
+    assert len(clock.slept) < 100, f"{len(clock.slept)} sleeps: the wait spun on float residue"
+    assert clock.waited() <= BUDGET_SECONDS + 5 + 10 + health.POLL_SECONDS  # the budget plus one jittered delay
+
+
 # --- the budget is waiting time, not elapsed time ---
 
 LONG_CHUNKS = ["A long contract clause about termination, notice and the obligations that survive it. " * 12] * 120

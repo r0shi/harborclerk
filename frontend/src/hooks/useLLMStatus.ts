@@ -120,6 +120,10 @@ export function composeSetupStep(status: LLMStatus | null, platform?: 'macos' | 
       `The model is chosen by LLM_MODEL_FILE in .env${status.compose_model_file ? ` (${status.compose_model_file})` : ''}; download it in Settings → Models.`
     )
   }
-  if (platform === 'docker') return 'Download the model LLM_MODEL_FILE in .env names, in Settings → Models.'
+  // Platform 'docker' only means WATCH_ROOT is set, which a source run or a plain `docker run` also does, and
+  // Activate works there. So the Compose wording stands in only until the status says which it is.
+  const statusKnown = status != null && status.state !== 'unknown'
+  if (!statusKnown && platform === 'docker')
+    return 'Download the model LLM_MODEL_FILE in .env names, in Settings → Models.'
   return null
 }

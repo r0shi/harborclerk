@@ -69,8 +69,9 @@ whole() {
 if ! whole; then
     case "$model" in
     */)
-        echo "llama-server-entrypoint: no model configured (LLM_MODEL_FILE is empty). Set it in .env to a" \
-            "curated model's file and run 'docker compose up -d'. llama-server is not started." >&2
+        echo "llama-server-entrypoint: no model configured: $model is a directory (LLM_MODEL_FILE is empty, or" \
+            "ends in '/'). Set it in .env to a curated model's file and run 'docker compose up -d'. llama-server" \
+            "is not started." >&2
         ;;
     *)
         echo "llama-server-entrypoint: waiting for $model. Download the model from Settings > Models in the" \
