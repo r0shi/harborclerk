@@ -67,10 +67,9 @@ def truth_scores(run_dir: Path, key: dict) -> dict[str, dict]:
         entry = key.get(item["question_id"])
         if entry is None:
             continue
-        # The text, with the citations as the dictionary for a document id it wrote out (a citation the answer does
-        # not mention is a retrieval hit, not a name), and the question, which lets a list answer's heading deny the
-        # question's category (#816): the same inputs sweep.key_score_cell gives the scorer.
-        detail = key_score(entry, item["answer"], titles_by_doc_id(item.get("citations")), item.get("question"))
+        # The text, with the citations as the dictionary for a document id it wrote out; a citation the answer does
+        # not mention is a retrieval hit, not a name (sweep.key_score_cell scores the same way).
+        detail = key_score(entry, item["answer"], titles_by_doc_id(item.get("citations")))
         out[item["key"]] = {
             "truth": detail["score"],
             "model": item["model"],

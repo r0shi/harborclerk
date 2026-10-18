@@ -215,19 +215,3 @@ def test_the_truth_score_resolves_a_document_id_through_the_responses_citations(
         "cuad__m1__cuad-key-1__standard": 1.0,
         "cuad__m2__cuad-key-1__standard": 0.0,
     }
-
-
-def test_the_truth_score_reads_the_question_so_a_heading_can_deny_its_category(tmp_path):
-    """#816: the baseline's question goes to the scorer, as the sweep's does, so "## Not a widget clause" takes its
-    section out of a list answer to a question about widget clauses."""
-    run = tmp_path / "run"
-    (run / "baselines" / "cuad").mkdir(parents=True)
-    key = {"cuad-key-1": {"kind": "list", "positives": ["A_x"], "universe": ["A_x", "B_y"]}}
-    question = "Which contracts contain a widget clause?"
-    (run / "baselines" / "cuad" / "cuad-key-1.json").write_text(json.dumps({"question": question, "answer": "A_x."}))
-    folder = run / "responses" / "cuad" / "m1"
-    folder.mkdir(parents=True)
-    answer = "Found one.\n\n## Matches\n\n- A_x\n\n## Not a widget clause\n\n- B_y\n"
-    response = {"corpus": "cuad", "model": "m1", "question_id": "cuad-key-1", "depth": "standard"}
-    (folder / "cuad-key-1__standard.json").write_text(json.dumps({**response, "result": {"answer": answer}}))
-    assert ja.truth_scores(run, key)["cuad__m1__cuad-key-1__standard"]["truth"] == 1.0

@@ -26,14 +26,6 @@ SID, EID, PID = (
     "a30ad65d-2370-4336-87f9-0f8823e8e096",
 )
 CONTRACTS, IDS = [STAAR, EDIETS, PAPA], {SID: STAAR, EID: EDIETS, PID: PAPA}
-# The keyed questions, as `questions/keyed/*.yaml` asks them: a denial of the category is read against these.
-Q15 = "Which contracts contain a clause prohibiting the solicitation of the other party's customers?"
-Q16 = "Which contracts contain a non-disparagement clause? List every one you can find."
-Q18 = "Which contracts contain a right of first refusal, first offer or first negotiation? List every one you can find."
-Q19 = "Which contracts contain a requirement that a party maintain insurance? List every one you can find."
-Q20 = "Which contracts are governed by Delaware law? List every one you can find."
-Q_CAMPAIGNS = "Which campaigns have a marketing brief that targets Acme Corp?"
-Q16_FR = "Quels contrats contiennent une clause de non-dénigrement ?"
 INVOICES = ["0012_invoice", "0048_invoice", "0050_invoice"]
 INVOICE_ALIASES = {
     "0012_invoice": ["17195.51", "17195"],
@@ -80,6 +72,8 @@ def contracts(text: str) -> set[str]:
         "Excluded from the tally",  # not observed
         "Excluded from the total",  # not observed
         "Excluded from my count",  # review 3
+        "Excluded from the final list",  # review 5: one word may stand before the list word
+        "Not included in the final count",  # review 5
         "Not included in the list",  # review 3
         "Non-match (excluded from the tally)",  # review 3
         "Not a match for the question as asked",  # review 3
@@ -180,6 +174,8 @@ def test_a_label_that_opens_with_or_whose_leading_clause_ends_with_a_reject_phra
         "Exclusive licenses",  # review 3
         "Rejection rights",  # review 3
         "Excluded by the key",  # review 3: "excluded by" what is not the list
+        "Exclusions from the liability cap",  # review 5: "exclusions" before a preposition is read as a participle is
+        "Rejected by the licensee",  # review 5
         "Not included in the cap",  # review 3
         # Accepted false keeps (review 3): the reject phrase is not where the rule reads it.
         "Not relevant / excluded",
@@ -245,47 +241,30 @@ def test_a_closing_phrase_rejects_only_after_words_that_name_or_frame_the_items(
 
 
 @pytest.mark.parametrize(
-    ("label", "question", "rejects"),
+    "label",
     [
-        # A denial rejects only when the denied phrase's last content word is one of the question's.
-        ("Not a non-disparagement clause (word appears only incidentally)", Q16, True),
-        ("B. Not a non-disparagement clause", Q16, True),  # review 3: numbering read past
-        ("Not an Acme campaign", Q_CAMPAIGNS, True),
-        ("Pas une clause de non-dénigrement", Q16_FR, True),  # review 3, French
-        ("Ce n’est pas une clause de non-dénigrement", Q16_FR, True),  # a typographic apostrophe
-        ("Not a ROFR (rights of first negotiation)", Q18, False),  # review 3: shares nothing with the question
-        ("Not a ROFR", Q18, False),
-        ("Not a Delaware entity (Delaware law still governs)", Q20, False),  # review 3
-        ("Not a Delaware entity", Q20, False),  # the last content word, "entity", is not the question's
-        ("Not a minimum-coverage requirement (amount unspecified)", Q19, False),  # review 3
-        ("Not a right of first refusal — a right of first offer", Q18, False),  # review 3: it says what it is
-        # Several alternatives: a denial of one leaves the item free to qualify under another (review 4).
-        ("Not a right of first refusal", Q18, False),
-        ("Not a right of first refusal (right of first negotiation only)", Q18, False),  # review 4
-        ("Not a right of first refusal (ROFN only)", Q18, False),  # review 4
-        ("Not a right of first offer", Q18, False),  # review 4
-        ("Not a first-refusal right; a first negotiation right", Q18, False),  # review 4
-        ("Not a right of first refusal, first offer or first negotiation", Q18, True),
-        ("Not a ROFR, ROFO or ROFN", Q18, True),
-        ("Not a first-refusal, first-offer or first-negotiation right", Q18, True),
-        (
-            "Not an irrevocable or perpetual license",
-            "Which contracts contain an irrevocable or perpetual license grant?",
-            True,
-        ),
-        ("Not an irrevocable license", "Which contracts contain an irrevocable or perpetual license grant?", False),
-        ("Not a Delaware law clause", Q20, True),  # review 4: one alternative, named
-        ("Not an insurance requirement per se", Q19, False),  # review 4: "per se" is what is denied
-        ("Not an exclusive license, but perpetual", Q16, False),  # review 3
-        ("Not a party but bound", Q15, False),  # review 2
-        ("Not a classic non-disparagement covenant", Q16, False),  # a degree or a form
-        ("Not a non-disparagement clause (but still a covenant not to disparage)", Q16, False),  # it goes on
-        ("Not a typical ROFR", Q18, False),
-        ("Not a non-disparagement clause", None, False),  # no question, no denial
+        # A denial of a category is not read: it names a subtype as readily as the category (review 5).
+        "Not a New York law contract (Delaware governs; New York is only the forum)",  # review 5
+        "Not a liability insurance requirement (key-man life insurance only)",  # review 5
+        "Not a post-termination non-disparagement clause (during the term only)",  # review 5
+        "Not a right of first refusal (ROFN only)",  # review 4
+        "Not a ROFR (rights of first negotiation)",  # review 3
+        "Not a Delaware entity (Delaware law still governs)",  # review 3
+        # ...so a denial of the question's own category is counted: accepted false keeps.
+        "Not a non-disparagement clause (word appears only incidentally)",  # the rerun's cuad-key-16
+        "B. Not a non-disparagement clause",
+        "Not an Acme campaign",
+        "Pas une clause de non-dénigrement",
+        "Ce n’est pas une clause de non-dénigrement",
     ],
 )
-def test_a_denial_rejects_only_the_questions_own_category(label, question, rejects):
-    assert rejecting_label(label, question) is rejects
+def test_a_denial_of_a_category_does_not_reject(label):
+    assert not rejecting_label(label)
+
+
+@pytest.mark.parametrize("label", ["Not a match", "Not a match for the question as asked", "Does not qualify"])
+def test_a_reject_phrase_that_names_no_category_still_rejects(label):
+    assert rejecting_label(label)
 
 
 # ── sections and lines ──
@@ -297,8 +276,8 @@ def test_a_hedged_or_prohibiting_section_counts_and_a_rejecting_one_does_not():
         "## Borderline / related (mention Acme but not a classic Acme brief)\n\n- Skylight\n\n"
         "## Not an Acme campaign\n\n- Northstar\n"
     )
-    assert named_contracts(text, CAMPAIGNS, CAMPAIGN_ALIASES, None, Q_CAMPAIGNS) == {HARBOUR, SKYLIGHT}
-    assert named(text) == set(CAMPAIGNS), "without the question the denial is not read"
+    assert named(text) == set(CAMPAIGNS), "a hedge counts, and so does a denial of the category"
+    assert named(text.replace("Not an Acme campaign", "Excluded")) == {HARBOUR, SKYLIGHT}
     for heading in (
         "Irrevocable licenses (may not be revoked)",  # review 1
         "One-way (not mutual)",  # review 1
@@ -307,12 +286,13 @@ def test_a_hedged_or_prohibiting_section_counts_and_a_rejecting_one_does_not():
         "Customer non-solicitation (employees excluded)",  # review 2
         "Delaware law (conflict-of-law rules excluded)",  # review 2
         "Third-party sale once the first offer is rejected",  # review 3
-        "Not a ROFR (rights of first negotiation)",  # review 3, under Q18 below
+        "Not a ROFR (rights of first negotiation)",  # review 3
+        "Not a New York law contract (Delaware governs; New York is only the forum)",  # review 5
     ):
         answer = (
             f"I found three.\n\n## Customer non-solicitation\n\n- `{SID}`\n\n## {heading}\n\n- `{EID}`\n- `{PID}`\n"
         )
-        assert named_contracts(answer, CONTRACTS, None, IDS, Q18) == {STAAR, EDIETS, PAPA}, heading
+        assert contracts(answer) == {STAAR, EDIETS, PAPA}, heading
     rejecting = f"Two.\n\n## Matches\n- `{EID}`\n\n## Excluded from consideration\n- `{SID}`\n"  # review 3
     assert contracts(rejecting) == {EDIETS}
     assert contracts(rejecting.replace("from consideration", "from the cap")) == {STAAR, EDIETS}
@@ -367,7 +347,7 @@ def test_a_hedged_or_prohibiting_section_counts_and_a_rejecting_one_does_not():
         ),  # review 3
         # A label longer than a label is not one: the line is kept.
         (
-            "Harbour Lights.\nExcluded because they target Northwind and Polestar Industries instead: Skylight.",
+            "Harbour Lights.\nExcluded because they target Northwind and Polestar Industries rather than Acme Corp instead: Skylight.",
             {HARBOUR, SKYLIGHT},
         ),
         ("Harbour Lights.\nExcluded because they target Northwind: Skylight.", {HARBOUR}),
@@ -500,7 +480,7 @@ def test_a_rejecting_label_followed_by_none_rejects_nothing(text):
     ],
 )
 def test_none_of_and_a_bare_no_are_not_the_escape(text):
-    assert named_contracts(text, CONTRACTS, None, IDS, Q16) == {STAAR}
+    assert contracts(text) == {STAAR}
 
 
 def test_a_rejecting_label_not_followed_by_none_still_rejects():
@@ -606,20 +586,21 @@ KEY16_POSITIVES = [
 ]
 
 
-def test_fable_rerun_cuad_key_16_counts_its_borderline_section_and_not_its_rejected_one():
+def test_fable_rerun_cuad_key_16_counts_its_borderline_section():
     """bench-20261015-2259-cuad-fable-rerun: three headings. "Borderline / related provisions (contain disparagement
     language but not a classic non-disparagement covenant)" holds Berkshire Hills, Cybergy and Digital Cinema, CUAD
     positives, which #814's rule dropped ("borderline" and "not a"): 0.43. "Not a non-disparagement clause" holds
-    eDiets, which #814's rule kept."""
+    eDiets, which a denial of the category would reject; denials are not read, so it is counted (an accepted false
+    keep): 0.63."""
     answer = _fixture("fable-rerun-cuad-key-16.md")
     universe = sorted(set(KEY16_DOC_IDS.values()) | set(KEY16_POSITIVES))
-    got = named_contracts(answer, universe, None, KEY16_DOC_IDS, Q16)
+    got = named_contracts(answer, universe, None, KEY16_DOC_IDS)
     berkshire, cybergy, cinema = KEY16_POSITIVES[:3]
     assert {berkshire, cybergy, cinema} <= got
-    assert KEY16_DOC_IDS["3c40cba1-a4cc-47f4-a1a6-2011dc83888a"] not in got, "eDiets is under the rejecting heading"
+    assert KEY16_DOC_IDS["3c40cba1-a4cc-47f4-a1a6-2011dc83888a"] in got, "a denial is not read"
     entry = {"kind": "list", "positives": KEY16_POSITIVES, "universe": universe}
-    result = score(entry, answer, KEY16_DOC_IDS, Q16)
-    assert (result["named"], result["right"]) == (9, 6) and result["score"] == pytest.approx(2 / 3)
+    result = score(entry, answer, KEY16_DOC_IDS)
+    assert (result["named"], result["right"]) == (10, 6) and result["score"] == pytest.approx(12 / 19)
 
 
 def test_the_rerun_cuad_key_16_reads_the_same_with_its_table_written_as_bullets():
@@ -633,10 +614,9 @@ def test_the_rerun_cuad_key_16_reads_the_same_with_its_table_written_as_bullets(
             line = "- " + " — ".join(cell.strip() for cell in line.strip("|").split("|"))
         lines.append(line)
     universe = sorted(set(KEY16_DOC_IDS.values()) | set(KEY16_POSITIVES))
-    table = named_contracts(answer, universe, None, KEY16_DOC_IDS, Q16)
-    assert named_contracts("\n".join(lines), universe, None, KEY16_DOC_IDS, Q16) == table
-    eDiets = KEY16_DOC_IDS["3c40cba1-a4cc-47f4-a1a6-2011dc83888a"]
-    assert table == set(KEY16_DOC_IDS.values()) - {eDiets}, "every contract it names but the one it rejects"
+    table = named_contracts(answer, universe, None, KEY16_DOC_IDS)
+    assert named_contracts("\n".join(lines), universe, None, KEY16_DOC_IDS) == table
+    assert table == set(KEY16_DOC_IDS.values()), "every contract it names"
 
 
 @pytest.mark.parametrize(
@@ -667,7 +647,7 @@ def test_the_rerun_cuad_key_16_reads_the_same_with_its_table_written_as_bullets(
         (f"Three.\n\nExcluded from the cap:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
         (f"Three.\n\nExcluded: none.\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
         # "no" is not an escape word: the label still takes its line.
-        (f"One.\n- Staar (`{SID}`)\n- Excluded: no. eDiets (`{EID}`) has only a warranty.\n", {STAAR}),
+        (f"One.\n- Staar (`{SID}`)\n- Excluded: no covenant in eDiets (`{EID}`), only a warranty.\n", {STAAR}),
         # review 4: a descriptive closing phrase on a line label takes nothing.
         (
             f"Two.\n\n- Staar (`{SID}`): $5M CGL\n- Punitive damages excluded: Papa John's (`{PID}`) must carry $2M CGL\n",
@@ -686,5 +666,43 @@ def test_the_rerun_cuad_key_16_reads_the_same_with_its_table_written_as_bullets(
     ],
 )
 def test_review_4_shapes(text, expected):
-    question = Q18 if "first refusal" in text else Q19 if "CGL" in text else Q15 if "solicitation" in text else Q16
-    assert named_contracts(text, CONTRACTS, None, IDS, question) == expected
+    assert contracts(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # review 5: a heading or lead-in that says "none" after its own colon rejects nothing.
+        (
+            f"Found two.\n\n## Matches\n\n- `{SID}`\n\n## Exclusions: none\n\n- `{PID}` also qualifies (§9)\n",
+            {STAAR, PAPA},
+        ),
+        (
+            f"Found two.\n\n## Matches\n\n- `{SID}`\n\n**Exclusions:** none\n\n- `{PID}` also qualifies (§9)\n",
+            {STAAR, PAPA},
+        ),
+        (f"Found two.\n\n## Matches\n\n- `{SID}`\n\n## Exclusions: eDiets\n\n- `{EID}`\n", {STAAR}),
+        # review 5: a plain label is a single clause, and a rejecting label reaches to the next semicolon, sentence
+        # end or label on its line.
+        (f"Not counted: `{EID}`; counted: `{SID}`\n", {STAAR}),
+        (f"Excluded contracts aside, the matches are: `{SID}`, `{PID}`\n", {STAAR, PAPA}),
+        (f"Excluded: `{EID}`. Matches: `{SID}`.\n", {STAAR}),
+        (f"Excluded: `{EID}` Matches: `{SID}`\n", {STAAR}),
+        (f"- **Excluded:** `{EID}`; `{SID}` qualifies.\n", {STAAR}),
+        (f"- **Excluded:** `{EID}`, `{PID}` (warranties only).\n", set()),
+        (f"Excluded - see below: `{EID}`\n", {EDIETS}),
+        # A setext heading ("Excluded" over a row of dashes) is not read as a heading: an accepted false keep.
+        (f"Found.\n\nMatches\n-------\n\n- `{SID}`\n\nExcluded\n--------\n\n- `{EID}`\n", {STAAR, EDIETS}),
+        # review 5: a nine-word label-only line takes its list (the cap is twelve words).
+        (
+            f"Two.\n\n- `{SID}`\n\nNotable Contracts That Were Close But Do NOT Qualify:\n- `{EID}`\n- `{PID}`\n",
+            {STAAR},
+        ),
+        (
+            f"Two.\n\n- `{SID}`\n\nThese contracts were reviewed carefully by me in full but in the end were also excluded:\n- `{EID}`\n",
+            {STAAR, EDIETS},
+        ),
+    ],
+)
+def test_review_5_shapes(text, expected):
+    assert contracts(text) == expected
