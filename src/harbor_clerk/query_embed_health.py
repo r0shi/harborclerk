@@ -1,17 +1,24 @@
-"""What this process's own query embeds say about the embedder.
+"""The API process's evidence about the embedder, and the verdict health reports.
 
-Search embeds every query through the embedder, so the API process already
-holds the best evidence of whether semantic search works: its last success and
-its last failure. `/system/health` reads them (api/routes/system.py) before it
-spends an encode on an active probe:
+Two sources feed it: search's own query embeds (search._embed_query) and the
+background health probe (api/routes/system.py). `/system/health` never waits
+on the embedder; it reports `verdict()` and, when the evidence is stale,
+starts a probe in the background.
 
-- a query embed that failed, with no success since, inside the health window:
-  degraded, even if a probe would pass (the probe's one short text is the
-  easiest request the embedder gets);
-- a recent success, and no failure since: healthy, no probe needed.
+Evidence is one of three kinds, and the latest event wins:
 
-In-process and best-effort by design: a restart forgets it, and the active
-probe covers that case.
+- **success**: an embed returned a vector.
+- **failure**: a connection failure, a 5xx, or an invalid vector. Degraded.
+- **busy**: a timeout. The embedder serves one encode at a time, so during an
+  ingest a probe or a query can queue behind 64-text batches; that is the
+  embedder working, so busy reads "ok" with a note. A busy streak with no
+  success or failure in between that has lasted EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS
+  across consecutive events is no longer busy but wedged: degraded, "not
+  answering".
+
+A 4xx (the input was rejected) says nothing about the service and is not
+recorded. In-process and best-effort: a restart forgets it, and the probe
+rebuilds it.
 """
 
 from __future__ import annotations
@@ -19,45 +26,94 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+import httpx
+
+# A busy streak this long (from its first event to its latest) is a wedged
+# embedder, not a busy one. Two minutes is many 64-text batches (~3.5 s each
+# on an M4) and several probe timeouts in a row: an ingest queue drains
+# between them, a wedged encode slot does not.
+EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS = 120.0
+
+BUSY_NOTE = "busy: the embedder did not answer in time (it is serving other work)"
+
+
+def _now() -> float:
+    return time.monotonic()
+
 
 @dataclass
 class _Evidence:
-    last_success: float | None = None
-    last_failure: float | None = None
-    last_failure_detail: str = ""
+    kind: str | None = None  # "success" | "failure" | "busy"
+    at: float | None = None
+    detail: str = ""
+    busy_since: float | None = None
 
 
 _evidence = _Evidence()
 
 
-def record_query_embed_success() -> None:
-    _evidence.last_success = time.monotonic()
+def record_success() -> None:
+    _evidence.kind, _evidence.at, _evidence.detail, _evidence.busy_since = "success", _now(), "", None
 
 
-def record_query_embed_failure(detail: str) -> None:
-    _evidence.last_failure = time.monotonic()
-    _evidence.last_failure_detail = detail
+def record_failure(detail: str) -> None:
+    _evidence.kind, _evidence.at, _evidence.detail, _evidence.busy_since = "failure", _now(), detail, None
 
 
-def recent_failure(window_seconds: float) -> tuple[float, str] | None:
-    """(seconds ago, detail) of a failure inside the window with no success since, else None."""
-    failed = _evidence.last_failure
-    if failed is None:
+def record_busy() -> None:
+    now = _now()
+    if _evidence.kind != "busy" or _evidence.busy_since is None:
+        _evidence.busy_since = now
+    _evidence.kind, _evidence.at, _evidence.detail = "busy", now, ""
+
+
+def classify_embed_error(exc: BaseException) -> str:
+    """ "busy", "rejected" or "failure" for an exception from embedder_client.
+
+    The client raises its errors from the httpx exception that caused them: a
+    read, write or pool timeout is busy; an HTTP 4xx is the input rejected;
+    anything else (refused or dropped connection, 5xx, invalid response) is a
+    failure.
+    """
+    cause = exc.__cause__
+    if isinstance(exc, TimeoutError) or isinstance(cause, httpx.TimeoutException):
+        return "busy"
+    if isinstance(cause, httpx.HTTPStatusError) and 400 <= cause.response.status_code < 500:
+        return "rejected"
+    return "failure"
+
+
+def record_query_embed_outcome(exc: BaseException | None, detail: str = "") -> None:
+    """Record what one of search's query embeds says about the embedder."""
+    if exc is None:
+        record_success()
+        return
+    kind = classify_embed_error(exc)
+    if kind == "busy":
+        record_busy()
+    elif kind == "failure":
+        record_failure(f"search's query embed failed: {detail}")
+
+
+def age() -> float | None:
+    """Seconds since the latest evidence, or None when there is none."""
+    return None if _evidence.at is None else _now() - _evidence.at
+
+
+def verdict() -> tuple[str, str | None] | None:
+    """(status, note) from the latest evidence, however old; None when there is none."""
+    kind = _evidence.kind
+    if kind is None:
         return None
-    age = time.monotonic() - failed
-    if age >= window_seconds:
-        return None
-    if _evidence.last_success is not None and _evidence.last_success > failed:
-        return None
-    return age, _evidence.last_failure_detail
-
-
-def recent_success(window_seconds: float) -> bool:
-    """A success inside the window with no failure since."""
-    ok = _evidence.last_success
-    if ok is None or time.monotonic() - ok >= window_seconds:
-        return False
-    return _evidence.last_failure is None or _evidence.last_failure < ok
+    if kind == "success":
+        return "ok", None
+    if kind == "failure":
+        return f"error: {_evidence.detail}", None
+    streak = (_evidence.at or 0.0) - (_evidence.busy_since or 0.0)
+    if streak >= EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS:
+        note = f"not answering: every embed has timed out for {streak:.0f}s"
+        return f"error: embedder not answering (timed out for {streak:.0f}s)", note
+    return "ok", BUSY_NOTE
 
 
 def reset() -> None:

@@ -3,7 +3,6 @@ import logging
 import os
 import subprocess
 import sys
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -19,6 +18,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from harbor_clerk import query_embed_health as embedder_evidence
 from harbor_clerk.api.deps import Principal, require_admin
 from harbor_clerk.api.schemas.system import (
     DeleteAllRequest,
@@ -38,8 +38,6 @@ from harbor_clerk.models import (
 )
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.watched import WatchedFolder
-from harbor_clerk.query_embed_health import recent_failure as recent_query_embed_failure
-from harbor_clerk.query_embed_health import recent_success as recent_query_embed_success
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -163,81 +161,65 @@ async def ping() -> dict[str, str]:
     return {"status": "ok"}
 
 
-# How long an embedder health result stands, and the window for the passive
-# evidence of search's own query embeds (query_embed_health). The active probe
-# runs a real encode, and /system/health is unauthenticated and polled (the Mac
-# app every 2 s): cached and single-flight, any number of callers cost at most
-# one encode per window. Short enough that an outage, or recovery, shows.
+# How stale the embedder evidence may get before health starts a background
+# probe. /system/health is unauthenticated and polled (the Mac app every 2 s),
+# and it never waits on the embedder: it reports the last known verdict
+# (query_embed_health) and, past this age, starts one single-flight probe
+# that callers do not await.
 EMBEDDER_PROBE_TTL_SECONDS = 30.0
 # The probe's /embed deadline. The embedder runs one encode at a time, so
 # during a heavy ingest the probe queues behind 64-text batches (~3.5 s each on
-# an M4): a timeout here means busy, not broken.
+# an M4): a timeout here is busy evidence, not failure.
 EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS = 10.0
-EMBEDDER_BUSY_NOTE = "busy: /embed did not answer the health probe in time (it is serving other work)"
+EMBEDDER_CHECKING_NOTE = "checking: the first embedder probe is still running"
 
-# (monotonic time, embedder_url, status, note)
-_embedder_probe_cache: tuple[float, str, str, str | None] | None = None
-_embedder_probe_lock: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
+# (loop, task) of the in-flight probe; a task belongs to the loop that made it.
+_embedder_probe: tuple[asyncio.AbstractEventLoop, asyncio.Task] | None = None
 
 
-def _probe_lock() -> asyncio.Lock:
-    """The single-flight lock, for the running loop (an asyncio.Lock binds to one)."""
-    global _embedder_probe_lock
+def _embedder_probe_task() -> asyncio.Task | None:
+    """The in-flight (or last) background probe on the running loop, if any (tests await it)."""
+    probe = _embedder_probe
+    if probe is None or probe[0] is not asyncio.get_running_loop():
+        return None
+    return probe[1]
+
+
+def _start_embedder_probe(embedder_url: str) -> None:
+    """Start the background probe unless one is already running: single-flight, never awaited."""
+    global _embedder_probe
+    running = _embedder_probe_task()
+    if running is not None and not running.done():
+        return
     loop = asyncio.get_running_loop()
-    if _embedder_probe_lock is None or _embedder_probe_lock[0] is not loop:
-        _embedder_probe_lock = (loop, asyncio.Lock())
-    return _embedder_probe_lock[1]
-
-
-def _cached_probe(embedder_url: str) -> tuple[str, str | None] | None:
-    cached = _embedder_probe_cache
-    if cached is not None and cached[1] == embedder_url and time.monotonic() - cached[0] < EMBEDDER_PROBE_TTL_SECONDS:
-        return cached[2], cached[3]
-    return None
+    _embedder_probe = (loop, loop.create_task(_probe_embedder(embedder_url)))
 
 
 async def _embedder_check(embedder_url: str) -> tuple[str, str | None]:
-    """The embedder's health as search sees it: (status, note).
+    """The embedder's health as search sees it, (status, note), without waiting on it.
 
     /health alone said 200 for the whole of #685 while every /embed returned
-    500, so the app looked healthy while search ran keyword-only for hours. In
-    order:
-
-    1. A query embed by search failed inside the window, with no success since:
-       degraded, whatever a probe would say.
-    2. A query embed succeeded inside the window: healthy, no probe.
-    3. A probe result inside the window: that.
-    4. Otherwise one probe, shared by every concurrent caller: /health, then a
-       one-text POST /embed. A connection failure, a non-200 or an empty
-       vector is degraded; an /embed timeout is "ok" with a busy note, since a
-       one-at-a-time embedder serving an ingest is working as designed.
+    500, so the app looked healthy while search ran keyword-only for hours. The
+    verdict comes from the latest evidence (query_embed_health): search's own
+    query embeds and the background probe. Stale or missing evidence starts a
+    probe and returns at once: the last verdict, or "checking" before the first.
     """
-    global _embedder_probe_cache
-    failure = recent_query_embed_failure(EMBEDDER_PROBE_TTL_SECONDS)
-    if failure is not None:
-        age, detail = failure
-        bounded = detail[:HEALTH_DETAIL_LIMIT]
-        return f"error: search's query embed failed {age:.0f}s ago: {bounded}", None
-    if recent_query_embed_success(EMBEDDER_PROBE_TTL_SECONDS):
-        return "ok", None
-    if (cached := _cached_probe(embedder_url)) is not None:
-        return cached
-
-    async with _probe_lock():
-        # Whoever held the lock just probed: share its answer.
-        if (cached := _cached_probe(embedder_url)) is not None:
-            return cached
-        status, note = await _probe_embedder(embedder_url)
-        _embedder_probe_cache = (time.monotonic(), embedder_url, status, note)
-        return status, note
+    evidence_age = embedder_evidence.age()
+    if evidence_age is None or evidence_age >= EMBEDDER_PROBE_TTL_SECONDS:
+        _start_embedder_probe(embedder_url)
+    known = embedder_evidence.verdict()
+    if known is None:
+        return "checking", EMBEDDER_CHECKING_NOTE
+    return known
 
 
-async def _probe_embedder(embedder_url: str) -> tuple[str, str | None]:
+async def _probe_embedder(embedder_url: str) -> None:
+    """/health, then a one-text POST /embed, recorded as evidence."""
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{embedder_url}/health", timeout=5)
             if r.status_code != 200:
-                status = f"error: HTTP {r.status_code}"
+                failure = f"HTTP {r.status_code}"
             else:
                 try:
                     r = await asyncio.wait_for(
@@ -249,19 +231,22 @@ async def _probe_embedder(embedder_url: str) -> tuple[str, str | None]:
                         timeout=EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS,
                     )
                 except (TimeoutError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
-                    logger.info("Embedder health probe: %s", EMBEDDER_BUSY_NOTE)
-                    return "ok", EMBEDDER_BUSY_NOTE
+                    logger.info("Embedder health probe: %s", embedder_evidence.BUSY_NOTE)
+                    embedder_evidence.record_busy()
+                    return
                 if r.status_code != 200:
-                    status = f"error: /embed returned HTTP {r.status_code}"
+                    failure = f"/embed returned HTTP {r.status_code}"
                 else:
                     embeddings = r.json().get("embeddings")
                     ok = isinstance(embeddings, list) and len(embeddings) == 1 and bool(embeddings[0])
-                    status = "ok" if ok else "error: /embed returned no vector"
+                    failure = None if ok else "/embed returned no vector"
     except Exception as e:
-        status = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
-    if status != "ok":
-        logger.error("Embedder health check failed: %s", status)
-    return status, None
+        failure = describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)
+    if failure is None:
+        embedder_evidence.record_success()
+        return
+    logger.error("Embedder health check failed: %s", failure)
+    embedder_evidence.record_failure(failure)
 
 
 @router.get("/system/health")
@@ -300,7 +285,7 @@ async def health_check(
         logger.error("Tika health check failed: %s", describe_error(e))
         checks["tika"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
 
-    # Embedder: search's own evidence, else a cached single-flight probe (_embedder_check)
+    # Embedder: the last known verdict, never waited on (_embedder_check)
     notes: dict[str, str] = {}
     checks["embedder"], embedder_note = await _embedder_check(settings.embedder_url)
     if embedder_note:
@@ -336,7 +321,9 @@ async def health_check(
 
     from harbor_clerk.api.app import BUILD_HASH, build_version
 
-    overall = all(v in ("ok", "disabled", "not_probed") for v in checks.values())
+    # "checking" (the embedder's first background probe has not landed) is not
+    # a degraded state: nothing has failed yet.
+    overall = all(v in ("ok", "disabled", "not_probed", "checking") for v in checks.values())
     return {
         "status": "healthy" if overall else "degraded",
         # Commit of the running build ("dev" outside a packaged app) and the
@@ -374,6 +361,26 @@ _COMPLETED_READY_STAGES: tuple[JobStage, ...] = (
     JobStage.finalize,
 )
 _BACKGROUND_JOB_STAGES: tuple[JobStage, ...] = (JobStage.summarize,)
+
+
+def _humanize_retry_at(retry_after_iso: str | None, now: datetime) -> str | None:
+    """ "in about 4 minutes (14:05 UTC)" for a stored ISO retry time; None if absent or unreadable."""
+    if not retry_after_iso:
+        return None
+    try:
+        retry_at = datetime.fromisoformat(retry_after_iso)
+    except ValueError:
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    seconds = (retry_at - now).total_seconds()
+    clock = retry_at.astimezone(UTC).strftime("%H:%M UTC")
+    if seconds <= 0:
+        return "due now"
+    if seconds < 60:
+        return f"in under a minute ({clock})"
+    minutes = round(seconds / 60)
+    return f"in about {minutes} minute{'s' if minutes != 1 else ''} ({clock})"
 
 
 def _job_age_seconds(now: datetime, job: IngestionJob) -> float | None:
@@ -790,7 +797,8 @@ async def status_summary(
         )
     if blocked_embed_jobs:
         embed_label = "document is" if blocked_embed_jobs == 1 else "documents are"
-        retry_detail = f" Next retry is scheduled around {next_embed_retry_at}." if next_embed_retry_at else ""
+        when = _humanize_retry_at(next_embed_retry_at, datetime.now(UTC))
+        retry_detail = f" The next retry is {when}." if when else ""
         needs_attention.append(
             {
                 "kind": "embedding_blocked",

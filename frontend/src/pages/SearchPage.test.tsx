@@ -108,7 +108,7 @@ describe('SearchPage', () => {
     fireEvent.submit(input.closest('form') as HTMLFormElement)
 
     expect(await screen.findByText(/Keyword matches only/)).toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent('embedding service failed')
+    expect(screen.getByRole('status')).toHaveTextContent('semantic search is unavailable')
   })
 
   it('says so when semantic coverage of the matched documents is partial', async () => {

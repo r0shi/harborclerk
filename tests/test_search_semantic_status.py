@@ -300,3 +300,60 @@ def test_cli_text_output_says_keyword_only(command, payload):
     render(payload, mode=OutputMode.TEXT, command=command, stream=out)
 
     assert "semantic_status=unavailable" in out.getvalue()
+
+
+@pytest.mark.parametrize(
+    "command,payload",
+    [
+        ("search", {"hits": [], "semantic_status": "partial", "semantic_coverage": 0.4}),
+        ("find-all", {"results": [], "total_matches": 0, "semantic_status": "partial", "semantic_coverage": 0.4}),
+        (
+            "batch-search",
+            {"results": [{"query": "q", "hits": [], "semantic_status": "partial", "semantic_coverage": 0.4}]},
+        ),
+    ],
+)
+def test_cli_text_output_says_partial(command, payload):
+    import io
+
+    from harbor_clerk.cli.output import OutputMode, render
+
+    out = io.StringIO()
+    render(payload, mode=OutputMode.TEXT, command=command, stream=out)
+
+    assert "semantic_status=partial - 40% of" in out.getvalue()
+
+
+async def test_research_records_partial_coverage_with_its_own_note(monkeypatch):
+    """Partial is not keyword-only: the synthesis is told some documents aren't
+    searchable by meaning yet, which is a different gap from an outage."""
+    from harbor_clerk.llm import research as research_mod
+
+    statuses = {"thin": "partial", "down": "unavailable"}
+
+    async def _execute_tool(name, arguments, user_id, **kwargs):
+        return json.dumps(
+            {
+                "results": [
+                    {"query": q, "hits": [], **({"semantic_status": statuses[q]} if q in statuses else {})}
+                    for q in arguments["queries"]
+                ]
+            }
+        )
+
+    monkeypatch.setattr(research_mod, "execute_tool", _execute_tool)
+    keyword_only: list[str] = []
+    partial: list[str] = []
+
+    steps = [
+        s
+        async for s in research_mod._search_fan_out_steps(
+            ["up", "thin", "down"], None, 5, keyword_only_queries=keyword_only, partial_coverage_queries=partial
+        )
+    ]
+
+    assert steps[-1][0] == "coverage"
+    assert (keyword_only, partial) == (["down"], ["thin"])
+    note = research_mod._partial_coverage_note(partial, 3)
+    assert "1 of 3 searches" in note and "aren't searchable by meaning yet" in note
+    assert research_mod._partial_coverage_note([], 3) == ""

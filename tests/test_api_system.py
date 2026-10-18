@@ -57,38 +57,59 @@ async def test_health_check(client):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_embedder_probe(monkeypatch):
-    """The embedder probe is cached for EMBEDDER_PROBE_TTL_SECONDS, and search's query
-    embeds leave evidence health reads; no test may read another's."""
-    from harbor_clerk import query_embed_health
+async def _fresh_embedder_evidence(monkeypatch):
+    """Health reports the embedder evidence search and the background probe leave
+    (query_embed_health); no test may read another's, or inherit its probe."""
+    import asyncio
+    import contextlib
 
-    monkeypatch.setattr("harbor_clerk.api.routes.system._embedder_probe_cache", None)
+    from harbor_clerk import query_embed_health
+    from harbor_clerk.api.routes import system
+
+    monkeypatch.setattr(system, "_embedder_probe", None)
     query_embed_health.reset()
     yield
+    task = system._embedder_probe_task()
+    if task is not None and not task.done():
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
     query_embed_health.reset()
 
 
 def _stub_embedder(
-    monkeypatch, *, health_status: int = 200, embed_status: int = 200, embed_json=None, embed_delay: float = 0.0
+    monkeypatch,
+    *,
+    health_status: int = 200,
+    embed_status: int = 200,
+    embed_json=None,
+    embed_delay: float = 0.0,
+    others_ok: bool = False,
 ):
     """Answer the embedder's /health and /embed; every other request goes through.
 
-    Returns the list of embedder URLs requested, in order. Resolved from config:
-    CI overrides EMBEDDER_URL (see test_health_check_names_a_timing_out_embedder).
+    others_ok also answers Tika and the reranker 200, so the overall status
+    depends on the embedder alone. Returns the list of embedder URLs requested,
+    in order. Resolved from config: CI overrides EMBEDDER_URL (see
+    test_health_check_names_a_timing_out_embedder).
     """
     import httpx
 
     from harbor_clerk.config import get_settings
 
-    base = get_settings().embedder_url
+    settings = get_settings()
+    base = settings.embedder_url
     calls: list[str] = []
     real_get = httpx.AsyncClient.get
     real_post = httpx.AsyncClient.post
+    others = (f"{settings.tika_url}/tika", f"{settings.reranker_url}/health")
 
     async def _get(self, url, *args, **kwargs):
         if str(url) == f"{base}/health":
             calls.append(str(url))
             return httpx.Response(health_status, json={"status": "ok"}, request=httpx.Request("GET", str(url)))
+        if others_ok and str(url) in others:
+            return httpx.Response(200, json={}, request=httpx.Request("GET", str(url)))
         return await real_get(self, url, *args, **kwargs)
 
     async def _post(self, url, *args, **kwargs):
@@ -109,14 +130,53 @@ def _stub_embedder(
     return calls
 
 
+async def _await_probe():
+    """Wait for the background probe health started, bounded."""
+    import asyncio
+
+    from harbor_clerk.api.routes import system
+
+    task = system._embedder_probe_task()
+    if task is not None:
+        await asyncio.wait_for(asyncio.shield(task), timeout=10)
+
+
+async def _settled_health(client) -> dict:
+    """Health as it reads once its background probe has landed: fetch, wait, fetch."""
+    await client.get("/api/system/health")
+    await _await_probe()
+    return (await client.get("/api/system/health")).json()
+
+
 async def test_health_check_reports_embedder(client, monkeypatch):
     calls = _stub_embedder(monkeypatch)
 
-    resp = await client.get("/api/system/health")
-    assert resp.status_code == 200
-    data = resp.json()
+    data = await _settled_health(client)
+
     assert data["checks"]["embedder"] == "ok"
     assert any(c.endswith("/embed") for c in calls), "health must exercise /embed, not only /health"
+
+
+async def test_health_never_waits_on_a_slow_probe(client, monkeypatch):
+    """The route is polled every 2 s and unauthenticated; it reports what it knows
+    and probes in the background. Before the first verdict that is "checking",
+    which does not degrade the overall status."""
+    import time
+
+    from harbor_clerk.api.routes import system
+
+    calls = _stub_embedder(monkeypatch, embed_delay=5.0, others_ok=True)
+
+    started = time.monotonic()
+    data = (await client.get("/api/system/health")).json()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, f"health waited {elapsed:.2f}s on the embedder"
+    assert data["checks"]["embedder"] == "checking"
+    assert data["notes"]["embedder"].startswith("checking")
+    assert data["status"] == "healthy", "a probe still running is not a failure"
+    assert system._embedder_probe_task() is not None and not system._embedder_probe_task().done()
+    assert calls, "the background probe never started"
 
 
 async def test_health_check_degrades_when_embed_fails_though_health_answers(client, monkeypatch):
@@ -127,8 +187,7 @@ async def test_health_check_degrades_when_embed_fails_though_health_answers(clie
     """
     _stub_embedder(monkeypatch, health_status=200, embed_status=500)
 
-    resp = await client.get("/api/system/health")
-    data = resp.json()
+    data = await _settled_health(client)
 
     assert data["checks"]["embedder"] == "error: /embed returned HTTP 500"
     assert data["status"] == "degraded"
@@ -137,20 +196,22 @@ async def test_health_check_degrades_when_embed_fails_though_health_answers(clie
 async def test_health_check_degrades_when_embed_returns_no_vector(client, monkeypatch):
     _stub_embedder(monkeypatch, embed_json={"embeddings": []})
 
-    data = (await client.get("/api/system/health")).json()
+    data = await _settled_health(client)
 
     assert data["checks"]["embedder"] == "error: /embed returned no vector"
     assert data["status"] == "degraded"
 
 
-async def test_health_check_caches_the_embedder_probe(client, monkeypatch):
+async def test_fresh_evidence_needs_no_further_probe(client, monkeypatch):
     """The probe runs a real encode; a burst of health fetches must cost one."""
     calls = _stub_embedder(monkeypatch)
 
+    await _settled_health(client)
     for _ in range(3):
         assert (await client.get("/api/system/health")).json()["checks"]["embedder"] == "ok"
+    await _await_probe()
 
-    assert len([c for c in calls if c.endswith("/embed")]) == 1, f"probe was not cached: {calls}"
+    assert len([c for c in calls if c.endswith("/embed")]) == 1, f"probed again on fresh evidence: {calls}"
 
 
 async def test_concurrent_health_calls_share_one_probe(monkeypatch):
@@ -166,9 +227,11 @@ async def test_concurrent_health_calls_share_one_probe(monkeypatch):
     results = await asyncio.wait_for(
         asyncio.gather(*(system._embedder_check(get_settings().embedder_url) for _ in range(5))), timeout=10
     )
+    await _await_probe()
 
-    assert results == [("ok", None)] * 5
+    assert [status for status, _ in results] == ["checking"] * 5
     assert len([c for c in calls if c.endswith("/embed")]) == 1, f"{calls}"
+    assert await system._embedder_check(get_settings().embedder_url) == ("ok", None)
 
 
 async def test_a_busy_embedder_is_ok_not_degraded(client, monkeypatch, caplog):
@@ -180,7 +243,7 @@ async def test_a_busy_embedder_is_ok_not_degraded(client, monkeypatch, caplog):
     _stub_embedder(monkeypatch, embed_delay=3.0)
 
     with caplog.at_level(logging.INFO, logger="harbor_clerk.api.routes.system"):
-        data = (await client.get("/api/system/health")).json()
+        data = await _settled_health(client)
 
     assert data["checks"]["embedder"] == "ok"
     assert data["notes"]["embedder"].startswith("busy")
@@ -188,25 +251,62 @@ async def test_a_busy_embedder_is_ok_not_degraded(client, monkeypatch, caplog):
     assert not embedder_errors, f"a busy embedder was logged as a failure: {embedder_errors}"
 
 
+async def test_busy_for_longer_than_the_threshold_is_degraded(client, monkeypatch):
+    """A busy streak across consecutive probes that outlasts the threshold is a
+    wedged encode slot, not an ingest: "embedder not answering"."""
+    from harbor_clerk import query_embed_health
+
+    monkeypatch.setattr("harbor_clerk.api.routes.system.EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS", 0.2)
+    _stub_embedder(monkeypatch, embed_delay=3.0)
+    clock = [1000.0]
+    monkeypatch.setattr(query_embed_health, "_now", lambda: clock[0])
+
+    first = await _settled_health(client)
+    assert first["checks"]["embedder"] == "ok" and first["notes"]["embedder"].startswith("busy")
+
+    clock[0] += query_embed_health.EMBEDDER_BUSY_DEGRADED_AFTER_SECONDS + 1
+    still = (await client.get("/api/system/health")).json()  # stale: starts the next probe
+    assert still["checks"]["embedder"] == "ok", "one stale busy probe is not yet a streak"
+    await _await_probe()
+    data = (await client.get("/api/system/health")).json()
+
+    assert data["checks"]["embedder"].startswith("error: embedder not answering"), data["checks"]["embedder"]
+    assert data["notes"]["embedder"].startswith("not answering")
+    assert data["status"] == "degraded"
+
+
 async def test_a_503_from_embed_is_degraded(client, monkeypatch):
     _stub_embedder(monkeypatch, embed_status=503)
 
-    data = (await client.get("/api/system/health")).json()
+    data = await _settled_health(client)
 
     assert data["checks"]["embedder"] == "error: /embed returned HTTP 503"
     assert data["status"] == "degraded"
     assert "embedder" not in data["notes"]
 
 
+def _raise_from(cause: BaseException, exc_type=None, message: str = "embedder call failed"):
+    from harbor_clerk.embedder_client import EmbedderError
+
+    async def _failing(texts, **kwargs):
+        raise (exc_type or EmbedderError)(message) from cause
+
+    return _failing
+
+
 async def test_a_recent_failed_query_embed_is_degraded_even_if_the_probe_passes(client, monkeypatch):
     """Search's own failure is better evidence than a one-text probe that happens to pass."""
+    import httpx
+
     import harbor_clerk.search as search_mod
+    from harbor_clerk.embedder_client import EmbedderUnavailableError
 
-    async def _down(texts, **kwargs):
-        raise RuntimeError("embedder returned HTTP 500")
-
-    monkeypatch.setattr(search_mod, "embed_texts_async", _down)
-    with pytest.raises(RuntimeError):
+    monkeypatch.setattr(
+        search_mod,
+        "embed_texts_async",
+        _raise_from(httpx.ConnectError("refused"), EmbedderUnavailableError, "embedder call failed: HTTP 500"),
+    )
+    with pytest.raises(EmbedderUnavailableError):
         await search_mod._embed_query("lighthouse")
     calls = _stub_embedder(monkeypatch)  # the probe would pass
 
@@ -215,7 +315,46 @@ async def test_a_recent_failed_query_embed_is_degraded_even_if_the_probe_passes(
     assert data["checks"]["embedder"].startswith("error: search's query embed failed"), data["checks"]["embedder"]
     assert "HTTP 500" in data["checks"]["embedder"]
     assert data["status"] == "degraded"
-    assert not calls, "with search's evidence in hand, no probe is needed"
+    assert not calls, "with search's fresh evidence in hand, no probe is needed"
+
+
+async def test_a_timed_out_query_embed_is_busy_not_degraded(client, monkeypatch):
+    import httpx
+
+    import harbor_clerk.search as search_mod
+    from harbor_clerk.embedder_client import EmbedderUnavailableError
+
+    monkeypatch.setattr(
+        search_mod, "embed_texts_async", _raise_from(httpx.ReadTimeout("slow"), EmbedderUnavailableError)
+    )
+    with pytest.raises(EmbedderUnavailableError):
+        await search_mod._embed_query("lighthouse")
+    calls = _stub_embedder(monkeypatch)
+
+    data = (await client.get("/api/system/health")).json()
+
+    assert data["checks"]["embedder"] == "ok"
+    assert data["notes"]["embedder"].startswith("busy")
+    assert not calls
+
+
+async def test_a_rejected_query_embed_is_not_evidence(client, monkeypatch):
+    """A 4xx says the query text was refused, nothing about the service."""
+    import httpx
+
+    import harbor_clerk.search as search_mod
+    from harbor_clerk.embedder_client import EmbedderError
+
+    request = httpx.Request("POST", "http://embedder/embed")
+    rejected = httpx.HTTPStatusError("422", request=request, response=httpx.Response(422, request=request))
+    monkeypatch.setattr(search_mod, "embed_texts_async", _raise_from(rejected, EmbedderError))
+    with pytest.raises(EmbedderError):
+        await search_mod._embed_query("lighthouse")
+    _stub_embedder(monkeypatch)
+
+    data = (await client.get("/api/system/health")).json()
+
+    assert data["checks"]["embedder"] == "checking", "a rejected query was taken as evidence"
 
 
 async def test_a_recent_successful_query_embed_skips_the_probe(client, monkeypatch):
@@ -605,7 +744,20 @@ async def test_status_summary_surfaces_embeds_waiting_on_the_embedder(client, ad
     assert issue["severity"] == "warning"
     assert issue["count"] == 1
     assert "keyword only" in issue["detail"]
-    assert retry_at.isoformat() in issue["detail"]
+    assert retry_at.isoformat() not in issue["detail"], "a raw ISO timestamp is not for humans"
+    assert "The next retry is in about 5 minutes (" in issue["detail"], issue["detail"]
+    assert retry_at.strftime("%H:%M UTC") in issue["detail"]
+
+
+def test_retry_times_read_as_durations():
+    from harbor_clerk.api.routes.system import _humanize_retry_at
+
+    now = datetime(2026, 10, 18, 14, 0, tzinfo=UTC)
+    assert _humanize_retry_at((now + timedelta(minutes=1)).isoformat(), now) == "in about 1 minute (14:01 UTC)"
+    assert _humanize_retry_at((now + timedelta(seconds=20)).isoformat(), now) == "in under a minute (14:00 UTC)"
+    assert _humanize_retry_at((now - timedelta(minutes=3)).isoformat(), now) == "due now"
+    assert _humanize_retry_at("not a time", now) is None
+    assert _humanize_retry_at(None, now) is None
 
 
 async def test_stats_report_embedding_coverage(client, admin_user, admin_token, db_session):
@@ -1444,8 +1596,7 @@ async def test_health_check_names_a_timing_out_embedder(client, monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
 
-    resp = await client.get("/api/system/health")
-    data = resp.json()
+    data = await _settled_health(client)
 
     assert data["checks"]["embedder"] == "error: ReadTimeout"
     assert data["status"] == "degraded"
@@ -1488,8 +1639,7 @@ async def test_health_check_bounds_the_detail_it_publishes(client, monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
 
-    resp = await client.get("/api/system/health")
-    rendered = resp.json()["checks"]["embedder"]
+    rendered = (await _settled_health(client))["checks"]["embedder"]
 
     assert len(rendered) < HEALTH_DETAIL_LIMIT + 100, f"unbounded detail published: {len(rendered)} chars"
     assert rendered.endswith("…")
@@ -1516,8 +1666,7 @@ async def test_no_health_check_renders_a_dangling_prefix(client, monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
 
-    resp = await client.get("/api/system/health")
-    checks = resp.json()["checks"]
+    checks = (await _settled_health(client))["checks"]
     assert checks["embedder"] == "error: ConnectTimeout"
     for name, value in checks.items():
         assert value.strip() != "error:", f"{name} rendered a bare prefix"

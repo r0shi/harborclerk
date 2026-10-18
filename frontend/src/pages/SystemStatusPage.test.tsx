@@ -126,11 +126,11 @@ const SUMMARY = {
   ],
 }
 
-function mockRequests(summary = SUMMARY) {
+function mockRequests(summary = SUMMARY, health: object = HEALTHY, stats: object = STATS) {
   getMock.mockImplementation((url) => {
-    if (url === '/api/system/health') return Promise.resolve(HEALTHY)
+    if (url === '/api/system/health') return Promise.resolve(health)
     if (url === '/api/system/status-summary') return Promise.resolve(summary)
-    if (url === '/api/system/stats') return Promise.resolve(STATS)
+    if (url === '/api/system/stats') return Promise.resolve(stats)
     return Promise.reject(new Error(`Unexpected URL: ${url}`))
   })
   postMock.mockResolvedValue({ reaped: 1 })
@@ -190,6 +190,61 @@ describe('SystemStatusPage', () => {
     expect(screen.getByText('2 queued, 1 running')).toBeInTheDocument()
     expect(screen.getByText('LLM worker')).toBeInTheDocument()
     expect(screen.getByText('3 queued, 1 running')).toBeInTheDocument()
+  })
+
+  it('shows the embedder note and embedding coverage next to the embedder row', async () => {
+    mockRequests(
+      { ...SUMMARY, needs_attention: [] },
+      {
+        ...HEALTHY,
+        notes: { embedder: 'busy: the embedder did not answer in time (it is serving other work)' },
+      },
+      {
+        ...STATS,
+        embeddings: { chunks_total: 40, chunks_embedded: 30, chunks_missing: 10 },
+      },
+    )
+
+    renderStatusPage()
+
+    expect(await screen.findByText(/busy: the embedder did not answer in time/)).toBeInTheDocument()
+    expect(screen.getByText('Chunks embedded')).toBeInTheDocument()
+    expect(screen.getByText('Chunks without vectors')).toBeInTheDocument()
+    expect(screen.queryByText('Search services need attention')).not.toBeInTheDocument()
+  })
+
+  it('treats a still-checking embedder as not failed', async () => {
+    mockRequests(
+      { ...SUMMARY, needs_attention: [] },
+      {
+        ...HEALTHY,
+        checks: { ...HEALTHY.checks, embedder: 'checking' },
+        notes: { embedder: 'checking: the first embedder probe is still running' },
+      },
+    )
+
+    renderStatusPage()
+
+    expect(await screen.findByText(/checking: the first embedder probe/)).toBeInTheDocument()
+    expect(screen.getByText('Checking')).toBeInTheDocument()
+    expect(screen.queryByText('Search services need attention')).not.toBeInTheDocument()
+  })
+
+  it('raises a service issue when the embedder is not answering', async () => {
+    mockRequests(
+      { ...SUMMARY, needs_attention: [] },
+      {
+        ...HEALTHY,
+        status: 'degraded',
+        checks: { ...HEALTHY.checks, embedder: 'error: embedder not answering (timed out for 150s)' },
+        notes: { embedder: 'not answering: every embed has timed out for 150s' },
+      },
+    )
+
+    renderStatusPage()
+
+    expect(await screen.findByText('Search services need attention')).toBeInTheDocument()
+    expect(screen.getByText(/not answering: every embed has timed out/)).toBeInTheDocument()
   })
 
   it('runs the reaper action from a stuck-job issue', async () => {

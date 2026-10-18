@@ -716,6 +716,23 @@ def _keyword_only_note(keyword_only_queries: list[str], total_queries: int) -> s
     )
 
 
+def _partial_coverage_note(partial_queries: list[str], total_queries: int) -> str:
+    """A line for the coverage notes when some searches had partial vector coverage, else "".
+
+    The query embedded, but many passages of the documents it found have no
+    vector yet (an embed pending, deferred or failed), so the semantic leg saw
+    only part of them: what is missing may be there under other wording.
+    """
+    if not partial_queries:
+        return ""
+    count = len(set(partial_queries))
+    return (
+        f"Note: for {count} of {total_queries} searches, some documents aren't searchable by meaning yet "
+        "(many of their passages are not embedded), so they were matched by keyword only. Passages that use "
+        "different wording may be missing from this coverage.\n"
+    )
+
+
 async def _search_fan_out_steps(
     queries: list[str],
     user_id: uuid.UUID | None,
@@ -724,12 +741,14 @@ async def _search_fan_out_steps(
     paginate: bool = False,
     user_scope: UserScope | None = None,
     keyword_only_queries: list[str] | None = None,
+    partial_coverage_queries: list[str] | None = None,
 ) -> AsyncGenerator[tuple, None]:
     """Phase 2: run all queries, dedupe by chunk_id, and say so after every search.
 
     ``keyword_only_queries``, when given, collects each query whose search ran
     without its vector leg (``semantic_status`` "unavailable", #685), so the
-    caller can tell the model its coverage is keyword-only.
+    caller can tell the model its coverage is keyword-only;
+    ``partial_coverage_queries`` likewise collects each "partial" one.
 
     Yields ``("progress", searches_done, searches_planned)`` after each batch_search call (up to five
     queries, run one after another) and each pagination page, then ``("coverage", coverage)`` once, last.
@@ -767,8 +786,11 @@ async def _search_fan_out_steps(
             for query_result in result.get("results", []):
                 query_text = query_result.get("query", "")
                 _ingest_hits(coverage, query_result.get("hits", []), query_text)
-                if keyword_only_queries is not None and query_result.get("semantic_status") == "unavailable":
+                semantic_status = query_result.get("semantic_status")
+                if keyword_only_queries is not None and semantic_status == "unavailable":
                     keyword_only_queries.append(query_text)
+                if partial_coverage_queries is not None and semantic_status == "partial":
+                    partial_coverage_queries.append(query_text)
                 if paginate and query_result.get("has_more") and query_result.get("total_candidates", 0) > k_per_query:
                     queries_with_more.append((query_text, k_per_query))
         except Exception:
@@ -1570,6 +1592,7 @@ async def research_stream(
                     # task stale at five minutes of silence, and this phase has run longer than that while working.
                     coverage: dict[str, dict] = {}
                     keyword_only_queries: list[str] = []
+                    partial_coverage_queries: list[str] = []
                     async for fan_out_step in _search_fan_out_steps(
                         queries,
                         user_id,
@@ -1577,6 +1600,7 @@ async def research_stream(
                         paginate=depth_config.get("paginate", False),
                         user_scope=user_scope,
                         keyword_only_queries=keyword_only_queries,
+                        partial_coverage_queries=partial_coverage_queries,
                     ):
                         if fan_out_step[0] == "coverage":
                             coverage = fan_out_step[1]
@@ -1600,6 +1624,7 @@ async def research_stream(
                             f"- {dinfo['title']}: {dinfo['chunks']} passages (best score: {dinfo['best_score']:.2f})\n"
                         )
                     coverage_summary += _keyword_only_note(keyword_only_queries, len(queries))
+                    coverage_summary += _partial_coverage_note(partial_coverage_queries, len(queries))
 
                     collected_notes.append(f"## Search coverage\n{coverage_summary}")
                     yield _sse(
@@ -1819,12 +1844,14 @@ async def research_stream(
                         # Run gap queries
                         gap_coverage: dict[str, dict] = {}
                         gap_keyword_only: list[str] = []
+                        gap_partial: list[str] = []
                         async for fan_out_step in _search_fan_out_steps(
                             gap_queries,
                             user_id,
                             depth_config["k_per_query"],
                             user_scope=user_scope,
                             keyword_only_queries=gap_keyword_only,
+                            partial_coverage_queries=gap_partial,
                         ):
                             if fan_out_step[0] == "coverage":
                                 gap_coverage = fan_out_step[1]
@@ -1836,7 +1863,9 @@ async def research_stream(
                             )
                         # Filter out already-seen chunks
                         new_chunks = {k: v for k, v in gap_coverage.items() if k not in coverage}
-                        gap_note = _keyword_only_note(gap_keyword_only, len(gap_queries))
+                        gap_note = _keyword_only_note(gap_keyword_only, len(gap_queries)) + _partial_coverage_note(
+                            gap_partial, len(gap_queries)
+                        )
                         if gap_note:
                             collected_notes.append(f"## Gap search coverage{round_label}\n{gap_note}")
 

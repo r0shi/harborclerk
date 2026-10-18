@@ -67,8 +67,9 @@ interface SearchResponse {
   semantic_coverage?: number | null
 }
 
-// Whether the server's semantic (vector) leg ran: "unavailable" means the
-// embedding service failed and the results are keyword matches only;
+// Whether the server's semantic (vector) leg ran: "unavailable" means it failed
+// (the query could not be embedded, or the vector query errored) and the
+// results are keyword matches only;
 // "partial" that many of the matched documents' passages have no vectors yet.
 type SemanticStatus = 'ok' | 'partial' | 'unavailable'
 
@@ -110,7 +111,7 @@ function SemanticNotice({ status, coverage }: { status?: SemanticStatus; coverag
   if (status !== 'unavailable' && status !== 'partial') return null
   const message =
     status === 'unavailable'
-      ? 'Keyword matches only: semantic search is unavailable because the embedding service failed. ' +
+      ? 'Keyword matches only: semantic search is unavailable right now. ' +
         'Passages that use different wording are missed, so a missing result does not mean the documents lack it.'
       : `Partly keyword-only: ${coverage != null ? `${Math.round(coverage * 100)}% of` : 'only some of'} ` +
         "the matched documents' passages are embedded, so the rest are found by keyword only."

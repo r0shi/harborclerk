@@ -502,12 +502,28 @@ async def test_reaper_requeue_clears_a_stale_embed_deferral(db_session, monkeypa
 
     stale = {"reason": EMBED_RETRY_REASON, "retry_attempts": 3, "retry_after": "2026-01-01T00:00:00+00:00"}
     doc_id = await _make_doc(db_session, chunk_count=1, job_status=JobStatus.running, metrics=stale)
+    # A summarize orphan whose retry_after is its Apple Intelligence backoff: not ours to clear.
+    afm = {"reason": "apple_intelligence_unavailable", "retry_attempts": 2, "retry_after": "2026-01-01T00:05:00+00:00"}
+    summary_doc = Document(
+        title="afm",
+        canonical_filename="afm.txt",
+        status="active",
+        sha256=hashlib.sha256(b"afm-orphan").digest(),
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(summary_doc)
+    await db_session.flush()
+    db_session.add(
+        IngestionJob(doc_id=summary_doc.doc_id, stage=JobStage.summarize, status=JobStatus.running, metrics=afm)
+    )
+    await db_session.flush()
     await db_session.execute(
         update(IngestionJob)
-        .where(IngestionJob.doc_id == doc_id)
+        .where(IngestionJob.doc_id.in_([doc_id, summary_doc.doc_id]))
         .values(heartbeat_at=datetime.now(UTC) - timedelta(minutes=10))
     )
     await db_session.commit()
+    summary_doc_id = summary_doc.doc_id
 
     conn = await db_session.connection()
 
@@ -543,3 +559,23 @@ async def test_reaper_requeue_clears_a_stale_embed_deferral(db_session, monkeypa
     assert job.status == JobStatus.queued, "the orphan was not requeued"
     assert "reason" not in job.metrics and "retry_after" not in job.metrics, job.metrics
     assert job.metrics["retry_attempts"] == 3
+
+    session = get_sync_session()
+    try:
+        summary_job = session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == summary_doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert summary_job.status == JobStatus.queued
+        assert summary_job.metrics == afm, f"a summarize row's AFM schedule was cleared: {summary_job.metrics}"
+    finally:
+        session.close()
+
+
+def test_the_schedule_helper_touches_embed_rows_only():
+    from harbor_clerk.worker.pipeline import without_embed_retry_schedule
+
+    afm = {"reason": "apple_intelligence_unavailable", "retry_after": "2026-01-01T00:05:00+00:00"}
+    deferred = {"reason": EMBED_RETRY_REASON, "retry_attempts": 2, "retry_after": "2026-01-01T00:05:00+00:00"}
+
+    assert without_embed_retry_schedule(afm, JobStage.summarize) == afm
+    assert without_embed_retry_schedule(deferred, JobStage.embed) == {"retry_attempts": 2}

@@ -17,7 +17,7 @@ from harbor_clerk.error_text import describe_error
 from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.passage_cap import cap_text, refuse_filter_past_cap
-from harbor_clerk.query_embed_health import record_query_embed_failure, record_query_embed_success
+from harbor_clerk.query_embed_health import record_query_embed_outcome
 from harbor_clerk.search_rerank import rerank_hits
 from harbor_clerk.search_types import (
     SEMANTIC_OK,
@@ -118,10 +118,11 @@ async def _embed_query(query: str) -> list[float]:
         embeddings = await embed_texts_async([query], task="query", timeout=30, max_attempts=1)
     except Exception as exc:
         # Passive evidence for /system/health (query_embed_health), which
-        # otherwise has only its own probe to go on (#685).
-        record_query_embed_failure(describe_error(exc))
+        # otherwise has only its own probe to go on (#685). A timeout counts
+        # as busy and a 4xx as nothing; see classify_embed_error.
+        record_query_embed_outcome(exc, describe_error(exc))
         raise
-    record_query_embed_success()
+    record_query_embed_outcome(None)
     return embeddings[0]
 
 

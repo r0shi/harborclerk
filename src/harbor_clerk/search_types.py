@@ -23,7 +23,10 @@ SEMANTIC_PARTIAL_COVERAGE = 0.9
 # notice periods across a corpus of contracts, and three models concluded the
 # corpus did not discuss it: a keyword-only result read as a complete one.
 SEMANTIC_UNAVAILABLE_NOTICE = (
-    "Semantic search is unavailable (the embedding service failed), so these results are keyword matches only. "
+    # Neutral on the cause: "unavailable" is set when the query could not be
+    # embedded *or* the vector query itself errored, and only the first is the
+    # embedding service's fault.
+    "Semantic search is unavailable, so these results are keyword matches only. "
     "Passages that use different wording are missed: absence here is not evidence the corpus lacks the topic."
 )
 SEMANTIC_PARTIAL_NOTICE = (

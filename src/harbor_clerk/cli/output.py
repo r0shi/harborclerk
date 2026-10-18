@@ -110,8 +110,16 @@ def _render_search(payload: Any, stream: TextIO) -> None:
 
 def _render_semantic_status(payload: dict, stream: TextIO) -> None:
     """Say so when the server's vector leg failed: the results are keyword-only (#685)."""
-    if payload.get("semantic_status") == "unavailable":
+    status = payload.get("semantic_status")
+    if status == "unavailable":
         stream.write("semantic_status=unavailable - keyword matches only; differently worded passages are missed\n")
+    elif status == "partial":
+        coverage = payload.get("semantic_coverage")
+        share = f"{round(coverage * 100)}% of" if isinstance(coverage, (int, float)) else "only some of"
+        stream.write(
+            f"semantic_status=partial - {share} the matched documents' passages are embedded; "
+            "the rest matched by keyword only\n"
+        )
 
 
 # --- Find all pretty-printer ---

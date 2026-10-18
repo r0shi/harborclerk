@@ -397,3 +397,27 @@ def test_a_resource_failure_is_a_503_retry_later(stub_model, exc):
 
     assert r.status_code == 503
     assert r.headers.get("retry-after")
+
+
+def test_cancellation_propagates_rather_than_becoming_a_503(stub_model):
+    """The handler catches BaseException to see a tokenizers panic, so it must hand
+    cancellation (and other non-Exception BaseExceptions) back untouched: a 503
+    there would answer a request whose task is being torn down, as "retry later"."""
+    import asyncio
+
+    import embedder.app as app_module
+    from embedder.app import EmbedRequest
+
+    stub_model.encode.side_effect = asyncio.CancelledError()
+
+    async def _call():
+        app_module._model = stub_model
+        app_module._encode_slots = asyncio.Semaphore(1)
+        try:
+            await app_module.embed(EmbedRequest(texts=["a"]))
+        finally:
+            app_module._model = None
+            app_module._encode_slots = None
+
+    with patch("embedder.app.release_gpu_cache"), pytest.raises(asyncio.CancelledError):
+        asyncio.run(asyncio.wait_for(_call(), timeout=10))

@@ -186,7 +186,7 @@ async def _session_reaper_loop() -> None:
                     job.error = None
                     # An orphan is not an embed deferred for an outage (#619):
                     # drop any stale retry schedule so status stays truthful.
-                    job.metrics = without_embed_retry_schedule(job.metrics)
+                    job.metrics = without_embed_retry_schedule(job.metrics, job.stage)
 
                 await db.commit()
                 total = len(stale_sessions) + len(done_sessions)

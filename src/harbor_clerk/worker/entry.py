@@ -785,7 +785,7 @@ def _requeue_after_shutdown(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: in
             job.heartbeat_at = None
             job.progress_current = 0
             # Not deferred for an outage: no stale "waiting on the embedder".
-            job.metrics = without_embed_retry_schedule(job.metrics)
+            job.metrics = without_embed_retry_schedule(job.metrics, stage)
         session.commit()
     finally:
         session.close()

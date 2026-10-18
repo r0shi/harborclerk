@@ -123,16 +123,19 @@ EMBED_RETRY_DELAYS_SECONDS = (60, 120, 300, 600, 900, 1800)
 EMBED_RETRY_MAX_ATTEMPTS = len(EMBED_RETRY_DELAYS_SECONDS) + 1
 
 
-def without_embed_retry_schedule(metrics: dict | None) -> dict:
+def without_embed_retry_schedule(metrics: dict | None, stage: JobStage) -> dict:
     """``metrics`` minus a deferred embed's schedule, for a job requeued for another reason.
 
     A job requeued by the shutdown deadline or the reaper kept ``reason`` and a
     past ``retry_after``, and status-summary then reported "the embedding
     service is failing … next retry <a past time>". ``retry_attempts`` stays:
     an interruption is not progress, and the count still bounds a broken
-    document.
+    document. Embed rows only: a summarize row's ``retry_after`` is its Apple
+    Intelligence backoff (worker/entry.py AFM_RETRY_*), which a requeue must keep.
     """
     cleaned = dict(metrics or {})
+    if stage != JobStage.embed:
+        return cleaned
     if cleaned.get("reason") == EMBED_RETRY_REASON:
         cleaned.pop("reason")
     cleaned.pop("retry_after", None)

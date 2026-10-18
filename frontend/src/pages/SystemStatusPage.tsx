@@ -19,6 +19,9 @@ interface HealthCheck {
     reranker?: string
     local_https_gateway?: string
   }
+  // Context for a check, e.g. an embedder that is busy, still being checked,
+  // or not answering. Present only when there is something to say.
+  notes?: Record<string, string>
 }
 
 interface ServiceStats {
@@ -29,6 +32,7 @@ interface StatsResponse {
   postgres?: ServiceStats
   storage?: ServiceStats
   queues?: ServiceStats
+  embeddings?: ServiceStats
 }
 
 interface StatusIssue {
@@ -99,6 +103,12 @@ const STAT_LABELS: Record<string, string> = {
   llm_running: 'LLM Running',
   object_count: 'Objects',
   total_size_mb: 'Total Size',
+  chunks_total: 'Chunks',
+  chunks_embedded: 'Chunks embedded',
+  chunks_missing: 'Chunks without vectors',
+  documents_with_chunks: 'Documents',
+  documents_fully_embedded: 'Documents fully embedded',
+  documents_missing_embeddings: 'Documents missing vectors',
 }
 
 function formatStatValue(key: string, value: number | string | null | undefined): string {
@@ -145,12 +155,15 @@ function statePill(state: StatusSummary['state'] | undefined, attentionItems: St
   return 'active'
 }
 
+// "checking": the embedder's first background probe has not landed yet. Not a
+// failure, so it never raises a service issue.
 function serviceIsOk(status?: string): boolean {
-  return status === 'ok' || status === 'disabled' || status === 'not_probed'
+  return status === 'ok' || status === 'disabled' || status === 'not_probed' || status === 'checking'
 }
 
 function serviceLabel(status: string): string {
   if (status === 'not_probed') return 'Not probed'
+  if (status === 'checking') return 'Checking'
   return serviceIsOk(status) ? 'OK' : status
 }
 
@@ -443,7 +456,13 @@ export default function SystemStatusPage() {
               statsLoading={statsLoading}
             />
             <HealthCard name="Tika" status={health.checks.tika} statsLoading={false} />
-            <HealthCard name="Embedder" status={health.checks.embedder ?? 'unknown'} statsLoading={false} />
+            <HealthCard
+              name="Embedder"
+              status={health.checks.embedder ?? 'unknown'}
+              note={health.notes?.embedder}
+              stats={stats?.embeddings}
+              statsLoading={statsLoading}
+            />
             <HealthCard name="Reranker" status={health.checks.reranker ?? 'not configured'} statsLoading={false} />
             {health.checks.local_https_gateway && (
               <HealthCard name="Local HTTPS Gateway" status={health.checks.local_https_gateway} statsLoading={false} />
@@ -685,21 +704,25 @@ function DocumentStatusRow({ doc, tone }: { doc: StatusDoc; tone: 'error' | 'run
 function HealthCard({
   name,
   status,
+  note,
   stats,
   statsLoading,
 }: {
   name: string
   status: string
+  note?: string
   stats?: ServiceStats
   statsLoading: boolean
 }) {
   const ok = serviceIsOk(status)
   const statEntries = stats ? Object.entries(stats).filter(([k]) => k !== 'error') : []
+  const pill: PillState = !ok ? 'error' : status === 'checking' ? 'pending' : 'active'
 
   return (
     <Card className={`p-4 ${ok ? 'bg-green-50 dark:bg-green-900/20' : 'bg-red-50 dark:bg-red-900/20'}`}>
       <div className="mb-1 text-sm font-medium text-gray-700 dark:text-gray-300">{name}</div>
-      <StatusPill state={ok ? 'active' : 'error'} label={serviceLabel(status)} />
+      <StatusPill state={pill} label={serviceLabel(status)} />
+      {note && <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">{note}</div>}
       {statsLoading && !stats && <div className="mt-2 text-xs text-gray-400">Loading stats...</div>}
       {stats?.error && <div className="mt-2 text-xs text-red-500">{String(stats.error)}</div>}
       {statEntries.length > 0 && (
