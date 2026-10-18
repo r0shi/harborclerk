@@ -1172,3 +1172,108 @@ def test_declined_json_beside_document_is_indexed_and_does_not_requeue(sync_sess
     sync_session.refresh(md_doc)
     assert md_doc.pipeline_seq == 0
     assert _queued_extract_jobs(sync_session, md_doc.doc_id) == 0
+
+
+# ---------------------------------------------------------------------------
+# A document whose read failed is queued again when the watcher sees its file
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def real_folder(sync_session, tmp_path):
+    """A watched folder at tmp_path, so source paths verify as read in place."""
+    f = WatchedFolder(path=str(tmp_path), display_name="real", bookmark_data=None)
+    sync_session.add(f)
+    sync_session.commit()
+    return f
+
+
+def _fail_like_the_worker(sync_session, doc_id) -> None:
+    """What the worker's error handler records when a stage raises."""
+    doc = sync_session.get(Document, doc_id)
+    doc.pipeline_status = PipelineStatus.error
+    for job in sync_session.query(IngestionJob).filter_by(doc_id=doc_id).all():
+        job.status = JobStatus.error
+    sync_session.commit()
+
+
+def test_a_file_deleted_and_restored_with_the_same_bytes_is_extracted_again(sync_session, real_folder, tmp_path):
+    """Deleted: the read fails as missing and the document errors. Restored with the
+    same bytes (Branch 3): the document is queued again and extracted from the file."""
+    from harbor_clerk.watched_source import WatchedFileMissing
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    f = tmp_path / "doc.txt"
+    f.write_text("restored body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    doc_id = sync_session.query(Document).one().doc_id
+
+    f.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    with pytest.raises(WatchedFileMissing):
+        run_extract(doc_id)
+    _fail_like_the_worker(sync_session, doc_id)
+
+    f.write_text("restored body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    assert sync_session.get(Document, doc_id).pipeline_status == PipelineStatus.queued
+    assert _queued_extract_jobs(sync_session, doc_id) == 1
+
+    run_extract(doc_id)
+    sync_session.expire_all()
+    pages = sync_session.query(DocumentPage).filter_by(doc_id=doc_id).all()
+    assert [p.page_text for p in pages] == ["restored body"]
+
+
+def test_an_errored_doc_is_queued_again_on_an_unchanged_file_event(sync_session, real_folder, tmp_path):
+    """Branch 1 (active, same bytes): a document whose last run errored (its file was
+    missing mid save) is queued again."""
+    f = tmp_path / "doc.txt"
+    f.write_text("body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    doc_id, seq = doc.doc_id, doc.pipeline_seq
+    _fail_like_the_worker(sync_session, doc_id)
+
+    handle_event(sync_session, FileEvent(EventKind.modified, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    doc = sync_session.get(Document, doc_id)
+    assert doc.pipeline_status == PipelineStatus.queued
+    assert doc.pipeline_seq == seq + 1
+    assert _queued_extract_jobs(sync_session, doc_id) == 1
+
+
+def test_resurrect_canonicalizes_an_aliased_source_path(sync_session, tmp_path):
+    """Branch 3 repairs a source_path stored as an alias of the watched file's path."""
+    real = (tmp_path / "real").resolve()
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    folder = WatchedFolder(path=str(real), display_name="real", bookmark_data=None)
+    sync_session.add(folder)
+    sync_session.commit()
+
+    f = real / "doc.txt"
+    f.write_text("body")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    doc_id = doc.doc_id
+    doc.source_path = str(link / "doc.txt")  # as an older client stored it
+    sync_session.query(WatchedFile).one().status = WatchedFileStatus.removed
+    sync_session.commit()
+
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    assert sync_session.get(Document, doc_id).source_path == str(real / "doc.txt")
+    assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.active

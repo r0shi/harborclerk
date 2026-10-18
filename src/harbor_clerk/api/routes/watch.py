@@ -572,7 +572,8 @@ async def ingest_file(
     wf = wf_result.scalar_one_or_none()
 
     # Case 1: active + same SHA256 → skip, but for an aliased source_path, which is
-    # canonicalized so the document verifies as read in place.
+    # canonicalized so the document verifies as read in place, and for a document
+    # whose last read failed (its file was missing), which is queued again.
     if wf and wf.status == WatchedFileStatus.active and wf.sha256 == sha256_bytes:
         if wf.doc_id:
             doc = (await session.execute(select(Document).where(Document.doc_id == wf.doc_id))).scalar_one_or_none()
@@ -582,7 +583,9 @@ async def ingest_file(
                 )
                 if repaired is not None:
                     doc.source_path = repaired
-                    await session.commit()
+                if doc.pipeline_status == PipelineStatus.error:
+                    await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
+                await session.commit()
         return {"action": "skipped", "doc_id": str(wf.doc_id)}
 
     # Case 2: removed file at same path — resurrect (bookmark may differ after Trash restore)
@@ -612,6 +615,12 @@ async def ingest_file(
                     await session.commit()
                     return {"action": "updated", "doc_id": str(doc.doc_id)}
 
+        # Same bytes: a document whose last read failed (its file was missing) is
+        # queued again; otherwise its index is current.
+        if wf.doc_id:
+            doc = (await session.execute(select(Document).where(Document.doc_id == wf.doc_id))).scalar_one_or_none()
+            if doc is not None and doc.pipeline_status == PipelineStatus.error:
+                await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
         await session.commit()
         return {"action": "resurrected", "doc_id": str(wf.doc_id)}
 

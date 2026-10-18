@@ -853,15 +853,15 @@ async def download_document(
     from pathlib import Path
 
     from harbor_clerk.file_types import guess_mime_type
-    from harbor_clerk.watched_source import in_place_path_async
+    from harbor_clerk.watched_source import watched_state_async
 
-    # Read as the extract stage does (watched_source): a document read in place from
-    # its watched file (even with a stored original, #859), else its stored original.
-    # A failed lookup is a 503 and a missing watched file a 404, never the stored
-    # original: for a document that also carries one, that would serve the wrong
-    # bytes. An unverified source_path is never read.
+    # Read as the extract stage does (watched_source): a watched document from its
+    # file (even with a stored original, #859), else the stored original. A failed
+    # lookup is a 503, and a watched document whose file cannot be read in place a
+    # 404, never the stored original: that would serve the wrong bytes. An
+    # unverified source_path is never read.
     try:
-        in_place = await in_place_path_async(session, doc)
+        state = await watched_state_async(session, doc)
     except SQLAlchemyError:
         logger.warning("watched-file lookup failed for doc %s", doc_id, exc_info=True)
         raise HTTPException(
@@ -869,15 +869,17 @@ async def download_document(
             detail="Source file temporarily unavailable; try again.",
         )
     content_type = doc.mime_type or "application/octet-stream"
-    if in_place is not None:
+    if state.watched:
+        if state.path is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file is missing")
         try:
-            file_bytes = await asyncio.to_thread(Path(in_place).read_bytes)
+            file_bytes = await asyncio.to_thread(Path(state.path).read_bytes)
         except FileNotFoundError:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file is missing")
-        filename = posixpath.basename(in_place)
+        filename = posixpath.basename(state.path)
         # doc.mime_type is what the extract stage set from this file and its magic
         # bytes; the extension is the fallback when it is unset.
-        content_type = doc.mime_type or guess_mime_type(in_place)
+        content_type = doc.mime_type or guess_mime_type(state.path)
     elif doc.original_object_key:
         storage = get_storage()
         obj = storage.get_object(doc.original_bucket, doc.original_object_key)

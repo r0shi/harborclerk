@@ -672,16 +672,16 @@ def _aliased_watched_doc(factory, tmp_path, *, stored_source: str) -> tuple[uuid
 
 
 def _read(factory, doc_id: uuid.UUID) -> tuple[str | None, bytes | None]:
-    """(source_path, bytes read_document_bytes returns, or None if it raised NoReadableSource)."""
+    """(source_path, bytes read_document_bytes returns, or None if it could not read any)."""
     from harbor_clerk.models.document import Document
-    from harbor_clerk.watched_source import NoReadableSource, read_document_bytes
+    from harbor_clerk.watched_source import SourceUnavailable, read_document_bytes
 
     sess = factory()
     try:
         doc = sess.get(Document, doc_id)
         try:
             data, _ = read_document_bytes(sess, doc)
-        except NoReadableSource:
+        except SourceUnavailable:
             data = None
         return doc.source_path, data
     finally:
@@ -718,5 +718,30 @@ def test_startup_scan_leaves_a_source_path_naming_another_file(factory, tmp_path
 
         source_path, _ = _read(factory, doc_id)
         assert source_path == other
+    finally:
+        _truncate_watched(factory)
+
+
+def test_a_document_in_a_folder_stored_with_a_dot_dot_path_is_readable(factory, tmp_path, monkeypatch):
+    """A folder whose stored path is not normalized (as auto-discovery may store it):
+    the scan ingests its file, and the document reads in place."""
+    from harbor_clerk.models.document import Document
+
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+    (tmp_path / "other").mkdir()
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "doc.txt").write_text("dot dot body")
+    folder_path = f"{tmp_path}/other/../real"
+    folder_id = _commit_folder(factory, folder_path)
+    try:
+        WatcherDaemon(factory)._scan_folder(folder_id, folder_path)
+
+        sess = factory()
+        try:
+            doc_id = sess.query(Document).one().doc_id
+        finally:
+            sess.close()
+        assert _read(factory, doc_id)[1] == b"dot dot body"
     finally:
         _truncate_watched(factory)

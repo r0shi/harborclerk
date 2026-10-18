@@ -199,3 +199,14 @@ def test_an_absolute_or_dot_dot_relative_path_verifies_nothing():
     assert canonical_source_path("/srv/watched", "/etc/hosts") is None
     assert canonical_source_path("/srv/watched", "../hosts") is None
     assert canonical_source_path("/srv/watched", "sub/a.txt") == "/srv/watched/sub/a.txt"
+
+
+def test_a_folder_path_that_is_not_normalized_still_verifies():
+    """An auto-discovered folder may be stored as e.g. /data/../watch: the watcher's
+    paths are built on that string, and a normalized source_path verifies too."""
+    from harbor_clerk.watched_source import verified_in_place_path
+
+    rows = [("/data/../watch", "sub/a.txt")]
+    assert verified_in_place_path(rows, "/data/../watch/sub/a.txt") == "/data/../watch/sub/a.txt"
+    assert verified_in_place_path(rows, "/watch/sub/a.txt") == "/watch/sub/a.txt"
+    assert verified_in_place_path([("/data/../watch", "../etc/hosts")], "/data/../etc/hosts") is None

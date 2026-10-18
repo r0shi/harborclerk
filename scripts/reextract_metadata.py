@@ -24,7 +24,7 @@ from harbor_clerk.db import async_session_factory
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
 from harbor_clerk.models.document import Document
 from harbor_clerk.storage import get_storage
-from harbor_clerk.watched_source import in_place_path_async
+from harbor_clerk.watched_source import watched_state_async
 
 log = logging.getLogger("reextract_metadata")
 
@@ -40,18 +40,22 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
 
         for doc in docs:
             processed += 1
-            # Load raw bytes as the extract stage does (harbor_clerk.watched_source): in
-            # place from the watched file, else from the stored original (uploads, mail;
-            # their source_path is only a label). A missing watched file, or a document
-            # with neither, is skipped: never the stored original for a file read in
-            # place, never an unverified source_path.
+            # Load raw bytes as the extract stage does (harbor_clerk.watched_source): a
+            # watched document from its file, else the stored original (uploads, mail;
+            # their source_path is only a label). A watched document whose file cannot
+            # be read in place, or a document with neither, is skipped: never a watched
+            # document's stored original, never an unverified source_path.
             raw_bytes: bytes | None = None
-            in_place = await in_place_path_async(session, doc)
-            if in_place is not None:
-                try:
-                    raw_bytes = Path(in_place).read_bytes()
-                except FileNotFoundError:
-                    log.warning("doc %s: its watched file is missing; skipping", doc.doc_id)
+            state = await watched_state_async(session, doc)
+            in_place = state.path
+            if state.watched:
+                if in_place is not None:
+                    try:
+                        raw_bytes = Path(in_place).read_bytes()
+                    except FileNotFoundError:
+                        in_place = None
+                if in_place is None:
+                    log.warning("doc %s: its watched file cannot be read in place; skipping", doc.doc_id)
                     skipped += 1
                     continue
             elif doc.original_object_key:
@@ -63,7 +67,7 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
                     skipped += 1
                     continue
             else:
-                log.info("doc %s has no stored original and is not read in place; skipping", doc.doc_id)
+                log.info("doc %s is not watched and has no stored original; skipping", doc.doc_id)
                 skipped += 1
                 continue
 

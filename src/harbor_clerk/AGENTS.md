@@ -42,10 +42,10 @@ Watched-folder documents are read in place from `source_path` and are never
 written to. IMAP messages and attachments are the one case where content is
 fetched and stored (via the normal document path), as there is no file on disk.
 Read a document's bytes only through `watched_source` (`read_document_bytes`,
-`in_place_path*`): read in place means an active `WatchedFile` whose computed path
-the `source_path` is exactly. Never read an unverified `source_path`, never fall
-back to a stored original for a document read in place, and refuse `new_version`
-of one (409).
+`watched_state*`): a document with any `WatchedFile` is watched, read in place only
+from an active one whose computed path its `source_path` is exactly. Never read an
+unverified `source_path` or a watched document's stored original; refuse
+`new_version` of a watched document (409).
 
 ## Retrieval
 

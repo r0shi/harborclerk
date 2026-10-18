@@ -389,7 +389,7 @@ async def _pending_upload(client, token, name: str, content: bytes) -> str:
     return resp.json()["upload_id"]
 
 
-async def _document(db_session, *, watched: bool, tmp_path):
+async def _document(db_session, *, watched: bool, tmp_path, removed: bool = False):
     import hashlib
 
     from harbor_clerk.models import Document
@@ -420,7 +420,7 @@ async def _document(db_session, *, watched: bool, tmp_path):
                 bookmark_data=b"",
                 sha256=doc.sha256,
                 doc_id=doc.doc_id,
-                status=WatchedFileStatus.active,
+                status=WatchedFileStatus.removed if removed else WatchedFileStatus.active,
             )
         )
     await db_session.commit()
@@ -488,3 +488,19 @@ async def test_confirm_new_version_of_an_unwatched_document_still_succeeds(
     )
     assert resp.status_code == 200
     assert resp.json()["doc_id"] == str(doc_id)
+
+
+async def test_confirm_refuses_new_version_of_a_document_whose_watched_file_is_removed(
+    client, db_session, admin_user, admin_token, tmp_path
+):
+    """A document with a removed watched file is still a watched document: new_version is a 409."""
+    doc = await _document(db_session, watched=True, tmp_path=tmp_path, removed=True)
+    doc_id = doc.doc_id
+    upload_id = await _pending_upload(client, admin_token, "replacement.txt", b"replacement content removed")
+
+    resp = await client.post(
+        "/api/uploads/confirm",
+        json={"upload_id": upload_id, "action": "new_version", "existing_doc_id": str(doc_id)},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 409

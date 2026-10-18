@@ -2,6 +2,8 @@
 
 import uuid
 
+import pytest
+
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
@@ -757,3 +759,165 @@ async def test_ingest_refuses_a_symlink_in_the_folder_pointing_outside(client, a
 
     via_relative = await _ingest(client, admin_token, folder_id, "out.txt", str(real / "a.txt"))
     assert via_relative.status_code == 400, via_relative.text
+
+
+async def _mapped_doc(
+    db_session,
+    folder_id: str,
+    relative_path: str,
+    *,
+    sha: str,
+    source_path: str,
+    status: WatchedFileStatus = WatchedFileStatus.active,
+    pipeline_status: PipelineStatus = PipelineStatus.ready,
+) -> str:
+    """A document mapped to a watched file, as an earlier ingest left it. Returns its doc_id."""
+    doc = Document(
+        title=relative_path,
+        status="active",
+        sha256=bytes.fromhex(sha),
+        pipeline_status=pipeline_status,
+        source_path=source_path,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=uuid.UUID(folder_id),
+            relative_path=relative_path,
+            bookmark_data=b"",
+            sha256=bytes.fromhex(sha),
+            doc_id=doc.doc_id,
+            status=status,
+        )
+    )
+    await db_session.commit()
+    return str(doc.doc_id)
+
+
+async def _ingest_sha(client, token, folder_id: str, relative_path: str, source_path: str, sha: str):
+    return await client.post(
+        "/api/watch/ingest",
+        headers=auth_header(token),
+        json={
+            "folder_id": folder_id,
+            "relative_path": relative_path,
+            "sha256": sha,
+            "bookmark_data": "",
+            "source_path": source_path,
+            "mime_type": "text/plain",
+        },
+    )
+
+
+async def _doc_row(db_session, doc_id: str):
+    from sqlalchemy import select
+
+    db_session.expire_all()
+    return (await db_session.execute(select(Document).where(Document.doc_id == uuid.UUID(doc_id)))).scalar_one()
+
+
+async def _queued_extracts(db_session, doc_id: str) -> int:
+    from sqlalchemy import func, select
+
+    stmt = select(func.count()).where(
+        IngestionJob.doc_id == uuid.UUID(doc_id),
+        IngestionJob.stage == JobStage.extract,
+        IngestionJob.status == JobStatus.queued,
+    )
+    return (await db_session.execute(stmt)).scalar_one()
+
+
+@pytest.mark.parametrize("status", [WatchedFileStatus.active, WatchedFileStatus.removed], ids=["case1", "case2"])
+async def test_ingest_of_unchanged_bytes_queues_an_errored_doc_again(client, admin_token, db_session, tmp_path, status):
+    """Case 1 (active) and Case 2 (removed, resurrected) with the same bytes: a document
+    whose last run errored is queued again."""
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(
+        db_session,
+        folder_id,
+        "a.txt",
+        sha=sha,
+        source_path=str(real / "a.txt"),
+        status=status,
+        pipeline_status=PipelineStatus.error,
+    )
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    # reset_and_queue_extract_for_doc's own status for a queued extract
+    assert (await _doc_row(db_session, doc_id)).pipeline_status == PipelineStatus.extracting
+    assert await _queued_extracts(db_session, doc_id) == 1
+
+
+@pytest.mark.parametrize("same_bytes", [True, False], ids=["same-sha", "changed-sha"])
+async def test_ingest_resurrect_stores_the_canonical_path(client, admin_token, db_session, tmp_path, same_bytes):
+    """Case 2 (removed file resurrected), through an alias: the canonical path is stored."""
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(
+        db_session, folder_id, "a.txt", sha=sha, source_path=str(link / "a.txt"), status=WatchedFileStatus.removed
+    )
+
+    sent_sha = sha if same_bytes else uuid.uuid4().hex * 2
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(link / "a.txt"), sent_sha)
+
+    assert resp.status_code == 200, resp.text
+    assert (await _doc_row(db_session, doc_id)).source_path == str(real / "a.txt")
+
+
+async def test_ingest_of_changed_bytes_stores_the_canonical_path(client, admin_token, db_session, tmp_path):
+    """Case 3 (active, changed bytes), through an alias: the canonical path is stored."""
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path=str(link / "a.txt"))
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(link / "a.txt"), uuid.uuid4().hex * 2)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"] == "updated"
+    assert (await _doc_row(db_session, doc_id)).source_path == str(real / "a.txt")
+
+
+async def test_ingest_of_a_new_file_records_the_canonical_path_on_its_upload_row(
+    client, admin_token, db_session, tmp_path
+):
+    """Case 4: the Upload row, like the document, carries the canonical path."""
+    from sqlalchemy import select
+
+    from harbor_clerk.models.upload import Upload
+
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+
+    resp = await _ingest(client, admin_token, folder_id, "a.txt", str(link / "a.txt"))
+
+    assert resp.status_code == 200, resp.text
+    db_session.expire_all()
+    upload = (
+        await db_session.execute(select(Upload).where(Upload.doc_id == uuid.UUID(resp.json()["doc_id"])))
+    ).scalar_one()
+    assert upload.source_path == str(real / "a.txt")
+
+
+async def test_ingest_refuses_a_relative_path_resolving_outside_the_folder(client, admin_token, db_session, tmp_path):
+    """Only the containment check refuses this one: source_path is a hard link inside
+    the folder to a file outside it, and relative_path a symlink to that same file, so
+    the two do name the same file."""
+    import os
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+    os.link(outside, real / "hard.txt")
+    (real / "sym.txt").symlink_to(outside)
+
+    resp = await _ingest(client, admin_token, folder_id, "sym.txt", str(real / "hard.txt"))
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "relative_path is outside the watched folder"

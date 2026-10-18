@@ -510,7 +510,14 @@ async def test_download_returns_bytes_when_enabled(client, admin_user, admin_tok
 
 
 async def _download_watched_doc(
-    client, admin_token, db_session, tmp_path, *, delete_file: bool, mime_type: str | None = "application/pdf"
+    client,
+    admin_token,
+    db_session,
+    tmp_path,
+    *,
+    delete_file: bool,
+    mime_type: str | None = "application/pdf",
+    removed: bool = False,
 ):
     """Download a watched doc.txt (b"edited on disk") that also carries an older
     stored original, doc.pdf (b"stale stored"), with ``mime_type`` on the document."""
@@ -544,7 +551,7 @@ async def _download_watched_doc(
             bookmark_data=b"",
             sha256=doc.sha256,
             doc_id=doc.doc_id,
-            status=WatchedFileStatus.active,
+            status=WatchedFileStatus.removed if removed else WatchedFileStatus.active,
         )
     )
     await db_session.flush()
@@ -725,3 +732,14 @@ async def test_entity_autocomplete_escapes_percent(client, admin_user, admin_tok
     texts = {row["entity_text"] for row in resp.json()}
     assert "100% Complete" in texts
     assert "100 percent complete" not in texts
+
+
+async def test_download_never_serves_the_stored_original_of_a_removed_watched_file(
+    client, admin_user, admin_token, db_session, tmp_path
+):
+    """A watched document whose watched file is removed (its file deleted) is a 404,
+    not its stored original."""
+    resp = await _download_watched_doc(client, admin_token, db_session, tmp_path, delete_file=True, removed=True)
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Source file is missing"
+    assert b"stale stored" not in resp.content

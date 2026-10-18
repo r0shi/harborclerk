@@ -54,6 +54,7 @@ async def _extract_watched_doc(
     mime_type: str = "text/plain",
     delete_file: bool = False,
     raises: type[BaseException] | None = None,
+    watch: bool = True,
 ) -> SimpleNamespace:
     """Extract a watched document (its file and a sidecar on disk), optionally also
     carrying a stored original under ``stored_name`` whose bytes, name and
@@ -85,7 +86,8 @@ async def _extract_watched_doc(
     )
     db_session.add(doc)
     await db_session.flush()
-    await _watch(db_session, doc, source, enabled=enabled, status=status)
+    if watch:
+        await _watch(db_session, doc, source, enabled=enabled, status=status)
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
     await db_session.commit()
     doc_id = doc.doc_id
@@ -128,20 +130,26 @@ async def test_extract_stage_reads_the_sidecar_of_a_paused_folders_document(db_s
 
 
 @pytest.mark.asyncio
-async def test_extract_stage_reads_no_sidecar_for_a_removed_watched_file(db_session, tmp_path: Path):
-    """A removed watched file does not verify: the stored original is read, and no sidecar."""
-    out = await _extract_watched_doc(db_session, tmp_path, status=WatchedFileStatus.removed, stored=b"Stored body text")
-    assert "Stored body text" in out.text, out.text
+async def test_extract_stage_never_reads_the_stored_original_of_a_removed_watched_file(db_session, tmp_path: Path):
+    """A watched document whose watched file is removed is missing: the stage fails
+    rather than read its stored original, which may be an older upload."""
+    from harbor_clerk.watched_source import WatchedFileMissing
+
+    out = await _extract_watched_doc(
+        db_session, tmp_path, status=WatchedFileStatus.removed, stored=b"Stored body text", raises=WatchedFileMissing
+    )
+    assert "Stored body text" not in out.text, out.text
+    assert out.chars is None
     assert "sidecar" not in out.metadata, f"no sidecar expected, got: {out.metadata}"
 
 
 @pytest.mark.asyncio
 async def test_extract_stage_never_reads_an_unverified_source_path(db_session, tmp_path: Path):
-    """With no verified watched file and no stored original there is nothing to read:
+    """A document that is not watched and has no stored original has nothing to read:
     the stage fails, rather than reading the file at source_path."""
     from harbor_clerk.watched_source import NoReadableSource
 
-    out = await _extract_watched_doc(db_session, tmp_path, status=WatchedFileStatus.removed, raises=NoReadableSource)
+    out = await _extract_watched_doc(db_session, tmp_path, watch=False, raises=NoReadableSource)
     assert out.chars is None
     assert out.text == ""
 
@@ -290,7 +298,7 @@ async def test_extract_stage_writes_sidecar_metadata_to_doc(db_session, tmp_path
 
 
 async def _extract_with_stored_original(
-    db_session, tmp_path: Path, *, watched_file: Path | None
+    db_session, tmp_path: Path, *, watched_file: Path | None, raises: type[BaseException] | None = None
 ) -> tuple[dict | None, int | None]:
     """Extract a document whose original is in storage and whose source_path
     names a different file with a sidecar beside it, optionally mapped to the
@@ -331,7 +339,11 @@ async def _extract_with_stored_original(
     from harbor_clerk.worker.stages.extract import run_extract
 
     try:
-        run_extract(doc_id)
+        if raises is None:
+            run_extract(doc_id)
+        else:
+            with pytest.raises(raises):
+                run_extract(doc_id)
     finally:
         get_storage().remove_object(bucket, key)
 
@@ -355,17 +367,22 @@ async def test_extract_stage_reads_no_sidecar_beside_an_uploads_source_path(db_s
 
 @pytest.mark.asyncio
 async def test_extract_stage_reads_no_sidecar_when_source_path_is_not_the_watched_path(db_session, tmp_path: Path):
-    """A document mapped to a watched file but whose source_path names some
-    other file reads no sidecar, neither beside its source_path nor beside the
-    watched file."""
+    """A document mapped to a watched file but whose source_path names some other
+    file (an alias not yet repaired, or a label) is watched but not read in place:
+    the stage fails as missing. Neither its stored original nor any sidecar is read."""
+    from harbor_clerk.watched_source import WatchedFileMissing
+
     folder = tmp_path / "folder"
     folder.mkdir()
     watched = folder / "real.txt"
     watched.write_text("the watched file")
     (folder / "real.json").write_text(json.dumps({"vendor": "WatchedSidecar"}))
 
-    metadata, _ = await _extract_with_stored_original(db_session, tmp_path, watched_file=watched)
+    metadata, chars = await _extract_with_stored_original(
+        db_session, tmp_path, watched_file=watched, raises=WatchedFileMissing
+    )
 
+    assert chars is None, "nothing may be read from the stored original"
     assert "sidecar" not in (metadata or {}), f"no sidecar may be read, got: {metadata}"
 
 
