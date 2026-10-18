@@ -1,0 +1,184 @@
+"""Compose's llama-server serves one model, and the app follows the same model and context (#654).
+
+Without `-m`, the pinned llama.cpp (v0.4.1) starts in router mode: `/health` answers 200 with no model
+loaded and every chat request the app sends is refused with HTTP 400 ("model name is missing from the
+request"), because no payload names a `model`. Nothing failed visibly: chat and research errored,
+summaries fell back to extractive, and the container stayed healthy. These are static checks on the
+compose file and a behavioural check of the entrypoint that waits for the model file.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+import yaml
+
+from harbor_clerk.llm.models import MODELS, model_for_file
+
+REPO = Path(__file__).resolve().parents[1]
+COMPOSE_PATH = REPO / "docker-compose.yml"
+ENTRYPOINT = REPO / "docker" / "llama-server-entrypoint.sh"
+ENTRYPOINT_IN_CONTAINER = "/usr/local/bin/llama-server-entrypoint.sh"
+
+# `-` and not `:-`: an LLM_MODEL_FILE set empty in .env must stay empty (no local model), not fall back.
+MODEL_FILE_EXPR = re.compile(r"^\$\{LLM_MODEL_FILE-([^}]+)\}$")
+CONTEXT_EXPR = re.compile(r"^\$\{LLM_CONTEXT_TOKENS:-(\d+)\}$")
+
+
+def _services() -> dict:
+    return yaml.safe_load(COMPOSE_PATH.read_text())["services"]
+
+
+def _llama_args() -> list[str]:
+    return [str(token) for token in _services()["llama-server"]["command"]]
+
+
+def _flag(args: list[str], flag: str) -> str:
+    assert flag in args, f"llama-server is started without {flag}: {args}"
+    return args[args.index(flag) + 1]
+
+
+def _default_model_file() -> str:
+    model_path = _flag(_llama_args(), "-m")
+    assert model_path.startswith("/models/"), model_path
+    match = MODEL_FILE_EXPR.match(model_path.removeprefix("/models/"))
+    assert match, f"-m must be /models/${{LLM_MODEL_FILE-<default>}}, got {model_path!r}"
+    return match.group(1)
+
+
+def test_llama_server_is_started_with_one_model_not_as_a_router() -> None:
+    args = _llama_args()
+    assert "--models-dir" not in args and "--models-preset" not in args
+    default = _default_model_file()
+    model = model_for_file(default)
+    assert model is not None, f"the default LLM_MODEL_FILE {default!r} is not a curated model's file"
+    assert model.superseded_by is None, f"the default model {model.id} is superseded by {model.superseded_by}"
+
+
+def test_app_and_llm_worker_are_given_the_same_model_and_context() -> None:
+    services = _services()
+    args = _llama_args()
+    model_expr = _flag(args, "-m").removeprefix("/models/")
+    context_expr = _flag(args, "-c")
+    assert CONTEXT_EXPR.match(context_expr), f"-c must be ${{LLM_CONTEXT_TOKENS:-<default>}}, got {context_expr!r}"
+    for name in ("app", "worker-llm"):
+        env = services[name]["environment"]
+        assert env.get("LLM_MODEL_FILE") == model_expr, name
+        assert env.get("LLM_CONTEXT_TOKENS") == context_expr, name
+        # The model counts as active only while its file is in the volume, so both must see it there.
+        assert env.get("MODELS_DIR") == "/models", name
+        volumes = [str(v) for v in services[name].get("volumes") or []]
+        assert any(v.split(":")[:2] == ["llama_models", "/models"] for v in volumes), (name, volumes)
+
+
+def test_one_slot_as_every_curated_model_runs() -> None:
+    # -c is the total across slots; the app budgets a request to -c / parallel_slots.
+    assert {m.parallel_slots for m in MODELS.values()} == {1}
+    assert _flag(_llama_args(), "-np") == "1"
+
+
+def test_entrypoint_is_the_waiting_script() -> None:
+    service = _services()["llama-server"]
+    assert service["entrypoint"] == ["/bin/sh", ENTRYPOINT_IN_CONTAINER]
+    assert f"./docker/llama-server-entrypoint.sh:{ENTRYPOINT_IN_CONTAINER}:ro" in service["volumes"]
+    # Healthy means a model is loaded: single-model /health is 200 only after the load.
+    assert service["healthcheck"]["test"] == ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+
+
+def test_env_example_names_the_compose_defaults() -> None:
+    values = dict(
+        line.split("=", 1)
+        for line in (REPO / ".env.example").read_text().splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
+    assert values["LLM_MODEL_FILE"] == _default_model_file()
+    assert values["LLM_CONTEXT_TOKENS"] == CONTEXT_EXPR.match(_flag(_llama_args(), "-c")).group(1)
+
+
+# --- the entrypoint itself ---
+
+needs_sh = pytest.mark.skipif(shutil.which("sh") is None or sys.platform == "win32", reason="needs a POSIX sh")
+
+
+def _fake_server(tmp_path: Path) -> tuple[Path, Path]:
+    """A stand-in for /app/llama-server that records the arguments it was exec'd with."""
+    out = tmp_path / "exec-args"
+    fake = tmp_path / "fake-llama-server"
+    fake.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{out}"\n')
+    fake.chmod(0o755)
+    return fake, out
+
+
+def _env(fake: Path) -> dict[str, str]:
+    return {**os.environ, "LLAMA_SERVER_BIN": str(fake), "LLAMA_WAIT_INTERVAL": "0.05"}
+
+
+@needs_sh
+def test_entrypoint_execs_llama_server_with_its_arguments_when_the_model_is_there(tmp_path: Path) -> None:
+    fake, out = _fake_server(tmp_path)
+    model = tmp_path / "Qwen3.5-4B-Q4_K_M.gguf"
+    model.write_bytes(b"GGUF")
+    args = ["-m", str(model), "--host", "0.0.0.0", "-c", "8192", "--alias", "two words"]
+    result = subprocess.run(["sh", str(ENTRYPOINT), *args], env=_env(fake), capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert out.read_text().splitlines() == args
+
+
+@needs_sh
+def test_entrypoint_refuses_to_start_a_router(tmp_path: Path) -> None:
+    fake, out = _fake_server(tmp_path)
+    result = subprocess.run(
+        ["sh", str(ENTRYPOINT), "--host", "0.0.0.0", "--port", "8080"], env=_env(fake), capture_output=True, timeout=10
+    )
+    assert result.returncode == 64
+    assert b"router mode" in result.stderr
+    assert not out.exists()
+
+
+@needs_sh
+def test_entrypoint_waits_for_the_model_file_then_starts(tmp_path: Path) -> None:
+    fake, out = _fake_server(tmp_path)
+    model = tmp_path / "Qwen3.5-4B-Q4_K_M.gguf"
+    proc = subprocess.Popen(
+        ["sh", str(ENTRYPOINT), "-m", str(model), "--port", "8080"],
+        env=_env(fake),
+        stderr=subprocess.PIPE,
+    )
+    try:
+        time.sleep(0.5)
+        assert proc.poll() is None, "the entrypoint exited instead of waiting for the model file"
+        assert not out.exists(), "llama-server was started before its model file existed"
+        model.write_bytes(b"GGUF")
+        assert proc.wait(timeout=10) == 0
+        assert out.read_text().splitlines() == ["-m", str(model), "--port", "8080"]
+        assert b"waiting for" in proc.stderr.read()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+@needs_sh
+def test_entrypoint_says_no_model_is_configured_when_the_file_name_is_empty(tmp_path: Path) -> None:
+    fake, out = _fake_server(tmp_path)
+    # What `-m /models/${LLM_MODEL_FILE-...}` renders to when LLM_MODEL_FILE is set empty.
+    proc = subprocess.Popen(
+        ["sh", str(ENTRYPOINT), "-m", f"{tmp_path}/", "--port", "8080"],
+        env=_env(fake),
+        stderr=subprocess.PIPE,
+    )
+    try:
+        time.sleep(0.5)
+        assert proc.poll() is None
+        assert not out.exists()
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+    assert b"LLM_MODEL_FILE is empty" in proc.stderr.read()

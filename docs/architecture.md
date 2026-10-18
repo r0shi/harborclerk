@@ -209,6 +209,11 @@ graph TB
     wllm --> pg & llama
 ```
 
+> `llama-server` runs one model, `-m /models/$LLM_MODEL_FILE`, at `-c $LLM_CONTEXT_TOKENS`; `app` and
+> `worker-llm` are given both, treat that model as active while its file is in the `llama_models` volume, and
+> budget prompts to that context. Its entrypoint (`docker/llama-server-entrypoint.sh`) waits for the file, so
+> the container is healthy only once a model is loaded (#654). Setup: [README](../README.md#local-ai-on-docker).
+
 ### macOS Native
 
 ```mermaid

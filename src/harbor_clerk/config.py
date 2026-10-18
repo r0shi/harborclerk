@@ -90,6 +90,15 @@ class Settings(BaseSettings):
     # for summaries while still wanting the LLM for chat / research.
     summary_force_apple_intelligence: bool = Field(default=False)
     models_dir: str = Field(default="./data/models")
+    # Docker Compose only (#654): the GGUF file the `llama-server` service is started with (`-m`), and
+    # the context it runs at (`-c`). Compose has no launcher to start llama-server per model, so the
+    # model is chosen there, and the app follows it rather than the other way round: while
+    # `llm_model_file` is set (and no native config.json is), `llm_model_id` is the registry id of that
+    # file when the file is in `models_dir`, and empty when it is not (`_apply_model_file`). The context
+    # bounds what prompts are budgeted to (`llm/models.py::effective_context`). Both are unset under the
+    # macOS app, whose launcher sizes `-c` itself.
+    llm_model_file: str = Field(default="")
+    llm_context_tokens: int = Field(default=0, ge=0)
 
     # Native macOS app config file (set by Swift via env var)
     native_config_file: str = Field(default="")
@@ -192,8 +201,69 @@ def get_settings() -> Settings:
         # observer), so one of them would silently get env-only values.
         settings = Settings()
         _apply_to(settings)
+        configured_model_id = settings.llm_model_id
+        _apply_model_file(settings)
+        if configured_model_id and compose_model_file(settings) and configured_model_id != settings.llm_model_id:
+            logger.warning(
+                "LLM_MODEL_ID=%s is ignored: under Docker Compose LLM_MODEL_FILE (%s) chooses the model",
+                configured_model_id,
+                settings.llm_model_file,
+            )
         _settings = settings
     return _settings
+
+
+def compose_model_file(settings: Settings) -> str:
+    """The model file Compose's llama-server is started with, or "" when the model is not chosen that way.
+
+    Under the macOS app (a native config.json is set) the menubar launcher starts llama-server with the
+    model config.json names, so `llm_model_file` never applies there, even if it is set."""
+    return "" if settings.native_config_file else settings.llm_model_file
+
+
+# The last (file, state) `_apply_model_file` logged, so the per-stage refreshers report a change once.
+_model_file_reported: tuple[str, str] | None = None
+
+
+def _apply_model_file(settings: Settings) -> None:
+    """Under Docker Compose, make `llm_model_id` the model llama-server serves (#654).
+
+    Compose starts llama-server with `-m /models/$LLM_MODEL_FILE` and its entrypoint waits for that file,
+    so the model is loaded exactly when the file is in the shared volume. The app and `worker-llm` see
+    the same volume: the model is active while the file is there, and nothing is active while it is not,
+    so Ask says no model is configured and summaries fall back at once, instead of sending requests to a
+    server that is not listening (a summary would spend ~95 s of retries on each). A file that is not a
+    curated model's activates nothing: the registry is what budgets, tools and research flags come from.
+
+    Runs when the settings are built and on every `refresh_llm_settings()`, which the chat and research
+    routes and the summarize stage call per request, so a download finishing is picked up without a
+    restart."""
+    global _model_file_reported
+    filename = compose_model_file(settings)
+    if not filename:
+        return
+    from harbor_clerk.llm.models import model_for_file  # llm.models imports nothing from this package
+
+    model = model_for_file(filename)
+    present = os.path.isfile(os.path.join(settings.models_dir, filename))
+    state = "unknown" if model is None else "present" if present else "missing"
+    if _model_file_reported != (filename, state):
+        _model_file_reported = (filename, state)
+        if model is None:
+            logger.warning("LLM_MODEL_FILE %r is not a curated model's file; no local model is active", filename)
+        elif not present:
+            # The services that read .env but never mount the volume (watcher, io and cpu workers) say this
+            # at debug: they run no LLM stage, and "not in ./data/models" there would only mislead.
+            level = logging.INFO if os.path.isdir(settings.models_dir) else logging.DEBUG
+            logger.log(
+                level,
+                "LLM_MODEL_FILE %s is not in %s; no local model is active until it is",
+                filename,
+                settings.models_dir,
+            )
+        else:
+            logger.info("Local model %s is active: LLM_MODEL_FILE %s is in %s", model.id, filename, settings.models_dir)
+    settings.llm_model_id = model.id if model is not None and present else ""
 
 
 # Keys in config.json that deliberately do not map onto a Settings field.
@@ -339,7 +409,9 @@ def refresh_llm_settings() -> None:
 
     Workers are separate processes from the API server, so when the user
     changes the active model via the API, the worker's cached Settings
-    object is stale.  Call this before any LLM-dependent stage.
+    object is stale.  Call this before any LLM-dependent stage. Under Docker
+    Compose it also re-derives the active model from LLM_MODEL_FILE
+    (`_apply_model_file`).
     """
     apply_native_config(
         only={
@@ -350,6 +422,7 @@ def refresh_llm_settings() -> None:
             "research_verifier_revision_enabled",
         }
     )
+    _apply_model_file(get_settings())
 
 
 def sync_native_config(key: str, value: str | bool | int) -> None:

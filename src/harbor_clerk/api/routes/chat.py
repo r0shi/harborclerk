@@ -23,7 +23,7 @@ from harbor_clerk.api.schemas.chat import (
     SendMessageRequest,
 )
 from harbor_clerk.api.scope_validation import validate_scope_folders
-from harbor_clerk.config import get_settings, refresh_llm_settings, sync_native_config
+from harbor_clerk.config import compose_model_file, get_settings, refresh_llm_settings, sync_native_config
 from harbor_clerk.db import get_session
 from harbor_clerk.llm.chat import chat_stream
 from harbor_clerk.llm.download import (
@@ -375,6 +375,34 @@ async def start_model_download(
     return {"status": "downloading"}
 
 
+def _refuse_model_switch_under_compose(model_id: str | None) -> None:
+    """Under Docker Compose, refuse a switch to any model but the one llama-server serves (#654).
+
+    Compose starts llama-server once, with `-m /models/$LLM_MODEL_FILE`, and nothing in the app can restart
+    it with another file (the macOS launcher is what does that on a Mac). The active model there is derived
+    from LLM_MODEL_FILE on every refresh (`config._apply_model_file`), so an activation would show one model
+    while another answered, until the next refresh put it back. Activating the served model is allowed and
+    changes nothing. `model_id` None is a deactivation. Under the macOS app this does nothing."""
+    settings = get_settings()
+    model_file = compose_model_file(settings)
+    if not model_file:
+        return
+    model = get_model(model_id) if model_id else None
+    if model is not None and model.filename == model_file:
+        return
+    if model is not None:
+        change = f"To use {model.name}, set LLM_MODEL_FILE={model.filename}"
+    else:
+        change = "To run no local model, set LLM_MODEL_FILE= (empty)"
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            f"Under Docker Compose the model is the one llama-server is started with, LLM_MODEL_FILE={model_file}. "
+            f"{change} in .env and run `docker compose up -d`."
+        ),
+    )
+
+
 @router.put("/chat/models/{model_id}/activate", status_code=200)
 async def activate_model(
     model_id: str,
@@ -382,6 +410,7 @@ async def activate_model(
 ):
     if get_model_path(model_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not downloaded")
+    _refuse_model_switch_under_compose(model_id)
     # A model whose weights alone do not fit this Mac is refused: unified
     # memory would let llama-server allocate it, and the machine, not the
     # server, is what fails. There is no override, because the macOS launcher
@@ -416,6 +445,7 @@ async def activate_model(
 async def deactivate_model(
     principal: Principal = Depends(require_admin),
 ):
+    _refuse_model_switch_under_compose(None)
     settings = get_settings()
     previous = settings.llm_model_id or ""
     settings.llm_model_id = ""
@@ -517,7 +547,7 @@ async def llm_status(
     # (`max_context_here` is 0), so a "loading" that never ends can say why. A memory-budget change can leave
     # an installed app with an active model that no longer fits; the launcher refuses it, and this is how the
     # web app learns that. Only under the native app (`native_config_file` is set, as system.py reads it):
-    # on Compose nothing refuses a model, llama-server runs at the fixed `-c` in docker-compose.yml, and a
+    # on Compose nothing refuses a model, llama-server runs at LLM_CONTEXT_TOKENS (docker-compose.yml), and a
     # host whose memory makes the arithmetic say 0 may still be loading. None there, and when nothing is
     # configured, the registry does not know the id, or memory cannot be read (nothing is refused then).
     does_not_fit_here = None

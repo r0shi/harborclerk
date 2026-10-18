@@ -361,6 +361,11 @@ def get_model(model_id: str) -> ModelInfo | None:
     return MODELS.get(model_id)
 
 
+def model_for_file(filename: str) -> ModelInfo | None:
+    """The curated model whose GGUF is `filename`, or None. Docker Compose names its model by file (#654)."""
+    return next((m for m in MODELS.values() if m.filename == filename), None)
+
+
 # Context checkpoints the launcher lets llama-server keep per slot (--ctx-checkpoints). Its default is 32,
 # in host RAM, and nothing bounded or budgeted them (#657): for the 26B that is up to 10 GB.
 #
@@ -485,9 +490,17 @@ def effective_context(model: ModelInfo, yarn_enabled: bool, ram_bytes: int | Non
     arithmetic (`MemoryBudget` in Settings.swift). When memory cannot be read,
     or the model does not fit at all (the launcher then refuses to start it),
     the requested window is returned: there is nothing better to budget by.
-    Under Compose nothing clamps: llama-server runs at the fixed `-c` in
-    docker-compose.yml, and this is an upper bound on what it accepts (#654)."""
+    Under Compose nothing clamps by memory: llama-server runs at the `-c`
+    docker-compose.yml gives it, LLM_CONTEXT_TOKENS, which `app` and
+    `worker-llm` are given too (`llm_context_tokens`), so the context is that,
+    or the requested window if smaller (#654). It is 0, and unused, under the
+    macOS app."""
     requested = requested_context(model, yarn_enabled)
+    from harbor_clerk.config import get_settings  # not at load: config imports this module lazily
+
+    server_context = get_settings().llm_context_tokens
+    if server_context > 0:
+        return min(requested, server_context)
     ram = system_ram_bytes() if ram_bytes is None else ram_bytes
     fit = max_context(model, ram, requested)  # 0 when memory is unknown, or the model does not fit at all
     return fit if fit > 0 else requested
