@@ -1901,6 +1901,9 @@ def main(argv: list[str] | None = None) -> int:
                 # Set by the branch that finishes the unit; the exception handlers below fall through to the
                 # metrics row with it unset, and the answer key must not read an outage as a wrong answer.
                 final_status: Status | None = None
+                # The question asked, read for the answer key after the try: bound here, so a unit whose question
+                # cannot be found (a KeyError the handlers below record) still reaches its row (review of #816).
+                text: str | None = None
                 try:
                     if phase == 0:
                         manifests[u.corpus] = _phase0_acquire(u.corpus, workdir)

@@ -103,3 +103,22 @@ def test_a_unit_that_gets_no_row_is_still_saved(tmp_path):
         assert _sweep(tmp_path, qdir) == 0
     unit = _unit(run_dir)
     assert unit["status"] == "error" and unit["error"] == "unfilled placeholder: {{contract_a}}"
+
+
+def test_a_unit_whose_question_cannot_be_found_is_recorded_as_an_error_and_the_run_goes_on(tmp_path):
+    """Resuming a run whose state names a question since removed: the lookup raises KeyError, which the unit's
+    handler records. The answer key is read after the handler, with the question text; it must not find that text
+    unbound (review of #816: the run died with UnboundLocalError on the first such unit)."""
+    qdir = _questions_dir(tmp_path)
+    run_dir = tmp_path / "results" / "r1"
+    missing = KeyError("unknown question id cuad-ask-1")
+    with (
+        _patched(answer=ANSWERED, entity_overlap=lambda *a, **k: 0.5),
+        patch.object(sweep, "_question_text", side_effect=missing),
+    ):
+        assert _sweep(tmp_path, qdir) == 0
+    unit = _unit(run_dir)
+    assert unit["status"] == "error" and "unknown question id" in (unit["error"] or "")
+    assert [(r["question_id"], r["status"], r["answer_key_score"]) for r in _rows(run_dir)] == [
+        ("cuad-ask-1", "error", "")
+    ]

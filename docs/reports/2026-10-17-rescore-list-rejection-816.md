@@ -17,32 +17,40 @@
 ## The rule
 
 Only labels are read for rejection: headings, bold lead-ins, and the bold or colon-terminated label that opens a
-line or bullet. A heading or lead-in that rejects takes its section out, as under #814; a line label that rejects
-and names no item takes the rest of its line. A label rejects when:
+line or bullet. A heading or lead-in that rejects takes its section out, as under #814. A line label that rejects
+and names no item takes the rest of its line, and a line that is only a rejecting label ("Excluded:", "- **Excluded
+near-misses:**") takes the list items under it, to a blank line, a heading, another label line, a line that is not
+a list item, or (under a bulleted label) an item back at its indentation. A label rejects when:
 
 - it **opens** with a reject phrase: excluded, exclusions, not counted, not included, not a match, non-match,
   near-miss, false positive, rejected, ruled out, does not qualify, and the French equivalents; or
-- it **opens** with a denial of the question's own category: "Not a non-disparagement clause" against "Which
-  contracts contain a non-disparagement clause?" (the denied phrase's last content word is one of the question's).
-  Without the question, no denial is read; or
+- it **opens** with a denial that covers the question's whole category. With one alternative ("Which contracts
+  contain a non-disparagement clause?"), the denied phrase's last content word is one of the question's: "Not a
+  non-disparagement clause". With several ("first refusal, first offer or first negotiation"), the phrase names all
+  of them, so "Not a right of first refusal" keeps: the item may still be a right of first offer. Without the
+  question, no denial is read; or
 - its **leading clause**, the words before the first parenthesis, comma, colon, semicolon or dash, **ends** with a
-  reject phrase: "Reviewed and excluded", "Context on what was excluded".
+  reject phrase after nothing but words for the items and framing words: "Reviewed and excluded", "Context on what
+  was excluded", "Notable Contracts That Were Close But Do NOT Qualify". Any other word means the phrase describes
+  the clause: "Punitive damages excluded", "Employee solicitation not included", "Sale once the first offer is
+  rejected".
 
 It does not reject when:
 - the leading clause opens with a negation ("No contracts were excluded", "Nothing has been excluded");
-- a closing phrase is attached to something else by a condition or attachment word in the leading clause (once,
-  after, when, whenever, if, unless, until, provided, with, without, where, except, and the French): "Third-party
-  sale once the first offer is rejected", "Customer non-solicits with employees excluded";
-- the words right after the label say it rejects nothing ("Exclusions: none; Staar and Papa John's both qualify");
+- the words right after the label are only "none", "nothing", "n/a", "zero" or the like, alone or followed by
+  punctuation or a conjunction ("Exclusions: none; Staar and Papa John's both qualify"). "None of these contains a
+  genuine covenant:" and "No affirmative covenant in either:" are rejections and do not stop it;
 - an opening participle describes something else: "Excluded from the cap" (but "Excluded from the list /
-  consideration / scope / review / tally" rejects), "Rejected offers go to third parties", "Rejected-offer matching
-  rights";
-- a denial denies a degree or a form ("Not a classic covenant"), names another category ("Not a ROFR" against a
-  question about first refusal, offer or negotiation; "Not a Delaware entity" against one about Delaware law), or
-  goes on to say what the item is instead ("Not a right of first refusal — a right of first offer").
+  consideration / scope / review / tally" and "Excluded due to scope" reject), "Rejected offers go to third
+  parties", "Rejected-offer matching rights";
+- a denial denies a degree or a form the question does not ask about ("Not a classic covenant"), or goes on to say
+  what the item is instead ("Not a party but bound").
 
 A reject word anywhere else in a label does nothing, hedges count ("Borderline / related", "Mentions / borderline"),
 and prose is not read for rejection.
+
+The question reaches the scorer from every scoring site: `report.py` (a baseline's recorded `question`), the sweep's
+`key_score_cell` (the text asked), and `judge_agreement.py` (the bake-off item's `question`).
 
 Why so little: a false drop silently lowers recall on a right answer, while a false keep lowers only precision,
 which the reports read as a floor for narrating models. Rules that read negation anywhere in a heading, or verdicts

@@ -203,15 +203,45 @@ def test_any_other_label_keeps_its_items(label):
 
 @pytest.mark.parametrize("word", ["once", "after", "when", "whenever", "if", "unless", "until", "provided", "with",
                                   "without", "where", "except"])  # fmt: skip
-def test_a_condition_or_attachment_word_in_the_leading_clause_stops_the_closing_phrase(word):
+def test_a_closing_phrase_after_a_condition_describes_the_clause_and_does_not_reject(word):
     assert not rejecting_label(f"Sale to a third party {word} the offer is rejected")
     assert rejecting_label("Reviewed and rejected") and rejecting_label("Context on what was excluded")
 
 
 @pytest.mark.parametrize("word", ["si", "lorsque", "quand", "avec", "sans"])
-def test_the_french_condition_and_attachment_words_stop_it_too(word):
+def test_and_in_french(word):
     assert not rejecting_label(f"Vente à un tiers {word} l'offre rejetée")
     assert rejecting_label("Examinés et rejetés")
+
+
+@pytest.mark.parametrize(
+    ("label", "rejects"),
+    [
+        # Every word before a closing reject phrase names the items or frames them: a verdict.
+        ("Context on what was excluded", True),
+        ("Reviewed and excluded", True),
+        ("Checked and excluded (not a *customer* non-solicit)", True),
+        ("Candidates reviewed and excluded", True),
+        ("Contracts Excluded (Delaware mentioned but NOT the governing law)", True),
+        ("⚠️ Notable Contracts That Were Close But Do NOT Qualify (Employee Non-Solicitation Only)", True),
+        ("Notable Near-Misses (NOT governed by Delaware law)", True),
+        ("The remaining documents were also rejected", True),
+        ("Examinés et rejetés", True),
+        # Any other word: the phrase describes something in the clause (review 4).
+        ("Punitive damages excluded", False),
+        ("Employee solicitation not included", False),
+        ("Consequential damages excluded", False),
+        ("Clauses with consequential damages excluded", False),
+        ("Contracts whose renewals are excluded", False),
+        # An opening participle followed by a reason is a verdict (review 4).
+        ("Not counted toward the total", True),
+        ("Excluded due to scope", True),
+        ("Excluded following review", True),
+        ("Exclus car hors sujet", True),
+    ],
+)
+def test_a_closing_phrase_rejects_only_after_words_that_name_or_frame_the_items(label, rejects):
+    assert rejecting_label(label) is rejects
 
 
 @pytest.mark.parametrize(
@@ -229,7 +259,23 @@ def test_the_french_condition_and_attachment_words_stop_it_too(word):
         ("Not a Delaware entity", Q20, False),  # the last content word, "entity", is not the question's
         ("Not a minimum-coverage requirement (amount unspecified)", Q19, False),  # review 3
         ("Not a right of first refusal — a right of first offer", Q18, False),  # review 3: it says what it is
-        ("Not a right of first refusal", Q18, True),
+        # Several alternatives: a denial of one leaves the item free to qualify under another (review 4).
+        ("Not a right of first refusal", Q18, False),
+        ("Not a right of first refusal (right of first negotiation only)", Q18, False),  # review 4
+        ("Not a right of first refusal (ROFN only)", Q18, False),  # review 4
+        ("Not a right of first offer", Q18, False),  # review 4
+        ("Not a first-refusal right; a first negotiation right", Q18, False),  # review 4
+        ("Not a right of first refusal, first offer or first negotiation", Q18, True),
+        ("Not a ROFR, ROFO or ROFN", Q18, True),
+        ("Not a first-refusal, first-offer or first-negotiation right", Q18, True),
+        (
+            "Not an irrevocable or perpetual license",
+            "Which contracts contain an irrevocable or perpetual license grant?",
+            True,
+        ),
+        ("Not an irrevocable license", "Which contracts contain an irrevocable or perpetual license grant?", False),
+        ("Not a Delaware law clause", Q20, True),  # review 4: one alternative, named
+        ("Not an insurance requirement per se", Q19, False),  # review 4: "per se" is what is denied
         ("Not an exclusive license, but perpetual", Q16, False),  # review 3
         ("Not a party but bound", Q15, False),  # review 2
         ("Not a classic non-disparagement covenant", Q16, False),  # a degree or a form
@@ -437,6 +483,24 @@ def test_a_rejecting_label_followed_by_none_rejects_nothing(text):
     assert contracts(text) == {STAAR, PAPA}
 
 
+@pytest.mark.parametrize(
+    "text",
+    [  # review 4: "none of ...", and a bare "No <noun>", are the rejection, not its absence
+        f"One.\n\n## Matches\n\n- Staar (`{SID}`)\n\n## Excluded\n\nNone of these contains a genuine covenant:\n"
+        f"- eDiets (`{EID}`)\n- Papa (`{PID}`)\n",
+        f"One.\n\n## Matches\n\n- Staar (`{SID}`)\n\n## Rejected candidates\n\nNo affirmative covenant in either:\n"
+        f"- eDiets (`{EID}`)\n- Papa (`{PID}`)\n",
+        f"One.\n\n- Staar (`{SID}`)\n\n**Excluded:** none of these is a real covenant: eDiets (`{EID}`), Papa (`{PID}`).\n",
+        f"One.\n\n## Matches\n- Staar (`{SID}`)\n\n## Near-misses\n\nNo operative clause; recitals only:\n"
+        f"- eDiets (`{EID}`)\n- Papa (`{PID}`)\n",
+        f"One.\n\n## Matches\n- Staar (`{SID}`)\n\n## Excluded\n\n### Nominal mentions\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n",
+        f"One.\n- Staar (`{SID}`)\n- Excluded: nothing in eDiets (`{EID}`) or Papa (`{PID}`) is a covenant.\n",
+    ],
+)
+def test_none_of_and_a_bare_no_are_not_the_escape(text):
+    assert named_contracts(text, CONTRACTS, None, IDS, Q16) == {STAAR}
+
+
 def test_a_rejecting_label_not_followed_by_none_still_rejects():
     assert contracts(f"Two.\n- **Exclusions:** Staar (`{SID}`)\n- Papa John's (`{PID}`)") == {PAPA}
     assert contracts(f"Two.\n\n## False positives\n\nStaar (`{SID}`).\n\n## Matches\n\nPapa (`{PID}`)") == {PAPA}
@@ -571,3 +635,51 @@ def test_the_rerun_cuad_key_16_reads_the_same_with_its_table_written_as_bullets(
     assert named_contracts("\n".join(lines), universe, None, KEY16_DOC_IDS, Q16) == table
     eDiets = KEY16_DOC_IDS["3c40cba1-a4cc-47f4-a1a6-2011dc83888a"]
     assert table == set(KEY16_DOC_IDS.values()) - {eDiets}, "every contract it names but the one it rejects"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # review 4: a line that is only a rejecting label takes out the list under it.
+        (
+            f"One.\n\n- Staar (`{SID}`)\n- **Excluded near-misses:**\n  - eDiets (`{EID}`)\n  - Papa (`{PID}`)\n",
+            {STAAR},
+        ),
+        (f"One.\n\n- Staar (`{SID}`)\n\nExcluded:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {STAAR}),
+        (f"One.\n\n- Staar (`{SID}`)\n\n__Rejected:__\n1. eDiets (`{EID}`)\n2. Papa (`{PID}`)\n", {STAAR}),
+        (f"One.\n\n- Staar (`{SID}`)\n\n**Not counted**:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {STAAR}),
+        # Its list ends at a blank line, a heading, another label line, a line that is not an item, or (under a
+        # bulleted label) an item back at the label's indentation.
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\n\n- Papa (`{PID}`)\n", {PAPA}),
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\n## Matches\n- Papa (`{PID}`)\n", {PAPA}),
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nMatches:\n- Papa (`{PID}`)\n", {PAPA}),
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nAnd one more that qualifies:\n- Papa (`{PID}`)\n", {PAPA}),
+        (f"Two.\n\nExcluded:\n- eDiets (`{EID}`)\nPapa (`{PID}`) qualifies.\n", {PAPA}),
+        (f"Two.\n\n- **Excluded near-misses:**\n  - eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {PAPA}),
+        (f"Two.\n\n  - **Excluded:**\n    - eDiets (`{EID}`)\n  - Papa (`{PID}`)\n", {PAPA}),
+        # A plain label's list runs at any indentation.
+        (f"One.\n\nExcluded:\n- eDiets (`{EID}`)\n  - Papa (`{PID}`)\n- Staar (`{SID}`)\n", set()),
+        # A label line that keeps, or is not only a label, takes nothing.
+        (f"Three.\n\nMatches:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n- Staar (`{SID}`)\n", {STAAR, EDIETS, PAPA}),
+        (f"Three.\n\nExcluded from the cap:\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
+        (f"Three.\n\nExcluded: none.\n- eDiets (`{EID}`)\n- Papa (`{PID}`)\n", {EDIETS, PAPA}),
+        # review 4: a descriptive closing phrase on a line label takes nothing.
+        (
+            f"Two.\n\n- Staar (`{SID}`): $5M CGL\n- Punitive damages excluded: Papa John's (`{PID}`) must carry $2M CGL\n",
+            {STAAR, PAPA},
+        ),
+        (
+            f"Two.\n\n- Staar (`{SID}`)\n\n### Employee solicitation not included\n\n- Papa John's (`{PID}`)\n",
+            {STAAR, PAPA},
+        ),
+        # review 4: a denial of one alternative keeps its section.
+        (
+            f"Two.\n\n## Rights of first refusal\n\n- Staar (`{SID}`)\n\n"
+            f"## Not a right of first refusal (right of first negotiation only)\n\n- Papa John's (`{PID}`), s7\n",
+            {STAAR, PAPA},
+        ),
+    ],
+)
+def test_review_4_shapes(text, expected):
+    question = Q18 if "first refusal" in text else Q19 if "CGL" in text else Q15 if "solicitation" in text else Q16
+    assert named_contracts(text, CONTRACTS, None, IDS, question) == expected

@@ -223,7 +223,8 @@ def test_a_contract_is_named_by_its_document_id_when_the_map_resolves_it():
     assert named_contracts(f"Staar Surgical Company; and `{ID_EDIETS}`", UNIVERSE, None, DOC_IDS) == {STAAR, EDIETS}
     assert named_contracts(f"| *{EDIETS}* |", UNIVERSE, None, DOC_IDS) == {EDIETS}
     assert named_contracts("", UNIVERSE, None, DOC_IDS) == set() and named_contracts(by_id, UNIVERSE, None, {}) == set()
-    # The prose is read for an id as for a title (#816): a sentence opening "Not included:" names nothing.
+    # A line label is read for an id as for a title (#816): a line opening with the label "Not included:" names
+    # nothing after it.
     assert (
         named_contracts(f"Not included: `{ID_EDIETS}` (the word appears only in warranties)", UNIVERSE, None, DOC_IDS)
         == set()
@@ -734,7 +735,7 @@ def test_a_dropped_heading_takes_its_sub_headings_and_lead_ins_and_the_first_sec
     assert named_contracts(text, UNIVERSE, None, DOC_IDS) == {STAAR}
     assert without_excluded_sections(text).endswith("## Summary\n\nOne contract: Staar Surgical Company.")
     # A lead-in's section ends at the next lead-in or heading; a heading's does not end at a lead-in.
-    # (The item is on the lead-in's next line: on the lead-in's own line the sentence-label rule would read it.)
+    # (The item is on the lead-in's next line: on the lead-in's own line the line-label rule would read it.)
     assert named_contracts(f"**Not a match**\n`{ID_EDIETS}`\n**Match:** `{ID_STAAR}`\n", UNIVERSE, None, DOC_IDS) == {
         EDIETS,
         STAAR,
@@ -743,7 +744,7 @@ def test_a_dropped_heading_takes_its_sub_headings_and_lead_ins_and_the_first_sec
         f"Two.\n**Not a match:** `{ID_EDIETS}`\n**Match:** `{ID_STAAR}`\n", UNIVERSE, None, DOC_IDS
     ) == {STAAR}
     assert named_contracts(f"Two.\n## Excluded\n**Match:** `{ID_STAAR}`\n", UNIVERSE, None, DOC_IDS) == set()
-    # A sentence that opens with a rejecting label is read as its heading would be (#816), first section or not.
+    # A line that opens with a rejecting label loses the rest of the line (#816), first section or not.
     assert named_contracts(f"Not included: `{ID_EDIETS}` (warranties only)", UNIVERSE, None, DOC_IDS) == set()
     # The shape it cannot read, stated as a cost in the module docstring: an excluded lead-in followed by `###`
     # items excludes only itself, because a heading ends a lead-in's section.
