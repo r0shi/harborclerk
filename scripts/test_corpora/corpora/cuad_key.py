@@ -38,8 +38,11 @@ log = logging.getLogger(__name__)
 OUT_DIR = Path(__file__).resolve().parent.parent / "questions" / "keyed"
 
 # What a CUAD file name carries before its exhibit's description: filer, filing date, form, exhibit number and EDGAR
-# accession number (`HarpoonTherapeuticsInc_20200312_10-K_EX-10.18_12051356`). Together they name one exhibit of one
-# filing. A name not in this shape (`KALLOINC_11_03_2011-EX-10.1-STRATEGIC ALLIANCE AGREEMENT`) has none.
+# accession number (`HarpoonTherapeuticsInc_20200312_10-K_EX-10.18_12051356`). They narrow the candidates; they do
+# not identify a contract. In the 510-PDF release 11 groups are shared by two to four PDFs of one split exhibit, and
+# 329 names are not in this shape at all (`KALLOINC_11_03_2011-EX-10.1-STRATEGIC ALLIANCE AGREEMENT`) and have none.
+# A match is unique only because `annotation_rows` refuses every row another contract could also claim: loosen
+# those refusals and the identifiers alone will pair a row with the wrong half of a split exhibit.
 _IDENTIFIERS = re.compile(r"[^_]+_\d{8}_[^_]+_[^_]+_\d+(?=_)")
 
 # (clause column, how the question says it). Chosen for a positive count in the sample that is neither a
@@ -103,17 +106,16 @@ _RULES: tuple[tuple[str, Callable[[str, str], bool]], ...] = (
 def annotation_rows(titles: list[str], rows: list[dict], release: Iterable[str] = ()) -> dict[str, dict]:
     """title -> its annotation row, for each title that has one. A title whose normalised name is a row's is that
     row's. Otherwise the rules in `_RULES` are tried in order, and the first that finds any row for the title
-    decides, matching only if it finds exactly one row, that row is no contract's by name, and that row fits no
-    other contract by the same rule; anything else is refused and logged, and the title stays outside the key.
+    decides, matching only if it finds exactly one row, that row is no contract's by name, and no other contract
+    fits that row by any rule; anything else is refused and logged, and the title stays outside the key.
     "Contract" is any ingested title or any PDF of the CUAD release (`release`, the stems of the files the sample
-    was drawn from), since a row that could be a contract outside the sample's is not this one's. Every inexact
-    match is logged, and a row two titles reached by different rules goes to neither."""
+    was drawn from), since a row that could be a contract outside the sample's is not this one's. So a row two
+    titles reach, by the same rule or by different ones, goes to neither. Every inexact match is logged."""
     by_stem = {Path(r["Filename"]).stem: r for r in rows}
     exact = {normalize(stem): r for stem, r in by_stem.items()}
     names = sorted(set(titles) | set(release))
     taken = {normalize(n) for n in names}  # a row whose name is a contract's is that contract's
     out: dict[str, dict] = {}
-    inexact: dict[str, list[tuple[str, str]]] = {}  # row stem -> [(title, rule)]
     for title in titles:
         if normalize(title) in exact:
             out[title] = exact[normalize(title)]
@@ -122,24 +124,19 @@ def annotation_rows(titles: list[str], rows: list[dict], release: Iterable[str] 
             found = [stem for stem in by_stem if rule(stem, title)]
             if not found:
                 continue
+            row = found[0]
             if len(found) > 1:
                 log.warning("cuad key: %r not matched (%s): rows %s", title, rule_name, found)
-            elif normalize(found[0]) in taken:
-                log.warning("cuad key: %r not matched (%s): row %r is another contract's", title, rule_name, found[0])
-            elif (claimants := [n for n in names if rule(found[0], n)]) != [title]:
-                log.warning("cuad key: %r not matched (%s): row %r fits %s", title, rule_name, found[0], claimants)
+            elif normalize(row) in taken:
+                log.warning("cuad key: %r not matched (%s): row %r is another contract's", title, rule_name, row)
+            elif (claimants := [n for n in names if any(fits(row, n) for _, fits in _RULES)]) != [title]:
+                log.warning("cuad key: %r not matched (%s): row %r fits %s", title, rule_name, row, claimants)
             else:
-                inexact.setdefault(found[0], []).append((title, rule_name))
+                log.info("cuad key: %r matched inexactly (%s) to row %r", title, rule_name, row)
+                out[title] = by_stem[row]
             break
         else:
             log.warning("cuad key: %r has no annotation row", title)
-    for stem, claims in inexact.items():
-        if len(claims) > 1:
-            log.warning("cuad key: row %r not matched: it fits %s", stem, [t for t, _ in claims])
-            continue
-        (title, rule_name), *_ = claims
-        log.info("cuad key: %r matched inexactly (%s) to row %r", title, rule_name, stem)
-        out[title] = by_stem[stem]
     return out
 
 

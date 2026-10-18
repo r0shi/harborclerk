@@ -78,12 +78,12 @@ Sonnet row is the same answers.
   (0.461 → 0.462) passes its `gemma4-26b-a4b` (0.466 → 0.458). Gaps that small were not a ranking before either.
 - **The cloud subjects named Harpoon where they judged its text supports it.** Both Fable runs scored 1.00 on key-17,
   key-19 and key-20 and still do, with Harpoon counted as a hit on each; astra likewise on key-17 and key-20, and
-  it gains Harpoon on key-19 (0.977 → 0.978). On key-18 neither Fable run claims it: both
-  put Harpoon–AbbVie under headings the scorer reads as rejected (the first run under "Mentions / borderline" and
-  "Reviewed and excluded", the rerun under "Candidates reviewed and excluded"), calling AbbVie's §5.9.2 "first right ... to negotiate" for third-party licences an IP-control provision,
-  so the new positive is a miss and Fable's key-18 falls by 0.03. astra lists it in its own "flagged separately"
-  table, which the scorer counts, and gains it. Whether §5.9.2 is a right of first negotiation is the annotators' call
-  against the models'; the key keeps the annotators'.
+  it gains Harpoon on key-19 (0.977 → 0.978). On key-18 neither Fable run claims it: both put Harpoon–AbbVie under
+  headings the scorer reads as rejected (the first run under "Mentions / borderline" and "Reviewed and excluded",
+  the rerun under "Candidates reviewed and excluded"), calling AbbVie's §5.9.2 "first right ... to negotiate" for
+  third-party licences an IP-control provision, so the new positive is a miss and Fable's key-18 falls by 0.03.
+  astra lists it in its own "flagged separately" table, which the scorer counts, and gains it. Whether §5.9.2 is a
+  right of first negotiation is the annotators' call against the models'; the key keeps the annotators'.
 - **Local models mostly lose a little on key-17 and key-18 and gain on key-19 and key-20.** They rarely name Harpoon
   for the licence or first-refusal questions, so they lose recall there, and often name it for insurance and
   Delaware law, so they gain a hit there.

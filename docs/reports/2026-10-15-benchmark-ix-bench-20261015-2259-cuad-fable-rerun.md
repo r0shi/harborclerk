@@ -64,3 +64,5 @@ Facts and dates stayed at 1.00.
 ### Not verified
 
 No human read the 20 answers end to end. The tool transcripts store a 600-character summary of each result, so the chunk-id provenance on key-15 rests on there being no other source of chunk ids before those calls, not on reading the full rows. The WaterNow line break is inferred from the fix, not read from the stored chunk. One run per build; variance between two runs on the same build was not measured.
+
+Since 2026-10-18 the universe is 80 (#815): rescored over 80, this run's lists are 0.838 (0.843 before; key-18 0.828 → 0.800, and the first run's key-18 0.667 → 0.640), and the before-and-after list figures (0.82 and 0.84) read the same at two places; see `2026-10-18-rescore-cuad-key-universe-80.md`.

@@ -407,15 +407,43 @@ def test_an_ambiguous_inexact_match_is_refused_and_logged(caplog):
             "another contract's"
         ]
         caplog.clear()
-        # Two titles reaching one row by different rules: one by its identifiers, one (named with spaces, so it has
-        # none) by prefix. Each rule alone finds one title for the row; neither title gets it.
+        # One row that two contracts fit by different rules: one by its identifiers, one (named with spaces, so it
+        # has none) by prefix. Each rule alone finds one contract for the row; neither gets it, whether the second
+        # contract is in the sample or only in the release.
         row = "FooInc_20200101_10-K_EX-10.1_123_EX-10.1_Supply"
         by_ids = "FooInc_20200101_10-K_EX-10.1_123_EX-10.1_Distribution Agreement"
         by_prefix = "FooInc 20200101 10-K EX-10.1 123 EX-10.1 Supply Agreement"
+        both = sorted([by_ids, by_prefix])
         assert cuad_key.annotation_rows([by_ids, by_prefix], [_row(row)]) == {}
         assert [r.message for r in caplog.records] == [
-            f"cuad key: row {row!r} not matched: it fits {[by_ids, by_prefix]}"
+            f"cuad key: {by_ids!r} not matched (identifiers to the accession number): row {row!r} fits {both}",
+            f"cuad key: {by_prefix!r} not matched (the row's name is a prefix of the title): row {row!r} fits {both}",
         ]
+        caplog.clear()
+        assert cuad_key.annotation_rows([by_ids], [_row(row)], release=[by_ids, by_prefix]) == {}
+        assert [r.message for r in caplog.records] == [
+            f"cuad key: {by_ids!r} not matched (identifiers to the accession number): row {row!r} fits {both}"
+        ]
+
+
+@pytest.mark.parametrize("suffix", [".PDF", ".pdf"])
+def test_build_refuses_a_row_that_a_release_pdf_outside_the_sample_also_fits(tmp_path, monkeypatch, caplog, suffix):
+    """`build` reads the release's PDFs, both spellings of the extension, as contracts a row could belong to: the
+    truncated row fits the sampled KALLO and an amendment the sample did not take, so KALLO is left out."""
+    amendment = f"{KALLO} AMENDMENT"
+    texts = {STAAR: "", KALLO: ""}
+    workdir = _workdir(tmp_path, texts, [_row(STAAR), _row(KALLO[:-10])])
+    part = workdir / "cuad" / "extracted" / "CUAD_v1" / "full_contract_pdf" / "Part_I"
+    part.mkdir(parents=True)
+    (part / f"{amendment}{suffix}").write_bytes(b"%PDF-1.4 stub")
+    monkeypatch.setattr(cuad_key, "_text", lambda pdf: texts[pdf.stem])
+    with caplog.at_level("INFO", logger=cuad_key.__name__):
+        _, key = cuad_key.build(workdir)
+    assert all(e["universe"] == [STAAR] for e in key.values() if e["kind"] == "list")
+    assert [r.message for r in caplog.records] == [
+        f"cuad key: {KALLO!r} not matched (the row's name is a prefix of the title): row {KALLO[:-10]!r} fits "
+        f"{sorted([KALLO, amendment])}"
+    ]
 
 
 def test_an_exact_match_is_unaffected_by_rows_that_would_match_it_inexactly(caplog):
