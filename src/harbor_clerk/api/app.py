@@ -464,7 +464,11 @@ def _static_file(static_root: Path, full_path: str) -> str | object | None:
     if "\x00" in full_path or "\\" in full_path:
         return _OUTSIDE
     segments = full_path.split("/")
-    if segments[0] == "" or ".." in segments:
+    if segments[0] == "":
+        # A leading empty segment (``//docs``): a client route at most, never a
+        # file. The index, without touching the disk.
+        return None
+    if ".." in segments:
         return _OUTSIDE
     try:
         root = os.path.realpath(static_root)

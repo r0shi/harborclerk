@@ -113,10 +113,19 @@ async def test_traversal_never_serves_a_file_outside_static_dir(app, raw_path):
 
 
 async def test_absolute_path_is_not_served(app, static_layout):
-    """A path that is absolute after the leading slash is a 404."""
+    """A path that is absolute after the leading slash is the index at most, never the file."""
     status, _, body = await _get(app, "/" + str(static_layout["secret"]))
     assert SECRET not in body
-    assert status == 404
+    assert status == 404 or (status == 200 and body == INDEX), (status, body[:80])
+
+
+@pytest.mark.parametrize("raw_path", ["//docs", "//docs/3f6c", "//etc/hosts", "//favicon.ico", "//assets/app.js"])
+async def test_a_leading_empty_segment_serves_the_index(app, raw_path):
+    """``//docs`` is the index, as before this change; ``//<anything>`` never serves a file."""
+    status, headers, body = await _get(app, raw_path)
+    assert status == 200
+    assert body == INDEX
+    assert headers["content-type"].startswith("text/html")
 
 
 @pytest.mark.parametrize("raw_path", ["/leak.txt", "/outside/secret.txt", "/assets/leak.js"])
@@ -227,10 +236,11 @@ async def test_get_of_an_api_route_with_a_trailing_slash_redirects_to_it(app, ra
     ],
 )
 async def test_a_trailing_slash_redirect_never_leaves_the_host(app, raw_path):
-    """Whatever the path, a redirect target starts with exactly one slash."""
-    status, headers, _ = await _get(app, raw_path)
+    """Whatever the path, a redirect target starts with exactly one slash; without a
+    redirect the answer is a 404 or the SPA index."""
+    status, headers, body = await _get(app, raw_path)
     if status in (301, 302, 303, 307, 308):
         location = headers["location"]
         assert location.startswith("/") and not location.startswith(("//", "/\\")), location
     else:
-        assert status == 404
+        assert status == 404 or (status == 200 and body == INDEX), (status, body[:80])
