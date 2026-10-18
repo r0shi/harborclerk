@@ -249,20 +249,23 @@ async def test_compose_deactivate_reads_the_active_model_fresh(
     assert resp.status_code == 200, "deactivate judged a model active that the volume no longer holds"
 
 
-async def test_compose_models_page_shows_the_servers_context_and_no_mac_fit_warning(
-    client, admin_user, admin_token, compose, monkeypatch
+@pytest.mark.parametrize("ram_gib", [2, 64])
+async def test_compose_models_page_shows_the_servers_context_and_an_honest_fit(
+    client, admin_user, admin_token, compose, monkeypatch, ram_gib
 ) -> None:
-    # A small Docker VM: the Mac arithmetic would say most models do not fit and run at a clamped context.
-    # Under Compose the server runs every model at LLM_CONTEXT_TOKENS and nothing refuses one.
+    # Under Compose the server runs every model at LLM_CONTEXT_TOKENS, so that is the context shown. Whether it
+    # fits is the same arithmetic against the memory this container sees, which is what llama-server can use:
+    # nothing fits a 2 GB VM, everything fits 64 GB. The page words it for Docker.
     from harbor_clerk.llm.models import MODELS
 
-    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 2 * GIB)
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: ram_gib * GIB)
     monkeypatch.setenv("LLM_CONTEXT_TOKENS", "8192")
     config._settings = None
     resp = await client.get("/api/chat/models", headers=auth_header(admin_token))
     assert resp.status_code == 200
     for m in resp.json():
-        assert m["fits_here"] is True, m["id"]
+        assert m["fits_here"] is (ram_gib == 64), m["id"]
+        assert m["compose_model_file"] == SERVED, m["id"]
         assert m["max_context_here"] == min(MODELS[m["id"]].context_window, 8192), m["id"]
         # The memory figures are both at that context, never at a YaRN window the server does not use.
         assert m["memory_bytes"] == memory_bytes(MODELS[m["id"]], m["max_context_here"]), m["id"]
@@ -276,6 +279,7 @@ async def test_a_source_run_models_page_keeps_the_mac_arithmetic(
     resp = await client.get("/api/chat/models", headers=auth_header(admin_token))
     by_id = {m["id"]: m for m in resp.json()}
     assert by_id["qwen35-4b"]["fits_here"] is False and by_id["qwen35-4b"]["max_context_here"] == 0
+    assert by_id["qwen35-4b"]["compose_model_file"] is None
 
 
 async def test_compose_with_no_model_yet_says_to_download_it(

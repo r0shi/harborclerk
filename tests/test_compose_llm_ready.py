@@ -345,6 +345,30 @@ def test_a_server_that_dies_on_every_prompt_costs_a_long_document_one_budget(com
     assert clock.now - started <= BUDGET_SECONDS + health.POLL_SECONDS < STAGE_TIMEOUT_SECONDS
 
 
+def test_generate_summary_alone_holds_one_budget_across_its_calls(compose, clock, monkeypatch) -> None:
+    # Called bare (no stage, no document_wait_budget around it), generate_summary still makes its map and reduce
+    # calls share one budget: against a server that dies on every prompt, one budget of waiting in all.
+    server = OomOnPrompt(clock)
+    monkeypatch.setattr(health.httpx, "get", server)
+    monkeypatch.setattr(summarize.httpx, "post", server.post)
+    chunks = ["A long contract clause about termination, notice and the obligations that survive it. " * 12] * 400
+    _, model_used = summarize.generate_summary(chunks)
+    assert model_used == "extractive"
+    assert clock.waited() <= BUDGET_SECONDS + health.POLL_SECONDS, "a bare generate_summary waited more than one budget"
+
+
+def test_the_stage_still_classifies_when_the_summary_fails(monkeypatch) -> None:
+    # A summary that raises is logged and dropped: no summary is stored, and the type is still classified.
+    from harbor_clerk.worker.stages import summarize as stage
+
+    def failing_summary(*args, **kwargs):
+        raise RuntimeError("summary blew up")
+
+    monkeypatch.setattr(stage, "generate_summary", failing_summary)
+    monkeypatch.setattr(stage, "classify_doc_type", lambda *a, **k: "Invoice")
+    assert stage._summary_and_type(uuid.uuid4(), CHUNKS, PDF) == (None, None, "Invoice")
+
+
 # --- the budget is waiting time, not elapsed time ---
 
 LONG_CHUNKS = ["A long contract clause about termination, notice and the obligations that survive it. " * 12] * 120

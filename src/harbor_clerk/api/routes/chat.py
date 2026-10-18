@@ -332,13 +332,14 @@ async def list_available_models(
     compose = is_compose(settings)
 
     def here(m) -> tuple[int, bool]:
-        # The context the model runs at here, and whether it runs at all. On a Mac, the launcher's arithmetic,
-        # at the context it asks for (the YaRN-extended window when YaRN is on). Under Docker Compose nothing
-        # clamps by memory and nothing refuses a model: the server runs at LLM_CONTEXT_TOKENS (#654), as
-        # llm_status already assumes, so the Mac's fit warnings do not apply.
-        wanted = requested_context(m, yarn)
+        # The context the model runs at here, and whether it fits. On a Mac, the launcher's arithmetic, at the
+        # context it asks for (the YaRN-extended window when YaRN is on). Under Docker Compose nothing clamps:
+        # the server runs at LLM_CONTEXT_TOKENS (#654), and whether that fits is the same arithmetic against the
+        # memory this container sees, which is what llama-server can use (the page words it for Docker).
         if compose:
-            return effective_context(m, yarn), True
+            context = effective_context(m, yarn)
+            return context, ram <= 0 or max_context(m, ram, context) >= context
+        wanted = requested_context(m, yarn)
         if ram <= 0:
             return wanted, True
         fits = max_context(m, ram, wanted)
@@ -351,6 +352,7 @@ async def list_available_models(
             max_context_here=here(m)[0],
             fits_here=here(m)[1],
             system_ram_gb=round(ram / GIB, 1),
+            compose_model_file=settings.llm_model_file if compose else None,
             id=m.id,
             name=m.name,
             size_bytes=m.size_bytes,

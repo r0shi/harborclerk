@@ -20,6 +20,11 @@ export function LLMStatusProvider({ children }: { children: ReactNode }) {
   return <LLMStatusContext.Provider value={value}>{children}</LLMStatusContext.Provider>
 }
 
+/** The LLM status when a provider is mounted, null otherwise: for components that render outside it too. */
+export function useOptionalLLMStatus(): LLMStatus | null {
+  return useContext(LLMStatusContext)?.status ?? null
+}
+
 export function useLLMStatusContext(): LLMStatusContextValue {
   const ctx = useContext(LLMStatusContext)
   if (!ctx) {

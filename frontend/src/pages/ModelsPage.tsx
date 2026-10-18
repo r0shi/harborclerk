@@ -30,6 +30,8 @@ interface ModelInfo {
   max_context_here: number
   fits_here: boolean
   system_ram_gb: number
+  // Docker Compose only (#654): LLM_MODEL_FILE, the same on every row; absent outside Compose.
+  compose_model_file?: string | null
 }
 
 interface OrphanInfo {
@@ -46,10 +48,12 @@ function formatSize(bytes: number): string {
 export default function ModelsPage() {
   const { token } = useAuth()
   const { status: llmStatus, markTransitioning } = useLLMStatusContext()
-  // Under Docker Compose the served model is LLM_MODEL_FILE: Activate, Deactivate and YaRN do not apply (#654).
-  const composeModelFile = llmStatus.compose_model_file ?? null
-  const compose = composeModelFile !== null
   const [models, setModels] = useState<ModelInfo[]>([])
+  // Under Docker Compose the served model is LLM_MODEL_FILE: Activate, Deactivate and YaRN do not apply (#654).
+  // Read from the models list itself, so it is known when the table first renders, before any status poll.
+  const composeModelFile = models.find((m) => m.compose_model_file != null)?.compose_model_file ?? null
+  const compose = composeModelFile !== null
+  const servedModelActive = models.some((m) => m.active)
   const [orphans, setOrphans] = useState<OrphanInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -319,12 +323,16 @@ export default function ModelsPage() {
           <div className="text-xs text-gray-500 dark:text-gray-400">{formatSize(model.memory_bytes)} to run</div>
           {!model.fits_here && model.max_context_here > 0 && (
             <div className="mt-1 max-w-[14rem] text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-              {model.active
-                ? // The launcher clamps -c to this figure (#709), so this is what it asks for when it starts
-                  // the active model. A claim, not the running server's n_ctx: a context is pinned once the
-                  // model has loaded at it (src/harbor_clerk/AGENTS.md), hence "up to".
-                  `This Mac (${model.system_ram_gb} GB) runs it at up to ${model.max_context_here.toLocaleString()} tokens of context; the full window needs about ${model.min_ram_gb} GB.`
-                : `Fits this Mac (${model.system_ram_gb} GB) at up to ${model.max_context_here.toLocaleString()} tokens of context; the full window needs about ${model.min_ram_gb} GB.`}
+              {compose
+                ? // The memory this container sees is what llama-server can use; Compose starts the model
+                  // regardless, so this is a warning, not a refusal.
+                  `May not fit in this container's memory (${model.system_ram_gb} GB): needs about ${model.min_ram_gb} GB.`
+                : model.active
+                  ? // The launcher clamps -c to this figure (#709), so this is what it asks for when it starts
+                    // the active model. A claim, not the running server's n_ctx: a context is pinned once the
+                    // model has loaded at it (src/harbor_clerk/AGENTS.md), hence "up to".
+                    `This Mac (${model.system_ram_gb} GB) runs it at up to ${model.max_context_here.toLocaleString()} tokens of context; the full window needs about ${model.min_ram_gb} GB.`
+                  : `Fits this Mac (${model.system_ram_gb} GB) at up to ${model.max_context_here.toLocaleString()} tokens of context; the full window needs about ${model.min_ram_gb} GB.`}
             </div>
           )}
           {model.max_context_here === 0 && (
@@ -477,7 +485,12 @@ export default function ModelsPage() {
               : 'The served model is chosen by LLM_MODEL_FILE in .env, which is empty: no local model runs.'}
           </div>
           <p className="mt-2 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-            Download that model here and it starts on its own. To use another, set LLM_MODEL_FILE to its file and run{' '}
+            {/* What to do now, as the server says it (no_model_message): download the file, or fix a file
+                that is not one of the models below. Nothing when the model is already served. */}
+            {composeModelFile && !servedModelActive && llmStatus.setup_hint ? `${llmStatus.setup_hint} ` : ''}
+            {composeModelFile
+              ? 'To use another model, set LLM_MODEL_FILE to its file and run '
+              : "To run one, set LLM_MODEL_FILE to a model's file below and run "}
             <code>docker compose up -d</code>.
           </p>
         </Card>

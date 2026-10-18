@@ -220,11 +220,11 @@ MODEL_STARTING_MESSAGE = (
     "The local model is starting; try again in a moment. If this persists, check `docker compose logs llama-server`."
 )
 # The same requests under Compose when llama-server accepted them and then stopped answering (a read timeout, a
-# connection cut mid-answer). Activating a model, the macOS advice, is refused under Compose; the likely cause
-# there is a model too big for the container.
+# connection cut mid-answer). Activating a model, the macOS advice, is refused under Compose; the cause there is
+# a slow prompt on a CPU-only container or a model too big for its memory.
 MODEL_STOPPED_MESSAGE = (
-    "The local model stopped answering; check `docker compose logs llama-server` "
-    "(it may need more memory than the container has)."
+    "The local model stopped answering or took too long; check `docker compose logs llama-server` "
+    "(it may be overloaded, or need more memory than the container has)."
 )
 
 

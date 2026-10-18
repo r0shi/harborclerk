@@ -107,3 +107,19 @@ export function useLLMStatus() {
 
   return { status, markTransitioning }
 }
+
+/**
+ * Under Docker Compose the model is LLM_MODEL_FILE, active once its file is downloaded (#654): the setup step is
+ * the server's own advice (`setup_hint`, which names the file or says why it cannot run), not "activate one".
+ * null outside Compose, or before the status says which.
+ */
+export function composeSetupStep(status: LLMStatus | null, platform?: 'macos' | 'docker'): string | null {
+  if (status && status.compose_model_file != null) {
+    return (
+      status.setup_hint ??
+      `The model is chosen by LLM_MODEL_FILE in .env${status.compose_model_file ? ` (${status.compose_model_file})` : ''}; download it in Settings → Models.`
+    )
+  }
+  if (platform === 'docker') return 'Download the model LLM_MODEL_FILE in .env names, in Settings → Models.'
+  return null
+}
