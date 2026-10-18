@@ -27,7 +27,7 @@ SOURCES = {
 }
 
 
-async def _make_doc(db_session, name: str, *, source: str = "watched"):
+async def _make_doc(db_session, name: str, *, source: str = "watched", previous_index: bool = True):
     source_path, object_key = SOURCES[source]
     doc = Document(
         title=name,
@@ -42,16 +42,17 @@ async def _make_doc(db_session, name: str, *, source: str = "watched"):
     db_session.add(doc)
     await db_session.flush()
     db_session.add(DocumentPage(doc_id=doc.doc_id, page_num=1, page_text=PAGE_TEXT))
-    # A stale chunk from the file's previous version.
-    db_session.add(
-        Chunk(
-            doc_id=doc.doc_id,
-            chunk_num=0,
-            chunk_text="previous version",
-            language="english",
-            embedding=[0.01] * 768,
+    if previous_index:
+        # A stale chunk from the file's previous version.
+        db_session.add(
+            Chunk(
+                doc_id=doc.doc_id,
+                chunk_num=0,
+                chunk_text="previous version",
+                language="english",
+                embedding=[0.01] * 768,
+            )
         )
-    )
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.chunk, status=JobStatus.running))
     await db_session.commit()
     return doc.doc_id
@@ -96,6 +97,7 @@ async def test_a_document_over_the_ceiling_fails_with_a_clear_reason(db_session,
     assert "MAX_CHUNKS_PER_DOCUMENT" in doc_error
     assert "max_chunks_per_document in the Mac app's config.json" in doc_error, "the Mac app's knob must be named too"
     assert job_error == doc_error
+    assert "previous version's index is still searchable until the document fits" in doc_error, doc_error
     # The existing index is left alone: an over-limit document reprocessed after
     # an upgrade keeps being found while the error says why it was not re-indexed.
     assert chunks == 1, f"the existing chunks were touched: {chunks}"
@@ -105,6 +107,19 @@ async def test_a_document_over_the_ceiling_fails_with_a_clear_reason(db_session,
         assert kept.chunk_text == "previous version" and kept.embedding is not None
     finally:
         session.close()
+
+
+@pytest.mark.asyncio
+async def test_a_new_document_over_the_ceiling_claims_no_previous_index(db_session, monkeypatch):
+    monkeypatch.setenv("MAX_CHUNKS_PER_DOCUMENT", "5")
+    doc_id = await _make_doc(db_session, "new-dump", previous_index=False)
+
+    _run_chunk_job(doc_id, monkeypatch)
+
+    job_status, _job_error, _pipeline_status, doc_error, chunks = _outcome(doc_id)
+    assert job_status == JobStatus.error and chunks == 0
+    assert "Document too large to index" in doc_error
+    assert "previous version" not in doc_error, doc_error
 
 
 @pytest.mark.asyncio

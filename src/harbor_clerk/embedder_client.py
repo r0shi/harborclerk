@@ -137,18 +137,36 @@ def _is_retryable_transport(exc: httpx.TransportError) -> bool:
 _DETAIL_MAX_CHARS = 300
 
 
+def _validation_summary(detail) -> str:
+    """``loc: msg`` for each item of a structured (FastAPI validation) detail, nothing else."""
+    items = detail if isinstance(detail, list) else [detail]
+    parts = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue  # an unknown shape may hold anything, request text included
+        loc = ".".join(str(part) for part in item.get("loc") or ())
+        msg = item.get("msg")
+        msg = msg if isinstance(msg, str) else ""
+        parts.append(f"{loc}: {msg}" if loc and msg else loc or msg)
+    return "; ".join(part for part in parts if part)
+
+
 def _status_detail(resp: httpx.Response) -> str:
     """ "HTTP 422: <the response's detail>", truncated; "HTTP 422" when the body says nothing.
 
     A bare "HTTP 422" on a failed document told the operator nothing: the
     embedder's own explanation (FastAPI's ``detail``) is the reason.
+
+    A validation error's detail is a list of items that each carry ``input``,
+    the request's own values: chunk text. This string lands in
+    ``documents.error``, which API keys can read past the snippet cap, so only
+    each item's ``loc`` and ``msg`` are kept, never ``input`` or ``ctx``.
     """
     detail = ""
     try:
         body = resp.json()
-        detail = body.get("detail", "") if isinstance(body, dict) else ""
-        if not isinstance(detail, str):
-            detail = str(detail)
+        raw = body.get("detail", "") if isinstance(body, dict) else ""
+        detail = raw if isinstance(raw, str) else _validation_summary(raw)
     except ValueError:
         detail = resp.text
     detail = " ".join(detail.split())

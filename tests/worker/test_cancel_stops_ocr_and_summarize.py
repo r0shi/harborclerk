@@ -150,7 +150,84 @@ def test_the_ocr_merge_is_idempotent():
 
     only_ocr = _merge_ocr_text("", "ocr text", already_ocrd=False)
     assert _merge_ocr_text(only_ocr, "ocr text", already_ocrd=True) == "ocr text"
-    assert _merge_ocr_text("Extracted", "", already_ocrd=False) == "Extracted"
+    # Empty OCR on a page with extracted text still writes the marker: it is what
+    # tells a rerun where the extracted text ends.
+    empty = _merge_ocr_text("Extracted", "", already_ocrd=False)
+    assert empty == f"Extracted{OCR_MARKER}"
+    assert _merge_ocr_text(empty, "", already_ocrd=True) == empty
+    assert _merge_ocr_text(empty, "late", already_ocrd=True) == f"Extracted{OCR_MARKER}late"
+    # A page whose trailing newlines were trimmed still splits at the marker.
+    assert _merge_ocr_text(empty.rstrip(), "", already_ocrd=True) == empty
+    # No extracted text and nothing recognised stays empty, run after run.
+    assert _merge_ocr_text("", "", already_ocrd=False) == ""
+    assert _merge_ocr_text("", "", already_ocrd=True) == ""
+
+
+def _requeue_ocr_job(doc_id):
+    """The shutdown requeue's effect on the row: the same job runs the stage again."""
+    session = get_sync_session()
+    try:
+        job = session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc_id, IngestionJob.stage == JobStage.ocr)
+        ).scalar_one()
+        job.status = JobStatus.running
+        session.commit()
+    finally:
+        session.close()
+
+
+async def _ocr_twice(db_session, monkeypatch, tmp_path, *, extracted: str, first_ocr: str, second_ocr: str):
+    """Page text after a first OCR run and after a rerun, through the real run_ocr."""
+    from harbor_clerk.worker.stages import ocr as ocr_stage
+
+    doc_id = await _make_doc(db_session, JobStage.ocr, tmp_path, pages=1)
+    session = get_sync_session()
+    try:
+        page = session.execute(select(DocumentPage).where(DocumentPage.doc_id == doc_id)).scalar_one()
+        page.page_text = extracted
+        session.commit()
+    finally:
+        session.close()
+    monkeypatch.setattr(ocr_stage, "_pdf_to_images", lambda data: [Image.new("RGB", (8, 8))])
+    monkeypatch.setattr("harbor_clerk.worker.pipeline.advance_pipeline", lambda _doc_id: None)
+
+    monkeypatch.setattr(ocr_stage, "_ocr_image_bytes", lambda image_bytes, lang: (first_ocr, 0.0))
+    ocr_stage.run_ocr(doc_id)
+    first = _read(doc_id, JobStage.ocr)[2]
+    _requeue_ocr_job(doc_id)
+    monkeypatch.setattr(ocr_stage, "_ocr_image_bytes", lambda image_bytes, lang: (second_ocr, 50.0))
+    ocr_stage.run_ocr(doc_id)
+    second = _read(doc_id, JobStage.ocr)[2]
+    return first, second
+
+
+@pytest.mark.asyncio
+async def test_a_rerun_with_empty_ocr_keeps_the_extracted_text(db_session, monkeypatch, tmp_path):
+    """#862 review 8: an empty first OCR wrote no marker but set ocr_used, so the
+    rerun took the extracted text for OCR and wiped it."""
+    from harbor_clerk.worker.stages.ocr import OCR_MARKER
+
+    first, second = await _ocr_twice(
+        db_session, monkeypatch, tmp_path, extracted="Bates HC-000123", first_ocr="", second_ocr=""
+    )
+    assert first == [f"Bates HC-000123{OCR_MARKER}"], first
+    assert second == first, f"the rerun changed the page: {second}"
+
+
+@pytest.mark.asyncio
+async def test_a_rerun_whose_ocr_now_finds_text_appends_it_after_the_extracted_text(db_session, monkeypatch, tmp_path):
+    from harbor_clerk.worker.stages.ocr import OCR_MARKER
+
+    _first, second = await _ocr_twice(
+        db_session, monkeypatch, tmp_path, extracted="Bates HC-000123", first_ocr="", second_ocr="recognised"
+    )
+    assert second == [f"Bates HC-000123{OCR_MARKER}recognised"], second
+
+
+@pytest.mark.asyncio
+async def test_a_page_with_no_text_and_empty_ocr_stays_empty(db_session, monkeypatch, tmp_path):
+    first, second = await _ocr_twice(db_session, monkeypatch, tmp_path, extracted="", first_ocr="", second_ocr="")
+    assert first == second == [""], (first, second)
 
 
 @pytest.mark.asyncio

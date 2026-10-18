@@ -54,22 +54,27 @@ OCR_MARKER = "\n\n--- OCR ---\n\n"
 def _merge_ocr_text(existing: str | None, ocr_text: str, *, already_ocrd: bool) -> str:
     """The page text with ``ocr_text`` merged in, the same however many times OCR runs.
 
-    The first run appends the OCR text after OCR_MARKER to the page's extracted
-    text (or uses it alone on a page with none). A rerun of the stage (a
-    shutdown requeue, a retry) starts again from page 1 while pages already
-    written carry the previous run's OCR: appending again doubled it. So on a
-    page already OCR'd, everything from the marker on is replaced, and a page
-    that held only OCR text is replaced whole.
+    A page with extracted text always gets OCR_MARKER after it, followed by the
+    OCR text, even when OCR found nothing: the marker is what tells a rerun
+    where the extracted text ends. A page with no extracted text holds the OCR
+    text alone ("" when OCR found nothing).
+
+    A rerun of the stage (a shutdown requeue, a retry) starts again from page 1
+    while pages already written carry the previous run's OCR: appending again
+    doubled it. So on a page already OCR'd, everything from the marker on is
+    replaced; with no marker the page had no extracted text, and is replaced
+    whole. An earlier version wrote no marker when OCR came back empty, so a
+    rerun took the extracted text for OCR and wiped it.
     """
     existing = existing or ""
     if already_ocrd:
-        if OCR_MARKER in existing:
-            existing = existing.split(OCR_MARKER, 1)[0]
-        else:
-            existing = ""  # the whole text was the previous run's OCR
-    if existing and ocr_text:
+        # Found without its trailing newlines, so a page whose text was trimmed
+        # still splits. No marker on an OCR'd page: it had no extracted text.
+        head, marker, _ = existing.partition(OCR_MARKER.rstrip())
+        existing = head if marker else ""
+    if existing:
         return existing + OCR_MARKER + ocr_text
-    return ocr_text or existing
+    return ocr_text
 
 
 def _pdf_to_images(data: bytes) -> list[Image.Image]:

@@ -225,6 +225,35 @@ async def test_a_small_document_filter_reads_exact_coverage_over_its_documents(
     assert (on_log.semantic_status, on_log.semantic_coverage) == ("partial", 0.0)
 
 
+async def test_a_failed_filtered_coverage_query_costs_the_figure_not_the_search(
+    db_session, half_embedded_corpus, monkeypatch, caplog
+):
+    """The search already has its results when coverage is computed. A database
+    error there (here a real one, division by zero) reports no figure and is
+    logged; the search's session stays usable for what follows."""
+    import logging
+
+    from sqlalchemy import text
+
+    import harbor_clerk.embedding_coverage as coverage_mod
+
+    keeper, _ = half_embedded_corpus
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_up)
+
+    async def _failing(session, doc_ids):
+        await session.execute(text("SELECT 1/0"))
+
+    monkeypatch.setattr(coverage_mod, "documents_embedding_coverage", _failing)
+
+    with caplog.at_level(logging.ERROR, logger="harbor_clerk.embedding_coverage"):
+        result = await search_mod.hybrid_search(db_session, "lighthouse keeper", doc_id=keeper.doc_id)
+
+    assert result.hits, "a coverage failure failed the search"
+    assert (result.semantic_status, result.semantic_coverage) == ("ok", None)
+    assert any("coverage" in r.getMessage() and r.exc_info for r in caplog.records), caplog.text
+    assert (await db_session.execute(select(func.count(Chunk.chunk_id)))).scalar_one() >= 0
+
+
 async def test_a_large_document_filter_reports_no_coverage(db_session, half_embedded_corpus, monkeypatch):
     """Over EXACT_COVERAGE_MAX_DOCS the figure is not computed, and the corpus
     figure (which describes documents outside the filter) is not substituted."""

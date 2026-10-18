@@ -433,6 +433,53 @@ def test_a_rejection_carries_the_embedders_reason(httpx_mock: HTTPXMock):
     assert "Input should be a valid string" in str(excinfo.value)
 
 
+def _real_fastapi_422(body: dict) -> dict:
+    """The JSON a real FastAPI app returns for ``body`` against the embedder's request model."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from pydantic import BaseModel, Field
+
+    class EmbedRequest(BaseModel):  # embedder/src/embedder/app.py's
+        texts: list[str] = Field(..., min_length=1, max_length=256)
+        task: str | None = Field(default=None, pattern="^(query|passage)$")
+
+    app = FastAPI()
+
+    @app.post("/embed")
+    def _embed(req: EmbedRequest):  # pragma: no cover - validation refuses first
+        return {}
+
+    resp = TestClient(app).post("/embed", json=body)
+    assert resp.status_code == 422
+    return resp.json()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"text": ["Privileged: settlement figure 4.2M"]},  # a missing field: input is the whole body
+        {"texts": ["Privileged: settlement figure 4.2M"], "task": "summary"},  # pattern: input is the value
+        {"texts": ["Privileged: settlement figure 4.2M"] * 257},  # too long: input is the whole list
+    ],
+    ids=["missing-field", "bad-task", "too-many"],
+)
+def test_a_validation_rejection_never_carries_the_request_text(httpx_mock: HTTPXMock, body):
+    """FastAPI's 422 detail echoes ``input``, the request's own values: chunk text.
+    The message lands in documents.error, which API keys read past the snippet cap."""
+    real = _real_fastapi_422(body)
+    assert "Privileged" in str(real) or "summary" in str(real), "the fixture should echo the input"
+    httpx_mock.add_response(url=EMBED_URL, status_code=422, json=real)
+
+    with pytest.raises(EmbedderError) as excinfo:
+        embed_texts(["hello"], task="passage")
+
+    message = str(excinfo.value)
+    assert "Privileged" not in message and "settlement" not in message, message
+    assert "'summary'" not in message, message
+    assert message.startswith("embedder rejected request: HTTP 422: body."), message
+    assert real["detail"][0]["msg"] in message
+
+
 def test_an_exhausted_5xx_carries_the_last_reason_bounded(httpx_mock: HTTPXMock):
     for _ in range(2):
         httpx_mock.add_response(

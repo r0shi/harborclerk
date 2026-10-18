@@ -203,7 +203,15 @@ async def search_scope_coverage(session: AsyncSession, scope_doc_ids: list | Non
     if scope_doc_ids is None:
         return await corpus_embedding_coverage(session)
     if len(scope_doc_ids) <= EXACT_COVERAGE_MAX_DOCS:
-        return await documents_embedding_coverage(session, scope_doc_ids)
+        # The search already has its results; a failure here costs the
+        # coverage figure, never the search. A savepoint, so the failed query
+        # does not leave the search's transaction aborted for what follows.
+        try:
+            async with session.begin_nested():
+                return await documents_embedding_coverage(session, scope_doc_ids)
+        except Exception:
+            logger.exception("Embedding coverage for %d filtered documents failed; reporting none", len(scope_doc_ids))
+            return None
     return None
 
 

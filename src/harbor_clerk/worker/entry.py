@@ -256,8 +256,30 @@ def _next_afm_retry_wait_seconds(stages: list[JobStage], *, default: int = 30) -
     return max(1, min(default, math.ceil(remaining)))
 
 
-def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, stop_event: threading.Event):
-    """Update heartbeat_at every HEARTBEAT_INTERVAL seconds until stop_event is set."""
+def _claim_clause(claimed_started_at):
+    """SQL condition: the job row is still the claim whose started_at was ``claimed_started_at``.
+
+    claim_next_job stamps started_at on every claim and enqueue_stage clears it
+    on every re-enqueue, so a row re-enqueued or re-claimed under a running
+    stage no longer matches.
+    """
+    if claimed_started_at is None:
+        return IngestionJob.started_at.is_(None)
+    return IngestionJob.started_at == claimed_started_at
+
+
+def _heartbeat_loop(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    pipeline_seq: int,
+    stop_event: threading.Event,
+    claimed_started_at=None,
+):
+    """Update heartbeat_at every HEARTBEAT_INTERVAL seconds until stop_event is set.
+
+    Only while the row is still this run's claim: a cancelled run that carries
+    on must not keep a re-enqueued row's heartbeat fresh for its new claim.
+    """
     while not stop_event.wait(timeout=HEARTBEAT_INTERVAL):
         session = get_sync_session()
         try:
@@ -267,6 +289,7 @@ def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, stop_
                     IngestionJob.doc_id == doc_id,
                     IngestionJob.stage == stage,
                     IngestionJob.pipeline_seq == pipeline_seq,
+                    _claim_clause(claimed_started_at),
                 )
                 .values(heartbeat_at=datetime.now(UTC))
             )
@@ -277,8 +300,13 @@ def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, stop_
             session.close()
 
 
-def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage, int] | None:
-    """Atomically claim the next queued job using SELECT ... FOR UPDATE SKIP LOCKED."""
+def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage, int, datetime] | None:
+    """Atomically claim the next queued job using SELECT ... FOR UPDATE SKIP LOCKED.
+
+    Returns (doc_id, stage, pipeline_seq, started_at). started_at is the claim's
+    identity, taken from this transaction: execute_job scopes every write it
+    makes on the run's behalf to it.
+    """
     stages_to_claim = list(stages)
     forced_afm_summaries, afm_cooldown = _summarize_afm_claim_state(stages_to_claim)
     if afm_cooldown is not None:
@@ -391,7 +419,7 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage, int] | 
         stage = row.stage
         pipeline_seq = row.pipeline_seq
         session.commit()
-        return (doc_id, stage, pipeline_seq)
+        return (doc_id, stage, pipeline_seq, now)
     except Exception:
         session.rollback()
         raise
@@ -421,6 +449,8 @@ def _record_afm_unavailable_job(
     stage: JobStage,
     pipeline_seq: int,
     error_msg: str,
+    *,
+    claimed_started_at,
 ) -> _AfmUnavailableJobResult | None:
     if stage != JobStage.summarize:
         return None
@@ -434,9 +464,16 @@ def _record_afm_unavailable_job(
                 IngestionJob.stage == stage,
             )
         ).scalar_one_or_none()
-        if job is None or job.pipeline_seq != pipeline_seq or job.status == JobStatus.error:
-            # Gone, superseded, or cancelled while it ran: a cancel must not
-            # turn into a scheduled retry (or an AFM failure message).
+        if (
+            job is None
+            or job.pipeline_seq != pipeline_seq
+            or job.status == JobStatus.error
+            or job.started_at != claimed_started_at
+        ):
+            # Gone, superseded, cancelled while it ran, or re-enqueued since
+            # (a newer claim's row): a cancel must not turn into a scheduled
+            # retry (or an AFM failure message), nor a retry the user asked
+            # for into this run's failure.
             return None
 
         metrics = dict(job.metrics or {})
@@ -499,12 +536,15 @@ def _record_embed_unavailable_job(
     doc_id: uuid.UUID,
     pipeline_seq: int,
     error_msg: str,
+    *,
+    claimed_started_at,
 ) -> _EmbedDeferral | None:
     """Defer an embed the embedder could not serve, or fail it once the budget is spent.
 
-    Returns None when the row is gone, a newer generation's, or set to error
-    (cancelled meanwhile): there is nothing of ours left to schedule, and a
-    cancel must stay a cancel. See EMBED_RETRY_DELAYS_SECONDS for the
+    Returns None when the row is gone, a newer generation's, set to error
+    (cancelled meanwhile), or re-enqueued since this run claimed it (its
+    started_at is no longer ``claimed_started_at``): there is nothing of ours
+    left to schedule, and a cancel must stay a cancel. See EMBED_RETRY_DELAYS_SECONDS for the
     schedule and why progress restarts the count.
     """
     now = datetime.now(UTC)
@@ -518,7 +558,12 @@ def _record_embed_unavailable_job(
             )
             .with_for_update()
         ).scalar_one_or_none()
-        if job is None or job.pipeline_seq != pipeline_seq or job.status == JobStatus.error:
+        if (
+            job is None
+            or job.pipeline_seq != pipeline_seq
+            or job.status == JobStatus.error
+            or job.started_at != claimed_started_at
+        ):
             return None
 
         metrics = dict(job.metrics or {})
@@ -572,8 +617,15 @@ def _record_embed_unavailable_job(
         session.close()
 
 
+_NOT_CLAIMED = object()
+
+
 def _claim_identity(doc_id: uuid.UUID, stage: JobStage):
-    """The job row's started_at as this run starts: claim_next_job stamps it on every claim."""
+    """The job row's started_at, for a stage run that did not come from claim_next_job.
+
+    The worker loop passes claim_next_job's own started_at instead: a separate
+    read could adopt a newer claim made in between.
+    """
     session = get_sync_session()
     try:
         return session.execute(
@@ -583,8 +635,19 @@ def _claim_identity(doc_id: uuid.UUID, stage: JobStage):
         session.close()
 
 
-def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = None) -> None:
-    """Run a stage function with timeout enforcement via signal.alarm() and heartbeat."""
+def execute_job(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    pipeline_seq: int | None = None,
+    claimed_started_at=_NOT_CLAIMED,
+) -> None:
+    """Run a stage function with timeout enforcement via signal.alarm() and heartbeat.
+
+    ``claimed_started_at`` is the claim's identity from claim_next_job. Every
+    write made on the run's behalf (the heartbeat, done, a failure, a deferral,
+    the shutdown requeue) is skipped once the row's started_at differs: the row
+    was re-enqueued or re-claimed and belongs to a newer run.
+    """
     _, timeout, _ = STAGE_CONFIG[stage]
     func = STAGE_FUNCTIONS[stage]
     filename = _lookup_filename(doc_id)
@@ -595,7 +658,8 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
             pipeline_seq = pipeline_seq or 0
         finally:
             session.close()
-    claimed_started_at = _claim_identity(doc_id, stage)
+    if claimed_started_at is _NOT_CLAIMED:
+        claimed_started_at = _claim_identity(doc_id, stage)
 
     logger.info("Starting %s for doc %s (timeout=%ds)", stage.value, doc_id, timeout)
     publish_job_event(doc_id, stage.value, "running", filename=filename)
@@ -604,7 +668,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
     stop_heartbeat = threading.Event()
     hb_thread = threading.Thread(
         target=_heartbeat_loop,
-        args=(doc_id, stage, pipeline_seq, stop_heartbeat),
+        args=(doc_id, stage, pipeline_seq, stop_heartbeat, claimed_started_at),
         daemon=True,
     )
     hb_thread.start()
@@ -647,11 +711,13 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
             signal.alarm(0)
     except AppleIntelligenceUnavailableError as e:
         error_msg = describe_error(e)
-        disposition = _record_afm_unavailable_job(doc_id, stage, pipeline_seq, error_msg)
+        disposition = _record_afm_unavailable_job(
+            doc_id, stage, pipeline_seq, error_msg, claimed_started_at=claimed_started_at
+        )
         if disposition is None and stage != JobStage.summarize:
             # Only summarize has the AFM retry schedule; anything else fails
             # the ordinary way (which also keeps a cancel a cancel).
-            _record_job_failure(doc_id, stage, pipeline_seq, error_msg, filename)
+            _record_job_failure(doc_id, stage, pipeline_seq, error_msg, filename, claimed_started_at=claimed_started_at)
         elif disposition is None:
             # The row is gone, superseded or cancelled: nothing of ours to
             # record, and a cancel's own event already went out.
@@ -694,13 +760,19 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
         # Only the embed stage calls the embedder; the guard keeps any future
         # caller on the ordinary failure path until it opts in.
         if stage != JobStage.embed:
-            _record_job_failure(doc_id, stage, pipeline_seq, describe_error(e), filename)
+            _record_job_failure(
+                doc_id, stage, pipeline_seq, describe_error(e), filename, claimed_started_at=claimed_started_at
+            )
         else:
-            _defer_unavailable_embed(doc_id, pipeline_seq, describe_error(e), filename)
+            _defer_unavailable_embed(
+                doc_id, pipeline_seq, describe_error(e), filename, claimed_started_at=claimed_started_at
+            )
     except _ShutdownDeadline:
-        _requeue_after_shutdown(doc_id, stage, pipeline_seq, filename)
+        _requeue_after_shutdown(doc_id, stage, pipeline_seq, filename, claimed_started_at=claimed_started_at)
     except Exception as e:
-        _record_job_failure(doc_id, stage, pipeline_seq, describe_error(e), filename)
+        _record_job_failure(
+            doc_id, stage, pipeline_seq, describe_error(e), filename, claimed_started_at=claimed_started_at
+        )
     finally:
         _job_running = False
         _shutdown_deadline_armed = False
@@ -717,6 +789,8 @@ def _record_job_failure(
     pipeline_seq: int,
     error_msg: str,
     filename: str | None,
+    *,
+    claimed_started_at,
 ) -> None:
     """Record a stage failure on its job row and, for gating stages, the document.
 
@@ -725,6 +799,11 @@ def _record_job_failure(
     mark_stage_done and _record_embed_unavailable_job: neither the job nor the
     document is rewritten. Cancelling an embed and then hitting a 422 used to
     end as "EmbedderError … HTTP 422" instead of "Cancelled by user".
+
+    A row whose started_at is no longer ``claimed_started_at`` was re-enqueued
+    (a cancel then Retry, at the same generation) or re-claimed since this run
+    started: it is a newer run's, and this run's failure is recorded neither on
+    it nor on the document.
     """
     session = get_sync_session()
     try:
@@ -740,6 +819,14 @@ def _record_job_failure(
                 doc_id,
                 stage.value,
                 job.error,
+                error_msg,
+            )
+            return
+        if job is not None and job.pipeline_seq == pipeline_seq and job.started_at != claimed_started_at:
+            logger.info(
+                "Job %s/%s failed after it was re-enqueued; leaving the row to the new claim. The failure: %s",
+                doc_id,
+                stage.value,
                 error_msg,
             )
             return
@@ -771,11 +858,16 @@ def _record_job_failure(
     publish_job_event(doc_id, stage.value, "error", error=error_msg, filename=filename)
 
 
-def _defer_unavailable_embed(doc_id: uuid.UUID, pipeline_seq: int, error_msg: str, filename: str | None) -> None:
+def _defer_unavailable_embed(
+    doc_id: uuid.UUID, pipeline_seq: int, error_msg: str, filename: str | None, *, claimed_started_at
+) -> None:
     """Retry-later for an embed the embedder could not serve (#619)."""
-    deferral = _record_embed_unavailable_job(doc_id, pipeline_seq, error_msg)
+    deferral = _record_embed_unavailable_job(doc_id, pipeline_seq, error_msg, claimed_started_at=claimed_started_at)
     if deferral is None:
-        logger.info("Job %s/embed: embedder unavailable, but the job was cancelled or superseded meanwhile", doc_id)
+        logger.info(
+            "Job %s/embed: embedder unavailable, but the job was cancelled, re-enqueued or superseded meanwhile",
+            doc_id,
+        )
         return
     if deferral.disposition == "error":
         logger.error("Job %s/embed failed: %s", doc_id, deferral.error)
@@ -801,7 +893,14 @@ def _defer_unavailable_embed(doc_id: uuid.UUID, pipeline_seq: int, error_msg: st
     )
 
 
-def _requeue_after_shutdown(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, filename: str | None = None) -> None:
+def _requeue_after_shutdown(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    pipeline_seq: int,
+    filename: str | None = None,
+    *,
+    claimed_started_at,
+) -> None:
     """Hand a job abandoned at the shutdown deadline back to the queue.
 
     Interrupted, not failed: the next worker runs it again. Every stage's
@@ -809,8 +908,9 @@ def _requeue_after_shutdown(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: in
     wrote; OCR's per-page merge replaces its own earlier output instead of
     appending, see ocr._merge_ocr_text), and embed keeps the batches it stored.
     A row no longer
-    `running` at our generation (cancelled meanwhile, or superseded) is left
-    as it is. Announced the way enqueue_stage announces a job: a pg_notify on
+    `running` at our generation as this run's claim (cancelled meanwhile,
+    superseded, or re-enqueued and claimed by another worker, whose live run
+    this must not hand back) is left as it is. Announced the way enqueue_stage announces a job: a pg_notify on
     the stage's queue channel, so a waiting worker claims it now rather than at
     its 30 s idle poll, and a "queued" job event, so the UI stops showing it
     running.
@@ -824,6 +924,7 @@ def _requeue_after_shutdown(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: in
                 IngestionJob.stage == stage,
                 IngestionJob.pipeline_seq == pipeline_seq,
                 IngestionJob.status == JobStatus.running,
+                _claim_clause(claimed_started_at),
             )
             .with_for_update()
         ).scalar_one_or_none()

@@ -311,12 +311,20 @@ def run_chunk(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             # anything is touched: an existing over-limit document reprocessed
             # after an upgrade keeps its chunks and embeddings, so search keeps
             # finding it while the error explains why it was not re-indexed.
+            has_previous_index = (
+                session.execute(select(Chunk.chunk_id).where(Chunk.doc_id == doc_id).limit(1)).first() is not None
+            )
             raise DocumentTooLargeError(
                 f"Document too large to index: it splits into {len(chunk_ranges):,} chunks, over the "
                 f"per-document limit of {ceiling:,} (the max_chunks_per_document setting: MAX_CHUNKS_PER_DOCUMENT "
                 f"in the environment or .env, max_chunks_per_document in the Mac app's config.json). Raise the "
                 f"limit and reprocess to index it, or leave files like this (dataset or database dumps) out of the "
                 f"library."
+                + (
+                    " Its previous version's index is still searchable until the document fits."
+                    if has_previous_index
+                    else ""
+                )
             )
 
         # Delete existing chunks (idempotency)
