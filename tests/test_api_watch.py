@@ -955,3 +955,48 @@ async def test_ingest_of_unchanged_bytes_leaves_a_doc_errored_for_another_reason
     assert resp.status_code == 200, resp.text
     assert (await _doc_row(db_session, doc_id)).pipeline_status == PipelineStatus.error
     assert await _queued_extracts(db_session, doc_id) == 0
+
+
+async def test_remove_of_a_file_still_present_does_not_remove_it(client, admin_token, db_session, tmp_path):
+    """/api/watch/remove for a file still present under that exact name (an atomic
+    save's trailing delete) leaves the watched file active and the document readable."""
+    from sqlalchemy import select
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path=str(real / "a.txt"))
+
+    resp = await client.post(
+        "/api/watch/remove",
+        headers=auth_header(admin_token),
+        json={"folder_id": folder_id, "relative_path": "a.txt"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"] == "skipped"
+    db_session.expire_all()
+    wf = (await db_session.execute(select(WatchedFile).where(WatchedFile.relative_path == "a.txt"))).scalar_one()
+    assert wf.status == WatchedFileStatus.active
+    assert (await _doc_row(db_session, doc_id)).status == "active"
+
+
+async def test_remove_of_a_file_that_is_gone_removes_it(client, admin_token, db_session, tmp_path):
+    from sqlalchemy import select
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "gone.txt", sha=sha, source_path=str(real / "gone.txt"))
+
+    resp = await client.post(
+        "/api/watch/remove",
+        headers=auth_header(admin_token),
+        json={"folder_id": folder_id, "relative_path": "gone.txt"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"] == "removed"
+    db_session.expire_all()
+    wf = (await db_session.execute(select(WatchedFile).where(WatchedFile.relative_path == "gone.txt"))).scalar_one()
+    assert wf.status == WatchedFileStatus.removed
+    assert (await _doc_row(db_session, doc_id)).status == "removed"

@@ -26,7 +26,12 @@ from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus, Uploa
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
-from harbor_clerk.watched_source import canonical_source_path, failed_for_a_missing_source, repaired_source_path
+from harbor_clerk.watched_source import (
+    canonical_source_path,
+    exists_exact_case,
+    failed_for_a_missing_source,
+    repaired_source_path,
+)
 from harbor_clerk.watcher.notify import notify_folder_change_async
 from harbor_clerk.worker.pipeline import queue_extract_for_current_pipeline, reset_and_queue_extract_for_doc
 
@@ -697,6 +702,13 @@ async def remove_file(
     wf = result.scalar_one_or_none()
     if not wf:
         raise HTTPException(status_code=404, detail="Watched file not found")
+
+    # A remove for a file still present under that exact name (an atomic save's
+    # trailing delete) is not a removal: a removed watched file is unreadable.
+    folder = (await session.execute(select(WatchedFolder).where(WatchedFolder.folder_id == fid))).scalar_one_or_none()
+    canonical = canonical_source_path(folder.path, body.relative_path) if folder is not None else None
+    if canonical is not None and await asyncio.to_thread(exists_exact_case, canonical):
+        return {"action": "skipped", "doc_id": str(wf.doc_id)}
 
     wf.status = WatchedFileStatus.removed
     wf.removed_at = datetime.now(UTC)

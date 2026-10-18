@@ -14,7 +14,7 @@ import os
 import posixpath
 import uuid
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -32,7 +32,12 @@ from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
-from harbor_clerk.watched_source import failed_for_a_missing_source, repaired_source_path
+from harbor_clerk.watched_source import (
+    exists_exact_case,
+    failed_for_a_missing_source,
+    repaired_source_path,
+    watched_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +217,13 @@ def handle_event(session: Session, event: FileEvent) -> None:
         logger.debug("watcher: ignored event for %s", event.relative_path)
         return
 
+    # An atomic save on macOS can end with a delete event for a file that is still
+    # there (the replaced inode's flag): marking it removed would make the document
+    # unreadable. A delete for a file present under that exact name is a modify.
+    if event.kind == EventKind.deleted and exists_exact_case(event.absolute_path):
+        logger.debug("watcher: delete event for %s, but the file is present; treated as a modify", event.relative_path)
+        event = replace(event, kind=EventKind.modified)
+
     existing = (
         session.query(WatchedFile).filter_by(folder_id=event.folder_id, relative_path=event.relative_path).one_or_none()
     )
@@ -347,10 +359,16 @@ def _requeue_if_errored(session: Session, watched_file: WatchedFile, sha: bytes)
     if watched_file.doc_id is None:
         return
     doc = session.get(Document, watched_file.doc_id)
-    if doc is None or not doc.source_path or not failed_for_a_missing_source(doc):
+    if doc is None or not failed_for_a_missing_source(doc):
+        return
+    # Only a document that now verifies as read in place: one whose repair was
+    # declined stays as it is (it would fail again), and the path handed on is the
+    # verified one, never a source_path that did not verify.
+    in_place = watched_state(session, doc).path
+    if in_place is None:
         return
     logger.info("watcher: queueing doc %s again after a failed run", doc.doc_id)
-    _reprocess_doc(session, doc.doc_id, sha, doc.source_path)
+    _reprocess_doc(session, doc.doc_id, sha, in_place)
 
 
 def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path: str) -> None:

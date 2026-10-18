@@ -114,3 +114,33 @@ def test_failed_for_a_missing_source_reads_the_error_the_worker_records(exc, sta
     }[exc]
     doc = SimpleNamespace(pipeline_status=PipelineStatus(status), error=describe_error(raised))
     assert failed_for_a_missing_source(doc) is expected
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        ("RuntimeError: No source for doc 0b5e: source_path and original_object_key both empty", True),
+        ("RuntimeError: No source for doc 0b5e", True),
+        ("RuntimeError: No sourcefile here", False),
+        ("ValueError: No source for doc 0b5e", False),
+        ("RuntimeError: Tika returned 422", False),
+    ],
+)
+def test_failed_for_a_missing_source_matches_the_pre_upgrade_error_exactly(error, expected):
+    """Documents that errored before the upgrade with the stages' old missing-source
+    error recover too; nothing broader matches."""
+    from types import SimpleNamespace
+
+    from harbor_clerk.watched_source import failed_for_a_missing_source
+
+    doc = SimpleNamespace(pipeline_status=PipelineStatus.error, error=error)
+    assert failed_for_a_missing_source(doc) is expected
+
+
+def test_exists_exact_case(tmp_path):
+    from harbor_clerk.watched_source import exists_exact_case
+
+    (tmp_path / "note.txt").write_text("x")
+    assert exists_exact_case(str(tmp_path / "note.txt"))
+    assert not exists_exact_case(str(tmp_path / "Note.txt"))
+    assert not exists_exact_case(str(tmp_path / "gone.txt"))

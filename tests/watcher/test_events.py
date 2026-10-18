@@ -1308,3 +1308,91 @@ def test_resurrect_canonicalizes_an_aliased_source_path(sync_session, tmp_path):
     sync_session.expire_all()
     assert sync_session.get(Document, doc_id).source_path == str(real / "doc.txt")
     assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.active
+
+
+def test_an_atomic_save_keeps_the_document_readable(sync_session, real_folder, tmp_path):
+    """The sequence a live observer records on macOS for an atomic save, replayed
+    through the watcher's handler: moved(tmp -> target), modified(target), then
+    deleted(target) while the target is present. The document stays read in place
+    and extracts the new content."""
+    import os
+
+    from watchdog.events import FileDeletedEvent, FileModifiedEvent, FileMovedEvent
+
+    from harbor_clerk.watched_source import read_document_bytes
+    from harbor_clerk.watcher.observer import _Handler
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    target = tmp_path / "note.txt"
+    target.write_text("first version")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "note.txt", str(target)))
+    sync_session.commit()
+    doc_id = sync_session.query(Document).one().doc_id
+    run_extract(doc_id)
+
+    def sink(event):
+        handle_event(sync_session, event)
+        sync_session.commit()
+
+    handler = _Handler(real_folder.folder_id, str(tmp_path), sink)
+    tmp = tmp_path / ".note.txt.tmp"
+    tmp.write_text("second version")
+    os.replace(tmp, target)
+    handler.dispatch(FileMovedEvent(str(tmp), str(target)))
+    handler.dispatch(FileModifiedEvent(str(target)))
+    handler.dispatch(FileDeletedEvent(str(target)))
+
+    sync_session.expire_all()
+    assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.active
+    data, in_place = read_document_bytes(sync_session, sync_session.get(Document, doc_id))
+    assert (data, in_place) == (b"second version", str(target))
+
+    run_extract(doc_id)
+    sync_session.expire_all()
+    pages = sync_session.query(DocumentPage).filter_by(doc_id=doc_id).all()
+    assert [p.page_text for p in pages] == ["second version"]
+
+
+def test_a_delete_event_for_a_file_present_only_under_another_case_still_removes(sync_session, real_folder, tmp_path):
+    """The presence check is exact-case: a delete for Note.txt removes it even when
+    note.txt exists (on a case-insensitive filesystem lexists alone would say yes)."""
+    import os
+
+    f = tmp_path / "Note.txt"
+    f.write_text("body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "Note.txt", str(f)))
+    sync_session.commit()
+    os.rename(f, tmp_path / "note.txt")
+
+    handle_event(sync_session, FileEvent(EventKind.deleted, real_folder.folder_id, "Note.txt", str(f)))
+    sync_session.commit()
+
+    assert sync_session.query(WatchedFile).filter_by(relative_path="Note.txt").one().status == WatchedFileStatus.removed
+
+
+def test_an_errored_doc_whose_path_does_not_verify_is_not_queued_again(sync_session, real_folder, tmp_path):
+    """A document whose source_path names another file (a repair the watcher declines)
+    is not queued again on every scan, even with a missing-source error."""
+    from harbor_clerk.watched_source import WatchedFileMissing
+
+    f = tmp_path / "doc.txt"
+    f.write_text("body")
+    other = tmp_path / "other.txt"
+    other.write_text("another file")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    doc_id, seq = doc.doc_id, doc.pipeline_seq
+    doc.source_path = str(other)
+    sync_session.commit()
+    _fail_like_the_worker(sync_session, doc_id, WatchedFileMissing("the watched file is missing"))
+
+    handle_event(sync_session, FileEvent(EventKind.modified, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    doc = sync_session.get(Document, doc_id)
+    assert doc.source_path == str(other)
+    assert doc.pipeline_status == PipelineStatus.error
+    assert doc.pipeline_seq == seq
+    assert _queued_extract_jobs(sync_session, doc_id) == 0

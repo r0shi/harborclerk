@@ -158,6 +158,26 @@ class NoReadableSource(SourceUnavailable):
 
 _MISSING_SOURCE_ERRORS = frozenset(cls.__name__ for cls in (WatchedFileMissing, NoReadableSource))
 
+# What the extract and OCR stages raised for an unreadable source before
+# read_document_bytes existed ("No source for doc <id>: ..." and "No source for doc
+# <id>"), as describe_error rendered it: documents that errored that way before an
+# upgrade recover like the ones above.
+_LEGACY_MISSING_SOURCE_PREFIX = "RuntimeError: No source for doc "
+
+
+def exists_exact_case(path: str) -> bool:
+    """True when ``path`` exists (a broken symlink counts) under exactly that name.
+
+    On a case-insensitive filesystem ``lexists`` also answers for a name that
+    differs only in case; the listing of the parent settles it.
+    """
+    try:
+        if not os.path.lexists(path):
+            return False
+        return os.path.basename(path) in os.listdir(os.path.dirname(path) or ".")
+    except OSError:
+        return False
+
 
 def failed_for_a_missing_source(doc) -> bool:
     """True when ``doc``'s last run errored because its source could not be read
@@ -167,12 +187,15 @@ def failed_for_a_missing_source(doc) -> bool:
 
     Keyed on the error the worker records: ``worker/entry.py`` writes
     ``error_text.describe_error(exc)``, ``"TypeName: message"``, into
-    ``documents.error``.
+    ``documents.error``. The pre-upgrade form ("RuntimeError: No source for doc
+    ...") matches too, and nothing broader.
     """
     from harbor_clerk.models.enums import PipelineStatus
 
     if doc.pipeline_status != PipelineStatus.error or not doc.error:
         return False
+    if doc.error.startswith(_LEGACY_MISSING_SOURCE_PREFIX):
+        return True
     return doc.error.split(":", 1)[0].strip() in _MISSING_SOURCE_ERRORS
 
 
