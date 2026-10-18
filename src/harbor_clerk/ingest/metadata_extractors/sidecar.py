@@ -23,7 +23,8 @@ not an object, empty), is an ordinary document. `load_sidecar` is the one
 predicate both sides use, so a file is either attached or indexed, never
 neither.
 
-Returns None for docs without source_path (legacy uploads), without a
+Returns None for docs without source_path, for docs with a stored original
+(uploads and mail, whatever source_path they carry), without a
 matching sidecar file, with malformed JSON, with an empty object, or
 with a non-object top-level JSON value (list/string/etc).
 """
@@ -102,5 +103,11 @@ class SidecarExtractor:
 
     def extract(self, *, doc, raw_bytes: bytes, source_path: str | None) -> dict | None:
         if not source_path:
+            return None
+        if getattr(doc, "original_object_key", None):
+            # A stored original (an upload, a mail message) is read from storage;
+            # its source_path is a label the client supplied, not a file on this
+            # host, so nothing beside it is read. Only a watched-folder document,
+            # read in place, has a sidecar.
             return None
         return load_sidecar(sidecar_path_for(source_path), owner=f"doc {getattr(doc, 'doc_id', '<unknown>')}")

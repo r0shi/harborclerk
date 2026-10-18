@@ -39,11 +39,11 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
 
         for doc in docs:
             processed += 1
-            # Load raw bytes from source_path (watched folder) or storage (legacy upload)
+            # Load raw bytes as the extract stage does: from storage when the original
+            # is stored (uploads, mail; their source_path is only a label), else in
+            # place from source_path (watched folder).
             raw_bytes: bytes | None = None
-            if doc.source_path and Path(doc.source_path).is_file():
-                raw_bytes = Path(doc.source_path).read_bytes()
-            elif doc.original_bucket and doc.original_object_key:
+            if doc.original_bucket and doc.original_object_key:
                 try:
                     response = storage.get_object(doc.original_bucket, doc.original_object_key)
                     raw_bytes = response.read()
@@ -51,6 +51,8 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
                     log.warning("storage fetch failed for doc %s: %s", doc.doc_id, exc)
                     skipped += 1
                     continue
+            elif doc.source_path and Path(doc.source_path).is_file():
+                raw_bytes = Path(doc.source_path).read_bytes()
             else:
                 log.info("doc %s has no source_path or storage object; skipping", doc.doc_id)
                 skipped += 1

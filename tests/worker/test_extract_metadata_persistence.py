@@ -59,6 +59,60 @@ async def test_extract_stage_writes_sidecar_metadata_to_doc(db_session, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_extract_stage_reads_no_sidecar_for_a_stored_original(db_session, tmp_path: Path):
+    """An uploaded document's source_path is a client-supplied label: the extract
+    stage reads its bytes from storage and attaches no file found beside that path."""
+    import io
+    import uuid
+
+    from harbor_clerk.storage import get_storage
+
+    body = b"Uploaded body text"
+    labelled = tmp_path / "0002_upload.txt"
+    labelled.write_text("a different file at the labelled path")
+    (tmp_path / "0002_upload.json").write_text(json.dumps({"vendor": "Outside"}))
+
+    bucket = "originals"
+    key = f"originals/docs/{uuid.uuid4()}/0002_upload.txt"
+    get_storage().put_object(bucket, key, io.BytesIO(body), len(body), "text/plain")
+
+    doc = Document(
+        title="0002_upload",
+        canonical_filename="0002_upload.txt",
+        status="active",
+        sha256=hashlib.sha256(body).digest(),
+        pipeline_status=PipelineStatus.queued,
+        mime_type="text/plain",
+        source_path=str(labelled),
+        original_bucket=bucket,
+        original_object_key=key,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
+    await db_session.commit()
+    doc_id = doc.doc_id
+
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    try:
+        run_extract(doc_id)
+    finally:
+        get_storage().remove_object(bucket, key)
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        metadata = refreshed.doc_metadata
+        extracted_chars = refreshed.extracted_chars
+    finally:
+        sync_session.close()
+
+    assert extracted_chars == len(body), "the body must come from storage, not the labelled path"
+    assert "sidecar" not in (metadata or {}), f"no sidecar may be read beside a stored original, got: {metadata}"
+
+
+@pytest.mark.asyncio
 async def test_extract_stage_clears_stale_metadata_when_extractors_return_empty(db_session, tmp_path: Path):
     """Re-ingesting a doc whose sidecar was deleted should drop the stale
     sidecar metadata, not keep it sticky. Same applies if Tika is unavailable

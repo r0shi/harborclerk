@@ -53,6 +53,27 @@ def test_sidecar_extractor_returns_none_when_source_path_unset():
     assert out is None
 
 
+@dataclass
+class _FakeStoredDoc:
+    doc_id: uuid.UUID
+    title: str
+    original_object_key: str
+
+
+def test_sidecar_extractor_ignores_source_path_of_a_stored_original(tmp_path: Path):
+    """A document whose original is in storage reads nothing beside its source_path."""
+    doc_file = tmp_path / "0001_invoice.txt"
+    doc_file.write_text("body")
+    (tmp_path / "0001_invoice.json").write_text(json.dumps({"vendor": "Acme"}))
+
+    out = SidecarExtractor().extract(
+        doc=_FakeStoredDoc(doc_id=uuid.uuid4(), title="i", original_object_key="originals/docs/x/0001_invoice.txt"),
+        raw_bytes=b"body",
+        source_path=str(doc_file),
+    )
+    assert out is None
+
+
 def test_sidecar_extractor_logs_and_returns_none_on_malformed_json(tmp_path: Path):
     doc_file = tmp_path / "0001_invoice.txt"
     doc_file.write_text("body")
