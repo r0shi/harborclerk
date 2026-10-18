@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import functools
 import json
 import logging
 import random
@@ -23,7 +24,13 @@ from enum import Enum
 import httpx
 
 from harbor_clerk.config import get_settings, refresh_llm_settings
-from harbor_clerk.llm.health import RESTART_WINDOW_SECONDS, UNAVAILABLE, wait_for_server
+from harbor_clerk.llm.health import (
+    DOCUMENT_WAIT_SECONDS,
+    READY,
+    document_wait_budget,
+    server_is_probed,
+    wait_for_server,
+)
 from harbor_clerk.llm.models import context_budget, get_model
 
 logger = logging.getLogger(__name__)
@@ -57,15 +64,25 @@ class _Tier(Enum):
     LONG = "long"
 
 
-def _local_server_unavailable() -> bool:
-    """Whether llama-server is gone, after waiting out a load or a restart in progress (#654).
+def _within_document_budget(fn: Callable) -> Callable:
+    """Run `fn` inside a document's wait budget (#654): its own, or the one its caller holds."""
 
-    Only under Docker Compose can this be True: elsewhere the server's state is READY, unprobed. Waiting
-    out LOADING (every `compose up`, the first load after a download) and a restart-length gap with nothing
-    listening is what keeps a summary from being stored extractive just because it was claimed then; past
-    a load's wait the request goes out anyway and its own 503 retries take over. A server gone for longer
-    than `RESTART_WINDOW_SECONDS` is fallen back from at once."""
-    return wait_for_server() == UNAVAILABLE
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        with document_wait_budget():
+            return fn(*args, **kwargs)
+
+    return run
+
+
+def _local_server_not_ready() -> bool:
+    """Whether llama-server is still not ready once the document's wait budget allows no more (#654).
+
+    Only under Docker Compose can this be True: elsewhere the server's state is READY, unprobed. Waiting out
+    a load (every `compose up`, the first load after a download) or a restart is what keeps a summary from
+    being stored extractive just because it was claimed then; the wait is bounded by the document's
+    `DOCUMENT_WAIT_SECONDS`, and while the server is flagged as failing there is no wait at all."""
+    return wait_for_server() != READY
 
 
 def _llm_intentionally_deactivated() -> bool:
@@ -235,6 +252,19 @@ def _call_llm(
         try:
             resp = httpx.post(url, json=payload, timeout=timeout)
             elapsed = time.perf_counter() - call_started
+            # Under Compose a 503 is llama-server loading its model (#654): wait for it within the
+            # document's budget, as for a refused connection, and never on the last attempt.
+            if resp.status_code == 503 and server_is_probed() and attempt < max_attempts:
+                if wait_for_server(fresh=True) == READY:
+                    continue
+                logger.info(
+                    "LLM call phase=%s elapsed=%.1fs 503 + llama-server not ready within the %.0fs budget — skipping %d remaining retries",
+                    phase,
+                    elapsed,
+                    DOCUMENT_WAIT_SECONDS,
+                    max_attempts - attempt,
+                )
+                return None
             if resp.status_code in {503, 429} and attempt < max_attempts:
                 delay = 5 + random.uniform(0, 10 * attempt)
                 logger.info(
@@ -325,16 +355,17 @@ def _call_llm(
                 )
                 return None
             # Under Compose a refused connection means nothing listens (#654): llama-server is restarting,
-            # waiting for its file, or gone after a failed load. A restart is waited out (up to
-            # RESTART_WINDOW_SECONDS from the start of the outage) and the call then retries; a server gone
-            # for longer is not retried at all. Outside Compose this returns at once and the retries below
-            # are unchanged.
-            if isinstance(e, httpx.ConnectError) and wait_for_server(fresh=True) == UNAVAILABLE:
+            # waiting for its file, or gone after a failed load. The wait for it draws on the document's
+            # budget, and never happens on the last attempt, which could not use it. Back in time: retry at
+            # once. Not: give up. Outside Compose the retries below are unchanged.
+            if isinstance(e, httpx.ConnectError) and server_is_probed() and attempt < max_attempts:
+                if wait_for_server(fresh=True) == READY:
+                    continue
                 logger.info(
-                    "LLM call phase=%s elapsed=%.1fs ConnectError + llama-server gone for over %.0fs — skipping %d remaining retries",
+                    "LLM call phase=%s elapsed=%.1fs ConnectError + llama-server not ready within the %.0fs budget — skipping %d remaining retries",
                     phase,
                     elapsed,
-                    RESTART_WINDOW_SECONDS,
+                    DOCUMENT_WAIT_SECONDS,
                     max_attempts - attempt,
                 )
                 return None
@@ -881,6 +912,7 @@ def _mime_to_doc_type(mime_type: str) -> str:
     return "Document"
 
 
+@_within_document_budget
 def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
     """Classify document type. Fallback chain: local LLM → Apple Intelligence → MIME type."""
     settings = get_settings()
@@ -893,8 +925,8 @@ def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
         return _mime_to_doc_type(mime_type)
 
     # Try local LLM first, if a model is active and its server is there (only Compose can say it is not, #654)
-    if settings.llm_model_id and _local_server_unavailable():
-        logger.info("llama-server is unavailable — trying Apple Intelligence for doc_type")
+    if settings.llm_model_id and _local_server_not_ready():
+        logger.info("llama-server is not ready — trying Apple Intelligence for doc_type")
     elif settings.llm_model_id:
         sample = "\n\n".join(chunks)[:2000]
         prompt = (
@@ -930,6 +962,7 @@ def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
     return _mime_to_doc_type(mime_type)
 
 
+@_within_document_budget
 def generate_summary(
     chunks: list[str],
     max_chars: int | None = None,
@@ -1000,11 +1033,11 @@ def generate_summary(
         logger.error("Apple Intelligence unavailable while forced; refusing extractive fallback (%s)", reason)
         raise AppleIntelligenceUnavailableError(f"Apple Intelligence summaries are enabled but unavailable: {reason}")
 
-    # Try LLM if a model is active and its server is there. Under Compose a model is active while its file
-    # is in the volume, which a failed load does not change, so the server is asked (#654); a load in
-    # progress is waited out, not fallen back from.
-    if settings.llm_model_id and _local_server_unavailable():
-        logger.info("llama-server is unavailable; summarizing without the local model %s", settings.llm_model_id)
+    # Try LLM if a model is active and its server is ready. Under Compose a model is active while its file
+    # is in the volume, which a failed load does not change, so the server is asked (#654); a load or a
+    # restart is waited out within the document's budget.
+    if settings.llm_model_id and _local_server_not_ready():
+        logger.info("llama-server is not ready; summarizing without the local model %s", settings.llm_model_id)
     elif settings.llm_model_id:
         model = get_model(settings.llm_model_id)
         context_window = context_budget(model, settings.llm_yarn_enabled) if model else None

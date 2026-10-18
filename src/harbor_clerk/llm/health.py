@@ -5,6 +5,8 @@ threshold of back-to-back failures, writes ``llm_restart: true`` to
 config.json so the macOS host app restarts the process.
 """
 
+import contextlib
+import contextvars
 import logging
 import threading
 import time
@@ -93,23 +95,24 @@ READY = "ready"  # 200: the model is loaded
 LOADING = "loading"  # 503 "Loading model", or a probe that timed out: it is up, and the model is coming
 UNAVAILABLE = "unavailable"  # nothing listening: restarting, waiting for its file, or gone after a failed load
 
-# How long a verdict is reused. The llm worker asks once per document. Loading and unavailable are kept
-# only briefly, so a load finishing or a restart is seen at once; a refused connection answers in
-# microseconds, so probing that often costs nothing.
+# How long a verdict is reused. A loading or unavailable one is kept only briefly, so a load finishing or a
+# restart is seen at once; a refused connection answers in microseconds, so probing that often costs nothing.
 _STATE_TTL_SECONDS = {READY: 10.0, LOADING: 2.0, UNAVAILABLE: 2.0}
 _PROBE_TIMEOUT_SECONDS = 2.0
-# How long a caller waits out LOADING before it sends its request anyway (and the request's own 503
-# retries take over), and how often it looks again meanwhile.
-LOADING_WAIT_SECONDS = 180.0
-LOADING_POLL_SECONDS = 2.0
-# How long nothing may listen before the server counts as gone rather than restarting. A restart (an
-# edited command and `docker compose up -d`, a crash, an OOM kill) leaves a few seconds with no listener,
-# the entrypoint's stability pause among them; a job claimed then waits, or every document in that window
-# would be stored extractive for good. Past it, jobs fall back at once: only the first after an outage waits.
-RESTART_WINDOW_SECONDS = 60.0
+# How often a wait looks again.
+POLL_SECONDS = 2.0
+# What one document may spend, in all, waiting for the server to be ready: every wait at every call site
+# (the checks before a summary or a doc type, and the retries after a refused connection or a 503) draws on
+# it. A load or a restart (an edited command and `up -d`, a crash) is waited out within it; a document
+# whose budget runs out falls back. Bounded per document, so a server that keeps failing (a model too big,
+# crash-looping through its load) cannot hold a document anywhere near the stage's 900 s timeout.
+DOCUMENT_WAIT_SECONDS = 90.0
+
 _state_probe: tuple[float, str] | None = None
-# When the probes started finding nothing listening; None while the server answers. Per process.
-_unavailable_since: float | None = None
+# Set when a document spends its whole budget without the server ever being READY; cleared only by a READY
+# probe (LOADING does not: a crash loop is LOADING most of the time). While set, documents fall back at once,
+# each after one probe, so the server coming back is seen by the next document.
+_server_failing = False
 
 
 def llm_server_state(*, fresh: bool = False) -> str:
@@ -117,17 +120,15 @@ def llm_server_state(*, fresh: bool = False) -> str:
 
     Compose's active model follows its file being in the volume, but a present file can still fail to load
     (too big for the container, a hand copy cut short), and llama-server then exits and restarts while the
-    model looks active: a summary would spend ~95 s of retries per document against it. Callers wait with
-    `wait_for_server`, which waits out LOADING and a restart-length UNAVAILABLE, and fall back fast only on
-    a server that has been gone longer. The verdict is reused per `_STATE_TTL_SECONDS` unless `fresh`,
-    which a failed request asks for.
+    model looks active. Callers wait through `wait_for_server`, within the document's budget. The verdict is
+    reused per `_STATE_TTL_SECONDS` unless `fresh`. A READY verdict clears the "server failing" flag.
 
     Everywhere else READY, unprobed: the macOS launcher owns llama-server, and its retries are the design."""
-    global _state_probe, _unavailable_since
-    from harbor_clerk.config import get_settings, is_compose
+    global _state_probe, _server_failing
+    from harbor_clerk.config import get_settings
 
     settings = get_settings()
-    if not is_compose(settings):
+    if not server_is_probed():
         return READY
     now = time.monotonic()
     with _lock:
@@ -143,34 +144,76 @@ def llm_server_state(*, fresh: bool = False) -> str:
         state = UNAVAILABLE
     with _lock:
         _state_probe = (now, state)
-        if state != UNAVAILABLE:
-            _unavailable_since = None
-        elif _unavailable_since is None:
-            _unavailable_since = now
+        if state == READY:
+            _server_failing = False
     if cached is None or cached[1] != state:
         logger.info("llama-server at %s is %s", settings.llama_server_url, state)
     return state
 
 
-def _unavailable_for(now: float) -> float:
-    """Seconds the probes have found nothing listening, 0 while the server answers."""
-    with _lock:
-        since = _unavailable_since
-    return 0.0 if since is None else now - since
+def server_is_probed() -> bool:
+    """Whether this process asks llama-server for its state: only a Docker Compose service does."""
+    from harbor_clerk.config import get_settings, is_compose
+
+    return is_compose(get_settings())
+
+
+class WaitBudget:
+    """The time one document may still spend waiting for the server, and whether it has seen it READY."""
+
+    def __init__(self, seconds: float) -> None:
+        self.deadline = time.monotonic() + seconds
+        self.saw_ready = False
+
+    def remaining(self) -> float:
+        return max(0.0, self.deadline - time.monotonic())
+
+
+_document_budget: contextvars.ContextVar[WaitBudget | None] = contextvars.ContextVar(
+    "document_wait_budget", default=None
+)
+
+
+@contextlib.contextmanager
+def document_wait_budget():
+    """One `DOCUMENT_WAIT_SECONDS` budget for every wait while one document is summarized and classified.
+
+    Re-entrant: inside a budget, this reuses it, so the summarize stage can hold one across both calls and
+    each call still gets its own when called alone."""
+    budget = _document_budget.get()
+    if budget is not None:
+        yield budget
+        return
+    budget = WaitBudget(DOCUMENT_WAIT_SECONDS)
+    token = _document_budget.set(budget)
+    try:
+        yield budget
+    finally:
+        _document_budget.reset(token)
 
 
 def wait_for_server(*, fresh: bool = False) -> str:
-    """The server's state once it is READY, or once waiting stops: LOADING past `LOADING_WAIT_SECONDS`
-    of this wait, or UNAVAILABLE for `RESTART_WINDOW_SECONDS` since the outage began. A caller falls
-    back on UNAVAILABLE only, so a restart is waited out and a long outage costs no wait after the first.
-    READY at once outside Compose."""
-    state = llm_server_state(fresh=fresh)
-    loading_deadline = time.monotonic() + LOADING_WAIT_SECONDS
-    while True:
-        now = time.monotonic()
-        loading = state == LOADING and now < loading_deadline
-        restarting = state == UNAVAILABLE and _unavailable_for(now) < RESTART_WINDOW_SECONDS
-        if not (loading or restarting):
-            return state
-        time.sleep(LOADING_POLL_SECONDS)
-        state = llm_server_state(fresh=True)
+    """The server's state once it is READY, or once the document's wait budget is spent (then not READY).
+
+    While the server is flagged as failing, nothing is waited: one probe, and its answer. A budget spent
+    without ever seeing READY sets that flag. Outside a `document_wait_budget` the call gets a budget of its
+    own. READY at once, unprobed, outside Compose."""
+    global _server_failing
+    with _lock:
+        failing = _server_failing
+    state = llm_server_state(fresh=fresh or failing)
+    budget = _document_budget.get() or WaitBudget(DOCUMENT_WAIT_SECONDS)
+    if state != READY and not failing:
+        while state != READY and budget.remaining() > 0:
+            time.sleep(min(POLL_SECONDS, budget.remaining()))
+            state = llm_server_state(fresh=True)
+        if state != READY and not budget.saw_ready:
+            with _lock:
+                _server_failing = True
+            logger.warning(
+                "llama-server was not ready within %.0fs; summaries fall back at once until it is",
+                DOCUMENT_WAIT_SECONDS,
+            )
+    if state == READY:
+        budget.saw_ready = True
+    return state
