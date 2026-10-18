@@ -764,16 +764,17 @@ async def chat_stream(
                 entry["tool_call_id"] = msg.tool_call_id
             messages.append(entry)
 
-        # The conversation's own prose ratio applies while its prose is re-measured: while the history it sends holds
-        # no tool row and the turn has not searched. Otherwise the model's table, as before #810, and an entry kept
-        # from an earlier tool-less prompt is dropped: it would stand for the life of the process (module comment).
-        history_has_tool_row = any(m["role"] == "tool" for m in messages)
-        if history_has_tool_row:
+        # The conversation's own prose ratio applies while its prose is re-measured. A history holding a tool row is
+        # not (its first prompts are tool-bearing), so the entry is dropped and every read takes the model's table, as
+        # before #810: kept, it would stand for the life of the process (module comment). A prompt of this turn that
+        # the trim leaves tool-less is measured and may be read in the turn (the refusal retry), being its own count.
+        # Once the turn has searched, the model's table too, as for the budget stop and the forced call.
+        if any(m["role"] == "tool" for m in messages):
             _forget_conversation_prose_ratio(conversation_id, active_model_id)
         searched_this_turn = False  # a tool result came back in this turn (history may hold earlier turns' results)
 
         def turn_prose_ratio() -> float:
-            if history_has_tool_row or searched_this_turn:
+            if searched_this_turn:
                 return _prose_ratio(active_model_id)
             return _conversation_prose_ratio(conversation_id, active_model_id)
 

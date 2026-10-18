@@ -3675,10 +3675,21 @@ def _language_client(
         question = next(m["content"] for m in reversed(payload["messages"]) if m["role"] == "user")
         return _lines_response([_chunk(content=answers[question]), _finish_chunk("stop"), *tail])
 
+    def forced(*_a, **_k):
+        # A forced answer (a search ended by the budget or a refusal) says so, so the turn's text shows it.
+        counted = count(client.stream.call_args.kwargs["json"]["messages"], None)
+        if counted > ctx:
+            return (refusal or _refusal)(counted, ctx)
+        return _lines_response([_chunk(content="Forced."), _finish_chunk("stop"), "data: [DONE]"])
+
     client = MagicMock()
     client.build_request = MagicMock(return_value=MagicMock())
     client.send = AsyncMock(side_effect=build)
     client.aclose = AsyncMock()
+    stream_ctx = MagicMock()
+    stream_ctx.__aenter__ = AsyncMock(side_effect=forced)
+    stream_ctx.__aexit__ = AsyncMock(return_value=False)
+    client.stream = MagicMock(return_value=stream_ctx)
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     return client, sent, counts, count
@@ -3976,43 +3987,54 @@ def test_the_conversation_table_keeps_the_most_recently_measured():
 async def test_a_conversation_that_searches_reads_the_models_table_not_its_turn_one_sample(
     db_session, admin_user, chat_session_factory, monkeypatch
 ):
-    """The review of #844: a Chinese conversation that searches on its first turn, on a server counting each message
-    by its script (Chinese at 1.8x, English, the system prompt and the schema at 1.0x), a 16,384 slot. Its turn-one
-    prompt, tool-less, measures mostly the system prompt and the schema (about 1.04). A dense conversation then moves
-    the model's table to about 1.6. Every later first prompt of the searching one holds a tool row and measures
-    nothing; its entry is dropped, and it is trimmed at the model's table, within the target by the server's count,
-    first time, every turn. Kept, the turn-one sample trimmed its Chinese history at 1.04 for the life of the
-    process: refused, or near the slot."""
+    """The review of #844: a Chinese conversation that searches from its first turn on, every turn, as the system
+    prompt asks, on a server counting each message by its script (Chinese at 1.8x, English, the system prompt and the
+    schema at 1.0x), a 12,288 slot. Its turn-one prompt, tool-less, measures mostly the system prompt and the schema
+    (about 1.04). A dense conversation then moves the model's table to about 1.6. Every later first prompt of the
+    searching one holds a tool row (the latest exchange's, which no trim drops) and measures nothing; its entry is
+    dropped, and it is trimmed at the model's table, within the target by the server's count, first time, every turn.
+    Kept, the turn-one sample trimmed its Chinese history at 1.04 for the life of the process: refused, or near the
+    slot."""
     from harbor_clerk.llm import chat as chat_module
 
-    ctx = 16384
+    ctx = 12288
     tables = ({}, {}, OrderedDict())
     searching, dense = [await _conversation(db_session, admin_user) for _ in range(2)]
     db_session.add_all(_history(dense.conversation_id, _stored_exchanges(20)))
     await db_session.commit()
-    first_question, first_answer = _exchange(0, cjk=True)
+    questions = [_exchange(i, cjk=True) for i in range(16)]
     client, sent, counts, _count = _language_client(
-        ctx, lambda m: 1.8 if _has_cjk(m.get("content") or "") else 1.0, 1.0, searches=frozenset({first_question})
+        ctx,
+        lambda m: 1.8 if _has_cjk(m.get("content") or "") else 1.0,
+        1.0,
+        searches=frozenset(q for q, _ in questions),
     )
     key = (str(searching.conversation_id), _MODEL_KEY)
-    text = await _prose_turn(searching.conversation_id, admin_user, client, monkeypatch, tables, first_question, ctx, 1)
-    assert text == first_answer
+    question, answer = questions[0]
+    assert await _prose_turn(searching.conversation_id, admin_user, client, monkeypatch, tables, question, ctx, 1)
     assert tables[2][key] < 1.1, f"the scenario: turn one measured the system prompt and schema ({tables[2][key]})"
     dense_client = _language_client(ctx, lambda m: 1.8, 1.8)[0]
-    question, answer = _exchange(20)
-    assert await _prose_turn(dense.conversation_id, admin_user, dense_client, monkeypatch, tables, question, ctx)
-    assert tables[1][_MODEL_KEY] > 1.5, f"the scenario: the model's table moved ({tables[1][_MODEL_KEY]})"
-    for i in range(1, 16):
+    dense_question, _ = _exchange(20)
+    assert await _prose_turn(dense.conversation_id, admin_user, dense_client, monkeypatch, tables, dense_question, ctx)
+    model_table = tables[1][_MODEL_KEY]
+    assert model_table > 1.5, f"the scenario: the model's table moved ({model_table})"
+    shares: list[float] = []  # each later turn's first prompt, by the server's count, over the slot (over 1: refused)
+    answered: list[bool] = []  # the turn searched once and the model answered it, not a forced answer
+    kept_entry: list[bool] = []
+    for question, answer in questions[1:]:
         before = len(sent)
-        question, answer = _exchange(i, cjk=True)
-        text = await _prose_turn(searching.conversation_id, admin_user, client, monkeypatch, tables, question, ctx)
-        assert text == answer
-        assert len(sent) - before == 1, f"turn {i}: refused ({counts[before:]})"
-        assert counts[before] <= chat_module._TRIM_BUDGET_FRACTION * ctx, f"turn {i}: {counts[before] / ctx:.1%}"
-        if i == 1:
-            assert any(m["role"] == "tool" for m in sent[before]["messages"]), "the scenario: a tool row"
-            assert key not in tables[2], "the entry is dropped once the history holds a tool row"
-    assert _kept(sent[-1]["messages"]) < 15, "the scenario: the history is long enough for the trim to bite"
+        text = await _prose_turn(searching.conversation_id, admin_user, client, monkeypatch, tables, question, ctx, 1)
+        assert any(m["role"] == "tool" for m in sent[before]["messages"]), (
+            "the scenario: a tool row in the first prompt"
+        )
+        shares.append(round(counts[before] / ctx, 3))
+        answered.append(text == answer and len(sent) - before == 2)
+        kept_entry.append(key in tables[2])
+    assert all(answered) and max(shares) <= chat_module._TRIM_BUDGET_FRACTION, f"{shares}, answered {answered}"
+    assert not any(kept_entry), "the entry is dropped once the history holds a tool row"
+    assert tables[1][_MODEL_KEY] == model_table, "the scenario: nothing re-measured the model's table"
+    window = 1 + get_settings().max_history_messages  # the system prompt and the rows loaded
+    assert len(sent[-2]["messages"]) < window, f"the scenario: the trim bit ({len(sent[-2]['messages'])} of {window})"
 
 
 @pytest.mark.asyncio
