@@ -381,24 +381,27 @@ async def start_model_download(
     return {"status": "downloading"}
 
 
-def _refuse_model_switch_under_compose(model_id: str | None) -> None:
+def _refuse_model_switch_under_compose(model_id: str | None) -> bool:
     """Under Docker Compose, refuse a switch to any model but the one llama-server serves (#654).
 
     Compose starts llama-server once, with `-m /models/$LLM_MODEL_FILE`, and nothing in the app can restart
     it with another file (the macOS launcher is what does that on a Mac). The active model there is derived
     from LLM_MODEL_FILE on every refresh (`config._apply_model_file`), so an activation would show one model
     while another answered, until the next refresh put it back. Activating the served model is allowed and
-    changes nothing. `model_id` None is a deactivation, allowed when LLM_MODEL_FILE is empty (nothing is
-    served, so there is nothing to change). Under the macOS app this does nothing."""
+    changes nothing. `model_id` None is a deactivation, allowed when no model is active (an empty
+    LLM_MODEL_FILE, or its file not downloaded yet), which changes nothing either. Returns True for those
+    no-ops, which the route answers without touching anything; False, having done nothing, under the
+    macOS app or any run that is not Compose."""
     settings = get_settings()
     if not is_compose(settings):
-        return
+        return False
+    refresh_llm_settings()  # the active model follows the file, which may have arrived since
     model_file = settings.llm_model_file
     model = get_model(model_id) if model_id else None
     if model is not None and model_file and model.filename == model_file:
-        return
-    if model is None and not model_file:
-        return
+        return True
+    if model_id is None and not settings.llm_model_id:
+        return True
     if model is not None:
         change = f"To use {model.name}, set LLM_MODEL_FILE={model.filename}"
     else:
@@ -439,7 +442,9 @@ async def activate_model(
 ):
     if get_model_path(model_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not downloaded")
-    _refuse_model_switch_under_compose(model_id)
+    if _refuse_model_switch_under_compose(model_id):
+        # Already the served model: the server runs it, so the memory check (about a Mac) does not apply.
+        return {"status": "activated"}
     # A model whose weights alone do not fit this Mac is refused: unified
     # memory would let llama-server allocate it, and the machine, not the
     # server, is what fails. There is no override, because the macOS launcher
@@ -474,7 +479,8 @@ async def activate_model(
 async def deactivate_model(
     principal: Principal = Depends(require_admin),
 ):
-    _refuse_model_switch_under_compose(None)
+    if _refuse_model_switch_under_compose(None):
+        return {"status": "deactivated"}
     settings = get_settings()
     previous = settings.llm_model_id or ""
     settings.llm_model_id = ""

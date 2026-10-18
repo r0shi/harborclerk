@@ -241,8 +241,8 @@ def test_entrypoint_waits_while_the_file_is_still_growing(tmp_path: Path) -> Non
 @needs_sh
 def test_entrypoint_stops_at_once_on_sigterm_while_waiting(tmp_path: Path) -> None:
     fake, out = _fake_server(tmp_path)
-    # A long poll interval: SIGTERM must interrupt the sleep, not wait for it out. As PID 1 the shell
-    # gets no default action for SIGTERM, so without the trap `docker compose down` waits its grace period.
+    # A long poll interval: the trap must interrupt the backgrounded sleep, not wait it out, so shutdown
+    # is prompt. Exit 143 is the trap's; an untrapped shell would die of the signal itself (-15).
     env = {**_env(fake), "LLAMA_WAIT_INTERVAL": "30"}
     proc = subprocess.Popen(["sh", str(ENTRYPOINT), "-m", str(tmp_path / "absent.gguf")], env=env)
     try:

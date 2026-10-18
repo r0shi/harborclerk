@@ -23,7 +23,7 @@ from enum import Enum
 import httpx
 
 from harbor_clerk.config import get_settings, refresh_llm_settings
-from harbor_clerk.llm.health import UNAVAILABLE, llm_server_state, wait_while_loading
+from harbor_clerk.llm.health import RESTART_WINDOW_SECONDS, UNAVAILABLE, wait_for_server
 from harbor_clerk.llm.models import context_budget, get_model
 
 logger = logging.getLogger(__name__)
@@ -58,13 +58,14 @@ class _Tier(Enum):
 
 
 def _local_server_unavailable() -> bool:
-    """Whether llama-server is not there at all, after waiting out a load in progress (#654).
+    """Whether llama-server is gone, after waiting out a load or a restart in progress (#654).
 
     Only under Docker Compose can this be True: elsewhere the server's state is READY, unprobed. Waiting
-    out LOADING (every `compose up`, a restart, the first load after a download) is what keeps a summary
-    from being stored extractive just because it was claimed during the load; past the wait the request
-    goes out anyway and its own 503 retries take over."""
-    return wait_while_loading() == UNAVAILABLE
+    out LOADING (every `compose up`, the first load after a download) and a restart-length gap with nothing
+    listening is what keeps a summary from being stored extractive just because it was claimed then; past
+    a load's wait the request goes out anyway and its own 503 retries take over. A server gone for longer
+    than `RESTART_WINDOW_SECONDS` is fallen back from at once."""
+    return wait_for_server() == UNAVAILABLE
 
 
 def _llm_intentionally_deactivated() -> bool:
@@ -323,14 +324,17 @@ def _call_llm(
                     max_attempts - attempt,
                 )
                 return None
-            # Under Compose a refused connection with nothing listening means llama-server is waiting for
-            # its file or exited after a failed load (#654), which a retry does not wait out. A server that
-            # is loading answers /health, so that case still retries.
-            if isinstance(e, httpx.ConnectError) and llm_server_state(fresh=True) == UNAVAILABLE:
+            # Under Compose a refused connection means nothing listens (#654): llama-server is restarting,
+            # waiting for its file, or gone after a failed load. A restart is waited out (up to
+            # RESTART_WINDOW_SECONDS from the start of the outage) and the call then retries; a server gone
+            # for longer is not retried at all. Outside Compose this returns at once and the retries below
+            # are unchanged.
+            if isinstance(e, httpx.ConnectError) and wait_for_server(fresh=True) == UNAVAILABLE:
                 logger.info(
-                    "LLM call phase=%s elapsed=%.1fs ConnectError + llama-server unavailable — skipping %d remaining retries",
+                    "LLM call phase=%s elapsed=%.1fs ConnectError + llama-server gone for over %.0fs — skipping %d remaining retries",
                     phase,
                     elapsed,
+                    RESTART_WINDOW_SECONDS,
                     max_attempts - attempt,
                 )
                 return None

@@ -206,3 +206,34 @@ async def test_research_sees_a_download_that_finished_after_startup(
     )
     assert resp.status_code == 200, resp.text
     assert config.get_settings().llm_model_id == "qwen35-4b"
+
+
+async def test_compose_deactivate_is_a_no_op_before_the_model_is_downloaded(
+    client, admin_user, admin_token, compose, models_dir: Path
+) -> None:
+    # LLM_MODEL_FILE is set but its file is not in the volume yet: nothing is active, so nothing to refuse.
+    (models_dir / SERVED).unlink()
+    config._settings = None
+    assert config.get_settings().llm_model_id == ""
+    resp = await client.put("/api/chat/models/deactivate", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert config.get_settings().llm_model_id == ""
+
+
+async def test_compose_activating_the_served_model_skips_the_mac_memory_check(
+    client, admin_user, admin_token, compose, monkeypatch
+) -> None:
+    # A small Docker VM: the Mac arithmetic says the model does not fit, but the server is already running it.
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 2 * GIB)
+    resp = await client.put("/api/chat/models/qwen35-4b/activate", headers=auth_header(admin_token))
+    assert resp.status_code == 200, resp.text
+    assert config.get_settings().llm_model_id == "qwen35-4b"
+
+
+async def test_a_source_run_still_gets_the_memory_check(
+    client, admin_user, admin_token, source_run, monkeypatch
+) -> None:
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 2 * GIB)
+    resp = await client.put("/api/chat/models/qwen35-4b/activate", headers=auth_header(admin_token))
+    assert resp.status_code == 409
+    assert "GB of memory" in resp.json()["detail"]

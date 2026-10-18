@@ -91,7 +91,7 @@ def request_llm_restart(reason: str) -> None:
 # What llama-server says about its model under Docker Compose (#654), from its `/health`.
 READY = "ready"  # 200: the model is loaded
 LOADING = "loading"  # 503 "Loading model", or a probe that timed out: it is up, and the model is coming
-UNAVAILABLE = "unavailable"  # nothing listening: waiting for its file, or exited after a failed load
+UNAVAILABLE = "unavailable"  # nothing listening: restarting, waiting for its file, or gone after a failed load
 
 # How long a verdict is reused. The llm worker asks once per document. Loading and unavailable are kept
 # only briefly, so a load finishing or a restart is seen at once; a refused connection answers in
@@ -102,7 +102,14 @@ _PROBE_TIMEOUT_SECONDS = 2.0
 # retries take over), and how often it looks again meanwhile.
 LOADING_WAIT_SECONDS = 180.0
 LOADING_POLL_SECONDS = 2.0
+# How long nothing may listen before the server counts as gone rather than restarting. A restart (an
+# edited command and `docker compose up -d`, a crash, an OOM kill) leaves a few seconds with no listener,
+# the entrypoint's stability pause among them; a job claimed then waits, or every document in that window
+# would be stored extractive for good. Past it, jobs fall back at once: only the first after an outage waits.
+RESTART_WINDOW_SECONDS = 60.0
 _state_probe: tuple[float, str] | None = None
+# When the probes started finding nothing listening; None while the server answers. Per process.
+_unavailable_since: float | None = None
 
 
 def llm_server_state(*, fresh: bool = False) -> str:
@@ -110,13 +117,13 @@ def llm_server_state(*, fresh: bool = False) -> str:
 
     Compose's active model follows its file being in the volume, but a present file can still fail to load
     (too big for the container, a hand copy cut short), and llama-server then exits and restarts while the
-    model looks active: a summary would spend ~95 s of retries per document against it. Callers fail fast
-    on UNAVAILABLE only. LOADING (every `compose up`, a crash restart, the first load after a download) is
-    waited out (`wait_while_loading`), as the summarize retries wait out a model swap on a Mac. The verdict
-    is reused per `_STATE_TTL_SECONDS` unless `fresh`, which a failed request asks for.
+    model looks active: a summary would spend ~95 s of retries per document against it. Callers wait with
+    `wait_for_server`, which waits out LOADING and a restart-length UNAVAILABLE, and fall back fast only on
+    a server that has been gone longer. The verdict is reused per `_STATE_TTL_SECONDS` unless `fresh`,
+    which a failed request asks for.
 
     Everywhere else READY, unprobed: the macOS launcher owns llama-server, and its retries are the design."""
-    global _state_probe
+    global _state_probe, _unavailable_since
     from harbor_clerk.config import get_settings, is_compose
 
     settings = get_settings()
@@ -136,16 +143,34 @@ def llm_server_state(*, fresh: bool = False) -> str:
         state = UNAVAILABLE
     with _lock:
         _state_probe = (now, state)
+        if state != UNAVAILABLE:
+            _unavailable_since = None
+        elif _unavailable_since is None:
+            _unavailable_since = now
     if cached is None or cached[1] != state:
         logger.info("llama-server at %s is %s", settings.llama_server_url, state)
     return state
 
 
-def wait_while_loading(budget_seconds: float | None = None) -> str:
-    """The server's state once it is no longer LOADING, or LOADING after `budget_seconds` of it."""
-    state = llm_server_state()
-    deadline = time.monotonic() + (LOADING_WAIT_SECONDS if budget_seconds is None else budget_seconds)
-    while state == LOADING and time.monotonic() < deadline:
+def _unavailable_for(now: float) -> float:
+    """Seconds the probes have found nothing listening, 0 while the server answers."""
+    with _lock:
+        since = _unavailable_since
+    return 0.0 if since is None else now - since
+
+
+def wait_for_server(*, fresh: bool = False) -> str:
+    """The server's state once it is READY, or once waiting stops: LOADING past `LOADING_WAIT_SECONDS`
+    of this wait, or UNAVAILABLE for `RESTART_WINDOW_SECONDS` since the outage began. A caller falls
+    back on UNAVAILABLE only, so a restart is waited out and a long outage costs no wait after the first.
+    READY at once outside Compose."""
+    state = llm_server_state(fresh=fresh)
+    loading_deadline = time.monotonic() + LOADING_WAIT_SECONDS
+    while True:
+        now = time.monotonic()
+        loading = state == LOADING and now < loading_deadline
+        restarting = state == UNAVAILABLE and _unavailable_for(now) < RESTART_WINDOW_SECONDS
+        if not (loading or restarting):
+            return state
         time.sleep(LOADING_POLL_SECONDS)
         state = llm_server_state(fresh=True)
-    return state

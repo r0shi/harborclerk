@@ -13,8 +13,9 @@
 # volume. A file copied in by hand under its final name is caught partway by checking the GGUF magic
 # and that the size holds still for LLAMA_STABLE_INTERVAL seconds; copy to a temporary name and rename.
 #
-# This shell is PID 1 while it waits, and PID 1 gets no default action for SIGTERM, so it traps it:
-# `docker compose down` stops a waiting container at once instead of after the grace period.
+# While it waits it traps SIGTERM and INT, and sleeps in the background so the trap interrupts the sleep
+# at once: `docker compose down` stops a waiting container promptly instead of after the grace period.
+# (docker-init is PID 1, from `init: true`, and forwards the signal here.)
 set -eu
 
 model=""
