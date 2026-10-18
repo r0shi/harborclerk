@@ -743,8 +743,10 @@ class ServiceManager: ObservableObject {
         // figures a start computes do not change between attempts, so a
         // restart would refuse again (#709). Defensive: today no caller
         // reaches here from a refusal, since a refused start spawns nothing
-        // for `onUnexpectedExit` to report and the health checker probes
-        // only `running` services. The guard is for the caller that does.
+        // for `onUnexpectedExit` to report and the health checker restarts
+        // only services it saw `running` (it probes an errored one only while
+        // it holds a live process, which a refusal never does). The guard is
+        // for the caller that does.
         if let refusal = service.startRefusal {
             Log.logger("lifecycle").notice(
                 "[\(service.name, privacy: .public)] Not restarting \(refusal.modelId, privacy: .public): \(refusal.message, privacy: .public)")
@@ -877,13 +879,7 @@ class ServiceManager: ObservableObject {
                 // of that transition finishes it, not this loop.
                 guard service.state == .starting else { return }
                 if healthy {
-                    service.state = .running
-                    // Reset crash counter now that the service is confirmed healthy
-                    if let pySvc = service as? PythonService {
-                        pySvc.resetRestartCount()
-                    }
-                    savePidFile()
-                    notifyStateChanged()
+                    markReady(service)
                     return
                 }
                 // Not `Task.sleep`: this loop keeps driving after its Task is
@@ -902,8 +898,10 @@ class ServiceManager: ObservableObject {
             if service.holdsLiveProcess {
                 // Kept, not killed: a model that loads slowly is still coming
                 // up and will serve. Every stop and relaunch path now acts on
-                // the process rather than this state, so it is not a leak.
-                Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Health check timeout; the process is still running and is stopped by the next stop or relaunch")
+                // the process rather than this state, so it is not a leak, and
+                // the health checker keeps probing it and promotes it to
+                // `running` once it answers (#767).
+                Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Health check timeout; the process is still running, and is marked running if it starts answering")
             } else {
                 Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Health check timeout")
             }
@@ -915,6 +913,23 @@ class ServiceManager: ObservableObject {
             notifyStateChanged()
             Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Start failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// A service's health check has passed: record it as `running`, the one
+    /// way a service gets there. `startService` calls this when the start-up
+    /// probe answers, and the health checker when a service it had given up
+    /// on (errored by a start-up timeout, process kept) starts answering
+    /// later (#767). Either way the service then gets what any running service
+    /// gets: a fresh crash budget, a pid in the orphan file, and the health
+    /// checker's consecutive-failure restarts.
+    func markReady(_ service: any ManagedService) {
+        service.state = .running
+        // Reset crash counter now that the service is confirmed healthy
+        if let pySvc = service as? PythonService {
+            pySvc.resetRestartCount()
+        }
+        savePidFile()
+        notifyStateChanged()
     }
 
     /// Put a start refusal in front of the user, once per launch per model.
