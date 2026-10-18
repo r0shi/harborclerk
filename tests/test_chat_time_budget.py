@@ -3640,13 +3640,13 @@ def _exchange(i: int, cjk: bool = False) -> tuple[str, str]:
     return f"Question {i}: " + "fee? " * 140, f"Answer {i}: " + "fee. " * 140
 
 
-def _language_client(ctx: int, density_of, schema_density: float):
+def _language_client(ctx: int, density_of, schema_density: float, usage: bool = True):
     """A server that counts by a rule of its own, per message: characters over a chars-per-token figure of
     ``density_of(message)`` times the estimate's, rounded up, a three-token wrapper, and the schema at
     ``schema_density``. It refuses a prompt counted over ``ctx`` with the pin's 400; otherwise the model answers on its
     own, the answer of the exchange whose question is the prompt's last message (``_exchange``), in the same chunks as
-    the pin (content, finish, usage, "[DONE]"). Returns the client, the loop's payloads, the server's count of each
-    and the counting function."""
+    the pin (content, finish, usage, "[DONE]"; no usage with ``usage`` off, an older build, whose refusals still name
+    their count). Returns the client, the loop's payloads, the server's count of each and the counting function."""
     import math
 
     sent: list[dict] = []
@@ -3665,7 +3665,8 @@ def _language_client(ctx: int, density_of, schema_density: float):
         if counted > ctx:
             return _refusal(counted, ctx)
         answer = answers[payload["messages"][-1]["content"]]
-        return _lines_response([_chunk(content=answer), _finish_chunk("stop"), _usage_chunk(counted), "data: [DONE]"])
+        tail = [_usage_chunk(counted), "data: [DONE]"] if usage else ["data: [DONE]"]
+        return _lines_response([_chunk(content=answer), _finish_chunk("stop"), *tail])
 
     client = MagicMock()
     client.build_request = MagicMock(return_value=MagicMock())
@@ -3853,6 +3854,42 @@ async def test_a_conversations_density_is_measured_again_after_a_restart(
     assert len(dense_sent) == 1 and dense_counts[0] <= target, "the next turn: first time, within the target"
     history = [_exchange(i) for i in range(21)]
     assert _kept(english_sent[0]["messages"]) >= _exchanges_that_fit(count, english_sent[0], history, ctx) - 1
+
+
+@pytest.mark.asyncio
+async def test_a_refusals_count_alone_measures_the_conversation(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """On a build that names its count in a refusal but reports no usage on the prompts it accepts, the refusal is
+    the only measurement. Two conversations with twenty exchanges stored, one counted at 1.8x, one at 2.8x (pasted
+    logs), on a 16,384 slot. The first, trimmed at the seed, is refused and retried; the second, trimmed at the
+    model's 1.8, is refused and retried, and moves the model's table to 2.3. The first conversation's next turn is
+    trimmed at its own 1.8, from its refusal, and keeps what fits; at the model's 2.3 it would keep fewer."""
+    from harbor_clerk.llm import chat as chat_module
+
+    ctx = 16384
+    densities = [1.8, 2.8]
+    history = [_exchange(i) for i in range(20)]
+    conversations = []
+    for _ in densities:
+        conv = await _conversation(db_session, admin_user)
+        rows = [{"role": role, "content": text} for q, a in history for role, text in (("user", q), ("assistant", a))]
+        db_session.add_all(_history(conv.conversation_id, rows))
+        await db_session.commit()
+        conversations.append(conv)
+    runs = [_language_client(ctx, lambda m, d=d: d, d, usage=False) for d in densities]
+    tables = ({}, {}, OrderedDict())
+    for conv, (client, sent, counts, _count) in zip(conversations, runs, strict=True):
+        question, answer = _exchange(20)
+        assert await _prose_turn(conv.conversation_id, admin_user, client, monkeypatch, tables, question, ctx) == answer
+        assert len(sent) == 2 and counts[0] > ctx and counts[1] <= ctx, f"the scenario: refused, retried ({counts})"
+    assert tables[1][_MODEL_KEY] == pytest.approx(2.3, abs=0.02), "the scenario: the model's table moved"
+    client, sent, counts, count = runs[0]
+    question, answer = _exchange(21)
+    assert await _prose_turn(conversations[0].conversation_id, admin_user, client, monkeypatch, tables, question, ctx)
+    assert len(sent) == 3, "accepted first time"
+    fits = _exchanges_that_fit(count, sent[-1], [*history, _exchange(20)], ctx)
+    assert _kept(sent[-1]["messages"]) >= fits - 1 and counts[-1] <= chat_module._TRIM_BUDGET_FRACTION * ctx
 
 
 def test_a_conversation_reads_its_own_prose_ratio_then_the_models():
