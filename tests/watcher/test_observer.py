@@ -1,9 +1,16 @@
 import uuid
 
-from watchdog.events import FileCreatedEvent, FileDeletedEvent, FileModifiedEvent
+from watchdog.events import (
+    DirDeletedEvent,
+    DirMovedEvent,
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+)
 
 from harbor_clerk.watcher.events import EventKind
-from harbor_clerk.watcher.observer import FolderObserver
+from harbor_clerk.watcher.observer import FolderObserver, RootState
 
 
 def test_translates_watchdog_create(tmp_path):
@@ -49,3 +56,84 @@ def test_paths_outside_root_ignored(tmp_path):
     outside = tmp_path.parent / "elsewhere.txt"
     obs._handler.on_created(FileCreatedEvent(str(outside)))
     assert captured == []
+
+
+def test_dotdot_prefixed_name_at_the_root_is_inside(tmp_path):
+    captured = []
+    obs = FolderObserver(uuid.uuid4(), str(tmp_path), captured.append)
+    obs._handler.on_created(FileCreatedEvent(str(tmp_path / "..notes.txt")))
+    assert [e.relative_path for e in captured] == ["..notes.txt"]
+
+
+def test_move_within_the_tree_is_a_moved_event(tmp_path):
+    captured = []
+    obs = FolderObserver(uuid.uuid4(), str(tmp_path), captured.append)
+    obs._handler.on_moved(FileMovedEvent(str(tmp_path / "a.txt"), str(tmp_path / "sub" / "b.txt")))
+    assert len(captured) == 1
+    e = captured[0]
+    assert (e.kind, e.relative_path, e.dest_relative_path) == (EventKind.moved, "a.txt", "sub/b.txt")
+    assert e.dest_absolute_path == str(tmp_path / "sub" / "b.txt")
+
+
+def test_move_out_of_the_tree_is_a_delete_and_into_it_a_create(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    captured = []
+    obs = FolderObserver(uuid.uuid4(), str(root), captured.append)
+    obs._handler.on_moved(FileMovedEvent(str(root / "a.txt"), str(tmp_path / "a.txt")))
+    obs._handler.on_moved(FileMovedEvent(str(tmp_path / "b.txt"), str(root / "b.txt")))
+    assert [(e.kind, e.relative_path) for e in captured] == [
+        (EventKind.deleted, "a.txt"),
+        (EventKind.created, "b.txt"),
+    ]
+
+
+def test_directory_moved_out_is_a_directory_delete(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    captured = []
+    obs = FolderObserver(uuid.uuid4(), str(root), captured.append)
+    obs._handler.on_moved(DirMovedEvent(str(root / "sub"), str(tmp_path / "sub")))
+    obs._handler.on_deleted(DirDeletedEvent(str(root / "gone")))
+    assert [(e.kind, e.relative_path, e.is_directory) for e in captured] == [
+        (EventKind.deleted, "sub", True),
+        (EventKind.deleted, "gone", True),
+    ]
+
+
+def test_directory_moved_within_the_tree_emits_nothing_itself(tmp_path):
+    """Every backend follows a directory move with a moved event per file inside."""
+    captured = []
+    obs = FolderObserver(uuid.uuid4(), str(tmp_path), captured.append)
+    obs._handler.on_moved(DirMovedEvent(str(tmp_path / "a"), str(tmp_path / "b")))
+    assert captured == []
+
+
+def test_losing_the_root_reports_it_and_emits_no_file_events(tmp_path):
+    """A deleted or moved root must never reach handle_event: that would
+    remove every document of a folder that may only be unmounted (#739)."""
+    captured, lost = [], []
+    obs = FolderObserver(uuid.uuid4(), str(tmp_path), captured.append, on_root_lost=lambda: lost.append(1))
+    obs._handler.on_deleted(DirDeletedEvent(str(tmp_path)))
+    obs._handler.on_moved(DirMovedEvent(str(tmp_path), str(tmp_path.parent / "aside")))
+    assert captured == []
+    assert lost == [1, 1]
+    assert obs._root_lost.is_set()
+
+
+def test_health_tells_missing_from_replaced(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    obs = FolderObserver(uuid.uuid4(), str(root), lambda _e: None)
+    assert obs.health() is RootState.detached, "never started"
+    obs.start()
+    try:
+        assert obs.health() is RootState.ok
+        root.rename(tmp_path / "aside")
+        assert obs.health() is RootState.missing
+        root.mkdir()
+        assert obs.health() is RootState.detached, "a different directory at the path"
+        obs.restart()
+        assert obs.health() is RootState.ok
+    finally:
+        obs.stop()

@@ -38,7 +38,14 @@ the filesystem directly. `STORAGE_BACKEND` selects the implementation.
 
 Watched-folder documents are read in place from `source_path` and are never
 written to. IMAP messages and attachments are the one case where content is
-fetched and stored, because there is no file on disk to reference.
+fetched and stored (the normal document path; only legacy uploads use the
+`originals/<doc_id>/<original_filename>` bucket). Watcher: a gone file's row and
+document are hidden through `watcher/visibility.py`, shared with `/watch/remove`;
+a delete is believed only once `file_exists_exact` agrees (atomic saves report
+deletes of live files; APFS is case-insensitive); a move keeps the doc_id. A
+reconcile (attach, `WATCH_RESCAN_INTERVAL_SECS`) removes nothing when the root is
+missing, empty or partly unlistable; a lost root re-attaches the observer, and
+never reaches `handle_event`, which would remove every document (#604/#847/#739).
 
 ## Retrieval
 
@@ -191,10 +198,3 @@ whose extract stage failed on a path-quoting OSError.
   endpoint blocks the event loop — wrap it in `run_in_executor`.
 - SQLAlchemy enum members must be **lowercase** to match Postgres values: both
   `postgresql.ENUM` and `sa.Enum` send `.name`, not `.value`.
-
-## Legacy upload storage
-
-The legacy upload path stores originals in the `originals` bucket under
-`originals/<doc_id>/<original_filename>`. Watched-folder and IMAP documents do
-**not** use it — watched files are read in place from `source_path`, and mail
-content is stored via the normal document path.

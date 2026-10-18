@@ -2,6 +2,8 @@
 
 import uuid
 
+import pytest
+
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
@@ -596,3 +598,43 @@ async def test_patch_folder_omitted_display_name_leaves_field_unchanged(client, 
     )
     folder_row = next(f for f in list_r.json() if f["folder_id"] == str(folder_a.folder_id))
     assert folder_row["display_name"] == "Sentinel"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/watch/remove — the same retirement as a file deleted from disk (#604)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("doc_before", "doc_after"), [("active", "removed"), ("deleted", "deleted")])
+async def test_remove_hides_the_document_but_never_overrides_an_admin_delete(
+    client, admin_token, db_session, doc_before, doc_after
+):
+    folder = WatchedFolder(path="/w", display_name="w", bookmark_data=None)
+    db_session.add(folder)
+    await db_session.flush()
+    doc = Document(
+        title="a",
+        canonical_filename="a.txt",
+        status=doc_before,
+        sha256=b"\x01" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    wf = WatchedFile(
+        folder_id=folder.folder_id, relative_path="a.txt", bookmark_data=b"", sha256=b"\x01" * 32, doc_id=doc.doc_id
+    )
+    db_session.add(wf)
+    await db_session.flush()
+
+    resp = await client.post(
+        "/api/watch/remove",
+        headers=auth_header(admin_token),
+        json={"folder_id": str(folder.folder_id), "relative_path": "a.txt"},
+    )
+    assert resp.status_code == 200
+    await db_session.refresh(wf)
+    await db_session.refresh(doc)
+    assert wf.status == WatchedFileStatus.removed
+    assert wf.removed_at is not None
+    assert doc.status == doc_after

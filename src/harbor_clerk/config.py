@@ -28,6 +28,10 @@ class Settings(BaseSettings):
 
     # Watched folder root (Docker mode only; empty in native macOS app)
     watch_root: str = Field(default="")
+    # Seconds between reconciliations of every watched folder against the
+    # index (new or changed files indexed, missing ones removed; #847, #739).
+    # 0 turns the periodic pass off; the one at attach still runs.
+    watch_rescan_interval_secs: float = Field(default=300.0, ge=0)
 
     # MinIO (only used when storage_backend=minio)
     minio_endpoint: str = Field(default="minio:9000")

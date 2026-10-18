@@ -67,6 +67,7 @@ The watcher process is single-threaded and lightweight. Even with thousands of f
 | ------------ | -------------- | -------------------------------------------------------------------------- |
 | `WATCH_ROOT` | `/data/watch`  | Directory inside the container whose top-level subdirs become folders.     |
 | `LOG_LEVEL`  | `INFO`         | Watcher log verbosity. Use `DEBUG` to see per-event details when debugging.|
+| `WATCH_RESCAN_INTERVAL_SECS` | `300` | Seconds between reconciliations of each folder with the index (new and changed files indexed, deleted ones removed). `0` keeps only the one when a folder's observer attaches. |
 
 ## Related endpoints
 

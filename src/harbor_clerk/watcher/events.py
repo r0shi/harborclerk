@@ -4,18 +4,20 @@ No watchdog imports, no I/O scheduling. Caller passes in synthetic FileEvent
 records; this module does the database work in the provided session. Caller
 is responsible for commit. It does read the filesystem: the event's file is
 hashed, an `.eml` is parsed, and a `.json` is judged a metadata sidecar or a
-document by listing its directory and reading it (`sidecar_owner_names`).
-Nothing under a watched folder is ever written, copied or moved.
+document by listing its directory and reading it (`sidecar_owner_names`), and
+a delete is checked against the disk before it is believed (an atomic save
+reports one for a file that exists). Nothing under a watched folder is ever
+written, copied or moved.
 """
 
 import hashlib
 import logging
 import os
 import posixpath
+import unicodedata
 import uuid
 from collections.abc import Iterable
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
@@ -32,6 +34,7 @@ from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
+from harbor_clerk.watcher.visibility import restore_document, retire_watched_file
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,9 @@ class EventKind(str, Enum):
     created = "created"
     modified = "modified"
     deleted = "deleted"
+    # A rename or move inside the folder: ``relative_path`` is the source,
+    # ``dest_relative_path`` the destination.
+    moved = "moved"
 
 
 class SkipReason(str, Enum):
@@ -80,6 +86,11 @@ class FileEvent:
     folder_id: uuid.UUID
     relative_path: str
     absolute_path: str
+    dest_relative_path: str | None = None
+    dest_absolute_path: str | None = None
+    # A directory event. Only ``deleted`` is dispatched for one: every file
+    # the index holds under it that is no longer on disk is removed.
+    is_directory: bool = False
 
 
 def classify_skip(
@@ -205,8 +216,43 @@ def _sha256_of(path: str) -> bytes:
     return h.digest()
 
 
+def file_exists_exact(absolute_path: str) -> bool:
+    """True when a regular file is at ``absolute_path`` under exactly that name.
+
+    ``os.path.isfile`` alone answers yes for ``Doc.pdf`` once it was renamed
+    to ``doc.pdf`` on a case-insensitive volume (APFS's default), which would
+    keep a renamed-away path alive; the parent's listing settles it. Names are
+    compared NFC-normalised, since macOS may hand back either form.
+    """
+    if not os.path.isfile(absolute_path):
+        return False
+    parent, name = os.path.split(absolute_path)
+    try:
+        names = os.listdir(parent or ".")
+    except OSError:
+        return False
+    if name in names:
+        return True
+    wanted = unicodedata.normalize("NFC", name)
+    return any(unicodedata.normalize("NFC", n) == wanted for n in names)
+
+
 def handle_event(session: Session, event: FileEvent) -> None:
     """Apply a FileEvent to the database. Caller is responsible for commit."""
+    if event.kind == EventKind.moved:
+        _handle_moved(session, event)
+        return
+    if event.is_directory:
+        if event.kind == EventKind.deleted:
+            _handle_directory_deleted(session, event)
+        return
+    if event.kind == EventKind.deleted and file_exists_exact(event.absolute_path):
+        # A delete for a file that is on disk is an atomic save (the old inode
+        # went, a new one was renamed into its place) or a delete followed by
+        # a re-create, reported in either order (#847). The file's state is
+        # what is on disk now: compare its content instead.
+        logger.debug("watcher: %s reported deleted but exists; treating as modified", event.relative_path)
+        event = replace(event, kind=EventKind.modified)
     if _should_ignore(event.relative_path):
         logger.debug("watcher: ignored event for %s", event.relative_path)
         return
@@ -240,11 +286,12 @@ def handle_event(session: Session, event: FileEvent) -> None:
         if existing is None or existing.status != WatchedFileStatus.active:
             return
 
-    # Delete events
+    # Delete events: the file is gone (checked above), so its document leaves
+    # search now, as `/watch/remove` does (#604); it comes back through the
+    # resurrect branches below if the file returns.
     if event.kind == EventKind.deleted:
         if existing is not None and existing.status == WatchedFileStatus.active:
-            existing.status = WatchedFileStatus.removed
-            existing.removed_at = datetime.now(UTC)
+            retire_watched_file(existing, session.get(Document, existing.doc_id) if existing.doc_id else None)
         return
 
     # Skip 0-byte files. Network shares (NFS / SMB / .AppleDouble-bearing
@@ -314,6 +361,100 @@ def handle_event(session: Session, event: FileEvent) -> None:
     _create_doc_and_enqueue(session, event, sha)
 
 
+def _handle_moved(session: Session, event: FileEvent) -> None:
+    """A file renamed or moved inside the watched folder (#847).
+
+    A known file keeps its document: the ``WatchedFile`` row and the document's
+    ``source_path`` follow it in place (the flat model has one row per path and
+    ``/watch/rename`` already moves it), so citations and chat history keep
+    resolving and an unchanged file is not re-indexed. The destination is then
+    compared like any modified file: changed content (or a changed extension,
+    which changes how it is extracted) is reprocessed under the same doc_id.
+
+    A move onto a path the index already knows (an atomic save renaming a temp
+    file over the original, or ``mv a b`` over an existing ``b``) keeps the
+    destination's document, which is the one cited by that path; the source's
+    row is retired as a deleted file. A move from a name the watcher ignores
+    (an editor's temp file) is a modify of the destination; a move to one is a
+    delete of the source. A sidecar on either side takes the delete-and-create
+    route, where its rules live.
+    """
+    dest_rel, dest_abs = event.dest_relative_path, event.dest_absolute_path
+    assert dest_rel is not None and dest_abs is not None, "a moved event names its destination"
+    src_deleted = replace(event, kind=EventKind.deleted, dest_relative_path=None, dest_absolute_path=None)
+    dest_modified = FileEvent(EventKind.modified, event.folder_id, dest_rel, dest_abs)
+
+    if _should_ignore(dest_rel):
+        handle_event(session, src_deleted)
+        return
+    if _should_ignore(event.relative_path) or sidecar_owner_names(event.absolute_path) or sidecar_owner_names(dest_abs):
+        handle_event(session, src_deleted)
+        handle_event(session, dest_modified)
+        return
+
+    src_wf = (
+        session.query(WatchedFile).filter_by(folder_id=event.folder_id, relative_path=event.relative_path).one_or_none()
+    )
+    dest_wf = session.query(WatchedFile).filter_by(folder_id=event.folder_id, relative_path=dest_rel).one_or_none()
+    if src_wf is None or dest_wf is not None:
+        handle_event(session, src_deleted)
+        handle_event(session, dest_modified)
+        return
+
+    doc = session.get(Document, src_wf.doc_id) if src_wf.doc_id else None
+    type_changed = Path(event.relative_path).suffix.lower() != Path(dest_rel).suffix.lower()
+    src_wf.relative_path = dest_rel
+    if doc is not None:
+        doc.source_path = dest_abs
+        doc.canonical_filename = Path(dest_abs).name
+        # A title the watcher derived from the old name follows the new one;
+        # one the extract stage set (a PDF's metadata, an email's subject) stays.
+        if doc.title == Path(event.relative_path).stem:
+            doc.title = Path(dest_rel).stem
+        if type_changed:
+            doc.mime_type = guess_mime_type(doc.canonical_filename)
+    session.flush()
+    logger.info("watcher: %s moved to %s; document kept", event.relative_path, dest_rel)
+
+    seq_before = doc.pipeline_seq if doc is not None else None
+    # Same content: a no-op, or a resurrection for a row a racing delete had
+    # retired. Changed content: reprocessed in place.
+    handle_event(session, dest_modified)
+    if doc is not None and type_changed and doc.pipeline_seq == seq_before and file_exists_exact(dest_abs):
+        _reprocess_doc(session, doc.doc_id, src_wf.sha256, dest_abs)
+
+
+def _handle_directory_deleted(session: Session, event: FileEvent) -> None:
+    """A subdirectory deleted or moved out of the folder: retire every file the index holds under it.
+
+    FSEvents reports a directory moved out of the tree as the directory alone,
+    with no event per file, so without this its files would stay active. Each
+    file is checked on disk first, as for a single delete. The watched root
+    itself never comes here: its loss means re-attaching, never removing every
+    document (``FolderObserver``).
+    """
+    rel = event.relative_path.strip("/")
+    if rel in ("", "."):
+        return
+    prefix = rel + "/"
+    rows = (
+        session.query(WatchedFile)
+        .filter(
+            WatchedFile.folder_id == event.folder_id,
+            WatchedFile.status == WatchedFileStatus.active,
+            WatchedFile.relative_path.startswith(prefix, autoescape=True),
+        )
+        .all()
+    )
+    for wf in rows:
+        abs_path = os.path.join(event.absolute_path, wf.relative_path[len(prefix) :])
+        if file_exists_exact(abs_path):
+            continue
+        retire_watched_file(wf, session.get(Document, wf.doc_id) if wf.doc_id else None)
+    if rows:
+        logger.info("watcher: directory %s removed; retired the files under it", rel)
+
+
 def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path: str) -> None:
     """Bump pipeline_seq, DELETE child rows, set pipeline_status=queued, enqueue extract.
 
@@ -354,10 +495,10 @@ def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path:
 def _retire_sidecar_row(session: Session, folder_id: uuid.UUID, relative_path: str) -> bool:
     """Mark the WatchedFile at ``relative_path`` removed and hide its document, if it is active.
 
-    Mirrors ``api/routes/watch.py::remove_file`` rather than the delete
-    branch above: a sidecar was never a document, so it leaves search now
-    instead of lingering until the reaper hard-deletes the row 30 days on.
-    Returns True when a row was retired.
+    The same retirement as a deleted file and ``api/routes/watch.py::remove_file``
+    (``retire_watched_file``): a sidecar was never a document, so it leaves
+    search now. An admin's "deleted" outranks it and is left alone. Returns
+    True when a row was retired.
     """
     wf = (
         session.query(WatchedFile)
@@ -366,12 +507,7 @@ def _retire_sidecar_row(session: Session, folder_id: uuid.UUID, relative_path: s
     )
     if wf is None:
         return False
-    wf.status = WatchedFileStatus.removed
-    wf.removed_at = datetime.now(UTC)
-    doc = session.get(Document, wf.doc_id) if wf.doc_id else None
-    # An admin's "deleted" (DELETE /docs/{id}) outranks this; it is left alone.
-    if doc is not None and doc.status == "active":
-        doc.status = "removed"
+    retire_watched_file(wf, session.get(Document, wf.doc_id) if wf.doc_id else None)
     logger.info("watcher: %s is a metadata sidecar of a sibling document; retired its own document row", relative_path)
     return True
 
@@ -458,17 +594,15 @@ def _drop_sidecar_namespace(session: Session, event: FileEvent, owner_names: Ite
 def _unhide_document(session: Session, doc_id: uuid.UUID | None) -> None:
     """Undo a retire when a resurrected row's document is hidden.
 
-    A row can be marked removed with its document set to "removed" (a sidecar
-    whose sibling has since gone, or the API's /watch/remove); a live
+    A removed row has its document set to "removed" (a deleted file, a
+    sidecar whose sibling has since gone, or the API's /watch/remove); a live
     WatchedFile pointing at a hidden document would be unreachable. Only that
-    state is undone: an admin's "deleted" (DELETE /docs/{id}) is not the
-    watcher's to revive, whatever happens to the file on disk.
+    state is undone (``restore_document``): an admin's "deleted" (DELETE
+    /docs/{id}) is not the watcher's to revive, whatever happens on disk.
     """
     if doc_id is None:
         return
-    doc = session.get(Document, doc_id)
-    if doc is not None and doc.status == "removed":
-        doc.status = "active"
+    restore_document(session.get(Document, doc_id))
 
 
 def _try_parse_eml(absolute_path: str) -> EmailParseResult | None:

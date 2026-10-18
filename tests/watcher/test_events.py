@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from harbor_clerk.file_types import guess_mime_type
 from harbor_clerk.ingest.metadata_extractors.sidecar import SidecarExtractor
 from harbor_clerk.models.chunk import Chunk
 from harbor_clerk.models.document import Document
@@ -789,9 +790,9 @@ def test_sidecar_indexed_by_an_earlier_build_is_retired_by_its_own_event(sync_se
 
 def test_deleting_a_sidecar_an_earlier_build_indexed_is_an_ordinary_delete(sync_session, folder, tmp_path, monkeypatch):
     """The file is gone, so its active row says it was a document too: the
-    delete branch handles it as for any deleted file (the document's fate on
-    deletion is #604's), and the sibling is left alone because its metadata
-    never carried the sidecar namespace."""
+    delete branch handles it as for any deleted file (its document is hidden,
+    #604), and the sibling is left alone because its metadata never carried
+    the sidecar namespace."""
     pdf, sidecar = _index_pair_as_an_earlier_build_did(sync_session, folder, tmp_path, monkeypatch)
     pdf_doc = sync_session.query(Document).filter_by(canonical_filename="INV-001.pdf").one()
 
@@ -802,8 +803,9 @@ def test_deleting_a_sidecar_an_earlier_build_indexed_is_an_ordinary_delete(sync_
     json_wf = sync_session.query(WatchedFile).filter_by(relative_path="INV-001.json").one()
     assert json_wf.status == WatchedFileStatus.removed
     assert json_wf.removed_at is not None
-    assert sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one().status == "active"
+    assert sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one().status == "removed"
     sync_session.refresh(pdf_doc)
+    assert pdf_doc.status == "active"
     assert pdf_doc.pipeline_seq == 0
 
 
@@ -988,7 +990,7 @@ def test_deleting_document_and_sidecar_together_sidecar_event_first(sync_session
     chunks and its pipeline: a re-extraction here would race its own deletion
     a moment later, strip the chunks and queue an extract of a path that is
     gone, leaving an empty, erroring document. Its own delete event then marks
-    its row removed and leaves the document as #604 leaves it."""
+    its row removed and hides the document (#604), chunks intact for a return."""
     pdf = tmp_path / "INV-001.pdf"
     pdf.write_bytes(b"%PDF-1.4 invoice body")
     sidecar = tmp_path / "INV-001.json"
@@ -1014,6 +1016,7 @@ def test_deleting_document_and_sidecar_together_sidecar_event_first(sync_session
     assert sync_session.query(Chunk).filter_by(doc_id=doc.doc_id).count() == 1, "its chunks are kept"
     assert "sidecar" not in doc.doc_metadata
     assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.removed
+    assert doc.status == "removed"
 
 
 def test_sidecar_in_a_subdirectory(sync_session, folder, tmp_path):
@@ -1068,9 +1071,8 @@ def test_sidecar_with_two_owners_requeues_both(sync_session, folder, tmp_path):
 
 def test_deleting_an_ordinary_json_beside_a_document_is_an_ordinary_delete(sync_session, folder, tmp_path):
     """`list.json` (a JSON list) beside `list.md` was never a sidecar: its
-    deletion neither re-extracts `list.md`, whose metadata never carried the
-    sidecar namespace, nor hides the `.json` document beyond what the delete
-    branch does for any file."""
+    deletion does not re-extract `list.md`, whose metadata never carried the
+    sidecar namespace; the `.json` document is hidden as any deleted file's is."""
     md = tmp_path / "list.md"
     md.write_text("# list\n")
     listing = tmp_path / "list.json"
@@ -1092,7 +1094,9 @@ def test_deleting_an_ordinary_json_beside_a_document_is_an_ordinary_delete(sync_
     json_wf = sync_session.query(WatchedFile).filter_by(relative_path="list.json").one()
     assert json_wf.status == WatchedFileStatus.removed
     sync_session.refresh(json_doc)
-    assert json_doc.status == "active"
+    assert json_doc.status == "removed"
+    sync_session.refresh(md_doc)
+    assert md_doc.status == "active"
 
 
 @pytest.mark.parametrize("md_after", [b"# list\n", b"# list, edited\n"], ids=["same-sha", "new-sha"])
@@ -1172,3 +1176,251 @@ def test_declined_json_beside_document_is_indexed_and_does_not_requeue(sync_sess
     sync_session.refresh(md_doc)
     assert md_doc.pipeline_seq == 0
     assert _queued_extract_jobs(sync_session, md_doc.doc_id) == 0
+
+
+# ---------------------------------------------------------------------------
+# Deletes hide the document; moves keep it; a delete is checked on disk
+# (#604, #847)
+# ---------------------------------------------------------------------------
+
+
+def _index(sync_session, folder, path, rel):
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, rel, str(path)))
+    sync_session.commit()
+    wf = sync_session.query(WatchedFile).filter_by(relative_path=rel).one()
+    return wf, sync_session.query(Document).filter_by(doc_id=wf.doc_id).one()
+
+
+def _moved(folder, tmp_path, src_rel, dest_rel):
+    return FileEvent(
+        EventKind.moved,
+        folder.folder_id,
+        src_rel,
+        str(tmp_path / src_rel),
+        dest_relative_path=dest_rel,
+        dest_absolute_path=str(tmp_path / dest_rel),
+    )
+
+
+def test_deleted_file_hides_its_document_and_its_return_restores_it(sync_session, folder, tmp_path):
+    """#604: the document leaves search with the file, and comes back with it, unreprocessed."""
+    f = tmp_path / "doc.txt"
+    f.write_text("body")
+    wf, doc = _index(sync_session, folder, f, "doc.txt")
+
+    f.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    assert (wf.status, doc.status) == (WatchedFileStatus.removed, "removed")
+
+    f.write_text("body")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    assert (wf.status, doc.status, doc.pipeline_seq) == (WatchedFileStatus.active, "active", 0)
+
+
+def test_deleted_file_leaves_an_admin_deleted_document_deleted(sync_session, folder, tmp_path):
+    f = tmp_path / "doc.txt"
+    f.write_text("body")
+    wf, doc = _index(sync_session, folder, f, "doc.txt")
+    doc.status = "deleted"
+    sync_session.commit()
+
+    f.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    assert (wf.status, doc.status) == (WatchedFileStatus.removed, "deleted")
+
+
+def test_delete_event_for_a_file_on_disk_is_a_modify(sync_session, folder, tmp_path):
+    """#847: an atomic save reports a delete after the new content is in place.
+    The file exists, so the row stays active and the new content is indexed."""
+    f = tmp_path / "doc.txt"
+    f.write_text("v1")
+    wf, doc = _index(sync_session, folder, f, "doc.txt")
+
+    f.write_text("v2")
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    assert (wf.status, doc.status) == (WatchedFileStatus.active, "active")
+    assert doc.sha256 == hashlib.sha256(b"v2").digest()
+    assert doc.pipeline_seq == 1
+
+
+def test_delete_then_create_of_the_same_path_ends_active_and_reindexed(sync_session, folder, tmp_path):
+    f = tmp_path / "doc.txt"
+    f.write_text("v1")
+    wf, doc = _index(sync_session, folder, f, "doc.txt")
+
+    f.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "doc.txt", str(f)))
+    f.write_text("v2")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    assert (wf.status, doc.status, doc.pipeline_seq) == (WatchedFileStatus.active, "active", 1)
+    assert doc.sha256 == hashlib.sha256(b"v2").digest()
+
+
+def test_case_only_rename_does_not_keep_the_old_name_alive(sync_session, folder, tmp_path):
+    """On a case-insensitive volume `isfile("Doc.txt")` is true after a rename to
+    `doc.txt`; the existence check must still call the old name gone."""
+    f = tmp_path / "Doc.txt"
+    f.write_text("body")
+    wf, doc = _index(sync_session, folder, f, "Doc.txt")
+    f.rename(tmp_path / "doc.txt")
+
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "Doc.txt", str(f)))
+    sync_session.commit()
+    assert wf.status == WatchedFileStatus.removed
+
+
+def test_rename_keeps_the_document_and_moves_its_path(sync_session, folder, tmp_path):
+    src = tmp_path / "a.txt"
+    src.write_text("body")
+    wf, doc = _index(sync_session, folder, src, "a.txt")
+    _mark_extracted(sync_session, doc.doc_id)
+    (tmp_path / "sub").mkdir()
+    src.rename(tmp_path / "sub" / "b.txt")
+
+    handle_event(sync_session, _moved(folder, tmp_path, "a.txt", "sub/b.txt"))
+    sync_session.commit()
+
+    assert sync_session.query(WatchedFile).count() == 1
+    assert (wf.relative_path, wf.status) == ("sub/b.txt", WatchedFileStatus.active)
+    assert doc.source_path == str(tmp_path / "sub" / "b.txt")
+    assert (doc.canonical_filename, doc.title, doc.status) == ("b.txt", "b", "active")
+    assert doc.pipeline_seq == 0, "unchanged content is not re-indexed"
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 0
+
+
+def test_rename_to_another_type_reextracts_under_the_same_document(sync_session, folder, tmp_path):
+    src = tmp_path / "notes.txt"
+    src.write_text("# notes\n")
+    wf, doc = _index(sync_session, folder, src, "notes.txt")
+    _mark_extracted(sync_session, doc.doc_id)
+    src.rename(tmp_path / "notes.md")
+
+    handle_event(sync_session, _moved(folder, tmp_path, "notes.txt", "notes.md"))
+    sync_session.commit()
+
+    assert wf.relative_path == "notes.md"
+    assert doc.mime_type == guess_mime_type("notes.md")
+    assert doc.pipeline_seq == 1
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 1
+
+
+def test_rename_with_changed_content_reprocesses_in_place(sync_session, folder, tmp_path):
+    src = tmp_path / "a.txt"
+    src.write_text("v1")
+    wf, doc = _index(sync_session, folder, src, "a.txt")
+    src.rename(tmp_path / "b.txt")
+    (tmp_path / "b.txt").write_text("v2")
+
+    handle_event(sync_session, _moved(folder, tmp_path, "a.txt", "b.txt"))
+    sync_session.commit()
+
+    assert wf.relative_path == "b.txt"
+    assert (doc.pipeline_seq, doc.sha256) == (1, hashlib.sha256(b"v2").digest())
+
+
+def test_rename_over_a_known_path_keeps_the_destination_document(sync_session, folder, tmp_path):
+    """`mv a.txt b.txt` over an indexed b.txt, or an atomic save whose temp file
+    has an admitted name: b.txt's document, the one its path cites, takes the
+    content; a.txt's row is retired as a deleted file."""
+    a = tmp_path / "a.txt"
+    a.write_text("new content")
+    b = tmp_path / "b.txt"
+    b.write_text("old content")
+    a_wf, a_doc = _index(sync_session, folder, a, "a.txt")
+    b_wf, b_doc = _index(sync_session, folder, b, "b.txt")
+    a.replace(b)
+
+    handle_event(sync_session, _moved(folder, tmp_path, "a.txt", "b.txt"))
+    sync_session.commit()
+
+    assert (a_wf.status, a_doc.status) == (WatchedFileStatus.removed, "removed")
+    assert (b_wf.status, b_doc.status) == (WatchedFileStatus.active, "active")
+    assert b_doc.sha256 == hashlib.sha256(b"new content").digest()
+    assert b_doc.pipeline_seq == 1
+
+
+def test_rename_from_an_ignored_temp_name_is_a_modify(sync_session, folder, tmp_path):
+    """The editor's atomic save: write `doc.txt.tmp`, rename it over `doc.txt`."""
+    f = tmp_path / "doc.txt"
+    f.write_text("v1")
+    wf, doc = _index(sync_session, folder, f, "doc.txt")
+    tmp = tmp_path / "doc.txt.tmp"
+    tmp.write_text("v2")
+    tmp.replace(f)
+
+    handle_event(sync_session, _moved(folder, tmp_path, "doc.txt.tmp", "doc.txt"))
+    sync_session.commit()
+
+    assert (wf.status, doc.status, doc.pipeline_seq) == (WatchedFileStatus.active, "active", 1)
+    assert doc.sha256 == hashlib.sha256(b"v2").digest()
+
+
+def test_rename_to_an_ignored_name_is_a_delete(sync_session, folder, tmp_path):
+    f = tmp_path / "doc.txt"
+    f.write_text("body")
+    wf, doc = _index(sync_session, folder, f, "doc.txt")
+    f.rename(tmp_path / "doc.txt~")
+
+    handle_event(sync_session, _moved(folder, tmp_path, "doc.txt", "doc.txt~"))
+    sync_session.commit()
+    assert (wf.status, doc.status) == (WatchedFileStatus.removed, "removed")
+
+
+def test_rename_of_an_unknown_file_indexes_the_destination(sync_session, folder, tmp_path):
+    (tmp_path / "b.txt").write_text("body")
+    handle_event(sync_session, _moved(folder, tmp_path, "a.txt", "b.txt"))
+    sync_session.commit()
+    assert [wf.relative_path for wf in sync_session.query(WatchedFile).all()] == ["b.txt"]
+
+
+def test_rename_of_a_removed_row_resurrects_it_under_the_new_name(sync_session, folder, tmp_path):
+    """A reconciliation can retire the source a moment before the move event lands."""
+    src = tmp_path / "a.txt"
+    src.write_text("body")
+    wf, doc = _index(sync_session, folder, src, "a.txt")
+    src.rename(tmp_path / "b.txt")
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "a.txt", str(src)))
+    sync_session.commit()
+    assert doc.status == "removed"
+
+    handle_event(sync_session, _moved(folder, tmp_path, "a.txt", "b.txt"))
+    sync_session.commit()
+    assert (wf.relative_path, wf.status, doc.status, doc.pipeline_seq) == (
+        "b.txt",
+        WatchedFileStatus.active,
+        "active",
+        0,
+    )
+
+
+def test_deleted_directory_retires_only_the_files_gone_from_under_it(sync_session, folder, tmp_path):
+    """FSEvents reports a directory moved out of the tree as the directory alone."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "a.txt").write_text("a")
+    (tmp_path / "sub2").mkdir()
+    (tmp_path / "sub2" / "c.txt").write_text("c")
+    (tmp_path / "top.txt").write_text("t")
+    for rel in ("sub/a.txt", "sub2/c.txt", "top.txt"):
+        _index(sync_session, folder, tmp_path / rel, rel)
+    (sub / "a.txt").unlink()
+    sub.rmdir()
+
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "sub", str(sub), is_directory=True))
+    sync_session.commit()
+
+    status = {wf.relative_path: wf.status for wf in sync_session.query(WatchedFile).all()}
+    assert status == {
+        "sub/a.txt": WatchedFileStatus.removed,
+        "sub2/c.txt": WatchedFileStatus.active,
+        "top.txt": WatchedFileStatus.active,
+    }
+    hidden = {d.canonical_filename: d.status for d in sync_session.query(Document).all()}
+    assert hidden == {"a.txt": "removed", "c.txt": "active", "top.txt": "active"}

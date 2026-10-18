@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,6 +26,7 @@ from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.watcher.notify import notify_folder_change_async
+from harbor_clerk.watcher.visibility import restore_document, retire_watched_file
 from harbor_clerk.worker.pipeline import queue_extract_for_current_pipeline, reset_and_queue_extract_for_doc
 
 logger = logging.getLogger(__name__)
@@ -555,7 +555,8 @@ async def ingest_file(
             doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
             doc = doc_result.scalar_one_or_none()
             if doc:
-                doc.status = "active"
+                # As the watcher's resurrection: an admin's "deleted" stays deleted.
+                restore_document(doc)
                 doc.source_path = body.source_path
 
         if wf.sha256 != sha256_bytes:
@@ -649,14 +650,9 @@ async def remove_file(
     if not wf:
         raise HTTPException(status_code=404, detail="Watched file not found")
 
-    wf.status = WatchedFileStatus.removed
-    wf.removed_at = datetime.now(UTC)
-
-    if wf.doc_id:
-        doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
-        doc = doc_result.scalar_one_or_none()
-        if doc:
-            doc.status = "removed"
+    # The same retirement as a file deleted from disk (watcher/visibility.py, #604).
+    doc = await session.get(Document, wf.doc_id) if wf.doc_id else None
+    retire_watched_file(wf, doc)
 
     await session.commit()
     return {"action": "removed", "doc_id": str(wf.doc_id)}

@@ -179,7 +179,7 @@ def test_daemon_scans_existing_files_when_observer_registers(factory, tmp_path, 
 
 
 def test_scan_folder_writes_skipped_count_and_extensions(factory, tmp_path, monkeypatch):
-    """After _scan_folder visits a folder containing unsupported files,
+    """After _reconcile_folder visits a folder containing unsupported files,
     watched_folders.skipped_count and .skipped_extensions are updated.
     Dotfiles, AppleDouble, __MACOSX, and *.excalidraw.md are NOT counted.
 
@@ -226,7 +226,7 @@ def test_scan_folder_writes_skipped_count_and_extensions(factory, tmp_path, monk
     try:
         daemon = WatcherDaemon(factory)
         # Avoid spinning up real observers — only the scan logic is under test.
-        daemon._scan_folder(folder_id, str(tmp_path))
+        daemon._reconcile_folder(folder_id, str(tmp_path))
 
         sess = factory()
         try:
@@ -271,7 +271,7 @@ def test_scan_folder_records_no_extension_sentinel(factory, tmp_path, monkeypatc
 
     try:
         daemon = WatcherDaemon(factory)
-        daemon._scan_folder(folder_id, str(tmp_path))
+        daemon._reconcile_folder(folder_id, str(tmp_path))
 
         sess = factory()
         try:
@@ -329,7 +329,7 @@ def test_scan_folder_skips_sidecar_json_without_counting_it(factory, tmp_path, m
             real_on_event(event)
 
         daemon._on_event = _recording_on_event
-        daemon._scan_folder(folder_id, str(tmp_path))
+        daemon._reconcile_folder(folder_id, str(tmp_path))
 
         # The scan classifies before dispatching so a sidecar costs no hash
         # and no round trip; handle_event would skip it, but must not be asked.
@@ -374,10 +374,11 @@ def test_scan_folder_retires_sidecar_rows_an_earlier_build_indexed(factory, tmp_
         with monkeypatch.context() as m:
             m.setattr(ev, "sidecar_owner_names", lambda _path, sibling_names=None: [])
             m.setattr(ev, "_retire_sidecar_row", lambda *_args: False)
-            daemon._scan_folder(folder_id, str(tmp_path))
+            daemon._reconcile_folder(folder_id, str(tmp_path))
         assert _watched_file_paths(factory, folder_id, WatchedFileStatus.active) == ["INV-001.json", "INV-001.pdf"]
 
-        daemon._scan_folder(folder_id, str(tmp_path))
+        # The upgrade is a restart: a new process, which has compared nothing yet.
+        WatcherDaemon(factory)._reconcile_folder(folder_id, str(tmp_path))
 
         assert _watched_file_paths(factory, folder_id, WatchedFileStatus.active) == ["INV-001.pdf"]
         assert _watched_file_paths(factory, folder_id, WatchedFileStatus.removed) == ["INV-001.json"]
