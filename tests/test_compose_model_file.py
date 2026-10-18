@@ -27,6 +27,7 @@ def compose_env(monkeypatch, tmp_path: Path) -> Path:
     models.mkdir()
     monkeypatch.delenv("NATIVE_CONFIG_FILE", raising=False)
     monkeypatch.delenv("LLM_MODEL_ID", raising=False)
+    monkeypatch.setenv("HC_DEPLOYMENT", "compose")  # what docker-compose.yml sets for app and worker-llm
     monkeypatch.setenv("MODELS_DIR", str(models))
     monkeypatch.setenv("LLM_MODEL_FILE", MODEL_FILE)
     monkeypatch.setattr(config, "_model_file_reported", None)
@@ -94,7 +95,7 @@ def test_the_macos_app_ignores_llm_model_file(compose_env: Path, monkeypatch, tm
 # --- the context ---
 
 
-def test_prompts_are_budgeted_to_the_context_llama_server_runs_at(monkeypatch) -> None:
+def test_prompts_are_budgeted_to_the_context_llama_server_runs_at(compose_env: Path, monkeypatch) -> None:
     model = get_model("qwen35-4b")
     roomy = 64 * GIB
     assert max_context(model, roomy) > 8192  # the memory arithmetic alone would budget far more
@@ -104,15 +105,55 @@ def test_prompts_are_budgeted_to_the_context_llama_server_runs_at(monkeypatch) -
     assert context_budget(model, False) == 8192
 
 
-def test_the_context_is_never_more_than_the_model_asks_for(monkeypatch) -> None:
+def test_the_context_is_never_more_than_the_model_asks_for(compose_env: Path, monkeypatch) -> None:
     model = get_model("qwen3-8b")  # a 32,768-token window
     monkeypatch.setenv("LLM_CONTEXT_TOKENS", "65536")
     config._settings = None
     assert effective_context(model, False, ram_bytes=64 * GIB) == 32768
 
 
-def test_without_a_server_context_the_memory_arithmetic_decides(monkeypatch) -> None:
+def test_without_a_server_context_the_memory_arithmetic_decides(compose_env: Path, monkeypatch) -> None:
     model = get_model("qwen35-4b")
     monkeypatch.setenv("LLM_CONTEXT_TOKENS", "0")
     config._settings = None
     assert effective_context(model, False, ram_bytes=32 * GIB) == max_context(model, 32 * GIB)
+
+
+def test_the_macos_app_keeps_its_launchers_context(compose_env: Path, monkeypatch, tmp_path: Path) -> None:
+    # Even with the marker and a context set, a native config.json means the launcher sized -c.
+    native = tmp_path / "config.json"
+    native.write_text("{}")
+    monkeypatch.setenv("NATIVE_CONFIG_FILE", str(native))
+    monkeypatch.setenv("LLM_CONTEXT_TOKENS", "8192")
+    config._settings = None
+    model = get_model("qwen35-4b")
+    assert effective_context(model, False, ram_bytes=64 * GIB) == max_context(model, 64 * GIB) > 8192
+
+
+# --- a .env beside a source run ---
+
+
+def test_a_copied_env_file_does_not_make_a_source_run_compose(monkeypatch, tmp_path: Path) -> None:
+    """The Docker quick start copies .env.example to .env, and Settings reads .env from the working
+    directory, so a source run started there reads it too. Without HC_DEPLOYMENT, which only the compose
+    file sets, nothing in it is Compose's: LLM_MODEL_ID stands, the context is the memory arithmetic's,
+    and Activate is not refused (tests/api/test_chat_models_compose.py)."""
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / MODEL_FILE).write_bytes(b"GGUF")
+    (tmp_path / ".env").write_text(
+        f"LLM_MODEL_ID=qwen35-9b\nMODELS_DIR={models}\nLLM_MODEL_FILE={MODEL_FILE}\nLLM_CONTEXT_TOKENS=8192\n"
+    )
+    for name in ("LLM_MODEL_ID", "MODELS_DIR", "LLM_MODEL_FILE", "LLM_CONTEXT_TOKENS", "NATIVE_CONFIG_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("HC_DEPLOYMENT", raising=False)  # conftest pins it empty; a source run has none
+    monkeypatch.chdir(tmp_path)
+    config._settings = None
+    settings = config.get_settings()
+    assert settings.llm_model_file == MODEL_FILE and settings.llm_context_tokens == 8192  # the file was read
+    assert not config.is_compose(settings)
+    assert settings.llm_model_id == "qwen35-9b"
+    config.refresh_llm_settings()
+    assert settings.llm_model_id == "qwen35-9b"
+    model = get_model("qwen35-4b")
+    assert effective_context(model, False, ram_bytes=64 * GIB) == max_context(model, 64 * GIB)

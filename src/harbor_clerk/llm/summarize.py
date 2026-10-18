@@ -23,6 +23,7 @@ from enum import Enum
 import httpx
 
 from harbor_clerk.config import get_settings, refresh_llm_settings
+from harbor_clerk.llm.health import llm_server_ready
 from harbor_clerk.llm.models import context_budget, get_model
 
 logger = logging.getLogger(__name__)
@@ -304,7 +305,11 @@ def _call_llm(
             # full minute of wall time per stalled summarize, which the
             # user feels. On loading / genuine-transient cases we still
             # retry with backoff.
-            if isinstance(e, httpx.ConnectError) and _llm_intentionally_deactivated():
+            # Under Compose a refused connection also means the server's model is not loaded (#654): it
+            # is waiting for its file or failed to load it, which a retry does not wait out.
+            if isinstance(e, httpx.ConnectError) and (
+                _llm_intentionally_deactivated() or not llm_server_ready(fresh=True)
+            ):
                 logger.info(
                     "LLM call phase=%s elapsed=%.1fs ConnectError + LLM deactivated — skipping %d remaining retries",
                     phase,
@@ -866,8 +871,8 @@ def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
         logger.info("Apple Intelligence unavailable while forced for doc_type — using MIME fallback")
         return _mime_to_doc_type(mime_type)
 
-    # Try local LLM first (if a model is active)
-    if settings.llm_model_id:
+    # Try local LLM first (if a model is active, and loaded: llm_server_ready is True except under Compose)
+    if settings.llm_model_id and llm_server_ready():
         sample = "\n\n".join(chunks)[:2000]
         prompt = (
             "Classify this document with a short phrase (2-4 words) like: "
@@ -972,8 +977,11 @@ def generate_summary(
         logger.error("Apple Intelligence unavailable while forced; refusing extractive fallback (%s)", reason)
         raise AppleIntelligenceUnavailableError(f"Apple Intelligence summaries are enabled but unavailable: {reason}")
 
-    # Try LLM if a model is active
-    if settings.llm_model_id:
+    # Try LLM if a model is active and loaded. Under Compose a model is active while its file is in the
+    # volume, which a failed load does not change; llm_server_ready (True elsewhere) asks the server (#654).
+    if settings.llm_model_id and not llm_server_ready():
+        logger.info("llama-server is not ready; summarizing without the local model %s", settings.llm_model_id)
+    elif settings.llm_model_id:
         model = get_model(settings.llm_model_id)
         context_window = context_budget(model, settings.llm_yarn_enabled) if model else None
         max_input_chars = _compute_max_input_chars(context_window)
@@ -1019,7 +1027,7 @@ def generate_summary(
         if _has_visible_content(result):
             return _truncate_at_sentence(result, max_chars), settings.llm_model_id
         logger.warning("LLM summarization returned no visible content — trying Apple Intelligence")
-    else:
+    if not settings.llm_model_id:
         logger.info("No language model active — trying Apple Intelligence fallback")
 
     # Try Apple Intelligence (macOS native only). Use `_has_visible_content`

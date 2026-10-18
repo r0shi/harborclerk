@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -70,6 +71,8 @@ def test_app_and_llm_worker_are_given_the_same_model_and_context() -> None:
     assert CONTEXT_EXPR.match(context_expr), f"-c must be ${{LLM_CONTEXT_TOKENS:-<default>}}, got {context_expr!r}"
     for name in ("app", "worker-llm"):
         env = services[name]["environment"]
+        # The marker that makes a process Compose: nothing else sets it, so a copied .env cannot (#654).
+        assert env.get("HC_DEPLOYMENT") == "compose", name
         assert env.get("LLM_MODEL_FILE") == model_expr, name
         assert env.get("LLM_CONTEXT_TOKENS") == context_expr, name
         # The model counts as active only while its file is in the volume, so both must see it there.
@@ -87,17 +90,18 @@ def test_one_slot_as_every_curated_model_runs() -> None:
 def test_entrypoint_is_the_waiting_script() -> None:
     service = _services()["llama-server"]
     assert service["entrypoint"] == ["/bin/sh", ENTRYPOINT_IN_CONTAINER]
+    assert service.get("init") is True  # SIGTERM reaches the shell, which also traps it
     assert f"./docker/llama-server-entrypoint.sh:{ENTRYPOINT_IN_CONTAINER}:ro" in service["volumes"]
     # Healthy means a model is loaded: single-model /health is 200 only after the load.
     assert service["healthcheck"]["test"] == ["CMD", "curl", "-sf", "http://localhost:8080/health"]
 
 
-def test_env_example_names_the_compose_defaults() -> None:
-    values = dict(
-        line.split("=", 1)
-        for line in (REPO / ".env.example").read_text().splitlines()
-        if line and not line.startswith("#") and "=" in line
-    )
+def test_env_example_names_the_compose_defaults_commented_out() -> None:
+    # Commented out: Settings reads .env from the working directory, and the compose file's defaults
+    # already cover these, so the copy the Docker quick start makes sets nothing a source run would read.
+    lines = (REPO / ".env.example").read_text().splitlines()
+    assert not [ln for ln in lines if re.match(r"\s*(LLM_MODEL_FILE|LLM_CONTEXT_TOKENS|HC_DEPLOYMENT)\s*=", ln)]
+    values = dict(ln.removeprefix("# ").split("=", 1) for ln in lines if re.match(r"# LLM_[A-Z_]+=", ln))
     assert values["LLM_MODEL_FILE"] == _default_model_file()
     assert values["LLM_CONTEXT_TOKENS"] == CONTEXT_EXPR.match(_flag(_llama_args(), "-c")).group(1)
 
@@ -117,7 +121,12 @@ def _fake_server(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _env(fake: Path) -> dict[str, str]:
-    return {**os.environ, "LLAMA_SERVER_BIN": str(fake), "LLAMA_WAIT_INTERVAL": "0.05"}
+    return {
+        **os.environ,
+        "LLAMA_SERVER_BIN": str(fake),
+        "LLAMA_WAIT_INTERVAL": "0.05",
+        "LLAMA_STABLE_INTERVAL": "0.05",
+    }
 
 
 @needs_sh
@@ -182,3 +191,69 @@ def test_entrypoint_says_no_model_is_configured_when_the_file_name_is_empty(tmp_
         proc.kill()
         proc.wait(timeout=5)
     assert b"LLM_MODEL_FILE is empty" in proc.stderr.read()
+
+
+@needs_sh
+def test_entrypoint_waits_out_a_file_that_is_not_a_gguf_yet(tmp_path: Path) -> None:
+    fake, out = _fake_server(tmp_path)
+    model = tmp_path / "Qwen3.5-4B-Q4_K_M.gguf"
+    model.write_bytes(b"\0\0\0\0 a copy caught before its header")
+    proc = subprocess.Popen(["sh", str(ENTRYPOINT), "-m", str(model)], env=_env(fake), stderr=subprocess.PIPE)
+    try:
+        time.sleep(0.6)
+        assert proc.poll() is None, "the entrypoint started llama-server on a file with no GGUF magic"
+        assert not out.exists()
+        model.write_bytes(b"GGUF" + b"\0" * 64)
+        assert proc.wait(timeout=10) == 0
+        assert out.read_text().splitlines() == ["-m", str(model)]
+        assert b"is not a whole GGUF yet" in proc.stderr.read()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+@needs_sh
+def test_entrypoint_waits_while_the_file_is_still_growing(tmp_path: Path) -> None:
+    fake, out = _fake_server(tmp_path)
+    model = tmp_path / "Qwen3.5-4B-Q4_K_M.gguf"
+    model.write_bytes(b"GGUF")
+    env = {**_env(fake), "LLAMA_STABLE_INTERVAL": "0.3"}
+    proc = subprocess.Popen(["sh", str(ENTRYPOINT), "-m", str(model)], env=env, stderr=subprocess.PIPE)
+    try:
+        # A copy in progress under the final name: the size changes within every stability interval.
+        deadline = time.monotonic() + 1.5
+        with model.open("ab") as f:
+            while time.monotonic() < deadline:
+                f.write(b"\0" * 1024)
+                f.flush()
+                time.sleep(0.05)
+                assert proc.poll() is None, "the entrypoint started llama-server on a file still being written"
+        assert not out.exists()
+        assert proc.wait(timeout=10) == 0, "the entrypoint did not start once the file stopped growing"
+        assert out.read_text().splitlines() == ["-m", str(model)]
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+@needs_sh
+def test_entrypoint_stops_at_once_on_sigterm_while_waiting(tmp_path: Path) -> None:
+    fake, out = _fake_server(tmp_path)
+    # A long poll interval: SIGTERM must interrupt the sleep, not wait for it out. As PID 1 the shell
+    # gets no default action for SIGTERM, so without the trap `docker compose down` waits its grace period.
+    env = {**_env(fake), "LLAMA_WAIT_INTERVAL": "30"}
+    proc = subprocess.Popen(["sh", str(ENTRYPOINT), "-m", str(tmp_path / "absent.gguf")], env=env)
+    try:
+        time.sleep(0.5)
+        assert proc.poll() is None
+        started = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=5) == 143
+        assert time.monotonic() - started < 3
+        assert not out.exists()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)

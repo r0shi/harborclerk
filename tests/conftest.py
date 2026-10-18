@@ -129,11 +129,8 @@ os.environ["STORAGE_BACKEND"] = "filesystem"
 os.environ["STORAGE_PATH"] = "/tmp/harbor_clerk_test_storage"
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
 os.environ["STATIC_DIR"] = "/tmp/harbor_clerk_test_static"
-# A .env copied from .env.example carries the Compose model and context (#654). Settings reads that file,
-# and these would make the model registry's context arithmetic, and the active model, Compose's in every
-# test. The environment wins over the file; a test that wants them sets them itself.
-os.environ["LLM_MODEL_FILE"] = ""
-os.environ["LLM_CONTEXT_TOKENS"] = "0"
+# Compose mode (#654) is for the compose file's services only; a test that wants it sets HC_DEPLOYMENT itself.
+os.environ["HC_DEPLOYMENT"] = ""
 
 # ruff: noqa: E402 — imports below MUST come after env setup (db.py reads settings at import time)
 from collections.abc import AsyncGenerator

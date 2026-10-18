@@ -493,14 +493,14 @@ def effective_context(model: ModelInfo, yarn_enabled: bool, ram_bytes: int | Non
     Under Compose nothing clamps by memory: llama-server runs at the `-c`
     docker-compose.yml gives it, LLM_CONTEXT_TOKENS, which `app` and
     `worker-llm` are given too (`llm_context_tokens`), so the context is that,
-    or the requested window if smaller (#654). It is 0, and unused, under the
-    macOS app."""
+    or the requested window if smaller (#654). Only under `is_compose()`: the
+    macOS app's context is its launcher's, whatever else is set."""
     requested = requested_context(model, yarn_enabled)
-    from harbor_clerk.config import get_settings  # not at load: config imports this module lazily
+    from harbor_clerk.config import get_settings, is_compose  # not at load: config imports this lazily
 
-    server_context = get_settings().llm_context_tokens
-    if server_context > 0:
-        return min(requested, server_context)
+    settings = get_settings()
+    if is_compose(settings) and settings.llm_context_tokens > 0:
+        return min(requested, settings.llm_context_tokens)
     ram = system_ram_bytes() if ram_bytes is None else ram_bytes
     fit = max_context(model, ram, requested)  # 0 when memory is unknown, or the model does not fit at all
     return fit if fit > 0 else requested

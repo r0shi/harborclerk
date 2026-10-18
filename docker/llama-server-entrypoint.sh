@@ -1,16 +1,20 @@
 #!/bin/sh
 # Entrypoint of the Compose `llama-server` service (#654).
 #
-# Starts llama-server in single-model mode, once the file it is given with `-m` exists. Without `-m`,
-# llama.cpp (v0.4.1) starts in router mode: `/health` answers 200 with no model loaded, and every chat
-# request the app sends (none names a `model`) is refused with HTTP 400. So a missing `-m` is refused
-# here, and a missing file is waited for rather than handed to llama-server, which would exit and be
-# restarted in a loop. Until the file exists nothing listens on the port, so the healthcheck fails: an
-# unhealthy container is how a Compose operator sees that no model is loaded.
+# Starts llama-server in single-model mode, once the file it is given with `-m` exists and looks whole.
+# Without `-m`, llama.cpp (v0.4.1) starts in router mode: `/health` answers 200 with no model loaded,
+# and every chat request the app sends (none names a `model`) is refused with HTTP 400. So a missing
+# `-m` is refused here, and a missing or partial file is waited for rather than handed to llama-server,
+# which would exit and be restarted in a loop. Until then nothing listens on the port, so the
+# healthcheck fails: an unhealthy container is how a Compose operator sees that no model is loaded.
 #
 # The file appears when the model is downloaded from Settings > Models (download.py renames the
-# finished `.part` file into place, so a partial download is never seen here), or when LLM_MODEL_FILE
-# names a GGUF already in the `llama_models` volume.
+# finished `.part` file into place), or when LLM_MODEL_FILE names a GGUF already in the `llama_models`
+# volume. A file copied in by hand under its final name is caught partway by checking the GGUF magic
+# and that the size holds still for LLAMA_STABLE_INTERVAL seconds; copy to a temporary name and rename.
+#
+# This shell is PID 1 while it waits, and PID 1 gets no default action for SIGTERM, so it traps it:
+# `docker compose down` stops a waiting container at once instead of after the grace period.
 set -eu
 
 model=""
@@ -27,7 +31,35 @@ if [ -z "$model" ]; then
     exit 64
 fi
 
-if [ ! -f "$model" ]; then
+sleeper=""
+stop() {
+    if [ -n "$sleeper" ]; then
+        kill "$sleeper" 2>/dev/null || true
+    fi
+    exit "$1"
+}
+trap 'stop 143' TERM
+trap 'stop 130' INT
+
+# A sleep the traps can interrupt: a trap runs only once the foreground command returns, and `wait` is
+# interrupted by a trapped signal where `sleep` is not.
+pause() {
+    sleep "$1" &
+    sleeper=$!
+    wait "$sleeper" || true
+    sleeper=""
+}
+
+# The file exists, starts with the GGUF magic, and its size does not change over the interval.
+whole() {
+    [ -f "$model" ] || return 1
+    [ "$(head -c 4 "$model" 2>/dev/null)" = "GGUF" ] || return 1
+    size=$(wc -c <"$model")
+    pause "${LLAMA_STABLE_INTERVAL:-2}"
+    [ -f "$model" ] && [ "$(wc -c <"$model")" = "$size" ]
+}
+
+if ! whole; then
     case "$model" in
     */)
         echo "llama-server-entrypoint: no model configured (LLM_MODEL_FILE is empty). Set it in .env to a" \
@@ -39,10 +71,17 @@ if [ ! -f "$model" ]; then
             "starts when the file exists; until then this container reports unhealthy." >&2
         ;;
     esac
-    while [ ! -f "$model" ]; do
-        sleep "${LLAMA_WAIT_INTERVAL:-10}"
+    said_partial=""
+    until whole; do
+        if [ -f "$model" ] && [ -z "$said_partial" ]; then
+            echo "llama-server-entrypoint: $model is there but is not a whole GGUF yet (no GGUF magic, or" \
+                "still growing); waiting. Copy a model in under a temporary name and rename it." >&2
+            said_partial=1
+        fi
+        pause "${LLAMA_WAIT_INTERVAL:-10}"
     done
     echo "llama-server-entrypoint: $model is present; starting llama-server" >&2
 fi
 
+trap - TERM INT
 exec "${LLAMA_SERVER_BIN:-/app/llama-server}" "$@"

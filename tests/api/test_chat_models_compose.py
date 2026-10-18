@@ -38,7 +38,19 @@ def models_dir(monkeypatch, tmp_path: Path) -> Path:
 @pytest.fixture
 def compose(monkeypatch, models_dir: Path) -> None:
     monkeypatch.delenv("NATIVE_CONFIG_FILE", raising=False)
+    monkeypatch.setenv("HC_DEPLOYMENT", "compose")
     monkeypatch.setenv("LLM_MODEL_FILE", SERVED)
+    config._settings = None
+
+
+@pytest.fixture
+def source_run(monkeypatch, models_dir: Path) -> None:
+    """A source run whose environment carries the Compose variables (a .env copied for Docker) but not the
+    marker only docker-compose.yml sets."""
+    monkeypatch.delenv("NATIVE_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("HC_DEPLOYMENT", raising=False)
+    monkeypatch.setenv("LLM_MODEL_FILE", SERVED)
+    monkeypatch.setenv("LLM_CONTEXT_TOKENS", "8192")
     config._settings = None
 
 
@@ -87,4 +99,54 @@ async def test_macos_switches_models_as_before(client, admin_user, admin_token, 
     assert json.loads(macos.read_text())["llm_model_id"] == "qwen35-9b"
     resp = await client.put("/api/chat/models/deactivate", headers=auth_header(admin_token))
     assert resp.status_code == 200
+    assert json.loads(macos.read_text())["llm_model_id"] == ""
+
+
+async def test_compose_refuses_deleting_the_served_model(
+    client, admin_user, admin_token, compose, models_dir: Path
+) -> None:
+    # llama-server has it mapped: unlinking frees nothing while the app would report no model.
+    resp = await client.delete("/api/chat/models/qwen35-4b", headers=auth_header(admin_token))
+    assert resp.status_code == 409
+    assert f"serving {SERVED}" in resp.json()["detail"]
+    assert (models_dir / SERVED).is_file()
+    assert config.get_settings().llm_model_id == "qwen35-4b"
+
+
+async def test_compose_still_deletes_other_models(client, admin_user, admin_token, compose, models_dir: Path) -> None:
+    resp = await client.delete("/api/chat/models/qwen35-9b", headers=auth_header(admin_token))
+    assert resp.status_code == 204
+    assert not (models_dir / OTHER).exists()
+
+
+async def test_compose_refuses_deleting_a_served_uncurated_file(
+    client, admin_user, admin_token, compose, models_dir: Path, monkeypatch
+) -> None:
+    # The orphan route deletes files the registry does not know, which LLM_MODEL_FILE may name.
+    (models_dir / "my-own.gguf").write_bytes(b"GGUF")
+    monkeypatch.setenv("LLM_MODEL_FILE", "my-own.gguf")
+    config._settings = None
+    resp = await client.delete("/api/chat/models/orphaned/my-own.gguf", headers=auth_header(admin_token))
+    assert resp.status_code == 409
+    assert (models_dir / "my-own.gguf").is_file()
+
+
+async def test_a_source_run_with_the_compose_variables_is_not_compose(
+    client, admin_user, admin_token, source_run, models_dir: Path
+) -> None:
+    resp = await client.put("/api/chat/models/qwen35-9b/activate", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert config.get_settings().llm_model_id == "qwen35-9b"
+    resp = await client.put("/api/chat/models/deactivate", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    resp = await client.delete("/api/chat/models/qwen35-4b", headers=auth_header(admin_token))
+    assert resp.status_code == 204
+
+
+async def test_macos_deletes_the_active_model_as_before(
+    client, admin_user, admin_token, macos: Path, models_dir: Path
+) -> None:
+    resp = await client.delete("/api/chat/models/qwen35-4b", headers=auth_header(admin_token))
+    assert resp.status_code == 204
+    assert not (models_dir / SERVED).exists()
     assert json.loads(macos.read_text())["llm_model_id"] == ""

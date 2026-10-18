@@ -210,9 +210,11 @@ graph TB
 ```
 
 > `llama-server` runs one model, `-m /models/$LLM_MODEL_FILE`, at `-c $LLM_CONTEXT_TOKENS`; `app` and
-> `worker-llm` are given both, treat that model as active while its file is in the `llama_models` volume, and
-> budget prompts to that context. Its entrypoint (`docker/llama-server-entrypoint.sh`) waits for the file, so
-> the container is healthy only once a model is loaded (#654). Setup: [README](../README.md#local-ai-on-docker).
+> `worker-llm` are given both and `HC_DEPLOYMENT=compose` (the marker that makes a process Compose; a copied
+> `.env` cannot), treat that model as active while its file is in the `llama_models` volume, summarize without it
+> while `/health` is not 200, and budget prompts to that context. Its entrypoint
+> (`docker/llama-server-entrypoint.sh`) waits for a whole GGUF, so the container is healthy only once a model is
+> loaded, and traps SIGTERM while it waits (#654). Setup: [README](../README.md#local-ai-on-docker).
 
 ### macOS Native
 

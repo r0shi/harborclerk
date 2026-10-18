@@ -403,6 +403,24 @@ def _refuse_model_switch_under_compose(model_id: str | None) -> None:
     )
 
 
+def _refuse_deleting_the_served_file(filename: str) -> None:
+    """Under Docker Compose, refuse to delete the file llama-server is serving (#654).
+
+    llama-server has it mapped: unlinking frees neither the disk nor the memory while it runs, and the app
+    would report no model while that model went on answering. Other models' files can be removed. Under
+    the macOS app this does nothing: deleting the active model there clears it, and the launcher stops it."""
+    model_file = compose_model_file(get_settings())
+    if model_file and filename == model_file:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Under Docker Compose llama-server is serving {model_file} (LLM_MODEL_FILE). To remove it, set "
+                "LLM_MODEL_FILE to another model's file, or empty for none, in .env, run `docker compose up -d`, "
+                "then delete it."
+            ),
+        )
+
+
 @router.put("/chat/models/{model_id}/activate", status_code=200)
 async def activate_model(
     model_id: str,
@@ -618,6 +636,9 @@ async def remove_model(
     model_id: str,
     principal: Principal = Depends(require_admin),
 ):
+    model = get_model(model_id)
+    if model is not None:
+        _refuse_deleting_the_served_file(model.filename)
     if not delete_model(model_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -644,6 +665,7 @@ async def remove_orphaned_model(
     filename: str,
     principal: Principal = Depends(require_admin),
 ):
+    _refuse_deleting_the_served_file(filename)
     if not delete_orphaned(filename):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

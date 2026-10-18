@@ -92,11 +92,14 @@ class Settings(BaseSettings):
     models_dir: str = Field(default="./data/models")
     # Docker Compose only (#654): the GGUF file the `llama-server` service is started with (`-m`), and
     # the context it runs at (`-c`). Compose has no launcher to start llama-server per model, so the
-    # model is chosen there, and the app follows it rather than the other way round: while
-    # `llm_model_file` is set (and no native config.json is), `llm_model_id` is the registry id of that
-    # file when the file is in `models_dir`, and empty when it is not (`_apply_model_file`). The context
-    # bounds what prompts are budgeted to (`llm/models.py::effective_context`). Both are unset under the
-    # macOS app, whose launcher sizes `-c` itself.
+    # model is chosen there, and the app follows it rather than the other way round: `llm_model_id` is
+    # the registry id of that file while the file is in `models_dir`, and empty while it is not
+    # (`_apply_model_file`); the context bounds what prompts are budgeted to
+    # (`llm/models.py::effective_context`). Both apply only under `is_compose()`: HC_DEPLOYMENT=compose,
+    # which only docker-compose.yml's `environment:` sets, and no native config.json. A `.env` copied
+    # from .env.example (Settings reads it from the working directory) does not make a source run
+    # Compose, and the macOS app, whose launcher sizes `-c` itself, never is.
+    hc_deployment: str = Field(default="")
     llm_model_file: str = Field(default="")
     llm_context_tokens: int = Field(default=0, ge=0)
 
@@ -213,12 +216,21 @@ def get_settings() -> Settings:
     return _settings
 
 
+def is_compose(settings: Settings) -> bool:
+    """Whether this process is a Docker Compose service whose llama-server the compose file starts (#654).
+
+    Only docker-compose.yml sets HC_DEPLOYMENT=compose, in the `environment:` of `app` and `worker-llm`.
+    The marker is explicit because the variables it gates can arrive by accident: Settings reads `.env`
+    from the working directory, so a source run beside the `.env` the Docker quick start copies would
+    otherwise become Compose. A native config.json means the macOS app, never Compose, whatever is set."""
+    return settings.hc_deployment == "compose" and not settings.native_config_file
+
+
 def compose_model_file(settings: Settings) -> str:
     """The model file Compose's llama-server is started with, or "" when the model is not chosen that way.
 
-    Under the macOS app (a native config.json is set) the menubar launcher starts llama-server with the
-    model config.json names, so `llm_model_file` never applies there, even if it is set."""
-    return "" if settings.native_config_file else settings.llm_model_file
+    Under the macOS app, or any run that is not a Compose service, `llm_model_file` never applies."""
+    return settings.llm_model_file if is_compose(settings) else ""
 
 
 # The last (file, state) `_apply_model_file` logged, so the per-stage refreshers report a change once.

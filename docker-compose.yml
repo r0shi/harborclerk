@@ -23,8 +23,10 @@ services:
     environment:
       LLAMA_SERVER_URL: http://llama-server:8080
       MODELS_DIR: /models
-      # The model and context llama-server is started with, below. The app follows them: the model is
-      # active while its file is in the volume, and prompts are budgeted to this context (#654).
+      # HC_DEPLOYMENT=compose (set only here and in worker-llm) makes the app follow the model and context
+      # llama-server is started with, below: the model is active while its file is in the volume, and
+      # prompts are budgeted to this context (#654).
+      HC_DEPLOYMENT: compose
       LLM_MODEL_FILE: ${LLM_MODEL_FILE-Qwen3.5-4B-Q4_K_M.gguf}
       LLM_CONTEXT_TOKENS: ${LLM_CONTEXT_TOKENS:-8192}
       HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
@@ -108,6 +110,7 @@ services:
       # As for `app`: summaries use the model while its file is in the volume (read-only here), and
       # are budgeted to the context llama-server runs at (#654).
       MODELS_DIR: /models
+      HC_DEPLOYMENT: compose
       LLM_MODEL_FILE: ${LLM_MODEL_FILE-Qwen3.5-4B-Q4_K_M.gguf}
       LLM_CONTEXT_TOKENS: ${LLM_CONTEXT_TOKENS:-8192}
       HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
@@ -242,6 +245,8 @@ services:
     # changed under us without a commit and ran a different llama.cpp than macOS.
     image: ghcr.io/ggml-org/llama.cpp:server-v0.4.1
     restart: unless-stopped
+    # An init as PID 1 forwards SIGTERM; the entrypoint also traps it while it waits for the model file.
+    init: true
     volumes:
       - llama_models:/models:ro
       - ./docker/llama-server-entrypoint.sh:/usr/local/bin/llama-server-entrypoint.sh:ro
