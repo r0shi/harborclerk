@@ -9,13 +9,13 @@ from datetime import datetime
 
 SEMANTIC_OK = "ok"
 SEMANTIC_UNAVAILABLE = "unavailable"
-# The query embedded, but the candidate documents' chunks are mostly without
-# vectors (an embed still pending, deferred or failed), so the semantic leg
-# saw only part of what keyword search found.
+# The query embedded, but a share of the corpus has no vectors (an embed still
+# pending, deferred or failed), so some documents are invisible to the
+# semantic leg and findable by keyword only (embedding_coverage.py).
 SEMANTIC_PARTIAL = "partial"
-# Below this share of candidate-document chunks with a vector, a result is
-# "partial". Ten percent missing is already a document or two invisible to
-# the semantic leg on a typical page; a fully embedded corpus reads 1.0.
+# Below this share of the active corpus's chunks with a vector, a result is
+# "partial". A tenth of the corpus unsearchable by meaning is enough to miss
+# whole documents; a fully embedded corpus reads 1.0.
 SEMANTIC_PARTIAL_COVERAGE = 0.9
 
 # Said alongside a degraded result on the surfaces a model reads (MCP, chat,
@@ -30,8 +30,8 @@ SEMANTIC_UNAVAILABLE_NOTICE = (
     "Passages that use different wording are missed: absence here is not evidence the corpus lacks the topic."
 )
 SEMANTIC_PARTIAL_NOTICE = (
-    "Semantic search covered only part of these documents: many of their passages are not embedded yet, so "
-    "those are found by keyword only. Passages that use different wording may be missed."
+    "Some documents aren't searchable by meaning yet: part of the corpus is not embedded, so those documents "
+    "can only be found by keyword. Passages that use different wording may be missed."
 )
 
 
@@ -63,11 +63,13 @@ class SearchResult:
     possible_conflict: bool = False
     conflict_sources: list[ConflictSource] = field(default_factory=list)
     reranker_status: str = "disabled"
-    # "ok", or "unavailable" when the vector leg failed (the query could not be
-    # embedded, or the vector query errored) and the hits are keyword-only.
+    # "ok"; "unavailable" when the vector leg failed (the query could not be
+    # embedded, or the vector query errored) and the hits are keyword-only;
+    # "partial" when it ran but under SEMANTIC_PARTIAL_COVERAGE of the corpus
+    # is embedded.
     semantic_status: str = SEMANTIC_OK
-    # Share of the candidate documents' chunks with a vector; None when the
-    # vector leg failed or nothing was found.
+    # Share of the active corpus's chunks with a vector (cached, see
+    # embedding_coverage.py); None when the vector leg failed or the corpus is empty.
     semantic_coverage: float | None = None
 
 

@@ -733,6 +733,20 @@ def _partial_coverage_note(partial_queries: list[str], total_queries: int) -> st
     )
 
 
+def _collect_semantic_status(
+    result: dict,
+    query_text: str,
+    keyword_only_queries: list[str] | None,
+    partial_coverage_queries: list[str] | None,
+) -> None:
+    """File one search result (a batch query's or a pagination page's) under its semantic_status."""
+    status = result.get("semantic_status")
+    if keyword_only_queries is not None and status == "unavailable":
+        keyword_only_queries.append(query_text)
+    if partial_coverage_queries is not None and status == "partial":
+        partial_coverage_queries.append(query_text)
+
+
 async def _search_fan_out_steps(
     queries: list[str],
     user_id: uuid.UUID | None,
@@ -786,11 +800,7 @@ async def _search_fan_out_steps(
             for query_result in result.get("results", []):
                 query_text = query_result.get("query", "")
                 _ingest_hits(coverage, query_result.get("hits", []), query_text)
-                semantic_status = query_result.get("semantic_status")
-                if keyword_only_queries is not None and semantic_status == "unavailable":
-                    keyword_only_queries.append(query_text)
-                if partial_coverage_queries is not None and semantic_status == "partial":
-                    partial_coverage_queries.append(query_text)
+                _collect_semantic_status(query_result, query_text, keyword_only_queries, partial_coverage_queries)
                 if paginate and query_result.get("has_more") and query_result.get("total_candidates", 0) > k_per_query:
                     queries_with_more.append((query_text, k_per_query))
         except Exception:
@@ -821,6 +831,7 @@ async def _search_fan_out_steps(
                     page_result = json.loads(page_json)
                     hits = page_result.get("hits", [])
                     _ingest_hits(coverage, hits, query_text)
+                    _collect_semantic_status(page_result, query_text, keyword_only_queries, partial_coverage_queries)
                     offset += len(hits)
                     has_more = bool(page_result.get("has_more"))
                 except Exception:

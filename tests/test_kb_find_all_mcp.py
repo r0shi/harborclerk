@@ -412,6 +412,12 @@ async def test_chat_cut_drops_snippets_before_rows(
     # A healthy semantic leg: with no embedder in the suite the result would be flagged
     # keyword-only (#685), which is not what this test measures.
     monkeypatch.setattr("harbor_clerk.search._embed_query", _query_vector)
+
+    async def _fully_embedded(_session):
+        return 1.0
+
+    # The seeded chunks carry no vectors, which would (correctly) read "partial".
+    monkeypatch.setattr("harbor_clerk.search.corpus_embedding_coverage", _fully_embedded)
     await _seed_long_docs(db_session, 100, title_len=80)
     raw = await _find_all_via_chat(admin_user)
     payload = json.loads(raw)

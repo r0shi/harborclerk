@@ -184,6 +184,27 @@ async def test_cancel_between_batches_makes_no_further_embedder_call(db_session,
 
 
 @pytest.mark.asyncio
+async def test_a_successful_embed_clears_the_retry_state_of_earlier_deferrals(db_session, monkeypatch):
+    """A done row must not keep "embedder_unavailable", the attempt count and the last error."""
+    deferred = {
+        "reason": EMBED_RETRY_REASON,
+        "retry_attempts": 3,
+        "retry_after": "2026-01-01T00:00:00+00:00",
+        "last_error": "EmbedderUnavailableError: HTTP 503",
+        "last_failed_at": "2026-01-01T00:00:00+00:00",
+    }
+    doc_id = await _make_doc(db_session, chunk_count=2, job_status=JobStatus.running, metrics=deferred)
+    monkeypatch.setattr("harbor_clerk.worker.stages.embed.embed_texts", lambda texts, *, task, timeout: _vectors(texts))
+    monkeypatch.setattr("harbor_clerk.worker.pipeline.advance_pipeline", lambda _doc_id: None)
+    from harbor_clerk.worker.stages.embed import run_embed
+
+    _run_in_thread(run_embed, doc_id)
+
+    job, _doc, embedded = _read(doc_id)
+    assert embedded == 2 and job.status == JobStatus.done
+    assert job.metrics == {}, f"a done embed kept stale failure state: {job.metrics}"
+
+
 async def test_uncancelled_embed_still_completes(db_session, monkeypatch):
     """The checks must not stop a run nobody stopped (job row `running`, as a worker claims it)."""
     doc_id = await _make_doc(db_session, chunk_count=BATCH * 2 + 3, job_status=JobStatus.running)

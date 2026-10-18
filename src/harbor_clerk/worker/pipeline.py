@@ -142,6 +142,24 @@ def without_embed_retry_schedule(metrics: dict | None, stage: JobStage) -> dict:
     return cleaned
 
 
+EMBED_RETRY_STATE_KEYS = (
+    "reason",
+    "retry_attempts",
+    "retry_after",
+    "last_error",
+    "last_failed_at",
+    "retry_exhausted",
+)
+
+
+def without_embed_retry_state(metrics: dict | None) -> dict:
+    """``metrics`` minus everything retry-later recorded on an embed row (for a finished embed)."""
+    cleaned = dict(metrics or {})
+    if cleaned.get("reason") not in (None, EMBED_RETRY_REASON):
+        return cleaned  # someone else's reason; leave the row alone
+    return {k: v for k, v in cleaned.items() if k not in EMBED_RETRY_STATE_KEYS}
+
+
 # Whether the main thread is inside a section the worker's SIGALRM must not
 # interrupt (worker/entry.py: the stage timeout and the shutdown deadline).
 # Thread-local because signal handlers run on the main thread, and only the
@@ -747,6 +765,10 @@ def _mark_stage_done(
         job.finished_at = datetime.now(UTC)
         if stage == JobStage.summarize and (job.metrics or {}).get("reason") == "apple_intelligence_unavailable":
             job.metrics = {}
+        if stage == JobStage.embed and job.metrics:
+            # A done row must not carry the failure state of the deferrals
+            # that preceded it (worker/entry.py _record_embed_unavailable_job).
+            job.metrics = without_embed_retry_state(job.metrics)
 
         # Background stages (summarize) never touch pipeline_status — that
         # field reflects the gating-stage progression only. A summarize-

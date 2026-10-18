@@ -70,7 +70,8 @@ interface SearchResponse {
 // Whether the server's semantic (vector) leg ran: "unavailable" means it failed
 // (the query could not be embedded, or the vector query errored) and the
 // results are keyword matches only;
-// "partial" that many of the matched documents' passages have no vectors yet.
+// "partial" that under 90% of the library is embedded, so some documents are
+// findable by keyword only (semantic_coverage is the library-wide share).
 type SemanticStatus = 'ok' | 'partial' | 'unavailable'
 
 interface FindAllTopChunk {
@@ -113,8 +114,9 @@ function SemanticNotice({ status, coverage }: { status?: SemanticStatus; coverag
     status === 'unavailable'
       ? 'Keyword matches only: semantic search is unavailable right now. ' +
         'Passages that use different wording are missed, so a missing result does not mean the documents lack it.'
-      : `Partly keyword-only: ${coverage != null ? `${Math.round(coverage * 100)}% of` : 'only some of'} ` +
-        "the matched documents' passages are embedded, so the rest are found by keyword only."
+      : "Some documents aren't searchable by meaning yet: " +
+        `${coverage != null ? `${Math.round(coverage * 100)}% of` : 'only part of'} ` +
+        'the library is embedded, so the rest can only be found by keyword.'
   return (
     <div
       role="status"

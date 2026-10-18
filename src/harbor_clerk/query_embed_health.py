@@ -28,6 +28,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from harbor_clerk.error_text import HEALTH_DETAIL_LIMIT
+
 # A busy streak this long (from its first event to its latest) is a wedged
 # embedder, not a busy one. Two minutes is many 64-text batches (~3.5 s each
 # on an M4) and several probe timeouts in a row: an ingest queue drains
@@ -57,6 +59,11 @@ def record_success() -> None:
 
 
 def record_failure(detail: str) -> None:
+    # Bounded here, for every caller: the verdict is published on the
+    # unauthenticated /system/health, and an exception's text can carry far
+    # more than its type (see error_text.HEALTH_DETAIL_LIMIT).
+    if len(detail) > HEALTH_DETAIL_LIMIT:
+        detail = detail[:HEALTH_DETAIL_LIMIT].rstrip() + "…"
     _evidence.kind, _evidence.at, _evidence.detail, _evidence.busy_since = "failure", _now(), detail, None
 
 
@@ -70,13 +77,15 @@ def record_busy() -> None:
 def classify_embed_error(exc: BaseException) -> str:
     """ "busy", "rejected" or "failure" for an exception from embedder_client.
 
-    The client raises its errors from the httpx exception that caused them: a
-    read, write or pool timeout is busy; an HTTP 4xx is the input rejected;
-    anything else (refused or dropped connection, 5xx, invalid response) is a
-    failure.
+    The client raises its unretried errors from the httpx exception that caused
+    them. A read or write timeout means the request landed and the embedder is
+    still working on it: busy. An HTTP 4xx is the input rejected. Everything
+    else is a failure, including a connect or pool timeout: those are retried
+    and then raised by `_give_up` with no cause, and they mean the embedder
+    could not be reached at all, which is unavailable, not busy.
     """
     cause = exc.__cause__
-    if isinstance(exc, TimeoutError) or isinstance(cause, httpx.TimeoutException):
+    if isinstance(exc, TimeoutError) or isinstance(cause, (httpx.ReadTimeout, httpx.WriteTimeout)):
         return "busy"
     if isinstance(cause, httpx.HTTPStatusError) and 400 <= cause.response.status_code < 500:
         return "rejected"

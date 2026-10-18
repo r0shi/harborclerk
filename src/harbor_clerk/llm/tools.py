@@ -906,16 +906,26 @@ async def execute_tool(
 
 
 _KEYWORD_ONLY_SUFFIX = " (keyword-only: semantic search unavailable)"
+_PARTIAL_SUFFIX = " (some documents not searchable by meaning)"
 
 
-def _semantic_unavailable(data: dict) -> bool:
-    """Whether a search payload, or any query in a batch, ran without its vector leg."""
-    if data.get("semantic_status") == "unavailable":
-        return True
+def _semantic_statuses(data: dict) -> set[str]:
+    """The semantic_status values a search payload carries, its own and any batch query's."""
+    statuses = {data.get("semantic_status")}
     results = data.get("results")
-    return isinstance(results, list) and any(
-        isinstance(r, dict) and r.get("semantic_status") == "unavailable" for r in results
-    )
+    if isinstance(results, list):
+        statuses.update(r.get("semantic_status") for r in results if isinstance(r, dict))
+    return {s for s in statuses if isinstance(s, str)}
+
+
+def _semantic_suffix(data: dict) -> str:
+    """What the chip adds when the search was keyword-only (worst first) or the corpus partly embedded."""
+    statuses = _semantic_statuses(data)
+    if "unavailable" in statuses:
+        return _KEYWORD_ONLY_SUFFIX
+    if "partial" in statuses:
+        return _PARTIAL_SUFFIX
+    return ""
 
 
 def summarize_tool_result(result_str: str) -> str:
@@ -926,7 +936,7 @@ def summarize_tool_result(result_str: str) -> str:
             return f"Error: {data['error']}"
         # The person watching the chip learns what the model is told in the
         # payload: these results are keyword-only (#685).
-        degraded = _KEYWORD_ONLY_SUFFIX if _semantic_unavailable(data) else ""
+        degraded = _semantic_suffix(data)
         if "hits" in data:
             return f"Found {len(data['hits'])} results{degraded}"
         if "results" in data:

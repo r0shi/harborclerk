@@ -8,9 +8,11 @@ not fail for it), but the result now carries `semantic_status`.
 """
 
 import json
+import uuid
 from contextlib import asynccontextmanager
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import harbor_clerk.search as search_mod
@@ -107,39 +109,115 @@ async def test_a_healthy_search_reports_ok(db_session, corpus, monkeypatch):
     assert result.semantic_coverage == 1.0
 
 
-@pytest.fixture
-async def unembedded_doc(db_session: AsyncSession, corpus):
-    """A document keyword search finds whose nine passages have no vectors yet."""
+@pytest.fixture(autouse=True)
+def _fresh_corpus_coverage():
+    """The corpus coverage figure is cached process-wide; no test may read another's."""
+    from harbor_clerk import embedding_coverage
+
+    embedding_coverage.reset()
+    yield
+    embedding_coverage.reset()
+
+
+async def _add_doc(db_session, title: str, texts: list[str], *, embedded: bool):
     doc = Document(
-        title="Keeper handbook",
+        title=title,
         status="active",
-        sha256=b"semantic-status-unembedded-00000",
-        pipeline_status=PipelineStatus.embedding,
+        sha256=title.encode().ljust(32, b"-")[:32],
+        pipeline_status=PipelineStatus.ready if embedded else PipelineStatus.embedding,
         mime_type="text/plain",
     )
     db_session.add(doc)
     await db_session.flush()
-    for n in range(9):
+    for n, text in enumerate(texts):
         db_session.add(
-            Chunk(doc_id=doc.doc_id, chunk_num=n, chunk_text=f"Lighthouse keeper duty {n}.", language="english")
+            Chunk(
+                doc_id=doc.doc_id,
+                chunk_num=n,
+                chunk_text=text,
+                language="english",
+                embedding=[0.01] * 768 if embedded else None,
+            )
         )
     await db_session.commit()
     return doc
 
 
-async def test_low_vector_coverage_among_candidates_is_partial(db_session, unembedded_doc, monkeypatch):
-    """The query embeds fine, but most of what keyword search found has no vectors:
-    the semantic leg saw a tenth of it (#685's 29% unembedded corpus)."""
+@pytest.fixture
+async def corpus_at_70_percent(db_session: AsyncSession, corpus):
+    """10 chunks, 7 with vectors. The unembedded document shares no words with the
+    test query, so every hit the query gets is an embedded chunk."""
+    await _add_doc(db_session, "Quarterly revenue", [f"Revenue rose in quarter {n}." for n in range(6)], embedded=True)
+    await _add_doc(db_session, "Tide tables", [f"High water at {n} o'clock." for n in range(3)], embedded=False)
+
+
+async def test_a_partly_embedded_corpus_flags_partial_though_every_hit_is_embedded(
+    db_session, corpus_at_70_percent, monkeypatch
+):
+    """The vector leg only ever returns embedded chunks, so coverage measured over
+    what a query found reads 100% here; the corpus figure is what tells the reader
+    that 30% of it is invisible to meaning-based search (#685: 29%)."""
     monkeypatch.setattr(search_mod, "_embed_query", _embedder_up)
 
     result = await search_mod.hybrid_search(db_session, "lighthouse keeper")
 
+    hit_ids = [uuid.UUID(h.chunk_id) for h in result.hits]
+    embedded = (
+        await db_session.execute(
+            select(func.count()).select_from(Chunk).where(Chunk.chunk_id.in_(hit_ids), Chunk.embedding.isnot(None))
+        )
+    ).scalar_one()
+    assert hit_ids and embedded == len(hit_ids), "premise: every hit is an embedded chunk"
     assert result.semantic_status == "partial"
-    assert result.semantic_coverage == 0.1
+    assert result.semantic_coverage == 0.7
+
+
+async def test_a_95_percent_embedded_corpus_reads_ok(db_session, corpus, monkeypatch):
+    await _add_doc(db_session, "Revenue", [f"Revenue rose in quarter {n}." for n in range(18)], embedded=True)
+    await _add_doc(db_session, "Tides", ["High water at noon."], embedded=False)
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_up)
+
+    result = await search_mod.hybrid_search(db_session, "lighthouse keeper")
+
+    assert result.semantic_status == "ok"
+    assert result.semantic_coverage == 0.95
+
+
+async def test_an_unavailable_vector_leg_stays_unavailable_not_partial(db_session, corpus_at_70_percent, monkeypatch):
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_down)
+
+    result = await search_mod.hybrid_search(db_session, "lighthouse keeper")
+
+    assert result.semantic_status == "unavailable"
+    assert result.semantic_coverage is None
+
+
+async def test_the_corpus_figure_is_cached_not_computed_per_search(db_session, corpus_at_70_percent, monkeypatch):
+    from harbor_clerk import embedding_coverage
+
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_up)
+    real_counts = embedding_coverage.embedding_coverage_counts
+    aggregates: list[int] = []
+
+    async def _counting(session):
+        aggregates.append(1)
+        return await real_counts(session)
+
+    clock = [5000.0]
+    monkeypatch.setattr(embedding_coverage, "embedding_coverage_counts", _counting)
+    monkeypatch.setattr(embedding_coverage, "_now", lambda: clock[0])
+
+    for query in ("lighthouse keeper", "revenue", "zeppelin"):
+        assert (await search_mod.hybrid_search(db_session, query)).semantic_status == "partial"
+    assert len(aggregates) == 1, f"{len(aggregates)} aggregates for 3 searches inside the TTL"
+
+    clock[0] += embedding_coverage.CORPUS_COVERAGE_TTL_SECONDS + 1
+    await search_mod.hybrid_search(db_session, "lighthouse keeper")
+    assert len(aggregates) == 2, "a stale figure was not refreshed"
 
 
 async def test_rest_and_mcp_report_partial_coverage(
-    client, admin_token, unembedded_doc, mcp_session, human, monkeypatch
+    client, admin_token, corpus_at_70_percent, mcp_session, human, monkeypatch
 ):
     from harbor_clerk.mcp_server import kb_search
 
@@ -150,9 +228,9 @@ async def test_rest_and_mcp_report_partial_coverage(
     ).json()
     mcp = json.loads(await kb_search(query="lighthouse keeper"))
 
-    assert (rest["semantic_status"], rest["semantic_coverage"]) == ("partial", 0.1)
-    assert (mcp["semantic_status"], mcp["semantic_coverage"]) == ("partial", 0.1)
-    assert "not embedded" in mcp["semantic_notice"]
+    assert (rest["semantic_status"], rest["semantic_coverage"]) == ("partial", 0.7)
+    assert (mcp["semantic_status"], mcp["semantic_coverage"]) == ("partial", 0.7)
+    assert "aren't searchable by meaning yet" in mcp["semantic_notice"]
 
 
 async def test_find_all_carries_the_flag(db_session, corpus, monkeypatch):
@@ -254,6 +332,51 @@ def test_chat_tool_chip_says_keyword_only():
     assert summarize_tool_result(healthy) == "Found 1 results"
 
 
+def test_chat_tool_chip_flags_partial_and_puts_unavailable_first():
+    from harbor_clerk.llm.tools import summarize_tool_result
+
+    partial = json.dumps({"hits": [{}], "semantic_status": "partial", "semantic_coverage": 0.7})
+    mixed = json.dumps(
+        {"results": [{"hits": [], "semantic_status": "partial"}, {"hits": [], "semantic_status": "unavailable"}]}
+    )
+
+    assert summarize_tool_result(partial) == "Found 1 results (some documents not searchable by meaning)"
+    assert summarize_tool_result(mixed).endswith("(keyword-only: semantic search unavailable)")
+
+
+async def test_research_collects_semantic_status_from_pagination_pages(monkeypatch):
+    """A query whose first page was healthy can page into a degraded leg (the
+    embedder failed in between); the page's status counts too."""
+    from harbor_clerk.llm import research as research_mod
+
+    async def _execute_tool(name, arguments, user_id, **kwargs):
+        if name == "batch_search":
+            return json.dumps(
+                {
+                    "results": [
+                        {"query": q, "hits": [{}] * 5, "has_more": True, "total_candidates": 50}
+                        for q in arguments["queries"]
+                    ]
+                }
+            )
+        return json.dumps({"hits": [], "has_more": False, "semantic_status": "partial"})
+
+    monkeypatch.setattr(research_mod, "execute_tool", _execute_tool)
+    monkeypatch.setattr(research_mod, "_ingest_hits", lambda coverage, hits, query: None)
+    keyword_only: list[str] = []
+    partial: list[str] = []
+
+    [
+        s
+        async for s in research_mod._search_fan_out_steps(
+            ["deep"], None, 5, paginate=True, keyword_only_queries=keyword_only, partial_coverage_queries=partial
+        )
+    ]
+
+    assert partial == ["deep"], "a pagination page's semantic_status was ignored"
+    assert keyword_only == []
+
+
 async def test_research_fan_out_collects_keyword_only_queries(monkeypatch):
     from harbor_clerk.llm import research as research_mod
 
@@ -321,7 +444,7 @@ def test_cli_text_output_says_partial(command, payload):
     out = io.StringIO()
     render(payload, mode=OutputMode.TEXT, command=command, stream=out)
 
-    assert "semantic_status=partial - 40% of" in out.getvalue()
+    assert "semantic_status=partial - some documents aren't searchable by meaning yet (40% of" in out.getvalue()
 
 
 async def test_research_records_partial_coverage_with_its_own_note(monkeypatch):

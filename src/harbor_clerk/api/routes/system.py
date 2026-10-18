@@ -28,6 +28,7 @@ from harbor_clerk.api.schemas.system import (
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import get_settings, sync_native_config
 from harbor_clerk.db import get_session
+from harbor_clerk.embedding_coverage import embedding_coverage_counts
 from harbor_clerk.error_text import HEALTH_DETAIL_LIMIT, describe_error
 from harbor_clerk.models import (
     Chunk,
@@ -230,7 +231,9 @@ async def _probe_embedder(embedder_url: str) -> None:
                         ),
                         timeout=EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS,
                     )
-                except (TimeoutError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+                # Busy only once the request has landed (as classify_embed_error
+                # has it); a connect or pool timeout falls to the failure path.
+                except (TimeoutError, httpx.ReadTimeout, httpx.WriteTimeout):
                     logger.info("Embedder health probe: %s", embedder_evidence.BUSY_NOTE)
                     embedder_evidence.record_busy()
                     return
@@ -923,28 +926,9 @@ async def system_stats(
     # ── Embedding coverage (active documents) ──
     # Chunks without a vector are invisible to semantic search. After #685 the
     # only way to learn that 29% of a corpus had none was to query Postgres.
+    # The same aggregate search's corpus coverage reads (embedding_coverage.py).
     try:
-        row = (
-            await session.execute(
-                select(
-                    func.count(Chunk.chunk_id),
-                    func.count(Chunk.embedding),
-                    func.count(func.distinct(Chunk.doc_id)),
-                    func.count(func.distinct(Chunk.doc_id)).filter(Chunk.embedding.is_(None)),
-                )
-                .join(Document, Document.doc_id == Chunk.doc_id)
-                .where(Document.status == "active")
-            )
-        ).one()
-        chunks_total, chunks_embedded, docs_with_chunks, docs_missing = (int(v or 0) for v in row)
-        result["embeddings"] = {
-            "chunks_total": chunks_total,
-            "chunks_embedded": chunks_embedded,
-            "chunks_missing": chunks_total - chunks_embedded,
-            "documents_with_chunks": docs_with_chunks,
-            "documents_fully_embedded": docs_with_chunks - docs_missing,
-            "documents_missing_embeddings": docs_missing,
-        }
+        result["embeddings"] = await embedding_coverage_counts(session)
     except Exception as e:
         logger.error("Failed to collect embedding coverage: %s", describe_error(e))
         result["embeddings"] = {"error": describe_error(e)}

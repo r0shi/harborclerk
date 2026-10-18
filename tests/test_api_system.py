@@ -275,6 +275,31 @@ async def test_busy_for_longer_than_the_threshold_is_degraded(client, monkeypatc
     assert data["status"] == "degraded"
 
 
+@pytest.mark.parametrize("timeout_exc", ["PoolTimeout", "ConnectTimeout"])
+async def test_a_probe_that_never_reaches_embed_is_degraded_not_busy(client, monkeypatch, timeout_exc):
+    """A pool or connect timeout means the request never landed: unavailable, as
+    classify_embed_error has it for search, not the busy of a read timeout."""
+    import httpx
+
+    from harbor_clerk.config import get_settings
+
+    _stub_embedder(monkeypatch)
+    real_post = httpx.AsyncClient.post
+    embed_url = f"{get_settings().embedder_url}/embed"
+
+    async def _post(self, url, *args, **kwargs):
+        if str(url) == embed_url:
+            raise getattr(httpx, timeout_exc)("")
+        return await real_post(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _post)
+
+    data = await _settled_health(client)
+
+    assert data["checks"]["embedder"] == f"error: {timeout_exc}"
+    assert "embedder" not in data["notes"]
+
+
 async def test_a_503_from_embed_is_degraded(client, monkeypatch):
     _stub_embedder(monkeypatch, embed_status=503)
 

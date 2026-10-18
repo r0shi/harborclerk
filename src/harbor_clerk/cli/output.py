@@ -117,8 +117,8 @@ def _render_semantic_status(payload: dict, stream: TextIO) -> None:
         coverage = payload.get("semantic_coverage")
         share = f"{round(coverage * 100)}% of" if isinstance(coverage, (int, float)) else "only some of"
         stream.write(
-            f"semantic_status=partial - {share} the matched documents' passages are embedded; "
-            "the rest matched by keyword only\n"
+            f"semantic_status=partial - some documents aren't searchable by meaning yet ({share} the corpus "
+            "is embedded); the rest can only be found by keyword\n"
         )
 
 

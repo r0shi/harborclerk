@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.embedder_client import embed_texts_async
+from harbor_clerk.embedding_coverage import corpus_embedding_coverage
 from harbor_clerk.error_text import describe_error
 from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
@@ -575,13 +576,23 @@ async def hybrid_search(
         logger.warning("Embedder unavailable, falling back to lexical-only search")
         semantic_status = SEMANTIC_UNAVAILABLE
 
+    # The vector leg ran, but it can only see embedded chunks: when much of
+    # the corpus has no vectors (#685: 29% after a failing night), some
+    # documents are findable by keyword only. Corpus-wide and cached
+    # (embedding_coverage), so this costs nothing per search.
+    semantic_coverage: float | None = None
+    if semantic_status == SEMANTIC_OK:
+        semantic_coverage = await corpus_embedding_coverage(session)
+        if semantic_coverage is not None and semantic_coverage < SEMANTIC_PARTIAL_COVERAGE:
+            semantic_status = SEMANTIC_PARTIAL
+
     # --- 3. Normalize & merge ---
     norm_fts = _normalize_scores(fts_scores)
     norm_vec = _normalize_scores(vector_scores)
 
     all_chunk_ids = set(norm_fts) | set(norm_vec)
     if not all_chunk_ids:
-        return SearchResult(hits=[], semantic_status=semantic_status)
+        return SearchResult(hits=[], semantic_status=semantic_status, semantic_coverage=semantic_coverage)
 
     combined: dict[uuid.UUID, float] = {}
     for cid in all_chunk_ids:
@@ -596,24 +607,6 @@ async def hybrid_search(
     doc_ids_set = {c.doc_id for c in chunks_by_id.values()}
     docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids_set))))
     docs_by_id: dict[uuid.UUID, Document] = {d.doc_id: d for d in docs_result.scalars().all()}
-
-    # Vector coverage of the candidate documents. The query can embed fine and
-    # the result still be mostly keyword-only, when the documents it found have
-    # few vectors (#685: 29% of a corpus had none after a failing night). One
-    # indexed aggregate over the candidates (chunks_doc_idx), not the corpus.
-    semantic_coverage: float | None = None
-    if semantic_status == SEMANTIC_OK and doc_ids_set:
-        total, embedded = (
-            await session.execute(
-                select(func.count(Chunk.chunk_id), func.count(Chunk.embedding)).where(
-                    Chunk.doc_id.in_(list(doc_ids_set))
-                )
-            )
-        ).one()
-        if total:
-            semantic_coverage = round(embedded / total, 3)
-            if semantic_coverage < SEMANTIC_PARTIAL_COVERAGE:
-                semantic_status = SEMANTIC_PARTIAL
 
     for cid, score in combined.items():
         chunk = chunks_by_id.get(cid)
