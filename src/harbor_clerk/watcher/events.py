@@ -16,8 +16,9 @@ import os
 import posixpath
 import unicodedata
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 
@@ -38,6 +39,10 @@ from harbor_clerk.watcher.relocate import apply_move, move_needs_reextract, side
 from harbor_clerk.watcher.visibility import restore_document, retire_watched_file
 
 logger = logging.getLogger(__name__)
+
+# How long a retired file's document waits to be adopted by a create of the
+# same content elsewhere in its folder (the second half of a split rename).
+ADOPT_WINDOW_SECS = 10.0
 
 # SHA-256 of empty content. Every 0-byte file produces this digest,
 # so it's NOT a unique fingerprint and must never be used as a dedup
@@ -99,6 +104,7 @@ def classify_skip(
     absolute_path: str | None = None,
     *,
     sibling_names: "Iterable[str] | SiblingIndex | None" = None,
+    sidecar_accepted: "Callable[[Path], bool] | None" = None,
 ) -> SkipReason | None:
     """Classify why ``relative_path`` would be skipped by the watcher.
 
@@ -112,7 +118,8 @@ def classify_skip(
     holds, so that check runs only when ``absolute_path`` is given; name-only
     callers (the API's extension validation) never see ``SIDECAR``. A caller
     that has already listed the directory passes ``sibling_names`` to spare
-    a listing per file.
+    a listing per file, and may pass ``sidecar_accepted`` to answer
+    ``load_sidecar`` from a cache (the reconcile keys it by the ``.json``'s stat).
     """
     parts = relative_path.split("/")
     if any(p == "__MACOSX" for p in parts):
@@ -126,7 +133,7 @@ def classify_skip(
     suffix = Path(relative_path).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         return SkipReason.UNSUPPORTED_EXTENSION
-    if absolute_path is not None and is_sidecar(absolute_path, sibling_names=sibling_names):
+    if absolute_path is not None and sidecar_owner_names(absolute_path, sibling_names, sidecar_accepted):
         return SkipReason.SIDECAR
     return None
 
@@ -136,7 +143,11 @@ def is_sidecar(absolute_path: str, sibling_names: "Iterable[str] | SiblingIndex 
     return bool(sidecar_owner_names(absolute_path, sibling_names))
 
 
-def sidecar_owner_names(absolute_path: str, sibling_names: "Iterable[str] | SiblingIndex | None" = None) -> list[str]:
+def sidecar_owner_names(
+    absolute_path: str,
+    sibling_names: "Iterable[str] | SiblingIndex | None" = None,
+    sidecar_accepted: "Callable[[Path], bool] | None" = None,
+) -> list[str]:
     """Names of the documents beside ``absolute_path`` that it is the sidecar of; empty when it is not one.
 
     Two conditions, the same two ``SidecarExtractor`` applies from the other
@@ -160,9 +171,13 @@ def sidecar_owner_names(absolute_path: str, sibling_names: "Iterable[str] | Sibl
     owners = _admitted_sibling_names(path, sibling_names)
     if not owners:
         return []
-    if path.exists() and load_sidecar(path, owner=absolute_path, quiet=True) is None:
-        return []
-    return owners
+    if not path.exists():
+        return owners
+    if sidecar_accepted is not None:
+        accepted = sidecar_accepted(path)
+    else:
+        accepted = load_sidecar(path, owner=absolute_path, quiet=True) is not None
+    return owners if accepted else []
 
 
 def _admitted_sibling_names(path: Path, names: "Iterable[str] | SiblingIndex | None" = None) -> list[str]:
@@ -469,8 +484,55 @@ def handle_event(session: Session, event: FileEvent) -> None:
         _unhide_document(session, existing.doc_id)
         return
 
+    # A file that just vanished elsewhere in this folder with this content
+    # moved here: it keeps its document (a rename whose halves arrived apart).
+    if _adopt_recently_retired(session, event, sha):
+        return
+
     # No existing row → create Document + WatchedFile + extract job
     _create_doc_and_enqueue(session, event, sha)
+
+
+def _adopt_recently_retired(session: Session, event: FileEvent, sha: bytes) -> bool:
+    """Give a new file the document of one retired moments ago in the same folder with the same content.
+
+    A rename can reach the watcher as two halves: a move whose destination is
+    already gone again (watchdog's FSEvents emitter drops the last leg of a
+    swap through a temp name: ``mv a t; mv b a; mv t b`` reports ``a→t``,
+    ``b→a`` and a create of ``b``), or a delete then a create. The retired
+    row is adopted only within ADOPT_WINDOW_SECS, only when its own path is
+    gone (otherwise this is a copy), and only for identical content, so the
+    adopted document's text is exactly this file's.
+    """
+    cutoff = datetime.now(UTC) - timedelta(seconds=ADOPT_WINDOW_SECS)
+    candidates = (
+        session.query(WatchedFile)
+        .filter(
+            WatchedFile.folder_id == event.folder_id,
+            WatchedFile.status == WatchedFileStatus.removed,
+            WatchedFile.sha256 == sha,
+            WatchedFile.removed_at >= cutoff,
+            WatchedFile.relative_path != event.relative_path,
+        )
+        .order_by(WatchedFile.removed_at.desc())
+        .all()
+    )
+    base, _rel = _event_base(event)
+    for wf in candidates:
+        if file_exists_exact(base, wf.relative_path):
+            continue
+        doc = session.get(Document, wf.doc_id) if wf.doc_id else None
+        old_rel = wf.relative_path
+        reextract = move_needs_reextract(old_rel, event.relative_path, doc, event.absolute_path)
+        apply_move(wf, doc, event.relative_path, event.absolute_path)
+        wf.status = WatchedFileStatus.active
+        wf.removed_at = None
+        restore_document(doc)
+        if doc is not None and reextract and not _extract_queued(session, doc.doc_id):
+            _reprocess_doc(session, doc.doc_id, sha, event.absolute_path)
+        logger.info("watcher: %s is %s moved; document kept", event.relative_path, old_rel)
+        return True
+    return False
 
 
 def _handle_moved(session: Session, event: FileEvent) -> None:
@@ -526,6 +588,16 @@ def _handle_moved(session: Session, event: FileEvent) -> None:
     reextract = move_needs_reextract(event.relative_path, dest_rel, doc, dest_abs)
     apply_move(src_wf, doc, dest_rel, dest_abs)
     session.flush()
+    if not file_exists_exact(*_event_base(dest_modified)):
+        # Gone again by the time this is handled: the next leg of a chain of
+        # renames was dropped, or the file was deleted. The row must not stay
+        # active at a missing path (a phantom in search). Retired here, its
+        # document is adopted by a create of the same content in this folder
+        # moments later (`_adopt_recently_retired`), or reaped like any other.
+        retire_watched_file(src_wf, doc)
+        logger.info("watcher: %s moved to %s, which is gone again; retired", event.relative_path, dest_rel)
+        _rejudge_old_sidecar(session, event)
+        return
     logger.info("watcher: %s moved to %s; document kept", event.relative_path, dest_rel)
 
     seq_before = doc.pipeline_seq if doc is not None else None
@@ -534,13 +606,7 @@ def _handle_moved(session: Session, event: FileEvent) -> None:
     # `.json` beside the new name that was indexed as a document is retired,
     # now that it is this file's sidecar.
     handle_event(session, dest_modified)
-    if (
-        doc is not None
-        and reextract
-        and doc.pipeline_seq == seq_before
-        and file_exists_exact(*_event_base(dest_modified))
-        and not _extract_queued(session, doc.doc_id)
-    ):
+    if doc is not None and reextract and doc.pipeline_seq == seq_before and not _extract_queued(session, doc.doc_id):
         _reprocess_doc(session, doc.doc_id, src_wf.sha256, dest_abs)
     _rejudge_old_sidecar(session, event)
 

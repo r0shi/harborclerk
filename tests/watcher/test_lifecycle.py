@@ -788,7 +788,11 @@ def test_a_failed_reattach_is_retried_and_reconciles_only_once_attached(factory,
     assert folder_id in daemon._seen_stats, "the stat cache is kept until an attach succeeds"
 
     daemon._check_roots()
-    assert (obs.restarts, requested) == (2, [folder_id, folder_id])
+    assert (obs.restarts, requested) == (2, [folder_id]), "a retry in a streak waits to be seen alive"
+    assert folder_id in daemon._seen_stats
+
+    daemon._check_roots()
+    assert (obs.restarts, requested) == (2, [folder_id, folder_id]), "seen alive: one full pass on recovery"
     assert folder_id not in daemon._seen_stats, "a new attachment compares every file again"
     assert folder_id not in daemon._reattach_failures
 
@@ -1277,3 +1281,186 @@ def test_disabling_a_folder_mid_pass_stops_the_walk_at_the_next_directory(factor
     dirs = {rel.split("/")[0] for rel in calls}
     assert len(dirs) == 1, f"the walk stopped after the directory it was in: {calls}"
     assert _last_scan_at(factory, folder_id) is None
+
+
+# ---------------------------------------------------------------------------
+# Seventh review of #860
+# ---------------------------------------------------------------------------
+
+
+def test_a_swap_through_a_temp_name_live_leaves_no_phantom(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    (root / "b.txt").write_text("beta")
+    folder_id = _add_folder(factory, root)
+    with _Running(factory, folder_id) as run:
+        (root / "a.txt").rename(root / "t.txt")
+        (root / "b.txt").rename(root / "a.txt")
+        (root / "t.txt").rename(root / "b.txt")
+
+        def settled(st):
+            active = {k: v for k, v in st.items() if v[0] == ACTIVE}
+            return (
+                set(active) == {"a.txt", "b.txt"}
+                and active["a.txt"][3] == _sha("beta")
+                and active["b.txt"][3] == _sha("alpha")
+            )
+
+        run.wait_for("the swap to settle with no phantom", settled)
+        time.sleep(1.0)
+        st = run.state()
+    assert settled(st), st
+    assert all(v[2] == "removed" for k, v in st.items() if v[0] == REMOVED), "nothing hidden stays searchable"
+
+
+class _DeadOnArrival:
+    """An observer whose restart returns but whose emitter is dead by the next check."""
+
+    def __init__(self, root):
+        self.root = root
+        self.restarts = 0
+
+    def health(self):
+        from harbor_clerk.watcher.observer import RootState
+
+        return RootState.detached
+
+    def restart(self):
+        self.restarts += 1
+
+
+def test_an_emitter_that_dies_after_each_restart_is_retried_with_backoff(factory, tmp_path, caplog):
+    import logging
+
+    folder_id = uuid.uuid4()
+    daemon = WatcherDaemon(factory)
+    obs = _DeadOnArrival(str(tmp_path))
+    daemon._observers[folder_id] = obs
+    daemon._seen_stats[folder_id] = {"a.txt": (1, 2, 3, 4)}
+    requested = []
+    daemon._request_reconcile = requested.append
+
+    with caplog.at_level(logging.DEBUG, logger="harbor_clerk.watcher"):
+        daemon._check_roots()  # first attach: one pass, the stat cache cleared once
+        assert (obs.restarts, requested) == (1, [folder_id])
+        assert folder_id not in daemon._seen_stats
+        daemon._seen_stats[folder_id] = {"a.txt": (1, 2, 3, 4)}
+        for _ in range(19):
+            daemon._check_roots()
+    # Restarts at checks 1, 3, 6, 11 and 20 (backoff after the 1st, 2nd, 3rd, 4th failure), not 20.
+    assert obs.restarts <= 5, obs.restarts
+    assert requested == [folder_id, folder_id], "one pass for the attach, one when the streak starts"
+    assert daemon._seen_stats[folder_id] == {"a.txt": (1, 2, 3, 4)}, "retries keep the stat cache"
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1 and "stopped right after attaching" in errors[0].getMessage()
+
+
+def test_a_real_observer_whose_emitter_dies_is_backed_off(factory, tmp_path, monkeypatch):
+    """The reviewer's fault injection: every attach "succeeds" and its emitter ends at once."""
+    from harbor_clerk.watcher.observer import FolderObserver
+
+    root = _root(tmp_path)
+    _add_folder(factory, root)
+    real_start = FolderObserver.start
+    starts = []
+
+    def start_then_die(self):
+        real_start(self)
+        starts.append(1)
+        for emitter in list(self._observer.emitters):
+            emitter.stop()
+            emitter.join(timeout=5.0)
+
+    monkeypatch.setattr(FolderObserver, "start", start_then_die)
+    daemon = WatcherDaemon(factory)
+    requested = []
+    daemon._request_reconcile = requested.append
+    try:
+        daemon._sync_observers()
+        for _ in range(20):
+            daemon._check_roots()
+        assert len(starts) <= 6, f"{len(starts)} attaches in 20 checks"
+        assert len(requested) == 2, requested
+    finally:
+        daemon.stop()
+
+
+def test_an_aborted_pass_is_retried_with_backoff_whatever_the_interval(factory, tmp_path, monkeypatch):
+    monkeypatch.setattr(watcher_main, "RETRY_FIRST_SECS", 30.0)
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    real_active_paths = daemon._active_paths
+
+    def unreachable(_folder_id):
+        raise _outage()
+
+    daemon._active_paths = unreachable
+    daemon._reconcile_folder(folder_id, str(root))
+    assert daemon._retry_delay[folder_id] == 30.0
+    daemon._reconcile_folder(folder_id, str(root))
+    assert daemon._retry_delay[folder_id] == 60.0, "doubling"
+    for _ in range(5):
+        daemon._reconcile_folder(folder_id, str(root))
+    assert daemon._retry_delay[folder_id] == watcher_main.RETRY_MAX_SECS, "capped"
+
+    requested = []
+    real_request = daemon._request_reconcile
+    daemon._request_reconcile = requested.append
+    daemon._run_due_retries()
+    assert requested == [], "not due yet"
+    daemon._retry_at[folder_id] = 0.0
+    daemon._run_due_retries()
+    assert requested == [folder_id]
+    daemon._request_reconcile = real_request
+
+    daemon._active_paths = real_active_paths
+    daemon._reconcile_folder(folder_id, str(root))
+    assert folder_id not in daemon._retry_delay and folder_id not in daemon._retry_at, "a completed pass ends it"
+
+
+def test_with_the_interval_at_zero_an_outage_at_attach_still_ends_scanning(factory, tmp_path, monkeypatch):
+    monkeypatch.setattr(watcher_main, "RETRY_FIRST_SECS", 0.3)
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _add_folder(factory, root)
+    failures = []
+    real_active_paths = WatcherDaemon._active_paths
+
+    def unreachable_once(self, fid):
+        if not failures:
+            failures.append(1)
+            raise _outage()
+        return real_active_paths(self, fid)
+
+    monkeypatch.setattr(WatcherDaemon, "_active_paths", unreachable_once)
+    with _Running(factory, folder_id) as run:  # waits, bounded, for last_scan_at
+        assert failures == [1]
+        assert list(run.state()) == ["a.txt"]
+
+
+def test_an_unchanged_sidecar_is_not_read_again_on_the_next_pass(factory, tmp_path, monkeypatch):
+    import harbor_clerk.watcher.events as ev
+
+    root = _root(tmp_path)
+    for i in range(5):
+        (root / f"INV-{i}.pdf").write_bytes(b"%PDF-1.4 " + str(i).encode())
+        (root / f"INV-{i}.json").write_text('{"vendor": "Acme"}')
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    daemon._reconcile_folder(folder_id, str(root))
+
+    reads = []
+    for module in (ev, watcher_main):
+        real = module.load_sidecar
+        monkeypatch.setattr(
+            module, "load_sidecar", lambda path, *a, _real=real, **k: reads.append(str(path)) or _real(path, *a, **k)
+        )
+    daemon._reconcile_folder(folder_id, str(root))
+    assert reads == [], "an unchanged sidecar is answered from its stat"
+
+    (root / "INV-2.json").write_text('{"vendor": "Acme Corporation"}')
+    daemon._reconcile_folder(folder_id, str(root))
+    assert reads == [str(root / "INV-2.json")]
+    assert len(_state(factory, folder_id)) == 5, "the sidecars are still sidecars"

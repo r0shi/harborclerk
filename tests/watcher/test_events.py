@@ -766,7 +766,7 @@ def _index_pair_as_an_earlier_build_did(sync_session, folder, tmp_path, monkeypa
     pdf, sidecar = _sidecar_pair(tmp_path)
     handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
     with monkeypatch.context() as m:
-        m.setattr(ev, "sidecar_owner_names", lambda _path, sibling_names=None: [])
+        m.setattr(ev, "sidecar_owner_names", lambda _path, *_args, **_kwargs: [])
         handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
     sync_session.commit()
     assert sync_session.query(WatchedFile).filter_by(status=WatchedFileStatus.active).count() == 2
@@ -1697,7 +1697,7 @@ def _index_as_a_document(sync_session, folder, path, rel):
     import harbor_clerk.watcher.events as ev
 
     real = ev.sidecar_owner_names
-    ev.sidecar_owner_names = lambda _path, sibling_names=None: []
+    ev.sidecar_owner_names = lambda _path, *_args, **_kwargs: []
     try:
         return _index(sync_session, folder, path, rel)
     finally:
@@ -1735,3 +1735,142 @@ def test_a_move_with_an_extract_still_queued_does_not_extract_twice(sync_session
     assert (wf.relative_path, doc.mime_type) == ("notes.md", guess_mime_type("notes.md"))
     assert doc.pipeline_seq == 0
     assert _queued_extract_jobs(sync_session, doc.doc_id) == 1
+
+
+# ---------------------------------------------------------------------------
+# Seventh review of #860: a swap through a temp name, adoption of a split rename
+# ---------------------------------------------------------------------------
+
+
+def _swap_on_disk(tmp_path):
+    """`mv a.txt t.txt; mv b.txt a.txt; mv t.txt b.txt`: the state every event is handled against."""
+    (tmp_path / "a.txt").rename(tmp_path / "t.txt")
+    (tmp_path / "b.txt").rename(tmp_path / "a.txt")
+    (tmp_path / "t.txt").rename(tmp_path / "b.txt")
+
+
+def _active_rows(sync_session) -> dict[str, tuple]:
+    return {
+        wf.relative_path: (wf.doc_id, wf.sha256)
+        for wf in sync_session.query(WatchedFile).filter_by(status=WatchedFileStatus.active).all()
+    }
+
+
+def _seed_pair(sync_session, folder, tmp_path):
+    (tmp_path / "a.txt").write_text("alpha")
+    (tmp_path / "b.txt").write_text("beta")
+    _a_wf, a_doc = _index(sync_session, folder, tmp_path / "a.txt", "a.txt")
+    _b_wf, b_doc = _index(sync_session, folder, tmp_path / "b.txt", "b.txt")
+    return a_doc.doc_id, b_doc.doc_id
+
+
+def test_a_swap_whose_last_rename_was_dropped_leaves_no_phantom(sync_session, folder, tmp_path):
+    """watchdog 6's FSEvents emitter reports the swap as `a→t`, `b→a` and a
+    create of `b`. The row moved to t.txt must not stay active at a path that
+    is gone, and b.txt adopts a's document, whose content it now holds."""
+    a_id, b_id = _seed_pair(sync_session, folder, tmp_path)
+    _swap_on_disk(tmp_path)
+
+    handle_event(sync_session, _moved(folder, tmp_path, "a.txt", "t.txt"))
+    handle_event(sync_session, _moved(folder, tmp_path, "b.txt", "a.txt"))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "b.txt", str(tmp_path / "b.txt")))
+    sync_session.commit()
+
+    assert _active_rows(sync_session) == {
+        "a.txt": (b_id, hashlib.sha256(b"beta").digest()),
+        "b.txt": (a_id, hashlib.sha256(b"alpha").digest()),
+    }
+    assert {d.doc_id: d.status for d in sync_session.query(Document).all()} == {a_id: "active", b_id: "active"}
+
+
+def test_a_swap_reported_with_coalesced_history_leaves_no_phantom(sync_session, folder, tmp_path):
+    """The same swap as logged live, with the coalesced create/modify events
+    FSEvents adds before each move. Content and paths end right, with no row
+    left active at t.txt; the spurious early create re-indexed a's document
+    with b's content, so it cannot be adopted by content (see #866)."""
+    _a_id, _b_id = _seed_pair(sync_session, folder, tmp_path)
+    _swap_on_disk(tmp_path)
+
+    def ev(kind, rel):
+        return FileEvent(kind, folder.folder_id, rel, str(tmp_path / rel))
+
+    for event in (
+        ev(EventKind.created, "a.txt"),
+        ev(EventKind.modified, "a.txt"),
+        _moved(folder, tmp_path, "a.txt", "t.txt"),
+        ev(EventKind.created, "b.txt"),
+        ev(EventKind.modified, "b.txt"),
+        _moved(folder, tmp_path, "b.txt", "a.txt"),
+        ev(EventKind.created, "b.txt"),
+    ):
+        handle_event(sync_session, event)
+        sync_session.commit()
+
+    active = _active_rows(sync_session)
+    assert set(active) == {"a.txt", "b.txt"}
+    assert active["a.txt"][1] == hashlib.sha256(b"beta").digest()
+    assert active["b.txt"][1] == hashlib.sha256(b"alpha").digest()
+    t_row = sync_session.query(WatchedFile).filter_by(relative_path="t.txt").one()
+    assert t_row.status == WatchedFileStatus.removed
+    assert sync_session.get(Document, t_row.doc_id).status == "removed", "no phantom in search"
+
+
+def test_a_move_whose_destination_is_gone_by_handling_time_is_retired(sync_session, folder, tmp_path):
+    src = tmp_path / "a.txt"
+    src.write_text("alpha")
+    wf, doc = _index(sync_session, folder, src, "a.txt")
+    src.rename(tmp_path / "t.txt")
+    (tmp_path / "t.txt").unlink()
+
+    handle_event(sync_session, _moved(folder, tmp_path, "a.txt", "t.txt"))
+    sync_session.commit()
+    assert (wf.relative_path, wf.status, doc.status) == ("t.txt", WatchedFileStatus.removed, "removed")
+
+
+@pytest.mark.parametrize("why", ["old-path-still-there", "too-long-ago", "other-content"])
+def test_a_retired_document_is_adopted_only_by_a_recent_move_of_the_same_content(sync_session, folder, tmp_path, why):
+    from datetime import UTC, datetime, timedelta
+
+    from harbor_clerk.watcher.visibility import retire_watched_file
+
+    old = tmp_path / "old.txt"
+    old.write_text("alpha")
+    wf, doc = _index(sync_session, folder, old, "old.txt")
+    if why == "old-path-still-there":
+        # Retired while its file is on disk (a /watch/remove): a create of the same content is a copy.
+        retire_watched_file(wf, doc)
+    else:
+        old.unlink()
+        handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "old.txt", str(old)))
+    if why == "too-long-ago":
+        wf.removed_at = datetime.now(UTC) - timedelta(minutes=5)
+    sync_session.commit()
+
+    new = tmp_path / "new.txt"
+    new.write_text("beta" if why == "other-content" else "alpha")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "new.txt", str(new)))
+    sync_session.commit()
+    new_wf = sync_session.query(WatchedFile).filter_by(relative_path="new.txt").one()
+    assert new_wf.doc_id != doc.doc_id
+    assert (wf.relative_path, wf.status) == ("old.txt", WatchedFileStatus.removed)
+
+
+def test_a_delete_then_a_create_of_the_same_content_elsewhere_is_a_move(sync_session, folder, tmp_path):
+    """A rename whose halves arrive as a delete and a create keeps its document."""
+    old = tmp_path / "old.txt"
+    old.write_text("alpha")
+    wf, doc = _index(sync_session, folder, old, "old.txt")
+    old.rename(tmp_path / "new.txt")
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "old.txt", str(old)))
+    sync_session.commit()
+    assert doc.status == "removed"
+
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "new.txt", str(tmp_path / "new.txt")))
+    sync_session.commit()
+    assert (wf.relative_path, wf.status, doc.status, doc.pipeline_seq) == (
+        "new.txt",
+        WatchedFileStatus.active,
+        "active",
+        0,
+    )
+    assert sync_session.query(WatchedFile).count() == 1

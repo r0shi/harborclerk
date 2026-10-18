@@ -183,3 +183,22 @@ def test_events_are_dropped_while_the_root_is_not_the_directory_attached_to(tmp_
             assert [(e.kind, e.relative_path) for e in captured] == [(EventKind.deleted, "a.txt")]
     finally:
         obs.stop()
+
+
+def test_an_emitter_that_died_after_start_reads_detached(tmp_path):
+    """watchdog's FSEvents run() catches its own add_watch/read_events failures,
+    so start() returns while the emitter thread has already ended."""
+    root = tmp_path / "root"
+    root.mkdir()
+    obs = FolderObserver(uuid.uuid4(), str(root), lambda _e: None)
+    obs.start()
+    try:
+        assert obs.health() is RootState.ok
+        for emitter in list(obs._observer.emitters):
+            emitter.stop()
+            emitter.join(timeout=5.0)
+            assert not emitter.is_alive()
+        assert obs._observer.is_alive(), "the observer thread itself is still running"
+        assert obs.health() is RootState.detached
+    finally:
+        obs.stop()

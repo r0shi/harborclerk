@@ -28,6 +28,7 @@ from sqlalchemy.orm import sessionmaker
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_engine
 from harbor_clerk.error_text import describe_error
+from harbor_clerk.ingest.metadata_extractors.sidecar import load_sidecar
 from harbor_clerk.log_setup import setup_logging
 from harbor_clerk.models.watched import (
     ROOT_EMPTY,
@@ -73,6 +74,9 @@ ROOT_CHECK_INTERVAL_SECS = 5.0
 REATTACH_MAX_SKIPPED_CHECKS = 59
 # How often, at most, a pass re-checks that its folder still exists and is enabled (once per directory).
 FOLDER_CHECK_INTERVAL_SECS = 1.0
+# A pass that ended early (database unreachable, an unexpected error) is retried after this, doubling.
+RETRY_FIRST_SECS = 30.0
+RETRY_MAX_SECS = 300.0
 
 StatKey = tuple[int, int, int, int]
 
@@ -166,6 +170,13 @@ class WatcherDaemon:
         self._db_streak_lock = threading.Lock()
         # Per folder whose observer failed to attach: [consecutive failures, root checks still to skip].
         self._reattach_failures: dict[uuid.UUID, list[int]] = {}
+        # Folders whose observer was (re)started and not yet seen alive by a check.
+        self._unconfirmed: set[uuid.UUID] = set()
+        # Per folder, each sidecar .json's accepted-or-not, keyed by its stat: not re-read while unchanged.
+        self._sidecar_cache: dict[uuid.UUID, dict[str, tuple[StatKey, bool]]] = {}
+        # A pass that ended early is retried with backoff, whatever the periodic interval.
+        self._retry_at: dict[uuid.UUID, float] = {}
+        self._retry_delay: dict[uuid.UUID, float] = {}
         self._stop = threading.Event()
         # Set by an observer that lost its root, so the monitor checks now.
         self._wake = threading.Event()
@@ -286,8 +297,12 @@ class WatcherDaemon:
                     self._seen_stats.pop(fid, None)
                     self._missing_roots.discard(fid)
                     self._reattach_failures.pop(fid, None)
+                    self._unconfirmed.discard(fid)
                     self._reasons.pop(fid, None)
                     self._prune_event_failures(fid, keep=frozenset())
+                    self._sidecar_cache.pop(fid, None)
+                    self._retry_at.pop(fid, None)
+                    self._retry_delay.pop(fid, None)
                     logger.info("watcher: stopped observer for folder %s", fid)
 
             # Start new observers. One that cannot start (its root is missing)
@@ -299,6 +314,7 @@ class WatcherDaemon:
                 self._observers[fid] = obs
                 try:
                     obs.start()
+                    self._unconfirmed.add(fid)
                 except Exception:
                     # Still run the pass below: it stamps last_scan_at and records
                     # why (root missing or unreadable), so the folder does not read
@@ -330,6 +346,8 @@ class WatcherDaemon:
                 continue
             self._missing_roots.discard(fid)
             if state is RootState.ok:
+                if fid in self._unconfirmed:
+                    self._confirm_attach(fid, obs)
                 # A root that was missing or unreadable and is back (inotify keeps
                 # watching a root moved aside and back) is compared now, which
                 # clears the reason, rather than at the next periodic pass or never.
@@ -337,6 +355,14 @@ class WatcherDaemon:
                     self._request_reconcile(fid)
                 continue
             backoff = self._reattach_failures.get(fid)
+            if fid in self._unconfirmed:
+                # Attached last check, detached now: the emitter died after a start
+                # that returned (watchdog's FSEvents run() catches add_watch and
+                # read_events failures in its own thread). A failed attach, like
+                # one that raised: back off rather than restart every check.
+                self._unconfirmed.discard(fid)
+                self._note_attach_failure(fid, obs, backoff, None)
+                continue
             if backoff is not None and backoff[1] > 0:
                 backoff[1] -= 1  # backing off after repeated failures
                 continue
@@ -346,28 +372,45 @@ class WatcherDaemon:
                 logger.info("watcher: re-attaching observer for %s", obs.root)
                 try:
                     obs.restart()
-                except Exception:
-                    failures = backoff[0] + 1 if backoff is not None else 1
-                    # Retry after 0, 1, 3, 7 ... checks, at most every REATTACH_MAX_SKIPPED_CHECKS + 1.
-                    self._reattach_failures[fid] = [
-                        failures,
-                        min(2 ** (failures - 1), REATTACH_MAX_SKIPPED_CHECKS + 1) - 1,
-                    ]
-                    if backoff is None:
-                        logger.exception(
-                            "watcher: failed to re-attach observer for %s; retrying with backoff", obs.root
-                        )
-                        # A pass still runs, so the folder records why (root unreadable) and
-                        # its last_scan_at, instead of reading "scanning" while this retries.
-                        self._request_reconcile(fid)
-                    else:
-                        logger.debug("watcher: re-attach of %s failed again (%d attempts)", obs.root, failures)
+                except Exception as exc:
+                    self._note_attach_failure(fid, obs, backoff, exc)
                     continue
+                # Confirmed by the next check, when the emitter is seen alive.
+                self._unconfirmed.add(fid)
                 if backoff is not None:
-                    logger.info("watcher: re-attached observer for %s after %d failed attempts", obs.root, backoff[0])
-                self._reattach_failures.pop(fid, None)
+                    continue  # a retry in a failure streak: the full pass waits for the recovery
                 self._seen_stats.pop(fid, None)
             self._request_reconcile(fid)
+
+    def _note_attach_failure(
+        self, fid: uuid.UUID, obs: FolderObserver, backoff: list[int] | None, exc: BaseException | None
+    ) -> None:
+        """Count a failed attach (raised, or emitter dead after it) and back off: retry after 0, 1, 3, 7 ... checks.
+
+        Logged and reconciled once per failure streak: the pass records why
+        (root unreadable) and stamps last_scan_at, instead of reading
+        "scanning" while this retries.
+        """
+        failures = backoff[0] + 1 if backoff is not None else 1
+        self._reattach_failures[fid] = [failures, min(2 ** (failures - 1), REATTACH_MAX_SKIPPED_CHECKS + 1) - 1]
+        if backoff is not None:
+            logger.debug("watcher: re-attach of %s failed again (%d attempts)", obs.root, failures)
+            return
+        if exc is not None:
+            logger.error("watcher: failed to re-attach observer for %s; retrying with backoff", obs.root, exc_info=exc)
+        else:
+            logger.error("watcher: observer for %s stopped right after attaching; retrying with backoff", obs.root)
+        self._request_reconcile(fid)
+
+    def _confirm_attach(self, fid: uuid.UUID, obs: FolderObserver) -> None:
+        """An attach seen alive at the next check. After a failure streak, compare every file once."""
+        self._unconfirmed.discard(fid)
+        backoff = self._reattach_failures.pop(fid, None)
+        if backoff is None:
+            return
+        logger.info("watcher: re-attached observer for %s after %d failed attempts", obs.root, backoff[0])
+        self._seen_stats.pop(fid, None)
+        self._request_reconcile(fid)
 
     def _request_reconcile(self, folder_id: uuid.UUID) -> None:
         with self._reconcile_guard:
@@ -410,6 +453,7 @@ class WatcherDaemon:
             self._reconcile_pass(folder_id, root)
         except _DatabaseUnavailable as exc:
             logger.debug("watcher: reconcile of %s ended: the database is unreachable (%s)", root, exc.__cause__)
+            self._schedule_retry(folder_id)
         except _FolderGone:
             logger.info("watcher: reconcile of %s stopped: the folder was removed or disabled", root)
         except Exception as exc:
@@ -417,6 +461,30 @@ class WatcherDaemon:
                 self._note_db_failure(exc)
             else:
                 logger.exception("watcher: reconcile of %s failed", root)
+            self._schedule_retry(folder_id)
+        else:
+            if not self._stop.is_set():
+                self._retry_at.pop(folder_id, None)
+                self._retry_delay.pop(folder_id, None)
+
+    def _schedule_retry(self, folder_id: uuid.UUID) -> None:
+        """Retry an aborted pass after RETRY_FIRST_SECS, doubling to RETRY_MAX_SECS, until one completes.
+
+        Without this a folder whose pass ended early read "scanning" until the
+        next periodic pass, or until a restart with WATCH_RESCAN_INTERVAL_SECS=0.
+        """
+        previous = self._retry_delay.get(folder_id)
+        delay = RETRY_FIRST_SECS if previous is None else min(previous * 2, RETRY_MAX_SECS)
+        self._retry_delay[folder_id] = delay
+        self._retry_at[folder_id] = time.monotonic() + delay
+        logger.info("watcher: reconcile of folder %s will be retried in %.0fs", folder_id, delay)
+
+    def _run_due_retries(self) -> None:
+        now = time.monotonic()
+        for fid, due in list(self._retry_at.items()):
+            if now >= due:
+                self._retry_at.pop(fid, None)
+                self._request_reconcile(fid)
 
     def _reconcile_pass(self, folder_id: uuid.UUID, root: str) -> None:
         """Compare a folder on disk with the index, both ways (#847, #739).
@@ -466,6 +534,21 @@ class WatcherDaemon:
         seen = self._seen_stats.setdefault(folder_id, {})
         active = self._active_paths(folder_id)
         last_alive_check = float("-inf")
+        sidecars = self._sidecar_cache.setdefault(folder_id, {})
+
+        def sidecar_accepted(path) -> bool:
+            # What `load_sidecar` said of this .json, while its stat is unchanged:
+            # reading every sidecar every pass re-downloads evicted iCloud files.
+            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            stat = _stat_key(str(path))
+            cached = sidecars.get(rel)
+            if stat is not None and cached is not None and cached[0] == stat:
+                return cached[1]
+            accepted = load_sidecar(path, owner=str(path), quiet=True) is not None
+            if stat is not None:
+                sidecars[rel] = (stat, accepted)
+            return accepted
+
         active_by_fold: dict[str, list[str]] = {}
         for path in sorted(active):
             active_by_fold.setdefault(_fold(path), []).append(path)
@@ -496,7 +579,7 @@ class WatcherDaemon:
                 # Classify BEFORE handing off to _on_event so we can
                 # tally UNSUPPORTED_EXTENSION skips without going
                 # through the event-handler path twice.
-                reason = classify_skip(rel_path, abs_path, sibling_names=siblings)
+                reason = classify_skip(rel_path, abs_path, sibling_names=siblings, sidecar_accepted=sidecar_accepted)
                 if reason is SkipReason.UNSUPPORTED_EXTENSION:
                     skipped_count += 1
                     suffix = os.path.splitext(rel_path)[1].lower()
@@ -613,6 +696,8 @@ class WatcherDaemon:
 
         # A streak for a path this pass no longer found (deleted, renamed) can never end.
         self._prune_event_failures(folder_id, keep=present)
+        for rel in [r for r in sidecars if r not in present]:
+            sidecars.pop(rel, None)
         self._record_pass(
             folder_id,
             unavailable=ROOT_EMPTY if empty else None,
@@ -782,6 +867,7 @@ class WatcherDaemon:
                 break
             try:
                 self._check_roots()
+                self._run_due_retries()
                 if interval > 0 and time.monotonic() >= next_rescan:
                     next_rescan = time.monotonic() + interval
                     self._sync_observers()
