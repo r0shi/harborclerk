@@ -229,9 +229,10 @@ def company(title: str) -> str:
 # A markdown heading: one to six `#`, then its text. A bold lead-in: `**...**` opening a line. A numbered item written
 # bold ("**1. Staar – Distributor** (doc_id ...)") opens its line bold and so is a lead-in of its own, which is
 # benign: its section is itself, to the next lead-in or heading, and its own text is a name, not a marker. A
-# bulleted one ("- **Staar**") is not a lead-in.
+# bulleted one ("- **Staar**") is not a lead-in, and nor is an indented one: "   **Exclusions:**" under item 1 of a
+# numbered list continues that item (review of #816), and its sub-list is read as a label line's (`_LABEL_ONLY`).
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t#]*$")
-_BOLD_LEAD = re.compile(r"^[ \t]*\*\*([^*\r\n]+?)\*\*")
+_BOLD_LEAD = re.compile(r"^\*\*([^*\r\n]+?)\*\*")
 _LEAD_IN_LEVEL = 7  # below any heading: a heading's section takes its lead-ins with it, not the other way round
 
 # What a label says about the items it heads, read in its own words, lower-cased and accents folded (`_label_view`).
@@ -278,6 +279,12 @@ _FRAME = frozenset((
     "des", "ceux", "qui", "ont", "ete", "sont", "le", "la", "l'", "un", "une",
 ))  # fmt: skip
 _CLAUSE_END = re.compile(r"[(,;:—–]")
+# A label that goes on, after a contrast, to say the items qualify does not reject them: "Not included above but also
+# qualifies", "Not counted above, but qualifies". A negation after the contrast keeps it a rejection: "Close But Do
+# NOT Qualify".
+_CONTRAST = re.compile(r"\b(?:but|however|though|although|yet|mais)\b")
+_QUALIFIES = re.compile(r"\b(?:qualif(?:y|ies)|counts?|match(?:es)?|applies|apply|included)\b")
+_NEGATED = re.compile(r"\b(?:not|no|never|neither|nor|pas)\b|n't\b")
 
 
 def _label_view(label: str) -> str:
@@ -296,6 +303,9 @@ def rejecting_label(label: str) -> bool:
     required (limits not listed)", "Punitive damages excluded", "No contracts were excluded")."""
     low = _label_view(label)
     clause = re.sub(r"[^a-z0-9']+$", "", _CLAUSE_END.split(low, maxsplit=1)[0])
+    affirmed = _CONTRAST.search(low)
+    if affirmed and _QUALIFIES.search(low, affirmed.end()) and not _NEGATED.search(low, affirmed.end()):
+        return False  # "Not included above but also qualifies"
     if opened := _OPENS.match(low):
         if not _PARTICIPLE.search(opened.group()):
             return True
@@ -311,9 +321,10 @@ def rejecting_label(label: str) -> bool:
 
 # What follows a rejecting label to say it rejects nothing: the word alone, or followed at once by punctuation or a
 # conjunction ("Exclusions: none; Staar and Papa John's both qualify", "False positives: none, both are real"). Never
-# "None of these contains a genuine covenant:", which is a rejection, and never a bare "No <noun>".
+# "None of these contains a genuine covenant:", which is a rejection, never a bare "No <noun>", and never a compound
+# ("Zero-rated:", "Nil-rated contracts").
 _EMPTY = re.compile(
-    r"[\s*_:—–-]*(?:none|nothing|n/a|nil|zero|aucune?|rien|neant)(?=[\s*_]*(?:$|[;.,:!—–-]|(?:and|but|or|so|et|mais)\b))",
+    r"[\s*_:—–-]*(?:none|nothing|n/a|nil|zero|aucune?|rien|neant)(?=[\s*_]*(?:$|[;.,:!—–]|(?:and|but|or|so|et|mais)\b))",
     re.IGNORECASE,
 )
 
@@ -360,19 +371,28 @@ def without_excluded_sections(text: str) -> str:
 # A line label: a line or bullet that opens with bold text, or with a short colon-terminated label that is a single
 # clause (no comma, semicolon or dash before its colon: "Excluded contracts aside, the matches are: X" is a
 # sentence), before its items ("- **Excluded near-misses:** ... `0050` ...", "Not counted: X"). A label that rejects
-# and names no item takes out what follows it on the line, to the next semicolon, sentence end or `word:` label
-# ("Not counted: eDiets; counted: Staar", "Excluded: eDiets. Matches: Staar").
+# and names no item takes out what follows it on the line, to the next semicolon or sentence end ("Not counted:
+# eDiets; counted: Staar", "Excluded: eDiets. Matches: Staar"). A full stop after an abbreviation or an initial
+# ("Inc.", "Jan.", "U.S.") does not end a sentence, and a colon inside the reach ("doc_id:", "Skylight: targets
+# Northwind") does not end it either.
 _LINE_LABEL = re.compile(
     r"^[ \t]*(?:(?:[-*•+]|\d+[.)])[ \t]+)?(?:\*\*(?P<bold>[^*\n]+)\*\*|__(?P<under>[^_\n]+)__"
     r"|(?P<plain>(?:(?! - )[^:*,;—–\n]){1,80}):(?=\s|$))"
 )
-_REACH_END = re.compile(r";|[.!?](?=\s|$)|\s[A-Za-z][\w-]*:(?=\s|$)")
+_ABBREVIATIONS = (
+    "inc", "ltd", "corp", "co", "llc", "lp", "jr", "sr", "no", "st", "jan", "feb", "mar", "apr", "jun", "jul", "aug",
+    "sep", "sept", "oct", "nov", "dec",
+)  # fmt: skip
+_REACH_END = re.compile(
+    r";|" + "".join(rf"(?<!\b{a})" for a in _ABBREVIATIONS) + r"(?<!\b[a-z])[.!?](?=\s|$)", re.IGNORECASE
+)
 # A label of more words than this is a sentence, not a label. Twelve takes "Notable Contracts That Were Close But
 # Do NOT Qualify:" (nine), a stored heading, and "Excluded because they target Northwind and Polestar instead:".
 _LABEL_MAX_WORDS = 12
 # A line that is nothing but a label ending with a colon, bulleted or not ("- **Excluded near-misses:**",
 # "Excluded:"): when it rejects, it takes out the list items under it, to a blank line, a heading, another such line,
-# a line that is not a list item, or (under a bulleted label) an item at the label's indentation or less.
+# a line that is not a list item, an item indented less than the label (so an indented "Exclusions:" under one
+# contract's bullet ends at the next contract), or, under a bulleted label, an item at the label's indentation.
 _LABEL_ONLY = re.compile(
     r"^(?P<indent>[ \t]*)(?P<bullet>(?:[-*•+]|\d+[.)])[ \t]+)?"
     r"(?:\*\*(?P<bold>[^*\n]+?)(?::\*\*|\*\*:)|__(?P<under>[^_\n]+?)(?::__|__:)"
@@ -429,21 +449,19 @@ def named_contracts(
     saying "none" after one search would score like one that listed the hits (review of #697). The map only
     resolves ids the answer itself wrote out."""
     kept = []
-    heading_list: tuple[int, bool] | None = None  # (indentation, bulleted) of a rejecting label line being read
+    # The least indentation an item under the rejecting label line being read may have: the label's own, or one more
+    # under a bulleted label, whose list items sit inside it.
+    heading_list: int | None = None
     for line in without_excluded_sections(text).splitlines():
         if heading_list is not None:
             item = _LIST_ITEM.match(line)
-            if (
-                item
-                and not _LABEL_ONLY.match(line)
-                and not (heading_list[1] and len(item.group("indent").expandtabs(4)) <= heading_list[0])
-            ):
+            if item and not _LABEL_ONLY.match(line) and len(item.group("indent").expandtabs(4)) >= heading_list:
                 continue
             heading_list = None
         only = _LABEL_ONLY.match(line)
         only_words = only and (only.group("bold") or only.group("under") or only.group("plain"))
         if only_words and len(only_words.split()) <= _LABEL_MAX_WORDS and rejecting_label(only_words):
-            heading_list = (len(only.group("indent").expandtabs(4)), bool(only.group("bullet")))
+            heading_list = len(only.group("indent").expandtabs(4)) + (1 if only.group("bullet") else 0)
             kept.append(line)
             continue
         label = _LINE_LABEL.match(line)

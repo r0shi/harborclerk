@@ -687,7 +687,9 @@ def test_review_4_shapes(text, expected):
         (f"Not counted: `{EID}`; counted: `{SID}`\n", {STAAR}),
         (f"Excluded contracts aside, the matches are: `{SID}`, `{PID}`\n", {STAAR, PAPA}),
         (f"Excluded: `{EID}`. Matches: `{SID}`.\n", {STAAR}),
-        (f"Excluded: `{EID}` Matches: `{SID}`\n", {STAAR}),
+        # A label after no semicolon or full stop does not end the reach: an accepted false drop, for the colon in
+        # "doc_id:" or "Skylight: targets Northwind" does not either (review 6).
+        (f"Excluded: `{EID}` Matches: `{SID}`\n", set()),
         (f"Excluded: `{EID}`. `{SID}` qualifies.\n", {STAAR}),
         (f"- **Not counted — Staar (`{SID}`)**: Papa John's (`{PID}`) qualifies.\n", {STAAR, PAPA}),
         # A label of more than twelve words is a sentence (this one is fourteen, under eighty characters).
@@ -713,3 +715,93 @@ def test_review_4_shapes(text, expected):
 )
 def test_review_5_shapes(text, expected):
     assert contracts(text) == expected
+
+
+STAAR_LINE = f"**Staar** (`{SID}`): $5M product liability."
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # review 6: an indented label under one contract's bullet takes its own sub-list, not the contracts after it.
+        (
+            f"Three.\n\n- {STAAR_LINE}\n  Exclusions:\n  - punitive damages\n- **eDiets** (`{EID}`): $1M CGL.\n"
+            f"- **Papa John's** (`{PID}`): $2M CGL.\n",
+            {STAAR, EDIETS, PAPA},
+        ),
+        (
+            f"Three.\n\n1. {STAAR_LINE}\n   **Exclusions:**\n   - punitive damages\n2. **eDiets** (`{EID}`): $1M CGL.\n"
+            f"3. **Papa John's** (`{PID}`): $2M CGL.\n",
+            {STAAR, EDIETS, PAPA},
+        ),
+        (
+            f"Three.\n\n1. {STAAR_LINE}\n   - **Exclusions:**\n     - punitive damages\n2. **eDiets** (`{EID}`): $1M CGL.\n"
+            f"3. **Papa John's** (`{PID}`): $2M CGL.\n",
+            {STAAR, EDIETS, PAPA},
+        ),
+        (
+            f"Three.\n\n- Staar (`{SID}`)\n  Excluded:\n  - conflict-of-law rules\n- eDiets (`{EID}`)\n"
+            f"- Papa John's (`{PID}`)\n",
+            {STAAR, EDIETS, PAPA},
+        ),
+        (f"Found.\n\n2. Papa `{PID}`\n   Exclusions:\n   - consequential damages\n3. eDiets `{EID}`\n", {PAPA, EDIETS}),
+        # ...while its sub-list, at or past its indentation, is taken.
+        (f"Two.\n\n- Staar (`{SID}`)\n  Excluded:\n  - eDiets (`{EID}`)\n    - Papa John's (`{PID}`)\n", {STAAR}),
+        # review 6: a twelve-word cap on a label-only line that rejects on its own.
+        (
+            f"Three.\n\nExcluded because all of these were for other firms and not for Acme at all:\n"
+            f"- `{EID}`\n- `{PID}`\n- `{SID}`\n",
+            {STAAR, EDIETS, PAPA},
+        ),
+        (f"Three.\n\nExcluded because all of these were for other firms:\n- `{EID}`\n- `{PID}`\n- `{SID}`\n", set()),
+        # review 6: a contrast that affirms qualification does not reject.
+        (
+            f"Found two.\n\n## Matches\n\n- `{SID}`\n- **Not included above but also qualifies:** `{PID}`\n",
+            {STAAR, PAPA},
+        ),
+        (f"Found two.\n\n- `{SID}`\n\n**Not counted above, but qualifies:** `{PID}`\n", {STAAR, PAPA}),
+        (f"Found two.\n\n- `{SID}`\n- **Not included above but does not qualify:** `{PID}`\n", {STAAR}),
+        # review 6: abbreviations and inner colons do not end a rejecting label's reach.
+        (f"One: `{SID}`.\n- **Excluded:** eDiets, doc_id: `{EID}` (warranty only)\n", {STAAR}),
+        (f"One: `{SID}`.\n- **Excluded:** eDiets — Doc ID: `{EID}`\n", {STAAR}),
+        (
+            f"One: `{SID}`.\n- **Not counted:** Papa John's International, Inc. and eDiets.com, Inc. (`{EID}`)\n",
+            {STAAR},
+        ),
+        (f"One: `{SID}`.\n- **Excluded:** the U.S. affiliate of eDiets (`{EID}`)\n", {STAAR}),
+        (f"One: `{SID}`.\n- **Excluded:** Agreement No. 7, eDiets (`{EID}`)\n", {STAAR}),
+        (f"Two.\n- **Excluded:** `{EID}` (doc 2: warranty only); `{SID}` qualifies.\n", {STAAR}),
+        (f"Two.\n- **Excluded near-misses:** eDiets (reviewed: warranty only) and `{PID}`\n", set()),
+        # review 6: "Zero-rated" and "Nil-rated" are not "none".
+        (f"Found two.\n\n## Matches\n\n- `{SID}`\n\n## Excluded\n\nZero-rated: `{EID}`\n", {STAAR}),
+        (f"Found two.\n\n- `{SID}`\n\n## Excluded\n\nNil-rated contracts are out of scope: `{EID}`\n", {STAAR}),
+        (f"Found two.\n\n- `{SID}`\n\n## Excluded\n\nNone — `{EID}` qualifies too.\n", {STAAR, EDIETS}),
+    ],
+)
+def test_review_6_shapes(text, expected):
+    assert contracts(text) == expected
+
+
+def test_review_6_campaign_shapes():
+    assert named("Harbour Lights.\nExcluded: Skylight: targets Northwind.") == {HARBOUR}
+    assert named("Harbour Lights.\nExcluded: Skylight (Jan. 3) and Northstar (Jan. 9).") == {HARBOUR}
+    assert named("Harbour Lights.\nExcluded: Skylight (jan. 3). Northstar targets Acme.") == {HARBOUR, NORTHSTAR}
+
+
+@pytest.mark.parametrize(
+    ("label", "rejects"),
+    [
+        ("Not included above but also qualifies", False),
+        ("Not counted above, but qualifies", False),
+        ("Excluded, but it applies", False),
+        ("Rejected at first, though it counts", False),
+        ("Excluded, yet a match", False),
+        ("Not counted, mais it qualifies", False),
+        ("Notable Contracts That Were Close But Do NOT Qualify", True),
+        ("Not included above but does not qualify", True),
+        ("Excluded, but it doesn't count", True),
+        ("Excluded, but see the note", True),
+    ],
+)
+def test_a_contrast_that_affirms_qualification_does_not_reject(label, rejects):
+    assert rejecting_label(label) is rejects
