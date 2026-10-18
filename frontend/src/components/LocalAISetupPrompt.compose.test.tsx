@@ -114,6 +114,31 @@ describe('local AI setup under Docker Compose (#654)', () => {
     expect(screen.queryByText(/LLM_MODEL_FILE/)).not.toBeInTheDocument()
   })
 
+  // The served model is there and loading, or crash-looping: no setup hint, so "download it" would be wrong.
+  it.each([
+    ['loading with the model id set', { state: 'loading' as const, model_id: 'qwen3.5-4b', model_name: 'Qwen3.5 4B' }],
+    ['loading before the id is known', { state: 'loading' as const, model_id: null, model_name: null }],
+    ['crash-looping with the model id set', { state: 'unknown' as const, model_id: 'qwen3.5-4b', model_name: null }],
+  ])('the empty state, %s, points at the llama-server log', (_label, status) => {
+    useOptionalLLMStatusMock.mockReturnValue({
+      ...status,
+      setup_hint: null,
+      compose_model_file: 'Qwen3.5-4B-Q4_K_M.gguf',
+    })
+    renderPrompt('ask')
+    expect(
+      screen.getByText("The local model is loading; if this persists, check 'docker compose logs llama-server'."),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/download it/)).not.toBeInTheDocument()
+  })
+
+  it('with no model id, no hint and not loading, the empty state still says to download the file', () => {
+    useOptionalLLMStatusMock.mockReturnValue({ ...compose, setup_hint: null })
+    renderPrompt('ask')
+    expect(screen.getByText(/\(Qwen3\.5-4B-Q4_K_M\.gguf\); download it in Settings → Models\./)).toBeInTheDocument()
+    expect(screen.queryByText(/is loading/)).not.toBeInTheDocument()
+  })
+
   it('composeSetupStep stands in for the status on Docker only until the status is known', () => {
     expect(composeSetupStep(null, 'docker')).toMatch(/LLM_MODEL_FILE/)
     expect(composeSetupStep({ state: 'unknown', model_id: null, model_name: null }, 'docker')).toMatch(/LLM_MODEL_FILE/)

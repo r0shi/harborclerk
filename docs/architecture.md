@@ -220,14 +220,17 @@ Setup: [README](../README.md#local-ai-on-docker).
 - **The served model.** `llama-server` runs one model, `-m /models/$LLM_MODEL_FILE`, at `-c $LLM_CONTEXT_TOKENS`.
   Without `-m` this llama.cpp is a router that refuses every request the app sends, so the entrypoint
   (`docker/llama-server-entrypoint.sh`) refuses a command with no model, waits for a whole GGUF (the container is
-  healthy only once a model is loaded), replaces a zero context with the compose default, and traps SIGTERM while it
-  waits.
+  healthy only once a model is loaded), and traps SIGTERM while it waits. It also replaces the context with the
+  compose default (8192), with a warning naming the value, when the value of `-c` or `--ctx-size` (spaced or `=`)
+  is not a non-empty string of ASCII digits, or is numerically zero: llama-server's `std::stoi` would read `8k` as 8
+  and `0x0` as 0, crash on `-1`, and take 0 as the model's full training context.
 - **The active model.** `llm_model_id` is the curated id of `LLM_MODEL_FILE` while that file is in the
   `llama_models` volume, and empty otherwise (`config._apply_model_file`, on every `refresh_llm_settings()`).
   Switching away from the served model, or deleting it, is refused with a 409 naming the `.env` change; activating the
   served model, or deactivating when nothing is active, is a no-op.
-- **The context.** `effective_context` is `min(window without YaRN, LLM_CONTEXT_TOKENS)`; a zero or malformed
-  `LLM_CONTEXT_TOKENS` is logged and budgeted as the compose default (8192), as the entrypoint runs it.
+- **The context.** `effective_context` is `min(window without YaRN, LLM_CONTEXT_TOKENS)`. A zero `LLM_CONTEXT_TOKENS`,
+  or one that is not a non-empty string of ASCII digits, is logged and budgeted as the compose default (8192), the
+  context the entrypoint then runs llama-server at.
 - **Waiting for the server.** Summaries wait for llama-server within one budget of 90 s of *waiting* per document
   (`health.document_wait_budget`, charged only inside `wait_for_server`, never with inference or idle yields), shared
   by the summary and the doc type, with no memory across documents: in a crash loop each document waits its own 90 s.

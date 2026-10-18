@@ -239,7 +239,11 @@ def test_the_summarizer_says_to_download_the_compose_model_not_to_activate(
     assert "Activate a model" not in caplog.text
 
 
-@pytest.mark.parametrize("bad", ["8k", "16,384", "-1"])
+# `²` and `٨١٩٢` are digits to str.isdigit() (and int() reads the second as 8192), but not to llama-server.
+MALFORMED_CONTEXTS = ["8k", "16,384", "-1", "\u00b2", "\u0668\u0661\u0669\u0662"]
+
+
+@pytest.mark.parametrize("bad", MALFORMED_CONTEXTS)
 def test_a_malformed_context_does_not_stop_settings_from_constructing(monkeypatch, caplog, bad) -> None:
     # Every service reads .env, so a typo here must not crash-loop the app, the watcher and the workers.
     monkeypatch.setenv("LLM_CONTEXT_TOKENS", bad)
@@ -251,7 +255,7 @@ def test_a_malformed_context_does_not_stop_settings_from_constructing(monkeypatc
     assert len(errors) == 1 and repr(bad) in errors[0].getMessage()
 
 
-@pytest.mark.parametrize("bad", ["8k", "16,384", "-1"])
+@pytest.mark.parametrize("bad", MALFORMED_CONTEXTS)
 def test_a_malformed_context_under_compose_budgets_to_the_compose_default(
     compose_env: Path, monkeypatch, caplog, bad
 ) -> None:

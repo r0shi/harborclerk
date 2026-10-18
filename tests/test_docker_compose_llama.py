@@ -348,11 +348,38 @@ def test_entrypoint_replaces_a_zero_context_with_the_compose_default(tmp_path: P
     result = subprocess.run(["dash", str(ENTRYPOINT), *args], env=_env(fake), capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert out.read_text().splitlines() == ["-m", str(model), "-ngl", "0", *passed, "--port", "8080"]
-    assert b"LLM_CONTEXT_TOKENS=0 is not supported under Compose" in result.stderr
+    value = given[-1].split("=")[-1]
+    assert f"LLM_CONTEXT_TOKENS={value} is not supported under Compose".encode() in result.stderr
+
+
+# What llama-server's std::stoi would misread (#654): `8k` as 8 (padded to 256 tokens), `16,384` as 16, `-1` wraps
+# and crashes, `+0`, `-0`, `0.0` and `0x0` as 0 (the full training context), `abc` throws. Non-ASCII digits are not
+# digits to it either.
+MALFORMED_CONTEXTS = ["8k", "16,384", "-1", "+0", "-0", "0.0", "0x0", "abc", "\u00b2", "\u0668\u0661\u0669\u0662", ""]
 
 
 @needs_dash
-@pytest.mark.parametrize("context", [["-c", "16384"], ["-c", "010"], ["--ctx-size=08192"]])
+@pytest.mark.parametrize("form", ["spaced", "equals"])
+@pytest.mark.parametrize("value", MALFORMED_CONTEXTS)
+def test_entrypoint_replaces_a_malformed_context_with_the_compose_default(
+    tmp_path: Path, value: str, form: str
+) -> None:
+    # The app logs that the compose default applies to a malformed LLM_CONTEXT_TOKENS; llama-server must get it too.
+    fake, out = _fake_server(tmp_path)
+    model = tmp_path / "Qwen3.5-4B-Q4_K_M.gguf"
+    model.write_bytes(b"GGUF")
+    given, passed = (
+        (["-c", value], ["-c", "8192"]) if form == "spaced" else ([f"--ctx-size={value}"], ["--ctx-size=8192"])
+    )
+    args = ["-m", str(model), *given, "--port", "8080"]
+    result = subprocess.run(["dash", str(ENTRYPOINT), *args], env=_env(fake), capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert out.read_text().splitlines() == ["-m", str(model), *passed, "--port", "8080"]
+    assert f"LLM_CONTEXT_TOKENS={value} is not a whole number of tokens".encode() in result.stderr
+
+
+@needs_dash
+@pytest.mark.parametrize("context", [["-c", "16384"], ["-c", "010"], ["--ctx-size=08192"], ["--ctx-size", "4096"]])
 def test_entrypoint_leaves_a_real_context_alone(tmp_path: Path, context) -> None:
     # A non-zero context passes untouched, leading zeros and all; so do other flags whose value is 0.
     fake, out = _fake_server(tmp_path)
