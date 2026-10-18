@@ -1,0 +1,2 @@
+# Shell scripts run under /bin/sh in containers; a CRLF checkout (core.autocrlf on Windows) breaks them.
+*.sh text eol=lf

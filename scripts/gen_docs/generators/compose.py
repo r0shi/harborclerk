@@ -33,8 +33,9 @@ def _role(service: dict) -> str:
     Compose `command:` comes in three shapes and each needs handling:
     a list starting with an executable (`harbor-clerk-worker ...`), a plain
     string (`server /data --console-address ...`), and a list of bare flags
-    with no executable at all (llama-server, whose entrypoint is baked into the
-    image). Naively taking token zero renders `--host` as the role, which is
+    with no executable at all (llama-server: its `entrypoint:` override, a script
+    that waits for the model file and then execs the image's binary, names the
+    program). Naively taking token zero renders `-m` as the role, which is
     meaningless.
     """
     command = service.get("command")
@@ -53,8 +54,9 @@ def _role(service: dict) -> str:
 
     first = str(command[0])
     if first.startswith("-"):
-        # Bare flags: the entrypoint lives in the image, which the Image column
-        # already names. Better to say nothing than to name a flag.
+        # Bare flags: the program is the entrypoint (the image's, or an override
+        # that execs it), and the Image column already names the image. Better to
+        # say nothing than to name a flag.
         return "—"
     return f"`{first}`"
 

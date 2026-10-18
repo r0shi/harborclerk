@@ -18,9 +18,14 @@
 # (docker-init is PID 1, from `init: true`, and forwards the signal here.)
 set -eu
 
-model=""
+# The model as llama-server would read it: `-m PATH`, `--model PATH`, `--model=PATH`, or LLAMA_ARG_MODEL
+# (llama.cpp's environment form of -m). A flag on the command line wins over the environment.
+model="${LLAMA_ARG_MODEL:-}"
 prev=""
 for arg in "$@"; do
+    case "$arg" in
+    --model=*) model="${arg#--model=}" ;;
+    esac
     if [ "$prev" = "-m" ] || [ "$prev" = "--model" ]; then
         model="$arg"
     fi
@@ -28,7 +33,8 @@ for arg in "$@"; do
 done
 
 if [ -z "$model" ]; then
-    echo "llama-server-entrypoint: no -m given; refusing to start llama-server in router mode (#654)" >&2
+    echo "llama-server-entrypoint: no model given (-m, --model or LLAMA_ARG_MODEL); refusing to start" \
+        "llama-server in router mode (#654)" >&2
     exit 64
 fi
 

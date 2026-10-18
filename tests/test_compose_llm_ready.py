@@ -318,6 +318,69 @@ def test_a_probe_that_times_out_is_loading_not_gone(compose, monkeypatch) -> Non
     assert health.llm_server_state() == health.LOADING
 
 
+def test_a_probe_whose_connection_timed_out_is_gone(compose, monkeypatch) -> None:
+    # Nothing accepted the connection: that is not a server slow to answer.
+    def timeout(url, **kwargs):
+        raise httpx.ConnectTimeout("no answer", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(health.httpx, "get", timeout)
+    assert health.llm_server_state() == health.UNAVAILABLE
+
+
+# --- a slow load is not a crash loop ---
+
+
+def test_a_slow_load_with_a_queue_of_documents_costs_at_most_the_first_one(compose, clock, monkeypatch, llm) -> None:
+    # 150 s of loading (503 throughout, nothing ever refused) with 80 documents queued a second apart. The
+    # first document waits its 90 s and falls back; it saw only LOADING, so it flags nothing, and the second
+    # waits out the rest of the load. Flagging it made 59 of 80 summaries extractive for good.
+    t0 = clock.now
+    server = Server(clock, up_at=t0, code=503)
+    monkeypatch.setattr(health.httpx, "get", server)
+
+    def finish_loading(seconds: float) -> None:
+        Clock.sleep(clock, seconds)
+        if clock.now >= t0 + 150:
+            server.code = 200
+
+    monkeypatch.setattr(health.time, "sleep", finish_loading)
+    used = []
+    for i in range(80):
+        clock.now = max(clock.now, t0 + i)  # the worker takes the next queued document
+        used.append(_document()[1])
+        assert not health.server_failing(), f"a slow load flagged the server at document {i}"
+    assert used.count("extractive") <= 1, f"{used.count('extractive')} of 80 summaries stored extractive"
+    assert used[1:] == ["qwen35-4b"] * 79
+
+
+def test_a_load_that_never_finishes_costs_each_document_its_own_budget(compose, clock, monkeypatch, llm) -> None:
+    # Accepted: a wedged loader is rare, and it is bounded per document. Each one waits its 90 s and falls
+    # back; none flags the server, because it never stopped answering.
+    monkeypatch.setattr(health.httpx, "get", Server(clock, up_at=clock.now, code=503))
+    for _ in range(3):
+        clock.slept.clear()
+        assert _document()[1] == "extractive"
+        assert health.DOCUMENT_WAIT_SECONDS <= clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS
+        assert not health.server_failing()
+
+
+def test_a_503_from_a_ready_server_retries_after_the_jittered_delay(compose, clock, monkeypatch) -> None:
+    # /health says ready, the completion answers 503: a busy server, not a load. The retries are spaced by
+    # the old 5-15 s jittered delay, not fired in the same instant; the last attempt does not wait.
+    monkeypatch.setattr(health.httpx, "get", Server(clock, up_at=clock.now))
+    posted_at: list[float] = []
+
+    def post(url, **kwargs):
+        posted_at.append(clock.now)
+        return httpx.Response(503, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(summarize.httpx, "post", post)
+    assert summarize._call_llm("system", "user", max_attempts=3, phase="test") is None
+    gaps = [b - a for a, b in zip(posted_at, posted_at[1:], strict=False)]
+    assert len(posted_at) == 3 and all(5 <= gap <= 5 + 10 * 3 for gap in gaps), gaps
+    assert clock.now == posted_at[-1], "the last attempt waited"
+
+
 def test_a_ready_verdict_is_reused_and_a_loading_one_only_briefly(compose, clock, monkeypatch) -> None:
     server = Server(clock, up_at=clock.now, code=503)
     monkeypatch.setattr(health.httpx, "get", server)

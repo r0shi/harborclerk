@@ -1985,7 +1985,7 @@ async def research_stream(
                     {
                         "type": "error",
                         "message": server_unready_message(
-                            "LLM server is not running. Select and activate a model in Settings."
+                            "LLM server is not running. Select and activate a model in Settings.", exc=exc
                         ),
                     }
                 )

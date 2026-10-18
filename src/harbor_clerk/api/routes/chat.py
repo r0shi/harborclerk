@@ -44,6 +44,7 @@ from harbor_clerk.llm.download import (
 )
 from harbor_clerk.llm.models import (
     GIB,
+    effective_context,
     get_model,
     list_models,
     max_context,
@@ -327,13 +328,27 @@ async def list_available_models(
     downloaded = set(list_downloaded())
     ram = system_ram_bytes()
     yarn = settings.llm_yarn_enabled
-    # At the context the launcher will ask for: the YaRN-extended window when YaRN is on.
+    compose = is_compose(settings)
+
+    def here(m) -> tuple[int, bool]:
+        # The context the model runs at here, and whether it runs at all. On a Mac, the launcher's arithmetic,
+        # at the context it asks for (the YaRN-extended window when YaRN is on). Under Docker Compose nothing
+        # clamps by memory and nothing refuses a model: the server runs at LLM_CONTEXT_TOKENS (#654), as
+        # llm_status already assumes, so the Mac's fit warnings do not apply.
+        wanted = requested_context(m, yarn)
+        if compose:
+            return effective_context(m, yarn), True
+        if ram <= 0:
+            return wanted, True
+        fits = max_context(m, ram, wanted)
+        return fits, fits >= wanted
+
     return [
         ModelOut(
-            memory_bytes=memory_bytes(m, requested_context(m, yarn)),
+            memory_bytes=memory_bytes(m, here(m)[0] if compose else requested_context(m, yarn)),
             min_ram_gb=min_ram_gb(m, requested_context(m, yarn)),
-            max_context_here=max_context(m, ram, requested_context(m, yarn)) if ram > 0 else requested_context(m, yarn),
-            fits_here=ram <= 0 or max_context(m, ram, requested_context(m, yarn)) >= requested_context(m, yarn),
+            max_context_here=here(m)[0],
+            fits_here=here(m)[1],
             system_ram_gb=round(ram / GIB, 1),
             id=m.id,
             name=m.name,

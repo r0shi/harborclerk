@@ -28,6 +28,7 @@ from harbor_clerk.llm.health import (
     DOCUMENT_WAIT_SECONDS,
     READY,
     document_wait_budget,
+    llm_server_state,
     server_is_probed,
     wait_for_server,
 )
@@ -252,10 +253,17 @@ def _call_llm(
         try:
             resp = httpx.post(url, json=payload, timeout=timeout)
             elapsed = time.perf_counter() - call_started
-            # Under Compose a 503 is llama-server loading its model (#654): wait for it within the
-            # document's budget, as for a refused connection, and never on the last attempt.
-            if resp.status_code == 503 and server_is_probed() and attempt < max_attempts:
-                if wait_for_server(fresh=True) == READY:
+            # Under Compose a 503 while /health is not ready is llama-server loading its model (#654): wait
+            # for it within the document's budget, as for a refused connection, and never on the last
+            # attempt. A 503 while /health says ready is a busy server: the jittered delay below spaces the
+            # retries, as before.
+            if (
+                resp.status_code == 503
+                and server_is_probed()
+                and attempt < max_attempts
+                and llm_server_state(fresh=True) != READY
+            ):
+                if wait_for_server() == READY:
                     continue
                 logger.info(
                     "LLM call phase=%s elapsed=%.1fs 503 + llama-server not ready within the %.0fs budget — skipping %d remaining retries",

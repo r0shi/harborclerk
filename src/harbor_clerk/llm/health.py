@@ -155,8 +155,10 @@ def llm_server_state(*, fresh: bool = False) -> str:
     try:
         code = httpx.get(f"{settings.llama_server_url}/health", timeout=_PROBE_TIMEOUT_SECONDS).status_code
         state = READY if code == 200 else LOADING if code == 503 else UNAVAILABLE
+    except httpx.ConnectTimeout:
+        state = UNAVAILABLE  # nothing accepted the connection
     except httpx.TimeoutException:
-        state = LOADING  # it accepted the connection; a server that is up answers /health while it works
+        state = LOADING  # it accepted the connection but was slow to answer; a server that is up answers /health
     except httpx.HTTPError:
         state = UNAVAILABLE
     with _lock:
@@ -186,6 +188,9 @@ class WaitBudget:
         self.seconds = seconds
         self.spent = 0.0
         self.saw_ready = False
+        # Whether a probe in this budget found nothing listening. A crash loop shows such gaps; a slow but
+        # healthy load answers 503 throughout and does not, and must not flag the server.
+        self.saw_unavailable = False
 
     def remaining(self) -> float:
         return max(0.0, self.seconds - self.spent)
@@ -228,13 +233,18 @@ def wait_for_server(*, fresh: bool = False) -> str:
     failing = server_failing()
     state = llm_server_state(fresh=fresh or failing)
     budget = _document_budget.get() or WaitBudget(DOCUMENT_WAIT_SECONDS)
+    budget.saw_unavailable |= state == UNAVAILABLE
     if state != READY and not failing:
         while state != READY and budget.remaining() > 0:
             started = time.monotonic()
             time.sleep(min(POLL_SECONDS, budget.remaining()))
             state = llm_server_state(fresh=True)
             budget.charge(time.monotonic() - started)
-        if state != READY and not budget.saw_ready:
+            budget.saw_unavailable |= state == UNAVAILABLE
+        # Flag only a server that failed: never READY in this budget, and found not listening at least once.
+        # A budget spent on a load that answered 503 throughout falls this document back but flags nothing,
+        # so the next document waits again (a load that never finishes costs each document its own budget).
+        if state != READY and not budget.saw_ready and budget.saw_unavailable:
             with _lock:
                 _failing_since = time.monotonic()
             logger.warning(
@@ -255,11 +265,12 @@ MODEL_STARTING_MESSAGE = (
 )
 
 
-def server_unready_message(default: str, *, status_code: int | None = None) -> str:
+def server_unready_message(default: str, *, status_code: int | None = None, exc: BaseException | None = None) -> str:
     """The user-facing text for a chat or research request llama-server did not serve.
 
-    Under Compose, a refused connection (`status_code` None) or a 503 means it is starting or loading its
-    model: `MODEL_STARTING_MESSAGE`. Anything else, and everything outside Compose, keeps `default`."""
-    if server_is_probed() and status_code in (None, 503):
+    Under Compose, a refused connection (`exc` an `httpx.ConnectError`) or a 503 (`status_code`) means it is
+    starting or loading its model: `MODEL_STARTING_MESSAGE`. A read timeout or a connection cut mid-answer is
+    something else and keeps `default`, as does everything outside Compose."""
+    if server_is_probed() and (status_code == 503 or isinstance(exc, httpx.ConnectError)):
         return MODEL_STARTING_MESSAGE
     return default

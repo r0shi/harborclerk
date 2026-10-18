@@ -257,3 +257,38 @@ def test_entrypoint_stops_at_once_on_sigterm_while_waiting(tmp_path: Path) -> No
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+@needs_sh
+@pytest.mark.parametrize("form", ["--model=", "LLAMA_ARG_MODEL"])
+def test_entrypoint_reads_the_other_ways_llama_server_takes_a_model(tmp_path: Path, form: str) -> None:
+    # llama-server also takes `--model=PATH`, and LLAMA_ARG_MODEL from the environment: either is a model
+    # given, to wait for, not a router to refuse.
+    fake, out = _fake_server(tmp_path)
+    model = tmp_path / "Qwen3.5-4B-Q4_K_M.gguf"
+    model.write_bytes(b"GGUF")
+    env = _env(fake)
+    if form == "--model=":
+        args = [f"--model={model}", "--port", "8080"]
+    else:
+        args = ["--port", "8080"]
+        env["LLAMA_ARG_MODEL"] = str(model)
+    result = subprocess.run(["sh", str(ENTRYPOINT), *args], env=env, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert out.read_text().splitlines() == args
+
+
+@needs_sh
+def test_entrypoint_waits_for_a_model_given_with_model_equals(tmp_path: Path) -> None:
+    fake, out = _fake_server(tmp_path)
+    model = tmp_path / "Qwen3.5-4B-Q4_K_M.gguf"
+    proc = subprocess.Popen(["sh", str(ENTRYPOINT), f"--model={model}"], env=_env(fake), stderr=subprocess.PIPE)
+    try:
+        time.sleep(0.5)
+        assert proc.poll() is None and not out.exists(), "started before the model file existed"
+        model.write_bytes(b"GGUF")
+        assert proc.wait(timeout=10) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)

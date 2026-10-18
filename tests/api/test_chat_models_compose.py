@@ -247,3 +247,29 @@ async def test_compose_deactivate_reads_the_active_model_fresh(
     (models_dir / SERVED).unlink()
     resp = await client.put("/api/chat/models/deactivate", headers=auth_header(admin_token))
     assert resp.status_code == 200, "deactivate judged a model active that the volume no longer holds"
+
+
+async def test_compose_models_page_shows_the_servers_context_and_no_mac_fit_warning(
+    client, admin_user, admin_token, compose, monkeypatch
+) -> None:
+    # A small Docker VM: the Mac arithmetic would say most models do not fit and run at a clamped context.
+    # Under Compose the server runs every model at LLM_CONTEXT_TOKENS and nothing refuses one.
+    from harbor_clerk.llm.models import MODELS
+
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 2 * GIB)
+    monkeypatch.setenv("LLM_CONTEXT_TOKENS", "8192")
+    config._settings = None
+    resp = await client.get("/api/chat/models", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    for m in resp.json():
+        assert m["fits_here"] is True, m["id"]
+        assert m["max_context_here"] == min(MODELS[m["id"]].context_window, 8192), m["id"]
+
+
+async def test_a_source_run_models_page_keeps_the_mac_arithmetic(
+    client, admin_user, admin_token, source_run, monkeypatch
+) -> None:
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 2 * GIB)
+    resp = await client.get("/api/chat/models", headers=auth_header(admin_token))
+    by_id = {m["id"]: m for m in resp.json()}
+    assert by_id["qwen35-4b"]["fits_here"] is False and by_id["qwen35-4b"]["max_context_here"] == 0
