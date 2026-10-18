@@ -42,6 +42,9 @@ class Clock:
     def sleep(self, seconds: float) -> None:
         self.slept.append(seconds)
         self.now += seconds
+        # A wait that never ends would spin forever on a clock that sleeping moves: bound it.
+        if sum(self.slept) > 3600:
+            raise AssertionError("waited over an hour of fake time: the wait does not end")
 
 
 class Server:
