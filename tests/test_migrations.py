@@ -755,9 +755,11 @@ def test_0010_upgrade_of_an_empty_table_starts_seq_at_one(alembic_cfg, sync_engi
     command.upgrade(alembic_cfg, "head")
     try:
         command.downgrade(alembic_cfg, "0009_fts_over_folded_text")
+        # Its own empty table, whatever earlier tests left (a test database: db_session's cleanup empties it too).
+        with sync_engine.begin() as conn:
+            conn.execute(text("DELETE FROM chat_messages"))
         with sync_engine.connect() as conn:
-            if conn.execute(text("SELECT count(*) FROM chat_messages")).scalar():
-                pytest.skip("chat_messages is not empty in this database")
+            assert conn.execute(text("SELECT count(*) FROM chat_messages")).scalar() == 0
         command.upgrade(alembic_cfg, "head")
         with sync_engine.begin() as conn:
             _seed_chat_owner(conn)

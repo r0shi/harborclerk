@@ -18,6 +18,7 @@ import ast
 import copy
 import json
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -452,3 +453,91 @@ def test_every_chat_message_ordering_breaks_created_at_ties_on_seq():
     assert len(orderings) >= 5, orderings  # the five readers of #809: the guard sees them
     wrong = [o for o in orderings if "created_at" in o[2] and "seq" not in o[2]]
     assert not wrong, f"ordered by created_at without seq: {wrong}"
+
+
+# ORDER BY created_at (qualified or not, ASC/DESC) not followed by a seq tie-break.
+_SQL_ORDER_BY_CREATED_AT = re.compile(
+    r"order\s+by\s+(?:\w+\.)?created_at\b(?!\s*(?:asc|desc)?\s*,\s*(?:\w+\.)?seq\b)", re.IGNORECASE
+)
+
+
+def _docstring_nodes(tree: ast.AST) -> set[int]:
+    ids = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                ids.add(id(first.value))
+    return ids
+
+
+def _other_created_at_orderings(source: str) -> list[tuple[int, str]]:
+    """(line, what) for each raw-SQL ``ORDER BY created_at`` without seq in a string naming chat_messages, and each
+    ``sorted(...)`` / ``.sort(...)`` keyed on ``.created_at`` without ``.seq`` where the call or its file is about
+    messages. From the AST: comments never match, and docstrings are skipped."""
+    tree = ast.parse(source)
+    docstrings = _docstring_nodes(tree)
+    about_messages = "ChatMessage" in source or "chat_messages" in source
+    found = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+            and "chat_messages" in node.value.lower()
+            and _SQL_ORDER_BY_CREATED_AT.search(node.value)
+        ):
+            found.append((node.lineno, "raw SQL ORDER BY created_at"))
+        if not isinstance(node, ast.Call):
+            continue
+        is_sort = (isinstance(node.func, ast.Name) and node.func.id == "sorted") or (
+            isinstance(node.func, ast.Attribute) and node.func.attr == "sort"
+        )
+        key = next((kw.value for kw in node.keywords if kw.arg == "key"), None)
+        if not is_sort or key is None:
+            continue
+        attrs = {sub.attr for sub in ast.walk(key) if isinstance(sub, ast.Attribute)}
+        call_text = (ast.get_source_segment(source, node) or "").lower()
+        if (
+            "created_at" in attrs
+            and "seq" not in attrs
+            and (about_messages or "msg" in call_text or "message" in call_text)
+        ):
+            found.append((node.lineno, "sort keyed on created_at"))
+    return sorted(found)
+
+
+def test_no_raw_sql_or_python_sort_orders_messages_by_created_at_alone():
+    found = [
+        (str(path.relative_to(_SRC)), line, what)
+        for path in sorted(_SRC.rglob("*.py"))
+        for line, what in _other_created_at_orderings(path.read_text())
+    ]
+    assert not found, f"ordered by created_at without seq: {found}"
+
+
+def test_the_raw_sql_and_sort_scan_catches_what_it_should():
+    """The scan above finds nothing in src today, so it is checked here on samples."""
+    flagged = """
+q1 = text("SELECT * FROM chat_messages WHERE conversation_id = :c ORDER BY created_at")
+q2 = "SELECT content FROM public.chat_messages m " "ORDER BY m.created_at DESC LIMIT 1"
+rows = sorted(msgs, key=lambda m: m.created_at)
+history.sort(key=lambda message: message.created_at)
+"""
+    assert [what for _, what in _other_created_at_orderings(flagged)] == [
+        "raw SQL ORDER BY created_at",
+        "raw SQL ORDER BY created_at",
+        "sort keyed on created_at",
+        "sort keyed on created_at",
+    ]
+    clean = '''
+"""A docstring may say: SELECT * FROM chat_messages ORDER BY created_at."""
+# A comment too: SELECT * FROM chat_messages ORDER BY created_at
+q1 = text("SELECT * FROM chat_messages ORDER BY created_at, seq")
+q2 = text("SELECT * FROM chat_messages m ORDER BY m.created_at ASC, m.seq")
+q3 = text("SELECT * FROM ingestion_jobs ORDER BY created_at")
+rows = sorted(msgs, key=lambda m: (m.created_at, m.seq))
+'''
+    assert _other_created_at_orderings(clean) == []
+    # A file that is not about messages may sort other rows by created_at.
+    assert _other_created_at_orderings("jobs = sorted(jobs, key=lambda j: j.created_at)\n") == []
