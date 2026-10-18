@@ -156,6 +156,26 @@ class NoReadableSource(SourceUnavailable):
     """The document is not watched and has no stored original."""
 
 
+_MISSING_SOURCE_ERRORS = frozenset(cls.__name__ for cls in (WatchedFileMissing, NoReadableSource))
+
+
+def failed_for_a_missing_source(doc) -> bool:
+    """True when ``doc``'s last run errored because its source could not be read
+    (``WatchedFileMissing`` or ``NoReadableSource``), so seeing its file again is
+    reason to queue it again. Any other error (a corrupt file, a Tika failure) is
+    not retried this way.
+
+    Keyed on the error the worker records: ``worker/entry.py`` writes
+    ``error_text.describe_error(exc)``, ``"TypeName: message"``, into
+    ``documents.error``.
+    """
+    from harbor_clerk.models.enums import PipelineStatus
+
+    if doc.pipeline_status != PipelineStatus.error or not doc.error:
+        return False
+    return doc.error.split(":", 1)[0].strip() in _MISSING_SOURCE_ERRORS
+
+
 def watched_state(session, doc) -> WatchedState:
     """The ``WatchedState`` of ``doc``, on a sync session.
 

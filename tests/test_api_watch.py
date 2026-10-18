@@ -770,6 +770,7 @@ async def _mapped_doc(
     source_path: str,
     status: WatchedFileStatus = WatchedFileStatus.active,
     pipeline_status: PipelineStatus = PipelineStatus.ready,
+    error: str | None = None,
 ) -> str:
     """A document mapped to a watched file, as an earlier ingest left it. Returns its doc_id."""
     doc = Document(
@@ -778,6 +779,7 @@ async def _mapped_doc(
         sha256=bytes.fromhex(sha),
         pipeline_status=pipeline_status,
         source_path=source_path,
+        error=error,
     )
     db_session.add(doc)
     await db_session.flush()
@@ -831,7 +833,10 @@ async def _queued_extracts(db_session, doc_id: str) -> int:
 @pytest.mark.parametrize("status", [WatchedFileStatus.active, WatchedFileStatus.removed], ids=["case1", "case2"])
 async def test_ingest_of_unchanged_bytes_queues_an_errored_doc_again(client, admin_token, db_session, tmp_path, status):
     """Case 1 (active) and Case 2 (removed, resurrected) with the same bytes: a document
-    whose last run errored is queued again."""
+    whose last run failed because its file was missing is queued again."""
+    from harbor_clerk.error_text import describe_error
+    from harbor_clerk.watched_source import WatchedFileMissing
+
     folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
     (real / "a.txt").write_text("a")
     sha = uuid.uuid4().hex * 2
@@ -843,6 +848,7 @@ async def test_ingest_of_unchanged_bytes_queues_an_errored_doc_again(client, adm
         source_path=str(real / "a.txt"),
         status=status,
         pipeline_status=PipelineStatus.error,
+        error=describe_error(WatchedFileMissing("the watched file is missing")),
     )
 
     resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
@@ -921,3 +927,31 @@ async def test_ingest_refuses_a_relative_path_resolving_outside_the_folder(clien
 
     assert resp.status_code == 400, resp.text
     assert resp.json()["detail"] == "relative_path is outside the watched folder"
+
+
+@pytest.mark.parametrize("status", [WatchedFileStatus.active, WatchedFileStatus.removed], ids=["case1", "case2"])
+async def test_ingest_of_unchanged_bytes_leaves_a_doc_errored_for_another_reason(
+    client, admin_token, db_session, tmp_path, status
+):
+    """A document that failed for any other reason (here, extraction) is not queued again."""
+    from harbor_clerk.error_text import describe_error
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(
+        db_session,
+        folder_id,
+        "a.txt",
+        sha=sha,
+        source_path=str(real / "a.txt"),
+        status=status,
+        pipeline_status=PipelineStatus.error,
+        error=describe_error(RuntimeError("Tika could not parse the file")),
+    )
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    assert (await _doc_row(db_session, doc_id)).pipeline_status == PipelineStatus.error
+    assert await _queued_extracts(db_session, doc_id) == 0

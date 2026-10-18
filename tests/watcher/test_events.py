@@ -1188,12 +1188,16 @@ def real_folder(sync_session, tmp_path):
     return f
 
 
-def _fail_like_the_worker(sync_session, doc_id) -> None:
-    """What the worker's error handler records when a stage raises."""
+def _fail_like_the_worker(sync_session, doc_id, exc: BaseException) -> None:
+    """What the worker's error handler (worker/entry.py) records when a stage raises ``exc``."""
+    from harbor_clerk.error_text import describe_error
+
     doc = sync_session.get(Document, doc_id)
     doc.pipeline_status = PipelineStatus.error
+    doc.error = describe_error(exc)
     for job in sync_session.query(IngestionJob).filter_by(doc_id=doc_id).all():
         job.status = JobStatus.error
+        job.error = describe_error(exc)
     sync_session.commit()
 
 
@@ -1212,9 +1216,9 @@ def test_a_file_deleted_and_restored_with_the_same_bytes_is_extracted_again(sync
     f.unlink()
     handle_event(sync_session, FileEvent(EventKind.deleted, real_folder.folder_id, "doc.txt", str(f)))
     sync_session.commit()
-    with pytest.raises(WatchedFileMissing):
+    with pytest.raises(WatchedFileMissing) as raised:
         run_extract(doc_id)
-    _fail_like_the_worker(sync_session, doc_id)
+    _fail_like_the_worker(sync_session, doc_id, raised.value)
 
     f.write_text("restored body")
     handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
@@ -1231,15 +1235,17 @@ def test_a_file_deleted_and_restored_with_the_same_bytes_is_extracted_again(sync
 
 
 def test_an_errored_doc_is_queued_again_on_an_unchanged_file_event(sync_session, real_folder, tmp_path):
-    """Branch 1 (active, same bytes): a document whose last run errored (its file was
-    missing mid save) is queued again."""
+    """Branch 1 (active, same bytes): a document whose last run failed because its
+    file was missing (mid save) is queued again."""
+    from harbor_clerk.watched_source import WatchedFileMissing
+
     f = tmp_path / "doc.txt"
     f.write_text("body")
     handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
     sync_session.commit()
     doc = sync_session.query(Document).one()
     doc_id, seq = doc.doc_id, doc.pipeline_seq
-    _fail_like_the_worker(sync_session, doc_id)
+    _fail_like_the_worker(sync_session, doc_id, WatchedFileMissing("the watched file is missing"))
 
     handle_event(sync_session, FileEvent(EventKind.modified, real_folder.folder_id, "doc.txt", str(f)))
     sync_session.commit()
@@ -1249,6 +1255,31 @@ def test_an_errored_doc_is_queued_again_on_an_unchanged_file_event(sync_session,
     assert doc.pipeline_status == PipelineStatus.queued
     assert doc.pipeline_seq == seq + 1
     assert _queued_extract_jobs(sync_session, doc_id) == 1
+
+
+@pytest.mark.parametrize("kind", [EventKind.modified, EventKind.created], ids=["unchanged", "resurrect"])
+def test_a_doc_errored_for_another_reason_is_not_queued_again(sync_session, real_folder, tmp_path, kind):
+    """A document that failed for any other reason (here, extraction) stays in error
+    on an unchanged-file event (Branch 1) or a resurrect with the same bytes (Branch 3)."""
+    f = tmp_path / "doc.txt"
+    f.write_text("body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    doc_id, seq = doc.doc_id, doc.pipeline_seq
+    _fail_like_the_worker(sync_session, doc_id, RuntimeError("Tika could not parse the file"))
+    if kind is EventKind.created:
+        sync_session.query(WatchedFile).one().status = WatchedFileStatus.removed
+        sync_session.commit()
+
+    handle_event(sync_session, FileEvent(kind, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    doc = sync_session.get(Document, doc_id)
+    assert doc.pipeline_status == PipelineStatus.error
+    assert doc.pipeline_seq == seq
+    assert _queued_extract_jobs(sync_session, doc_id) == 0
 
 
 def test_resurrect_canonicalizes_an_aliased_source_path(sync_session, tmp_path):

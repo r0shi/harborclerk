@@ -26,7 +26,7 @@ from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus, Uploa
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
-from harbor_clerk.watched_source import canonical_source_path, repaired_source_path
+from harbor_clerk.watched_source import canonical_source_path, failed_for_a_missing_source, repaired_source_path
 from harbor_clerk.watcher.notify import notify_folder_change_async
 from harbor_clerk.worker.pipeline import queue_extract_for_current_pipeline, reset_and_queue_extract_for_doc
 
@@ -573,7 +573,7 @@ async def ingest_file(
 
     # Case 1: active + same SHA256 → skip, but for an aliased source_path, which is
     # canonicalized so the document verifies as read in place, and for a document
-    # whose last read failed (its file was missing), which is queued again.
+    # whose last read failed because its file was missing, which is queued again.
     if wf and wf.status == WatchedFileStatus.active and wf.sha256 == sha256_bytes:
         if wf.doc_id:
             doc = (await session.execute(select(Document).where(Document.doc_id == wf.doc_id))).scalar_one_or_none()
@@ -583,7 +583,7 @@ async def ingest_file(
                 )
                 if repaired is not None:
                     doc.source_path = repaired
-                if doc.pipeline_status == PipelineStatus.error:
+                if failed_for_a_missing_source(doc):
                     await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
                 await session.commit()
         return {"action": "skipped", "doc_id": str(wf.doc_id)}
@@ -615,11 +615,11 @@ async def ingest_file(
                     await session.commit()
                     return {"action": "updated", "doc_id": str(doc.doc_id)}
 
-        # Same bytes: a document whose last read failed (its file was missing) is
-        # queued again; otherwise its index is current.
+        # Same bytes: a document whose last read failed because its file was missing
+        # is queued again; otherwise its index is current.
         if wf.doc_id:
             doc = (await session.execute(select(Document).where(Document.doc_id == wf.doc_id))).scalar_one_or_none()
-            if doc is not None and doc.pipeline_status == PipelineStatus.error:
+            if doc is not None and failed_for_a_missing_source(doc):
                 await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
         await session.commit()
         return {"action": "resurrected", "doc_id": str(wf.doc_id)}

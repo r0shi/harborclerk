@@ -87,3 +87,30 @@ async def test_worker_lookup_filename_shows_the_watched_files_name(db_session, t
 
     doc_id = await _doc(db_session, tmp_path, watched=True)
     assert _lookup_filename(doc_id) == "report.txt"
+
+
+@pytest.mark.parametrize(
+    ("exc", "status", "expected"),
+    [
+        ("missing", "error", True),
+        ("missing-empty", "error", True),
+        ("no-source", "error", True),
+        ("other", "error", False),
+        ("missing", "ready", False),
+    ],
+)
+def test_failed_for_a_missing_source_reads_the_error_the_worker_records(exc, status, expected):
+    """The predicate matches describe_error's rendering of the two missing-source errors only."""
+    from types import SimpleNamespace
+
+    from harbor_clerk.error_text import describe_error
+    from harbor_clerk.watched_source import NoReadableSource, WatchedFileMissing, failed_for_a_missing_source
+
+    raised = {
+        "missing": WatchedFileMissing("the watched file is missing"),
+        "missing-empty": WatchedFileMissing(),
+        "no-source": NoReadableSource("no stored original"),
+        "other": RuntimeError("WatchedFileMissing appears only in the message"),
+    }[exc]
+    doc = SimpleNamespace(pipeline_status=PipelineStatus(status), error=describe_error(raised))
+    assert failed_for_a_missing_source(doc) is expected

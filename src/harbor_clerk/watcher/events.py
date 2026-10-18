@@ -32,7 +32,7 @@ from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
-from harbor_clerk.watched_source import repaired_source_path
+from harbor_clerk.watched_source import failed_for_a_missing_source, repaired_source_path
 
 logger = logging.getLogger(__name__)
 
@@ -337,16 +337,17 @@ def _repair_source_path(session: Session, watched_file: WatchedFile) -> None:
 
 
 def _requeue_if_errored(session: Session, watched_file: WatchedFile, sha: bytes) -> None:
-    """Queue the document's extract again when its last run errored.
+    """Queue the document's extract again when its last run failed because its file
+    could not be read (``watched_source.failed_for_a_missing_source``).
 
     A read of a watched document fails while its file is missing (mid atomic save,
     or deleted and later restored with the same bytes); the unchanged-file
-    branches would otherwise leave it in error for good.
+    branches would otherwise leave it in error for good. Other errors are left.
     """
     if watched_file.doc_id is None:
         return
     doc = session.get(Document, watched_file.doc_id)
-    if doc is None or doc.pipeline_status != PipelineStatus.error or not doc.source_path:
+    if doc is None or not doc.source_path or not failed_for_a_missing_source(doc):
         return
     logger.info("watcher: queueing doc %s again after a failed run", doc.doc_id)
     _reprocess_doc(session, doc.doc_id, sha, doc.source_path)
