@@ -213,7 +213,7 @@ graph TB
 > `worker-llm` are given both and `HC_DEPLOYMENT=compose` (the marker that makes a process Compose; a copied
 > `.env` cannot), treat that model as active while its file is in the `llama_models` volume, summarize without it
 > when it is not ready within 90 s per document (a load or a restart is waited out within that; a document that
-> never sees it ready makes later ones fall back at once until a probe finds it ready), and budget prompts to that
+> never sees it ready makes later ones fall back at once until a probe finds it ready, or for 15 minutes), and budget prompts to that
 > context. Its entrypoint
 > (`docker/llama-server-entrypoint.sh`) waits for a whole GGUF, so the container is healthy only once a model is
 > loaded, and traps SIGTERM while it waits (#654). Setup: [README](../README.md#local-ai-on-docker).

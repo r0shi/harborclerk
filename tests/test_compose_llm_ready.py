@@ -101,7 +101,7 @@ def compose(monkeypatch, tmp_path: Path, clock: Clock) -> None:
     monkeypatch.setenv("LLM_CONTEXT_TOKENS", "8192")
     monkeypatch.setenv("LLAMA_SERVER_URL", "http://llama-server.invalid:8080")
     monkeypatch.setattr(health, "_state_probe", None)
-    monkeypatch.setattr(health, "_server_failing", False)
+    monkeypatch.setattr(health, "_failing_since", None)
     monkeypatch.setattr(summarize, "_apple_intelligence_summary", lambda *a, **k: None)
     monkeypatch.setattr(summarize, "_apple_intelligence_doc_type", lambda *a, **k: None)
     config._settings = None
@@ -137,7 +137,7 @@ def test_a_restart_under_the_budget_gives_a_model_summary(compose, clock, monkey
     text, model_used, doc_type = _document()
     assert (text, model_used, doc_type) == (SUMMARY, "qwen35-4b", "Invoice")
     assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS
-    assert health._server_failing is False
+    assert not health.server_failing()
 
 
 def test_a_load_under_the_budget_gives_a_model_summary(compose, clock, monkeypatch, llm) -> None:
@@ -164,7 +164,7 @@ def test_a_crash_looping_load_costs_one_document_the_budget_and_the_rest_nothing
     _, model_used, doc_type = _document()
     assert (model_used, doc_type) == ("extractive", summarize._mime_to_doc_type(PDF)) and llm == []
     assert health.DOCUMENT_WAIT_SECONDS <= clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS
-    assert health._server_failing is True
+    assert health.server_failing()
     for _ in range(3):
         clock.slept.clear()
         probes = server.probes
@@ -172,34 +172,70 @@ def test_a_crash_looping_load_costs_one_document_the_budget_and_the_rest_nothing
         _, model_used, _ = _document()
         assert model_used == "extractive" and clock.slept == [], "a later document waited for a failing server"
         assert server.probes > probes, "a later document did not look whether the server had come back"
-    assert health._server_failing is True  # LOADING answers did not clear it
+    assert health.server_failing()  # LOADING answers did not clear it
     server.state = lambda: 200  # the model loads at last
     assert _document()[:2] == (SUMMARY, "qwen35-4b")
-    assert health._server_failing is False
+    assert not health.server_failing()
 
 
 def test_loading_does_not_clear_the_failing_flag(compose, clock, monkeypatch, llm) -> None:
-    monkeypatch.setattr(health, "_server_failing", True)
+    monkeypatch.setattr(health, "_failing_since", clock.now)
     monkeypatch.setattr(health.httpx, "get", Server(clock, up_at=clock.now, code=503))
     assert _document()[1] == "extractive" and clock.slept == []
-    assert health._server_failing is True
+    assert health.server_failing()
 
 
 def test_an_old_failure_cleared_by_ready_lets_a_later_restart_be_waited_out(compose, clock, monkeypatch, llm) -> None:
     server = Server(clock)  # gone
     monkeypatch.setattr(health.httpx, "get", server)
     assert _document()[1] == "extractive"
-    assert health._server_failing is True
+    assert health.server_failing()
     clock.now += 3600
     server.up_at = clock.now  # back, and a document sees it
     assert _document()[1] == "qwen35-4b"
-    assert health._server_failing is False
+    assert not health.server_failing()
     clock.now += 3600  # an hour later, a short restart
     server.up_at = clock.now + 5
     clock.slept.clear()
     text, model_used, _ = _document()
     assert (text, model_used) == (SUMMARY, "qwen35-4b"), "an old failure made a later restart fall back"
     assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS
+
+
+def test_a_server_that_recovered_unobserved_gets_its_next_restart_waited_out(compose, clock, monkeypatch, llm) -> None:
+    # The review's sim_stale shape: an outage fails a document and flags the server; it comes back while no
+    # document runs, so no READY probe clears the flag; much later it restarts for 5 s and a job is claimed.
+    server = Server(clock)
+    monkeypatch.setattr(health.httpx, "get", server)
+    assert _document()[1] == "extractive"
+    assert health.server_failing()
+    server.up_at = clock.now + 10  # back, unobserved
+    clock.now += health.FAILING_FLAG_TTL_SECONDS + 7200  # a quiet period past the flag's life
+    server.up_at = clock.now + 5  # a short restart, and a job claimed in it
+    clock.slept.clear()
+    text, model_used, _ = _document()
+    assert (text, model_used) == (SUMMARY, "qwen35-4b"), "a stale failing flag made a restart fall back"
+    assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS
+    assert not health.server_failing()
+
+
+def test_a_server_that_stays_broken_costs_one_wait_per_flag_lifetime(compose, clock, monkeypatch, llm) -> None:
+    # A document a minute against a crash loop for most of an hour: one document per flag lifetime waits
+    # its budget (and re-flags the server), every other one falls back at once.
+    monkeypatch.setattr(health.httpx, "get", CrashLoop(clock))
+    waited_at: list[float] = []
+    for _ in range(50):
+        clock.slept.clear()
+        started = clock.now
+        assert _document()[1] == "extractive"
+        if clock.slept:
+            assert health.DOCUMENT_WAIT_SECONDS <= clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS
+            waited_at.append(started)
+        clock.now += 60
+    assert len(waited_at) == 4, f"documents that waited: {len(waited_at)} of 50"
+    gaps = [b - a for a, b in zip(waited_at, waited_at[1:], strict=False)]
+    ttl = health.FAILING_FLAG_TTL_SECONDS
+    assert all(ttl <= gap <= ttl + 60 + health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS for gap in gaps), gaps
 
 
 # --- inside a call ---
@@ -299,7 +335,7 @@ def test_outside_compose_nothing_is_probed_or_waited_for(monkeypatch, clock) -> 
 
     monkeypatch.setattr(health.httpx, "get", no_probe)
     monkeypatch.setattr(health, "_state_probe", None)
-    monkeypatch.setattr(health, "_server_failing", False)
+    monkeypatch.setattr(health, "_failing_since", None)
     monkeypatch.setenv("LLM_MODEL_FILE", MODEL_FILE)  # set, but no HC_DEPLOYMENT marker
     config._settings = None
     assert health.llm_server_state() == health.READY
@@ -379,7 +415,7 @@ def test_a_document_that_saw_the_server_ready_does_not_flag_it(compose, clock, m
 
     monkeypatch.setattr(summarize.httpx, "post", post)
     assert _document()[1] == "extractive"
-    assert health._server_failing is False
+    assert not health.server_failing()
     clock.now += 600
     server.up_at = clock.now + 5  # back after a short restart
     gone[0] = False

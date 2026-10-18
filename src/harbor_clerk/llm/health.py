@@ -107,12 +107,28 @@ POLL_SECONDS = 2.0
 # whose budget runs out falls back. Bounded per document, so a server that keeps failing (a model too big,
 # crash-looping through its load) cannot hold a document anywhere near the stage's 900 s timeout.
 DOCUMENT_WAIT_SECONDS = 90.0
+# How long the "server failing" flag lasts unless a READY probe clears it first. Then the next document
+# waits its normal budget again, which sets the flag again if the server is still broken: a server that
+# stays broken costs one budget per this long, and one that recovered while no document was looking gets
+# its next restart waited out rather than fallen back from.
+FAILING_FLAG_TTL_SECONDS = 15 * 60.0
 
 _state_probe: tuple[float, str] | None = None
-# Set when a document spends its whole budget without the server ever being READY; cleared only by a READY
-# probe (LOADING does not: a crash loop is LOADING most of the time). While set, documents fall back at once,
-# each after one probe, so the server coming back is seen by the next document.
-_server_failing = False
+# When a document spent its whole budget without the server ever being READY; None when the server is not
+# flagged. Cleared by a READY probe (LOADING does not: a crash loop is LOADING most of the time) or by age
+# (FAILING_FLAG_TTL_SECONDS). While set, documents fall back at once, each after one probe, so the server
+# coming back is seen by the next document.
+_failing_since: float | None = None
+
+
+def server_failing() -> bool:
+    """Whether the server is flagged as failing: set by a spent budget, not yet cleared by READY or by age."""
+    global _failing_since
+    with _lock:
+        if _failing_since is not None and time.monotonic() - _failing_since >= FAILING_FLAG_TTL_SECONDS:
+            _failing_since = None
+            logger.info("llama-server failing flag expired; the next document waits for the server again")
+        return _failing_since is not None
 
 
 def llm_server_state(*, fresh: bool = False) -> str:
@@ -124,7 +140,7 @@ def llm_server_state(*, fresh: bool = False) -> str:
     reused per `_STATE_TTL_SECONDS` unless `fresh`. A READY verdict clears the "server failing" flag.
 
     Everywhere else READY, unprobed: the macOS launcher owns llama-server, and its retries are the design."""
-    global _state_probe, _server_failing
+    global _state_probe, _failing_since
     from harbor_clerk.config import get_settings
 
     settings = get_settings()
@@ -145,7 +161,7 @@ def llm_server_state(*, fresh: bool = False) -> str:
     with _lock:
         _state_probe = (now, state)
         if state == READY:
-            _server_failing = False
+            _failing_since = None
     if cached is None or cached[1] != state:
         logger.info("llama-server at %s is %s", settings.llama_server_url, state)
     return state
@@ -196,11 +212,10 @@ def wait_for_server(*, fresh: bool = False) -> str:
     """The server's state once it is READY, or once the document's wait budget is spent (then not READY).
 
     While the server is flagged as failing, nothing is waited: one probe, and its answer. A budget spent
-    without ever seeing READY sets that flag. Outside a `document_wait_budget` the call gets a budget of its
+    without ever seeing READY sets that flag, for at most `FAILING_FLAG_TTL_SECONDS`. Outside a `document_wait_budget` the call gets a budget of its
     own. READY at once, unprobed, outside Compose."""
-    global _server_failing
-    with _lock:
-        failing = _server_failing
+    global _failing_since
+    failing = server_failing()
     state = llm_server_state(fresh=fresh or failing)
     budget = _document_budget.get() or WaitBudget(DOCUMENT_WAIT_SECONDS)
     if state != READY and not failing:
@@ -209,10 +224,11 @@ def wait_for_server(*, fresh: bool = False) -> str:
             state = llm_server_state(fresh=True)
         if state != READY and not budget.saw_ready:
             with _lock:
-                _server_failing = True
+                _failing_since = time.monotonic()
             logger.warning(
-                "llama-server was not ready within %.0fs; summaries fall back at once until it is",
+                "llama-server was not ready within %.0fs; summaries fall back at once until it is, or for %.0f min",
                 DOCUMENT_WAIT_SECONDS,
+                FAILING_FLAG_TTL_SECONDS / 60,
             )
     if state == READY:
         budget.saw_ready = True
