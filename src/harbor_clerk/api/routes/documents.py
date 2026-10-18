@@ -7,6 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_admin, require_read_access
@@ -856,15 +857,25 @@ async def download_document(
 
     # Read as the extract stage does: a document read in place from its watched file
     # (even with a stored original, #859), else storage, else source_path.
-    in_place = await in_place_path_async(session, doc)
+    # A failed lookup is a 503, never the stored original: for a document that also
+    # carries one, that would serve the wrong bytes.
+    try:
+        in_place = await in_place_path_async(session, doc)
+    except SQLAlchemyError:
+        logger.warning("watched-file lookup failed for doc %s", doc_id, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Source file temporarily unavailable; try again.",
+        )
     if in_place is not None and not os.path.exists(in_place):
         in_place = None
     content_type = doc.mime_type or "application/octet-stream"
     if in_place is not None:
         file_bytes = Path(in_place).read_bytes()
         filename = posixpath.basename(in_place)
-        # The file's own type; doc.mime_type may describe an older stored upload (#859).
-        content_type = guess_mime_type(in_place)
+        # doc.mime_type is what the extract stage set from this file and its magic
+        # bytes; the extension is the fallback when it is unset.
+        content_type = doc.mime_type or guess_mime_type(in_place)
     elif doc.original_object_key:
         storage = get_storage()
         obj = storage.get_object(doc.original_bucket, doc.original_object_key)

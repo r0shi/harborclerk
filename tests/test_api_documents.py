@@ -508,9 +508,11 @@ async def test_download_returns_bytes_when_enabled(client, admin_user, admin_tok
     assert "doc.pdf" in resp.headers["content-disposition"]
 
 
-async def _download_watched_doc(client, admin_token, db_session, tmp_path, *, delete_file: bool):
+async def _download_watched_doc(
+    client, admin_token, db_session, tmp_path, *, delete_file: bool, mime_type: str | None = "application/pdf"
+):
     """Download a watched doc.txt (b"edited on disk") that also carries an older
-    stored original, doc.pdf (b"stale stored", application/pdf)."""
+    stored original, doc.pdf (b"stale stored"), with ``mime_type`` on the document."""
     import io
 
     from harbor_clerk.config import get_settings
@@ -527,7 +529,7 @@ async def _download_watched_doc(client, admin_token, db_session, tmp_path, *, de
         source_path=str(src),
         original_bucket="originals",
         original_object_key=key,
-        mime_type="application/pdf",
+        mime_type=mime_type,
         **_DOC_DEFAULTS,
     )
     db_session.add(doc)
@@ -562,12 +564,41 @@ async def test_download_serves_a_watched_doc_from_disk_despite_a_stale_stored_or
     client, admin_user, admin_token, db_session, tmp_path
 ):
     """A watched document that also carries an older stored original (#859)
-    downloads its file, with the file's type."""
-    resp = await _download_watched_doc(client, admin_token, db_session, tmp_path, delete_file=False)
+    downloads its file; with no mime on the document, the file's extension types it."""
+    resp = await _download_watched_doc(client, admin_token, db_session, tmp_path, delete_file=False, mime_type=None)
     assert resp.status_code == 200
     assert resp.content == b"edited on disk"
     assert resp.headers["content-type"].startswith("text/plain")
     assert "doc.txt" in resp.headers["content-disposition"]
+
+
+async def test_download_of_a_watched_doc_sends_the_documents_mime_when_set(
+    client, admin_user, admin_token, db_session, tmp_path
+):
+    """doc.mime_type (set by the extract stage from the file and its magic bytes) wins over the extension."""
+    resp = await _download_watched_doc(
+        client, admin_token, db_session, tmp_path, delete_file=False, mime_type="image/png"
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"edited on disk"
+    assert resp.headers["content-type"].startswith("image/png")
+
+
+async def test_download_is_a_503_when_the_watched_file_lookup_fails(
+    client, admin_user, admin_token, db_session, tmp_path, monkeypatch
+):
+    """A failed lookup never serves the stored original."""
+    from sqlalchemy.exc import OperationalError
+
+    import harbor_clerk.watched_source as watched_source
+
+    def failing_query(doc_id):
+        raise OperationalError("SELECT watched files", {}, Exception("database unavailable"))
+
+    monkeypatch.setattr(watched_source, "watched_paths_query", failing_query)
+    resp = await _download_watched_doc(client, admin_token, db_session, tmp_path, delete_file=False)
+    assert resp.status_code == 503
+    assert b"stale stored" not in resp.content
 
 
 async def test_download_serves_storage_when_the_watched_file_is_gone(

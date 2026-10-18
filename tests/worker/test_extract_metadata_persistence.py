@@ -52,6 +52,7 @@ async def _extract_watched_doc(
     stored_name: str | None = None,
     mime_type: str = "text/plain",
     delete_file: bool = False,
+    raises: type[BaseException] | None = None,
 ) -> SimpleNamespace:
     """Extract a watched document (its file and a sidecar on disk), optionally also
     carrying a stored original under ``stored_name`` whose bytes, name and
@@ -93,7 +94,11 @@ async def _extract_watched_doc(
     from harbor_clerk.worker.stages.extract import run_extract
 
     try:
-        run_extract(doc_id)
+        if raises is None:
+            run_extract(doc_id)
+        else:
+            with pytest.raises(raises):
+                run_extract(doc_id)
     finally:
         if key:
             get_storage().remove_object("originals", key)
@@ -205,17 +210,19 @@ async def test_extract_stage_reads_a_watched_text_file_despite_a_stale_pdf_origi
 
 
 @pytest.mark.asyncio
-async def test_extract_stage_degrades_when_the_watched_file_lookup_fails(db_session, tmp_path: Path, monkeypatch):
-    """A failing watched-file query costs the sidecar, not the extract."""
+async def test_extract_stage_fails_when_the_watched_file_lookup_fails(db_session, tmp_path: Path, monkeypatch):
+    """A failed watched-file lookup fails the stage (to be retried); it never falls
+    back to the stored original, which would index the older upload's bytes."""
     from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
 
     import harbor_clerk.watched_source as watched_source
 
     monkeypatch.setattr(watched_source, "watched_paths_query", lambda doc_id: text("SELECT * FROM no_such_table_603"))
-    out = await _extract_watched_doc(db_session, tmp_path)
-    assert out.chars == len("Edited on disk body text"), "the extract must still commit"
-    assert "Edited on disk" in out.text
-    assert "sidecar" not in out.metadata, f"no sidecar expected, got: {out.metadata}"
+    out = await _extract_watched_doc(db_session, tmp_path, stored=b"Stale stored body", raises=SQLAlchemyError)
+    assert "Stale" not in out.text, out.text
+    assert out.chars is None, "nothing may be committed from the stored original"
+    assert out.mime == "text/plain"
 
 
 @pytest.mark.asyncio

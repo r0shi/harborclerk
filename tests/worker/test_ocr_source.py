@@ -25,6 +25,7 @@ async def _ocr_watched_scan(
     delete_file: bool,
     stored_name: str = "scan.png",
     mime_type: str = "image/png",
+    raises: type[BaseException] | None = None,
 ) -> tuple[list[bytes], str]:
     """OCR a watched image whose file holds b"edited on disk" and whose stored
     original holds b"stale stored". Returns (bytes OCR saw, page text)."""
@@ -77,7 +78,11 @@ async def _ocr_watched_scan(
         src.unlink()
 
     try:
-        ocr.run_ocr(doc_id)
+        if raises is None:
+            ocr.run_ocr(doc_id)
+        else:
+            with pytest.raises(raises):
+                ocr.run_ocr(doc_id)
     finally:
         get_storage().remove_object("originals", key)
 
@@ -128,3 +133,19 @@ async def test_ocr_does_not_treat_a_watched_file_as_pdf_because_of_a_stale_origi
         mime_type="application/octet-stream",
     )
     assert pdf_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ocr_fails_when_the_watched_file_lookup_fails(db_session, tmp_path: Path, monkeypatch):
+    """A failed watched-file lookup fails the stage; the stored original is not OCRed."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    import harbor_clerk.watched_source as watched_source
+
+    monkeypatch.setattr(watched_source, "watched_paths_query", lambda doc_id: text("SELECT * FROM no_such_table_603"))
+    seen, text_after = await _ocr_watched_scan(
+        db_session, tmp_path, monkeypatch, delete_file=False, raises=SQLAlchemyError
+    )
+    assert seen == []
+    assert text_after == ""

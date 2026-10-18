@@ -60,21 +60,42 @@ def verified_in_place_path(rows, source_path: str | None) -> str | None:
 def in_place_path(session, doc) -> str | None:
     """``verified_in_place_path`` for ``doc``, on a sync session.
 
-    The query runs in a savepoint: if it fails, the savepoint is rolled back,
-    the failure is logged and the answer is None (the caller reads the document
-    as it would any other), and the session's transaction stays usable.
+    None means the lookup succeeded and the document is not read in place. A
+    failed lookup raises: the caller (a pipeline stage) must fail and be retried,
+    never fall back to a stored original, which for a document that also carries
+    one would index the wrong bytes.
     """
-    doc_id, source_path = doc.doc_id, doc.source_path
-    try:
-        with session.begin_nested():
-            rows = session.execute(watched_paths_query(doc_id)).all()
-    except Exception as exc:
-        logger.warning("watched-file lookup failed for doc %s: %s", doc_id, exc)
-        return None
-    return verified_in_place_path(rows, source_path)
+    rows = session.execute(watched_paths_query(doc.doc_id)).all()
+    return verified_in_place_path(rows, doc.source_path)
 
 
 async def in_place_path_async(session, doc) -> str | None:
     """``verified_in_place_path`` for ``doc``, on an async session. Errors propagate."""
     rows = (await session.execute(watched_paths_query(doc.doc_id))).all()
     return verified_in_place_path(rows, doc.source_path)
+
+
+def display_filename(session, doc) -> str:
+    """The document's filename for job events and logs: the watched file's when it
+    is read in place, else the stored original's, else ``source_path``'s, else "".
+
+    Display only: the watched-file lookup runs only for a document carrying both a
+    stored original and a ``source_path`` (the one shape where the answers can
+    differ), in a savepoint, and a failure falls back silently.
+    """
+    doc_id, object_key, source_path = doc.doc_id, doc.original_object_key, doc.source_path
+    if object_key and source_path:
+        try:
+            with session.begin_nested():
+                rows = session.execute(watched_paths_query(doc_id)).all()
+            path = verified_in_place_path(rows, source_path)
+        except Exception:
+            logger.debug("watched-file lookup for a display name failed for doc %s", doc_id, exc_info=True)
+            path = None
+        if path:
+            return os.path.basename(path)
+    if object_key:
+        return os.path.basename(object_key)
+    if source_path:
+        return os.path.basename(source_path)
+    return ""
