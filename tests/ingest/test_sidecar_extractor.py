@@ -201,12 +201,21 @@ def test_an_absolute_or_dot_dot_relative_path_verifies_nothing():
     assert canonical_source_path("/srv/watched", "sub/a.txt") == "/srv/watched/sub/a.txt"
 
 
-def test_a_folder_path_that_is_not_normalized_still_verifies():
+def test_a_folder_path_that_is_not_normalized_still_verifies(monkeypatch):
     """An auto-discovered folder may be stored as e.g. /data/../watch: the watcher's
-    paths are built on that string, and a normalized source_path verifies too."""
+    paths are built on that string, and a normalized source_path verifies too,
+    without touching the disk (no realpath)."""
+    import os
+
     from harbor_clerk.watched_source import verified_in_place_path
+
+    def no_realpath(path, *args, **kwargs):
+        raise AssertionError(f"realpath called for {path}")
+
+    monkeypatch.setattr(os.path, "realpath", no_realpath)
 
     rows = [("/data/../watch", "sub/a.txt")]
     assert verified_in_place_path(rows, "/data/../watch/sub/a.txt") == "/data/../watch/sub/a.txt"
     assert verified_in_place_path(rows, "/watch/sub/a.txt") == "/watch/sub/a.txt"
+    monkeypatch.undo()
     assert verified_in_place_path([("/data/../watch", "../etc/hosts")], "/data/../etc/hosts") is None
