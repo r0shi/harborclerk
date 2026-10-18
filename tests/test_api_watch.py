@@ -596,3 +596,90 @@ async def test_patch_folder_omitted_display_name_leaves_field_unchanged(client, 
     )
     folder_row = next(f for f in list_r.json() if f["folder_id"] == str(folder_a.folder_id))
     assert folder_row["display_name"] == "Sentinel"
+
+
+# ---------------------------------------------------------------------------
+# /api/watch/ingest and /rename store the canonical source_path
+# ---------------------------------------------------------------------------
+
+
+async def _aliased_folder(db_session, tmp_path):
+    """A watched folder stored by its realpath, and a symlink alias to it."""
+    real = (tmp_path / "real").resolve()
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    folder = WatchedFolder(path=str(real), display_name="real", bookmark_data=None)
+    db_session.add(folder)
+    await db_session.commit()
+    return str(folder.folder_id), real, link
+
+
+async def _ingest(client, token, folder_id: str, relative_path: str, source_path: str):
+    return await client.post(
+        "/api/watch/ingest",
+        headers=auth_header(token),
+        json={
+            "folder_id": folder_id,
+            "relative_path": relative_path,
+            "sha256": uuid.uuid4().hex * 2,
+            "bookmark_data": "",
+            "source_path": source_path,
+            "mime_type": "text/plain",
+        },
+    )
+
+
+async def _source_path_of(db_session, doc_id: str) -> str:
+    from sqlalchemy import select
+
+    db_session.expire_all()
+    stmt = select(Document.source_path).where(Document.doc_id == uuid.UUID(doc_id))
+    return (await db_session.execute(stmt)).scalar_one()
+
+
+async def test_ingest_stores_the_canonical_path_for_an_aliased_source_path(client, admin_token, db_session, tmp_path):
+    """A source_path through a symlinked alias, or with a ./ segment, is stored as folder path + relative path."""
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    (real / "b.txt").write_text("b")
+
+    via_link = await _ingest(client, admin_token, folder_id, "a.txt", str(link / "a.txt"))
+    assert via_link.status_code == 200, via_link.text
+    assert await _source_path_of(db_session, via_link.json()["doc_id"]) == str(real / "a.txt")
+
+    dotted = await _ingest(client, admin_token, folder_id, "b.txt", f"{real}/./b.txt")
+    assert dotted.status_code == 200, dotted.text
+    assert await _source_path_of(db_session, dotted.json()["doc_id"]) == str(real / "b.txt")
+
+
+async def test_ingest_refuses_a_source_path_naming_another_file(client, admin_token, db_session, tmp_path):
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    (real / "b.txt").write_text("b")
+
+    resp = await _ingest(client, admin_token, folder_id, "a.txt", str(real / "b.txt"))
+    assert resp.status_code == 400
+    assert "different files" in resp.json()["detail"]
+
+
+async def test_rename_stores_the_canonical_path_for_an_aliased_source_path(client, admin_token, db_session, tmp_path):
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    created = await _ingest(client, admin_token, folder_id, "a.txt", str(real / "a.txt"))
+    assert created.status_code == 200, created.text
+    (real / "a.txt").rename(real / "c.txt")
+
+    resp = await client.post(
+        "/api/watch/rename",
+        headers=auth_header(admin_token),
+        json={
+            "folder_id": folder_id,
+            "old_relative_path": "a.txt",
+            "new_relative_path": "c.txt",
+            "bookmark_data": "",
+            "source_path": str(link / "c.txt"),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert await _source_path_of(db_session, created.json()["doc_id"]) == str(real / "c.txt")

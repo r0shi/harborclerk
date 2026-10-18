@@ -128,6 +128,33 @@ def _validate_source_path(source_path: str, folder_path: str) -> str:
     return real_source
 
 
+def _canonical_source_path(source_path: str, relative_path: str, folder_path: str) -> str:
+    """The ``source_path`` to store for a watched file: the folder's path joined with
+    its relative path, the form the watcher stores and ``watched_source`` verifies.
+
+    The client's ``source_path`` must name that same file inside the folder: an alias
+    (``/var`` vs ``/private/var``, a ``./`` segment, another Unicode normalization) is
+    accepted and canonicalized; a different file, or a relative path that is not
+    plain, is a 400.
+    """
+    real_source = _validate_source_path(source_path, folder_path)
+    canonical = os.path.join(folder_path, relative_path)
+    if os.path.isabs(relative_path) or os.path.normpath(canonical) != canonical:
+        raise HTTPException(status_code=400, detail="relative_path must be a plain path inside the watched folder")
+    real_folder = os.path.realpath(folder_path)
+    real_canonical = os.path.realpath(canonical)
+    if not real_canonical.startswith(real_folder + os.sep):
+        raise HTTPException(status_code=400, detail="relative_path is outside the watched folder")
+    if real_canonical != real_source:
+        try:
+            same = os.path.samefile(real_canonical, real_source)
+        except OSError:
+            same = False
+        if not same:
+            raise HTTPException(status_code=400, detail="source_path and relative_path name different files")
+    return canonical
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -527,6 +554,8 @@ async def ingest_file(
     ext = PurePosixPath(body.relative_path).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file extension: {ext}")
+    # Stored in the canonical form, so the document verifies as read in place.
+    source_path = _canonical_source_path(body.source_path, body.relative_path, folder.path)
 
     sha256_bytes = _parse_hex(body.sha256, "sha256")
     bookmark_bytes = _parse_base64(body.bookmark_data, "bookmark_data")
@@ -556,7 +585,7 @@ async def ingest_file(
             doc = doc_result.scalar_one_or_none()
             if doc:
                 doc.status = "active"
-                doc.source_path = body.source_path
+                doc.source_path = source_path
 
         if wf.sha256 != sha256_bytes:
             # SHA changed — re-ingest same document with updated content
@@ -566,7 +595,7 @@ async def ingest_file(
                 doc = doc_result.scalar_one_or_none()
                 if doc:
                     doc.sha256 = sha256_bytes
-                    doc.source_path = body.source_path
+                    doc.source_path = source_path
                     doc.mime_type = body.mime_type
                     await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
                     await session.commit()
@@ -584,7 +613,7 @@ async def ingest_file(
             doc = doc_result.scalar_one_or_none()
             if doc:
                 doc.sha256 = sha256_bytes
-                doc.source_path = body.source_path
+                doc.source_path = source_path
                 doc.mime_type = body.mime_type
                 await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
                 await session.commit()
@@ -597,7 +626,7 @@ async def ingest_file(
         status="active",
         sha256=sha256_bytes,
         mime_type=body.mime_type,
-        source_path=body.source_path,
+        source_path=source_path,
         pipeline_status=PipelineStatus.queued,
     )
     session.add(doc)
@@ -612,7 +641,7 @@ async def ingest_file(
         minio_bucket="",
         minio_object_key="",
         doc_id=doc.doc_id,
-        source_path=body.source_path,
+        source_path=source_path,
         status="confirmed",
     )
     session.add(upload)
@@ -676,7 +705,7 @@ async def rename_file(
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
 
-    _validate_source_path(body.source_path, folder.path)
+    source_path = _canonical_source_path(body.source_path, body.new_relative_path, folder.path)
 
     result = await session.execute(
         select(WatchedFile).where(
@@ -697,7 +726,7 @@ async def rename_file(
         doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
         doc = doc_result.scalar_one_or_none()
         if doc:
-            doc.source_path = body.source_path
+            doc.source_path = source_path
 
     await session.commit()
     return {"action": "renamed", "doc_id": str(wf.doc_id)}
