@@ -441,9 +441,12 @@ def _static_file(static_root: Path, full_path: str) -> str | object | None:
     try:
         root = os.path.realpath(static_root)
         candidate = os.path.realpath(os.path.join(root, full_path))
-        if not (candidate == root or candidate.startswith(root + os.sep)):
+        # The root itself is a directory, never a file to serve, so a strict
+        # prefix check is the whole containment test.
+        if not candidate.startswith(root + os.sep):
             return _OUTSIDE
-        return candidate if os.path.isfile(candidate) else None
+        safe = candidate
+        return safe if os.path.isfile(safe) else None
     except (OSError, RuntimeError, ValueError):
         return _OUTSIDE
 
