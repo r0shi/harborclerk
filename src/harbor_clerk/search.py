@@ -391,9 +391,11 @@ def websearch_tsquery(config: str, query: str):
     letter, so a query pasted from a PDF with "first<NBSP>refusal" or "Party’s" would be one lexeme
     and match nothing the folded columns hold. Every tsquery against those columns is built here.
     A pasted query parses like the same query typed: in "Article 4<NBSP>- Durée" the hyphen after
-    the folded space is negation, as it is in "Article 4 - Durée"; curly double quotes and
-    guillemets fold to ``"`` and so quote a phrase. A dash folds to a space, so a spaced em dash
-    ("termination — notice") is never negation.
+    the folded space is negation, as it is in "Article 4 - Durée" (an ASCII hyphen-minus is never
+    folded). Every non-ASCII dash and the minus sign fold to a space, so "termination — notice" or
+    "temperature −5" is never negation; curly double quotes and guillemets fold to a space too, so a
+    pasted, unbalanced “ never turns the query into a phrase. Both parse as libc en_US.UTF-8 parses
+    them unfolded, so Docker's queries are unchanged.
     """
     return func.websearch_to_tsquery(config, fold_search_text(query))
 

@@ -16,22 +16,25 @@ the same folded text on both sides. Case is left to ``ILIKE``.
 
 The fold, in this order:
 
-1. ``FOLD_MAP``: typographic apostrophes and single quotes become ``'``, double quotes and
-   guillemets ``"``, the hyphen, the non-breaking hyphen and the minus sign ``-``, the ellipsis
-   ``...``; the invisible in-word format characters (soft hyphen, zero-width non-joiner and
-   joiner, word joiner, BOM) are deleted.
+1. ``FOLD_MAP``: typographic apostrophes and single quotes become ``'``, the ellipsis ``...``;
+   the invisible in-word format characters (soft hyphen, zero-width non-joiner and joiner, word
+   joiner, BOM) are deleted.
 2. Every run of ``RUN_RANGES`` becomes one ASCII space: the Unicode ``White_Space`` property
    (``WHITESPACE_RANGES``: Python's ``str.isspace`` minus U+001C..U+001F, the information
    separators, which Python counts and Unicode does not) and ``SEPARATOR_RANGES``, the characters
-   that separate words without being White_Space (the zero-width space; the figure, en and em
-   dashes and the horizontal bar).
+   that separate words without being White_Space: the zero-width space, every non-ASCII hyphen,
+   dash and minus (U+2010..U+2015, U+2212), and the double quotes and guillemets.
 
 Why: under LC_CTYPE C (the Mac app's cluster, ``initdb --locale=C``) the text search parser reads
 every non-ASCII character as a letter, so each of these glued its neighbours into one lexeme
 ("party\\u2019", "first\\u2013refus"), and ``text_contains`` needed the same character typed. The
-dashes fold to a space, not to ``-``: libc en_US.UTF-8 (Docker) parses them as separators, and a
-``-`` would change search there (``2019\\u20132020`` would index ``-2020`` instead of ``2020``, and a
-spaced em dash in a query would become websearch negation).
+apostrophe maps to ``'`` (the point of #828: "Party\\u2019s" is "Party's"). Everything else that
+libc en_US.UTF-8 (Docker) parses as a separator folds to a space, so the Mac app parses it as
+Docker does and Docker's search does not change. No non-ASCII dash or minus becomes ASCII ``-``:
+``2019\\u20132020`` or ``\\u22125`` would index ``-2020`` or ``-5`` (not ``2020``, ``5``), and in a
+query a spaced dash or a minus would become websearch negation. No double quote becomes ``"``: a
+pasted, unbalanced \\u201c would turn the query into a phrase. The ASCII hyphen-minus is never
+touched: in ``text_contains`` "first-refusal" does not match "first refusal".
 
 The SQL function is frozen in the migration; ``tests/test_search_fold.py`` holds it to the tables
 here, against the live function, character by character.
@@ -61,8 +64,12 @@ WHITESPACE_RANGES: tuple[tuple[int, int], ...] = (
 
 # Word separators that are not White_Space, folded with it.
 SEPARATOR_RANGES: tuple[tuple[int, int], ...] = (
+    (0x00AB, 0x00AB),  # left-pointing double angle quotation mark (guillemet)
+    (0x00BB, 0x00BB),  # right-pointing double angle quotation mark (guillemet)
     (0x200B, 0x200B),  # zero-width space: a word boundary (UAX #29), unlike the joiners below
-    (0x2012, 0x2015),  # figure dash, en dash, em dash, horizontal bar
+    (0x2010, 0x2015),  # hyphen, non-breaking hyphen, figure dash, en dash, em dash, horizontal bar
+    (0x201C, 0x201F),  # left, right, low-9 and high-reversed-9 double quotation marks
+    (0x2212, 0x2212),  # minus sign
 )
 
 RUN_RANGES: tuple[tuple[int, int], ...] = WHITESPACE_RANGES + SEPARATOR_RANGES
@@ -76,15 +83,6 @@ FOLD_MAP: dict[str, str] = {
     "\u02bc": "'",  # modifier letter apostrophe
     "\u2039": "'",  # single left-pointing angle quotation mark
     "\u203a": "'",  # single right-pointing angle quotation mark
-    "\u201c": '"',  # left double quotation mark
-    "\u201d": '"',  # right double quotation mark
-    "\u201e": '"',  # double low-9 quotation mark
-    "\u201f": '"',  # double high-reversed-9 quotation mark
-    "\u00ab": '"',  # left-pointing double angle quotation mark (guillemet)
-    "\u00bb": '"',  # right-pointing double angle quotation mark (guillemet)
-    "\u2010": "-",  # hyphen
-    "\u2011": "-",  # non-breaking hyphen
-    "\u2212": "-",  # minus sign
     "\u2026": "...",  # horizontal ellipsis
     "\u00ad": "",  # soft hyphen
     "\u200c": "",  # zero-width non-joiner

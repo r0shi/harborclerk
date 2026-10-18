@@ -14,17 +14,18 @@ missed "Party\u2019s" everywhere.
 ``public.hc_fold_search_text(text)`` does what ``hc_fold_whitespace`` does, after first:
 
 - mapping the typographic apostrophes and single quotes (U+2018, U+2019, U+201A, U+201B, U+02BC,
-  U+2039, U+203A) to ``'``, the double quotes and guillemets (U+201C, U+201D, U+201E, U+201F,
-  U+00AB, U+00BB) to ``"``, the hyphen, non-breaking hyphen and minus sign (U+2010, U+2011,
-  U+2212) to ``-``, and the ellipsis (U+2026) to ``...``;
+  U+2039, U+203A) to ``'`` and the ellipsis (U+2026) to ``...``;
 - deleting the invisible in-word format characters: soft hyphen (U+00AD), zero-width non-joiner
   and joiner (U+200C, U+200D), word joiner (U+2060), BOM (U+FEFF);
 
 and its whitespace class also takes the word separators that are not White_Space: the zero-width
-space (U+200B) and the figure, en and em dashes and the horizontal bar (U+2012..U+2015). Those
-dashes become a space, not ``-``: en_US.UTF-8 parses them as separators, and a ``-`` would change
-search there (``2019\u20132020`` would index ``'-2020'``, not ``'2020'``, and a spaced em dash in a
-query would become websearch negation). Its arguments are frozen below; the application's mirror is
+space (U+200B), every non-ASCII hyphen, dash and minus (U+2010..U+2015, U+2212), and the double
+quotes and guillemets (U+201C..U+201F, U+00AB, U+00BB). en_US.UTF-8 parses all of these as
+separators, so the Mac app now parses them as Docker does and Docker's search is unchanged. None
+becomes ASCII ``-`` or ``"``: a ``-`` would change search there (``2019\u20132020`` or ``\u22125``
+would index ``'-2020'`` or ``'-5'``, not ``'2020'`` or ``'5'``, and in a query a spaced dash or a
+minus would become websearch negation), and a ``"`` would turn a pasted, unbalanced curly quote
+into a phrase query. Its arguments are frozen below; the application's mirror is
 ``harbor_clerk.text_contains.fold_search_text``, held to these strings and to the live function by
 ``tests/test_search_fold.py``. It is IMMUTABLE (translate, replace and regexp_replace over explicit
 code points, no case-insensitive flag, do not depend on locale), a plain SQL function with no SET
@@ -58,14 +59,14 @@ the serialised runs (env.py's advisory lock) and the cancellation by ``applicati
 
 Measured on a private PostgreSQL 18.3 database (LC_CTYPE C, M-series Mac) with 40,000 synthetic
 chunks (844 characters on average, 70% English and 30% French, mixed ASCII spaces, NBSP, U+202F,
-line breaks and the punctuation above, every chunk embedded): the upgrade took 45-46 s and held
-ACCESS EXCLUSIVE on ``chunks`` for 44 s of it; the downgrade 39-40 s, lock 38-39 s. On the same
-database and machine, at the same time, 0009's upgrade took 36.5-38 s. Of the upgrade, the
-rewrite is 38 s (rebuilding the HNSW index alone takes 24 s; the new fold costs 3.4 s per pass over
-the table, translate() most of it, against 0.6 s for the whitespace fold, and the rewrite runs it
-once per column), the trigram build 2.9 s and the ANALYZE 2.7 s. The time grows with the chunk
-count. The Run Migrations route's 120 s limit fits roughly 100,000 chunks; above that, restart
-the app (or the API container) to run it at startup.
+line breaks and the punctuation above, every chunk embedded): the upgrade took 38.6-39.7 s and
+held ACCESS EXCLUSIVE on ``chunks`` for 37.6-38.8 s of it; the downgrade 36-39 s, lock 35-38 s. On
+the same database and machine, at the same time, 0009's upgrade took 38.8-39.7 s. Of the upgrade,
+the rewrite is about 37 s (rebuilding the HNSW index alone takes 24 s; the new fold costs 1.9 s per
+pass over the table against 0.6 s for the whitespace fold, and the rewrite runs it once per
+column), the trigram build 2.2 s and the ANALYZE 1.5 s. The time grows with the chunk count. The
+Run Migrations route's 120 s limit fits roughly 120,000 chunks; above that, restart the app (or
+the API container) to run it at startup.
 
 Downgrade reverses it in one transaction: recreates ``hc_fold_whitespace`` with 0008's definition
 (0008's guard), resets the columns to 0009's expressions (the same rewrite), rebuilds
@@ -96,14 +97,15 @@ __all__ = ["revision", "down_revision", "branch_labels", "depends_on", "upgrade"
 # deletes those past its end (the last five).
 TRANSLATE_FROM = (
     "\u2018\u2019\u201a\u201b\u02bc\u2039\u203a"  # -> '
-    "\u201c\u201d\u201e\u201f\u00ab\u00bb"  # -> "
-    "\u2010\u2011\u2212"  # -> -
     "\u00ad\u200c\u200d\u2060\ufeff"  # deleted
 )
-TRANSLATE_TO = "'''''''" + '""""""' + "---"
+TRANSLATE_TO = "'''''''"
 EXPANSIONS = {"\u2026": "..."}
 # One run of White_Space or a word separator, as a Postgres ARE with backslash-u escapes.
-RUN_PATTERN = r"[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200b\u2012-\u2015\u2028-\u2029\u202f\u205f\u3000]+"
+RUN_PATTERN = (
+    r"[\u0009-\u000d\u0020\u0085\u00a0\u00ab\u00bb\u1680\u2000-\u200b\u2010-\u2015\u201c-\u201f"
+    r"\u2028-\u2029\u202f\u205f\u2212\u3000]+"
+)
 
 FOLD_FUNCTION = "public.hc_fold_search_text"
 _EXPECTED_FUNCTION = "pg_temp.hc_fold_search_text_expected"

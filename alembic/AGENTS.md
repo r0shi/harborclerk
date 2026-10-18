@@ -69,9 +69,9 @@ text is the migration's, verbatim (a test compares them).
 Changing a stored generated expression (`ALTER COLUMN ... SET EXPRESSION`)
 rewrites `chunks` under ACCESS EXCLUSIVE and rebuilds **every** index on it,
 the HNSW index included (40,000 chunks: 0009 about 26 s, 16 s of it HNSW, when
-measured for #827; 0011 45 s against 0009's 37 s on the same machine on the
-same day, since its fold is costlier and runs once per column). The time of
-an expression in a generated column is paid once per column per row. A rewrite
+measured for #827; 0011 and 0009 both 39-40 s on one machine on one day). The
+time of an expression in a generated column is paid once per column per row:
+0011's fold costs 1.9 s per 40,000 chunks against 0.6 s for 0008's. A rewrite
 also rebuilds, and so validates, an INVALID index left by an interrupted
 concurrent build. Killing the alembic client does not stop its backend: the lock
 lasts for the whole rewrite unless the backend is cancelled. env.py names its

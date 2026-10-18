@@ -14,7 +14,7 @@ embedder is down in every search here, so the FTS leg is the only source of a hi
 """
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Text, cast, select, text
 from sqlalchemy.exc import DBAPIError
 
 import harbor_clerk.search as search_mod
@@ -33,6 +33,8 @@ APOSTROPHE = chr(0x2019)
 LEFT_QUOTE, RIGHT_QUOTE = chr(0x201C), chr(0x201D)
 EN_DASH = chr(0x2013)
 EM_DASH = chr(0x2014)
+HYPHEN = chr(0x2010)
+MINUS = chr(0x2212)
 ZWSP = chr(0x200B)
 SOFT_HYPHEN = chr(0x00AD)
 
@@ -209,6 +211,65 @@ async def test_a_query_with_typographic_punctuation_is_folded(locale, monkeypatc
             assert "'parti'" not in unfolded, unfolded
 
 
+async def _tsquery_text(session, query: str) -> str:
+    """The tsquery ``search.websearch_tsquery`` builds for ``query`` (english), as text."""
+    return (await session.execute(select(cast(search_mod.websearch_tsquery("english", query), Text)))).scalar()
+
+
+async def test_a_minus_or_a_hyphen_separates_and_never_negates(locale, monkeypatch):
+    """U+2212 minus and U+2010 hyphen parse as en_US.UTF-8 parses them unfolded: as separators. So
+    "\u22125 degrees" indexes '5' (never '-5') and is found by "5 degrees", "2019\u20102020" indexes
+    '2020' (never '-2020') and is found by "2020", and a pasted "temperature \u22125" is the words, not
+    temperature without 5 (which would find the 20-degree chunk instead)."""
+    _, url = locale
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_down)
+    async with _session(url) as session:
+        ids = await _seed(
+            session,
+            {
+                "minus": f"The pipe holds at a temperature of {MINUS}5 degrees.",
+                "years": f"The licence runs for the years 2019{HYPHEN}2020 inclusive.",
+                "warm": "The pipe holds at a temperature of 20 degrees.",
+                "other": OTHER,
+            },
+        )
+        stored = dict(
+            (
+                await session.execute(
+                    text("SELECT d.title, c.fts_en::text FROM chunks c JOIN documents d USING (doc_id)")
+                )
+            )
+            .tuples()
+            .all()
+        )
+        assert "'5'" in stored["minus"] and "'-5'" not in stored["minus"], stored["minus"]
+        assert "'2020'" in stored["years"] and "'-2020'" not in stored["years"], stored["years"]
+
+        query = f"temperature {MINUS}5"
+        tsquery = await _tsquery_text(session, query)
+        assert "!" not in tsquery and "'5'" in tsquery, tsquery
+        cases = {"5 degrees": {"minus"}, "2020": {"years"}, query: {"minus"}}
+        for q, expected in cases.items():
+            result = await search_mod.hybrid_search(session, q, k=20, bypass_reranker=True)
+            assert {h.doc_id for h in result.hits} == {ids[label] for label in expected}, repr(q)
+            rows = await _query_documents_by_date(session, query=q, limit=20)
+            assert {str(doc.doc_id) for doc, _, _ in rows} == {ids[label] for label in expected}, repr(q)
+
+
+async def test_an_unbalanced_curly_quote_is_not_a_phrase(locale, monkeypatch):
+    """A pasted \u201c with no closing quote: folded to a space, as en_US.UTF-8 parses it, never to the
+    websearch phrase quote, so the words are found apart and in any order."""
+    _, url = locale
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_down)
+    async with _session(url) as session:
+        ids = await _seed(session, {"apart": "The obligations of each Party survive termination.", "other": OTHER})
+        for query in (f"{LEFT_QUOTE}Party obligations", f"{chr(0xAB)} Party obligations"):
+            tsquery = await _tsquery_text(session, query)
+            assert "<->" not in tsquery and "'parti'" in tsquery, (query, tsquery)
+            result = await search_mod.hybrid_search(session, query, k=20, bypass_reranker=True)
+            assert {h.doc_id for h in result.hits} == {ids["apart"]}, repr(query)
+
+
 async def test_text_contains_folds_punctuation(locale, monkeypatch):
     """A typed apostrophe finds a curly one and the reverse; a dash or a zero-width space matches a
     space; a soft hyphen is invisible. An ASCII hyphen is still not a space."""
@@ -223,14 +284,15 @@ async def test_text_contains_folds_punctuation(locale, monkeypatch):
                 "en-dash": f"The covenant grants a first{EN_DASH}refusal right.",
                 "zwsp": f"The covenant grants a first{ZWSP}refusal right.",
                 "hyphen": "The covenant grants a first-refusal right.",
+                "unicode-hyphen": f"The covenant grants a first{HYPHEN}refusal right.",
                 "soft-hyphen": f"The covenant con{SOFT_HYPHEN}tract renews.",
             },
         )
         cases = {
             "party's obligations": {"straight", "curly"},
             f"PARTY{APOSTROPHE}S": {"straight", "curly"},
-            "first refusal": {"en-dash", "zwsp"},
-            f"first{EM_DASH}refusal": {"en-dash", "zwsp"},
+            "first refusal": {"en-dash", "zwsp", "unicode-hyphen"},
+            f"first{EM_DASH}refusal": {"en-dash", "zwsp", "unicode-hyphen"},
             "first-refusal": {"hyphen"},
             " contract ": {"soft-hyphen"},
         }

@@ -47,8 +47,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--text-contains",
         help=(
-            "Require a substring in the chunk text (case, whitespace and typographic punctuation differences ignored; "
-            "leading or trailing whitespace requires a word boundary on that side)"
+            "Require a substring in the chunk text (case and whitespace differences ignored; typographic "
+            "dashes, minus signs and curly double quotes match a space, but the ASCII hyphen '-' is literal; "
+            "a typed apostrophe matches a curly one; leading or trailing whitespace requires a word boundary "
+            "on that side)"
         ),
     )
     p.add_argument("--faceted", action="store_true", help="Include facet counts in response")
