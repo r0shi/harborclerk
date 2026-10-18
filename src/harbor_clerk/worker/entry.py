@@ -36,6 +36,8 @@ from harbor_clerk.worker.pipeline import (
     EMBED_RETRY_MAX_ATTEMPTS,
     EMBED_RETRY_REASON,
     STAGE_CONFIG,
+    alarm_is_deferred,
+    without_embed_retry_schedule,
 )
 from harbor_clerk.worker.stages import STAGE_FUNCTIONS
 
@@ -67,6 +69,9 @@ _shutdown = False
 # Set by execute_job around the stage function, read by the signal handler.
 _job_running = False
 _shutdown_deadline_armed = False
+# True only while the stage function itself runs: the alarm handler is inert
+# outside it, so neither deadline can fire into execute_job's bookkeeping.
+_alarm_live = False
 
 # How long a running job may continue after SIGTERM before it is abandoned and
 # requeued. Both supervisors SIGKILL a worker 10 s after SIGTERM (the macOS
@@ -163,7 +168,7 @@ def _handle_signal(signum, frame):
     global _shutdown
     first = not _shutdown
     _shutdown = True
-    if first and _job_running:
+    if first and _job_running and _alarm_live:
         logger.warning(
             "Shutdown requested; the running job is abandoned and requeued if it is not done in %ds",
             SHUTDOWN_GRACE_SECONDS,
@@ -590,12 +595,24 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
     hb_thread.start()
 
     def _timeout_handler(signum, frame):
+        if not _alarm_live:
+            # The stage already returned or raised: its outcome is being
+            # recorded, and an exception here would escape execute_job's
+            # handlers and kill the worker mid-bookkeeping.
+            return
+        if alarm_is_deferred():
+            # mark_stage_done is between committing `done` and advancing the
+            # pipeline; interrupting it strands the document (the requeue only
+            # matches `running` rows). Look again in a second.
+            signal.alarm(1)
+            return
         if _shutdown_deadline_armed:
             raise _ShutdownDeadline()
         raise TimeoutError(f"Stage {stage.value} timed out after {timeout}s")
 
-    global _job_running, _shutdown_deadline_armed
+    global _job_running, _shutdown_deadline_armed, _alarm_live
     old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    _alarm_live = True
     signal.alarm(timeout)
     _job_running = True
     if _shutdown:
@@ -603,7 +620,13 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
         # for _handle_signal to bound. Bound it now.
         _arm_shutdown_deadline()
     try:
-        func(doc_id, worker_seq=pipeline_seq)
+        try:
+            func(doc_id, worker_seq=pipeline_seq)
+        finally:
+            # Disarm before any bookkeeping below: the deadline bounds the stage,
+            # not the recording of its outcome.
+            _alarm_live = False
+            signal.alarm(0)
     except AppleIntelligenceUnavailableError as e:
         error_msg = describe_error(e)
         disposition = _record_afm_unavailable_job(doc_id, stage, pipeline_seq, error_msg)
@@ -653,6 +676,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
     finally:
         _job_running = False
         _shutdown_deadline_armed = False
+        _alarm_live = False
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old_handler)
         stop_heartbeat.set()
@@ -744,21 +768,24 @@ def _requeue_after_shutdown(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: in
     """
     session = get_sync_session()
     try:
-        requeued = session.execute(
-            update(IngestionJob)
+        job = session.execute(
+            select(IngestionJob)
             .where(
                 IngestionJob.doc_id == doc_id,
                 IngestionJob.stage == stage,
                 IngestionJob.pipeline_seq == pipeline_seq,
                 IngestionJob.status == JobStatus.running,
             )
-            .values(
-                status=JobStatus.queued,
-                started_at=None,
-                heartbeat_at=None,
-                progress_current=0,
-            )
-        ).rowcount
+            .with_for_update()
+        ).scalar_one_or_none()
+        requeued = job is not None
+        if job is not None:
+            job.status = JobStatus.queued
+            job.started_at = None
+            job.heartbeat_at = None
+            job.progress_current = 0
+            # Not deferred for an outage: no stale "waiting on the embedder".
+            job.metrics = without_embed_retry_schedule(job.metrics)
         session.commit()
     finally:
         session.close()

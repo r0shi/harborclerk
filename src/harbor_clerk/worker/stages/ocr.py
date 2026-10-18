@@ -17,7 +17,12 @@ from harbor_clerk.models import Document, DocumentPage, IngestionJob
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
 from harbor_clerk.worker.ocr_languages import get_ocr_languages_for_doc
-from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import (
+    check_pipeline_seq,
+    mark_stage_done,
+    mark_stage_running,
+    stage_run_is_current,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +152,14 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
 
             total_chars = 0
             ocr_results = []
+            stopped = False
             for i, img in enumerate(images):
+                # A page takes seconds and a scan can run to the 7200 s stage
+                # timeout: ask between pages whether the run is still wanted, so
+                # a cancel or queue clear stops it here (#620's sibling).
+                if not stage_run_is_current(session, doc_id, JobStage.ocr, worker_seq):
+                    stopped = True
+                    break
                 page_num = i + 1
                 # Convert PIL image to bytes for OCR
                 buf = _io.BytesIO()
@@ -158,7 +170,15 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                 ocr_results.append((page_num, text, confidence))
 
             # Race check before writing results
-            if not check_pipeline_seq(session, doc_id, worker_seq):
+            if stopped:
+                logger.info(
+                    "ocr: run for %s cancelled or superseded after %d of %d pages; not writing",
+                    doc_id,
+                    len(ocr_results),
+                    len(images),
+                )
+                ocr_results = []
+            elif not check_pipeline_seq(session, doc_id, worker_seq):
                 logger.info("ocr: pipeline_seq bumped during processing for %s, aborting write", doc_id)
                 return
 
@@ -192,9 +212,10 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                 session.commit()
                 publish_job_event(doc_id, "ocr", "running", progress=i + 1, total=len(images))
 
-            doc.extracted_chars = total_chars
-            doc.ocr_languages_used = ocr_iso
-            session.commit()
+            if not stopped:
+                doc.extracted_chars = total_chars
+                doc.ocr_languages_used = ocr_iso
+                session.commit()
         else:
             logger.warning("OCR requested for unsupported mime type: %s", mime)
 

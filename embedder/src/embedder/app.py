@@ -45,6 +45,20 @@ MAX_CONCURRENCY = _positive_int_env("EMBED_MAX_CONCURRENCY", 1)
 # (~14 s measured for a restart). A hint only: the worker's own backoff governs.
 ENCODE_FAILURE_RETRY_AFTER_SECONDS = 30
 
+
+def _is_input_error(exc: BaseException) -> bool:
+    """Whether an encode failure is the input's fault (answer 422), not the service's (503).
+
+    ValueError and TypeError are what the tokenizer and SentenceTransformer
+    raise for text they cannot take. A Rust panic in `tokenizers` surfaces as
+    pyo3's PanicException, a BaseException subclass with no importable home,
+    hence the name check; it too is input-driven. Out-of-memory errors are
+    RuntimeError subclasses (torch.OutOfMemoryError, MPS's RuntimeError), so
+    they stay on the 503 side.
+    """
+    return isinstance(exc, (ValueError, TypeError)) or type(exc).__name__ == "PanicException"
+
+
 _model: SentenceTransformer | None = None
 _encode_slots: asyncio.Semaphore | None = None
 
@@ -126,14 +140,22 @@ async def embed(request: EmbedRequest):
     async with slots:
         try:
             embeddings = await asyncio.to_thread(_encode_and_release)
-        except Exception as exc:
+        except BaseException as exc:
             # An encode failure used to be a bare 500 whose traceback went only
             # to uvicorn's stderr: the "uvicorn.error" logger does not propagate
             # to the root logger, where main() attaches embedder.log, so a night
             # of MPS out-of-memory failures left nothing in the service's own
             # log (#619). Log it on this module's logger, which does reach the
-            # file. And answer 503 with Retry-After: the request is fine, the
-            # service cannot serve it right now.
+            # file, and say whose fault it was.
+            if _is_input_error(exc):
+                # The texts themselves: retrying them later fails the same way,
+                # and a 503 would have the worker defer the batch for an hour.
+                logger.warning("encode rejected %d texts: %s", len(texts), type(exc).__name__, exc_info=exc)
+                raise HTTPException(status_code=422, detail=f"encode rejected the input: {type(exc).__name__}") from exc
+            if not isinstance(exc, Exception):
+                raise  # cancellation, KeyboardInterrupt, SystemExit: not ours to translate
+            # Resource or runtime (MPS/CUDA out of memory, a RuntimeError in the
+            # model): the request is fine, the service cannot serve it now.
             logger.exception("encode failed for %d texts: %s", len(texts), type(exc).__name__)
             raise HTTPException(
                 status_code=503,

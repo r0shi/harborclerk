@@ -38,6 +38,8 @@ from harbor_clerk.models import (
 )
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.watched import WatchedFolder
+from harbor_clerk.query_embed_health import recent_failure as recent_query_embed_failure
+from harbor_clerk.query_embed_health import recent_success as recent_query_embed_success
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -161,50 +163,105 @@ async def ping() -> dict[str, str]:
     return {"status": "ok"}
 
 
-# How long an embedder probe result stands. The probe runs a real encode, and
-# /system/health is fetched on every app boot and Status page load and by the
-# macOS client's backend detector: cached, a burst of loads costs one encode.
-# Short enough that an outage, or the recovery from one, shows within it.
+# How long an embedder health result stands, and the window for the passive
+# evidence of search's own query embeds (query_embed_health). The active probe
+# runs a real encode, and /system/health is unauthenticated and polled (the Mac
+# app every 2 s): cached and single-flight, any number of callers cost at most
+# one encode per window. Short enough that an outage, or recovery, shows.
 EMBEDDER_PROBE_TTL_SECONDS = 30.0
-_embedder_probe_cache: tuple[float, str, str] | None = None  # (monotonic time, embedder_url, result)
+# The probe's /embed deadline. The embedder runs one encode at a time, so
+# during a heavy ingest the probe queues behind 64-text batches (~3.5 s each on
+# an M4): a timeout here means busy, not broken.
+EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS = 10.0
+EMBEDDER_BUSY_NOTE = "busy: /embed did not answer the health probe in time (it is serving other work)"
+
+# (monotonic time, embedder_url, status, note)
+_embedder_probe_cache: tuple[float, str, str, str | None] | None = None
+_embedder_probe_lock: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
 
 
-async def _embedder_check(embedder_url: str) -> str:
-    """Probe the embedder the way search uses it: /health, then POST /embed of one text.
+def _probe_lock() -> asyncio.Lock:
+    """The single-flight lock, for the running loop (an asyncio.Lock binds to one)."""
+    global _embedder_probe_lock
+    loop = asyncio.get_running_loop()
+    if _embedder_probe_lock is None or _embedder_probe_lock[0] is not loop:
+        _embedder_probe_lock = (loop, asyncio.Lock())
+    return _embedder_probe_lock[1]
+
+
+def _cached_probe(embedder_url: str) -> tuple[str, str | None] | None:
+    cached = _embedder_probe_cache
+    if cached is not None and cached[1] == embedder_url and time.monotonic() - cached[0] < EMBEDDER_PROBE_TTL_SECONDS:
+        return cached[2], cached[3]
+    return None
+
+
+async def _embedder_check(embedder_url: str) -> tuple[str, str | None]:
+    """The embedder's health as search sees it: (status, note).
 
     /health alone said 200 for the whole of #685 while every /embed returned
-    500, so the app looked healthy while search ran keyword-only for hours.
+    500, so the app looked healthy while search ran keyword-only for hours. In
+    order:
+
+    1. A query embed by search failed inside the window, with no success since:
+       degraded, whatever a probe would say.
+    2. A query embed succeeded inside the window: healthy, no probe.
+    3. A probe result inside the window: that.
+    4. Otherwise one probe, shared by every concurrent caller: /health, then a
+       one-text POST /embed. A connection failure, a non-200 or an empty
+       vector is degraded; an /embed timeout is "ok" with a busy note, since a
+       one-at-a-time embedder serving an ingest is working as designed.
     """
     global _embedder_probe_cache
-    now = time.monotonic()
-    cached = _embedder_probe_cache
-    if cached is not None and cached[1] == embedder_url and now - cached[0] < EMBEDDER_PROBE_TTL_SECONDS:
-        return cached[2]
+    failure = recent_query_embed_failure(EMBEDDER_PROBE_TTL_SECONDS)
+    if failure is not None:
+        age, detail = failure
+        bounded = detail[:HEALTH_DETAIL_LIMIT]
+        return f"error: search's query embed failed {age:.0f}s ago: {bounded}", None
+    if recent_query_embed_success(EMBEDDER_PROBE_TTL_SECONDS):
+        return "ok", None
+    if (cached := _cached_probe(embedder_url)) is not None:
+        return cached
 
+    async with _probe_lock():
+        # Whoever held the lock just probed: share its answer.
+        if (cached := _cached_probe(embedder_url)) is not None:
+            return cached
+        status, note = await _probe_embedder(embedder_url)
+        _embedder_probe_cache = (time.monotonic(), embedder_url, status, note)
+        return status, note
+
+
+async def _probe_embedder(embedder_url: str) -> tuple[str, str | None]:
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{embedder_url}/health", timeout=5)
             if r.status_code != 200:
-                result = f"error: HTTP {r.status_code}"
+                status = f"error: HTTP {r.status_code}"
             else:
-                r = await client.post(
-                    f"{embedder_url}/embed",
-                    json={"texts": ["health check"], "task": "query"},
-                    timeout=10,
-                )
+                try:
+                    r = await asyncio.wait_for(
+                        client.post(
+                            f"{embedder_url}/embed",
+                            json={"texts": ["health check"], "task": "query"},
+                            timeout=EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS,
+                        ),
+                        timeout=EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS,
+                    )
+                except (TimeoutError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+                    logger.info("Embedder health probe: %s", EMBEDDER_BUSY_NOTE)
+                    return "ok", EMBEDDER_BUSY_NOTE
                 if r.status_code != 200:
-                    result = f"error: /embed returned HTTP {r.status_code}"
+                    status = f"error: /embed returned HTTP {r.status_code}"
                 else:
                     embeddings = r.json().get("embeddings")
                     ok = isinstance(embeddings, list) and len(embeddings) == 1 and bool(embeddings[0])
-                    result = "ok" if ok else "error: /embed returned no vector"
+                    status = "ok" if ok else "error: /embed returned no vector"
     except Exception as e:
-        result = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
-    if result != "ok":
-        logger.error("Embedder health check failed: %s", result)
-
-    _embedder_probe_cache = (now, embedder_url, result)
-    return result
+        status = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
+    if status != "ok":
+        logger.error("Embedder health check failed: %s", status)
+    return status, None
 
 
 @router.get("/system/health")
@@ -243,8 +300,11 @@ async def health_check(
         logger.error("Tika health check failed: %s", describe_error(e))
         checks["tika"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
 
-    # Embedder: liveness, then a real one-text embed (cached, see _embedder_check)
-    checks["embedder"] = await _embedder_check(settings.embedder_url)
+    # Embedder: search's own evidence, else a cached single-flight probe (_embedder_check)
+    notes: dict[str, str] = {}
+    checks["embedder"], embedder_note = await _embedder_check(settings.embedder_url)
+    if embedder_note:
+        notes["embedder"] = embedder_note
 
     # Reranker — only probed when enabled; disabled is not a degraded state
     if settings.reranker_enabled:
@@ -297,6 +357,9 @@ async def health_check(
         # (None → omitted by frontend) on Docker/Linux where the shim concept
         # doesn't apply.
         "cli_shim_install_status": _cli_shim_install_status(),
+        # Context for a check that is "ok" but not idle, e.g. an embedder too
+        # busy to answer the probe. Never a degraded state; empty when quiet.
+        "notes": notes,
     }
 
 

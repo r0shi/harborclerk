@@ -11,8 +11,9 @@ in `docs/architecture.md#ingestion-pipeline-stages`.
 - **Always call `mark_stage_done` on every exit path, including early returns.**
   An early `return` on a seq race once left a row `running` for 20 minutes, and
   re-enqueue is suppressed while a row is `running`. It declines a row a cancel
-  set to `error`. A cancel does not bump `pipeline_seq`: a long loop polls
-  `stage_run_is_current` between units of work, or it outlives the cancel (#620).
+  set to `error`. A cancel does not bump `pipeline_seq`: embed, OCR and summarize
+  poll `stage_run_is_current` between units of work; a new long loop must too (#620).
+  It holds the worker's alarm off (`alarm_deferred`) until the pipeline advance has run.
 - **Sequential prefix:** `extract` → `ocr` → `chunk`. Then `entities` and
   `embed` fan out and **gate `finalize`**. `summarize` is a **background** stage
   on the `llm` queue and does not gate `finalize` (see `worker/pipeline.py`).

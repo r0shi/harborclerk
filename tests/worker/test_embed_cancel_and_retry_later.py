@@ -380,7 +380,9 @@ async def test_sigterm_abandons_and_requeues_the_running_job_after_the_grace(db_
 
     from harbor_clerk.worker import entry as entry_mod
 
-    doc_id = await _make_doc(db_session, chunk_count=1, job_status=JobStatus.running)
+    # A job claimed after an earlier deferral still carries that schedule.
+    stale = {"reason": EMBED_RETRY_REASON, "retry_attempts": 2, "retry_after": "2026-01-01T00:00:00+00:00"}
+    doc_id = await _make_doc(db_session, chunk_count=1, job_status=JobStatus.running, metrics=stale)
     monkeypatch.setattr(entry_mod, "SHUTDOWN_GRACE_SECONDS", 1)
     monkeypatch.setattr(entry_mod, "_shutdown", False)
     if when == "during":
@@ -401,3 +403,143 @@ async def test_sigterm_abandons_and_requeues_the_running_job_after_the_grace(db_
     assert job.started_at is None
     assert doc.pipeline_status != PipelineStatus.error, "an interrupted job is not a failed one"
     assert entry_mod._shutdown_deadline_armed is False, "the deadline must not outlive the job"
+    # Requeued for a shutdown, not an outage: no stale "waiting on the embedder, next retry <past>".
+    assert "reason" not in job.metrics and "retry_after" not in job.metrics, job.metrics
+    assert job.metrics["retry_attempts"] == 2, "an interruption is not progress"
+
+
+# --------------------------------------------------------------------------
+# The alarm cannot fire into the recording of a stage's outcome
+# --------------------------------------------------------------------------
+
+
+def _early_alarm():
+    """Deliver SIGALRM now, as if the deadline fired at exactly this point."""
+    import signal
+
+    signal.raise_signal(signal.SIGALRM)
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_between_done_and_advance_does_not_strand_the_document(db_session, monkeypatch):
+    """mark_stage_done commits `done`, then advances. A deadline between the two left
+    the job done with nothing enqueued after it, and the requeue matches only
+    `running` rows: the document stranded."""
+    import signal
+
+    from harbor_clerk.worker import entry as entry_mod
+    from harbor_clerk.worker.pipeline import mark_stage_done
+
+    doc_id = await _make_doc(db_session, chunk_count=1, job_status=JobStatus.running)
+    monkeypatch.setattr(entry_mod, "SHUTDOWN_GRACE_SECONDS", 1)
+    monkeypatch.setattr(entry_mod, "_shutdown", False)
+    advanced: list[bool] = []
+
+    def _advance(doc_id_):
+        _early_alarm()  # the deadline lands after `done` is committed
+        advanced.append(True)
+
+    monkeypatch.setattr("harbor_clerk.worker.pipeline.advance_pipeline", _advance)
+
+    def _stage(doc_id_, *, worker_seq=None):
+        entry_mod._handle_signal(signal.SIGTERM, None)  # arms the shutdown deadline
+        mark_stage_done(doc_id_, JobStage.embed, worker_seq=worker_seq)
+
+    monkeypatch.setitem(entry_mod.STAGE_FUNCTIONS, JobStage.embed, _stage)
+
+    entry_mod.execute_job(doc_id, JobStage.embed, 0)
+
+    job, _doc, _ = _read(doc_id)
+    assert job.status == JobStatus.done
+    assert advanced == [True], "the deadline interrupted the pipeline advance after `done` was committed"
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_during_failure_bookkeeping_does_not_kill_the_worker(db_session, monkeypatch):
+    """Inside execute_job's handlers (here the retry-later write) a deadline used to
+    escape as _ShutdownDeadline and take the worker down mid-write."""
+    import signal
+
+    from harbor_clerk.worker import entry as entry_mod
+
+    doc_id = await _make_doc(db_session, chunk_count=1, job_status=JobStatus.running)
+    monkeypatch.setattr(entry_mod, "SHUTDOWN_GRACE_SECONDS", 1)
+    monkeypatch.setattr(entry_mod, "_shutdown", False)
+    real_record = entry_mod._record_embed_unavailable_job
+
+    def _record(*args, **kwargs):
+        _early_alarm()
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(entry_mod, "_record_embed_unavailable_job", _record)
+
+    def _stage(doc_id_, *, worker_seq=None):
+        entry_mod._handle_signal(signal.SIGTERM, None)
+        raise EmbedderUnavailableError("embedder call failed after 7/7 attempts: HTTP 503")
+
+    monkeypatch.setitem(entry_mod.STAGE_FUNCTIONS, JobStage.embed, _stage)
+
+    entry_mod.execute_job(doc_id, JobStage.embed, 0)  # must not raise
+
+    job, _doc, _ = _read(doc_id)
+    assert job.status == JobStatus.queued
+    assert job.metrics["reason"] == EMBED_RETRY_REASON, "the deferral was not recorded"
+
+
+# --------------------------------------------------------------------------
+# The reaper's requeue drops a stale deferral too
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reaper_requeue_clears_a_stale_embed_deferral(db_session, monkeypatch):
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    import harbor_clerk.api.app as app_mod
+
+    stale = {"reason": EMBED_RETRY_REASON, "retry_attempts": 3, "retry_after": "2026-01-01T00:00:00+00:00"}
+    doc_id = await _make_doc(db_session, chunk_count=1, job_status=JobStatus.running, metrics=stale)
+    await db_session.execute(
+        update(IngestionJob)
+        .where(IngestionJob.doc_id == doc_id)
+        .values(heartbeat_at=datetime.now(UTC) - timedelta(minutes=10))
+    )
+    await db_session.commit()
+
+    conn = await db_session.connection()
+
+    @asynccontextmanager
+    async def _factory():
+        session = AsyncSession(bind=conn, expire_on_commit=False)
+        try:
+            yield session
+        finally:
+            await session.close()
+
+    class _Stop(BaseException):
+        pass
+
+    sleeps = iter([None])
+
+    async def _sleep(_seconds):
+        if next(sleeps, "stop") == "stop":
+            raise _Stop()
+
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("harbor_clerk.db.async_session_factory", _factory)
+    # Only the loop's own `asyncio.sleep` (its sole asyncio use), not the event loop's.
+    monkeypatch.setattr(app_mod, "asyncio", SimpleNamespace(sleep=_sleep))
+
+    with pytest.raises(_Stop):
+        await asyncio.wait_for(app_mod._session_reaper_loop(), timeout=30)
+    # The reaper's session joined the test connection's transaction; make it visible.
+    await db_session.commit()
+
+    job, _doc, _ = _read(doc_id)
+    assert job.status == JobStatus.queued, "the orphan was not requeued"
+    assert "reason" not in job.metrics and "retry_after" not in job.metrics, job.metrics
+    assert job.metrics["retry_attempts"] == 3

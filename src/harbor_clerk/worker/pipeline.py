@@ -2,7 +2,9 @@
 
 import logging
 import os
+import threading
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from sqlalchemy import select, text
@@ -119,6 +121,44 @@ STAGE_CONFIG: dict[JobStage, tuple[str, int, PipelineStatus]] = {
 EMBED_RETRY_REASON = "embedder_unavailable"
 EMBED_RETRY_DELAYS_SECONDS = (60, 120, 300, 600, 900, 1800)
 EMBED_RETRY_MAX_ATTEMPTS = len(EMBED_RETRY_DELAYS_SECONDS) + 1
+
+
+def without_embed_retry_schedule(metrics: dict | None) -> dict:
+    """``metrics`` minus a deferred embed's schedule, for a job requeued for another reason.
+
+    A job requeued by the shutdown deadline or the reaper kept ``reason`` and a
+    past ``retry_after``, and status-summary then reported "the embedding
+    service is failing … next retry <a past time>". ``retry_attempts`` stays:
+    an interruption is not progress, and the count still bounds a broken
+    document.
+    """
+    cleaned = dict(metrics or {})
+    if cleaned.get("reason") == EMBED_RETRY_REASON:
+        cleaned.pop("reason")
+    cleaned.pop("retry_after", None)
+    return cleaned
+
+
+# Whether the main thread is inside a section the worker's SIGALRM must not
+# interrupt (worker/entry.py: the stage timeout and the shutdown deadline).
+# Thread-local because signal handlers run on the main thread, and only the
+# main thread's sections matter to them.
+_alarm_sections = threading.local()
+
+
+@contextmanager
+def alarm_deferred():
+    """Hold the worker's alarm off for the enclosed block (it re-checks a second later)."""
+    _alarm_sections.depth = getattr(_alarm_sections, "depth", 0) + 1
+    try:
+        yield
+    finally:
+        _alarm_sections.depth -= 1
+
+
+def alarm_is_deferred() -> bool:
+    return getattr(_alarm_sections, "depth", 0) > 0
+
 
 # Ordered pipeline stages (documentation; actual execution uses fan-out after chunk)
 STAGE_ORDER = [
@@ -601,6 +641,24 @@ def advance_pipeline(doc_id: uuid.UUID) -> None:
 
 
 def mark_stage_done(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    *,
+    worker_seq: int | None = None,
+    **extra_event_fields,
+) -> None:
+    """Mark a stage as done and advance the pipeline, atomically with respect to the worker's alarm.
+
+    Committing `done` and advancing are two steps. A shutdown deadline (or stage
+    timeout) firing between them left the job `done` with nothing enqueued after
+    it, and the deadline's requeue matches only `running` rows, so the document
+    stranded. The alarm is held off until both have run.
+    """
+    with alarm_deferred():
+        _mark_stage_done(doc_id, stage, worker_seq=worker_seq, **extra_event_fields)
+
+
+def _mark_stage_done(
     doc_id: uuid.UUID,
     stage: JobStage,
     *,

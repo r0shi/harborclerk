@@ -13,12 +13,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.embedder_client import embed_texts_async
+from harbor_clerk.error_text import describe_error
 from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.passage_cap import cap_text, refuse_filter_past_cap
+from harbor_clerk.query_embed_health import record_query_embed_failure, record_query_embed_success
 from harbor_clerk.search_rerank import rerank_hits
 from harbor_clerk.search_types import (
     SEMANTIC_OK,
+    SEMANTIC_PARTIAL,
+    SEMANTIC_PARTIAL_COVERAGE,
     SEMANTIC_UNAVAILABLE,
     ConflictSource,
     FindAllHit,
@@ -110,7 +114,14 @@ async def _embed_query(query: str) -> list[float]:
     workers waking on one LISTEN notification, not to an interactive request
     with a free fallback.
     """
-    embeddings = await embed_texts_async([query], task="query", timeout=30, max_attempts=1)
+    try:
+        embeddings = await embed_texts_async([query], task="query", timeout=30, max_attempts=1)
+    except Exception as exc:
+        # Passive evidence for /system/health (query_embed_health), which
+        # otherwise has only its own probe to go on (#685).
+        record_query_embed_failure(describe_error(exc))
+        raise
+    record_query_embed_success()
     return embeddings[0]
 
 
@@ -585,6 +596,24 @@ async def hybrid_search(
     docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids_set))))
     docs_by_id: dict[uuid.UUID, Document] = {d.doc_id: d for d in docs_result.scalars().all()}
 
+    # Vector coverage of the candidate documents. The query can embed fine and
+    # the result still be mostly keyword-only, when the documents it found have
+    # few vectors (#685: 29% of a corpus had none after a failing night). One
+    # indexed aggregate over the candidates (chunks_doc_idx), not the corpus.
+    semantic_coverage: float | None = None
+    if semantic_status == SEMANTIC_OK and doc_ids_set:
+        total, embedded = (
+            await session.execute(
+                select(func.count(Chunk.chunk_id), func.count(Chunk.embedding)).where(
+                    Chunk.doc_id.in_(list(doc_ids_set))
+                )
+            )
+        ).one()
+        if total:
+            semantic_coverage = round(embedded / total, 3)
+            if semantic_coverage < SEMANTIC_PARTIAL_COVERAGE:
+                semantic_status = SEMANTIC_PARTIAL
+
     for cid, score in combined.items():
         chunk = chunks_by_id.get(cid)
         if chunk is None:
@@ -671,6 +700,7 @@ async def hybrid_search(
         conflict_sources=conflict_sources,
         reranker_status=reranker_status,
         semantic_status=semantic_status,
+        semantic_coverage=semantic_coverage,
     )
 
 
@@ -949,4 +979,5 @@ async def find_all(
         sort_by=sort_by,
         presentation=presentation,
         semantic_status=inner.semantic_status,
+        semantic_coverage=inner.semantic_coverage,
     )

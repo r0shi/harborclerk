@@ -18,9 +18,19 @@ from harbor_clerk.llm.summarize import (
 from harbor_clerk.models import ChatMessage, Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.models.research_state import ResearchState
-from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import (
+    check_pipeline_seq,
+    mark_stage_done,
+    mark_stage_running,
+    stage_run_is_current,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class _SummarizeRunStopped(Exception):
+    """Raised from generate_summary's yield_check when the job was cancelled; caught in run_summarize."""
+
 
 # Yield-to-interactive: when a user-driven LLM workload is active, summarize
 # stops before claiming the LLM slot and waits up to YIELD_BUDGET_SEC for
@@ -132,13 +142,29 @@ def run_summarize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                 finally:
                     inner_session.close()
 
+            stopped = False
+
+            def _yield_or_stop() -> None:
+                # Called before every map-reduce LLM sub-call: the natural point
+                # to notice a cancel or queue clear (job row set to error) and
+                # stop spending the LLM on a document nobody wants summarized.
+                if not stage_run_is_current(session, doc_id, JobStage.summarize, worker_seq):
+                    raise _SummarizeRunStopped()
+                _wait_for_idle_llm()
+
             # Generate summary (compute before race check)
             try:
                 summary, model_used = generate_summary(
                     list(chunks),
-                    yield_check=_wait_for_idle_llm,
+                    yield_check=_yield_or_stop,
                     progress_callback=_progress,
                 )
+            except _SummarizeRunStopped:
+                # Nothing is written (no summary, no classification call), and
+                # mark_stage_done below declines the cancelled row.
+                logger.info("summarize: run for %s cancelled or superseded; stopping", doc_id)
+                stopped = True
+                summary, model_used = None, None
             except AppleIntelligenceUnavailableError:
                 logger.warning("Summary generation blocked for %s because Apple Intelligence is unavailable", doc_id)
                 raise
@@ -152,7 +178,8 @@ def run_summarize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             # Classify document type (compute before race check)
             doc_type = None
             try:
-                doc_type = classify_doc_type(list(chunks), mime_type=doc.mime_type or "")
+                if not stopped:
+                    doc_type = classify_doc_type(list(chunks), mime_type=doc.mime_type or "")
             except Exception:
                 logger.warning("Doc type classification failed for %s", doc_id, exc_info=True)
 

@@ -104,6 +104,55 @@ async def test_a_healthy_search_reports_ok(db_session, corpus, monkeypatch):
 
     assert result.hits
     assert result.semantic_status == "ok"
+    assert result.semantic_coverage == 1.0
+
+
+@pytest.fixture
+async def unembedded_doc(db_session: AsyncSession, corpus):
+    """A document keyword search finds whose nine passages have no vectors yet."""
+    doc = Document(
+        title="Keeper handbook",
+        status="active",
+        sha256=b"semantic-status-unembedded-00000",
+        pipeline_status=PipelineStatus.embedding,
+        mime_type="text/plain",
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    for n in range(9):
+        db_session.add(
+            Chunk(doc_id=doc.doc_id, chunk_num=n, chunk_text=f"Lighthouse keeper duty {n}.", language="english")
+        )
+    await db_session.commit()
+    return doc
+
+
+async def test_low_vector_coverage_among_candidates_is_partial(db_session, unembedded_doc, monkeypatch):
+    """The query embeds fine, but most of what keyword search found has no vectors:
+    the semantic leg saw a tenth of it (#685's 29% unembedded corpus)."""
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_up)
+
+    result = await search_mod.hybrid_search(db_session, "lighthouse keeper")
+
+    assert result.semantic_status == "partial"
+    assert result.semantic_coverage == 0.1
+
+
+async def test_rest_and_mcp_report_partial_coverage(
+    client, admin_token, unembedded_doc, mcp_session, human, monkeypatch
+):
+    from harbor_clerk.mcp_server import kb_search
+
+    monkeypatch.setattr(search_mod, "_embed_query", _embedder_up)
+
+    rest = (
+        await client.post("/api/search", json={"query": "lighthouse keeper"}, headers=auth_header(admin_token))
+    ).json()
+    mcp = json.loads(await kb_search(query="lighthouse keeper"))
+
+    assert (rest["semantic_status"], rest["semantic_coverage"]) == ("partial", 0.1)
+    assert (mcp["semantic_status"], mcp["semantic_coverage"]) == ("partial", 0.1)
+    assert "not embedded" in mcp["semantic_notice"]
 
 
 async def test_find_all_carries_the_flag(db_session, corpus, monkeypatch):

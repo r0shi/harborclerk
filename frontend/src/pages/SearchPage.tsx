@@ -63,7 +63,14 @@ interface SearchResponse {
   has_more: boolean
   possible_conflict: boolean
   conflict_sources: ConflictSource[]
+  semantic_status?: SemanticStatus
+  semantic_coverage?: number | null
 }
+
+// Whether the server's semantic (vector) leg ran: "unavailable" means the
+// embedding service failed and the results are keyword matches only;
+// "partial" that many of the matched documents' passages have no vectors yet.
+type SemanticStatus = 'ok' | 'partial' | 'unavailable'
 
 interface FindAllTopChunk {
   chunk_id?: string
@@ -93,9 +100,29 @@ interface FindAllResponse {
   truncated: boolean
   sort_by: FindAllSort
   presentation: 'brief' | 'full'
+  semantic_status?: SemanticStatus
+  semantic_coverage?: number | null
 }
 
 type SearchResults = SearchResponse | FindAllResponse
+
+function SemanticNotice({ status, coverage }: { status?: SemanticStatus; coverage?: number | null }) {
+  if (status !== 'unavailable' && status !== 'partial') return null
+  const message =
+    status === 'unavailable'
+      ? 'Keyword matches only: semantic search is unavailable because the embedding service failed. ' +
+        'Passages that use different wording are missed, so a missing result does not mean the documents lack it.'
+      : `Partly keyword-only: ${coverage != null ? `${Math.round(coverage * 100)}% of` : 'only some of'} ` +
+        "the matched documents' passages are embedded, so the rest are found by keyword only."
+  return (
+    <div
+      role="status"
+      className="mb-4 rounded-sm bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-400"
+    >
+      {message}
+    </div>
+  )
+}
 
 const HISTORY_KEY = 'search_history'
 const STATE_KEY = 'search_state'
@@ -894,6 +921,7 @@ export default function SearchPage() {
 
       {searchResults && (
         <>
+          <SemanticNotice status={searchResults.semantic_status} coverage={searchResults.semantic_coverage} />
           {searchResults.possible_conflict && searchResults.conflict_sources.length > 0 && (
             <div className="mb-4 rounded-sm bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-400">
               <strong>Possible conflict:</strong> Similar content found across multiple sources:{' '}
@@ -984,6 +1012,7 @@ export default function SearchPage() {
 
       {findAllResults && (
         <>
+          <SemanticNotice status={findAllResults.semantic_status} coverage={findAllResults.semantic_coverage} />
           {findAllResults.results.length === 0 && currentPage === 1 ? (
             <p className="text-gray-500 dark:text-gray-400">No documents found.</p>
           ) : (

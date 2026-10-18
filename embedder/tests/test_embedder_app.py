@@ -348,3 +348,52 @@ def test_encode_failure_is_a_logged_503_with_retry_after(stub_model, caplog):
     assert records, "the encode failure was not logged on the embedder's own logger"
     assert records[0].exc_info is not None, "the log line must carry the traceback"
     assert logging.getLogger("embedder.app").propagate, "the record must reach the root logger's file handler"
+
+
+class PanicException(BaseException):
+    """Stands in for pyo3's PanicException (a tokenizers Rust panic), which has no importable home."""
+
+
+class OutOfMemoryError(RuntimeError):
+    """Stands in for torch.OutOfMemoryError, a RuntimeError subclass."""
+
+
+def _post_with_encode_raising(stub_model, exc):
+    from unittest.mock import patch
+
+    stub_model.encode.side_effect = exc
+    with (
+        patch("embedder.app.SentenceTransformer", return_value=stub_model),
+        patch("embedder.app.release_gpu_cache"),
+    ):
+        from embedder.app import app
+
+        with TestClient(app, raise_server_exceptions=False) as c:
+            return c.post("/embed", json={"texts": ["a"]})
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [ValueError("text input must be of type str"), TypeError("TextEncodeInput must be Union"), PanicException("x")],
+    ids=["ValueError", "TypeError", "tokenizers-panic"],
+)
+def test_an_input_error_is_a_422_not_a_retry_later(stub_model, exc):
+    """A batch that always fails must not be told "retry later": the worker would
+    defer it for an hour, ~49 encodes, before giving up. The client treats a 4xx as
+    final."""
+    r = _post_with_encode_raising(stub_model, exc)
+
+    assert r.status_code == 422, f"{type(exc).__name__} -> {r.status_code}"
+    assert "retry-after" not in r.headers
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [RuntimeError("MPS backend out of memory"), OutOfMemoryError("CUDA out of memory")],
+    ids=["RuntimeError", "OutOfMemoryError"],
+)
+def test_a_resource_failure_is_a_503_retry_later(stub_model, exc):
+    r = _post_with_encode_raising(stub_model, exc)
+
+    assert r.status_code == 503
+    assert r.headers.get("retry-after")

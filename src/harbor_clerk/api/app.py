@@ -159,6 +159,7 @@ async def _session_reaper_loop() -> None:
                 # Re-queue orphaned ingestion jobs (running with stale heartbeat >90s)
                 from harbor_clerk.models import Document, IngestionJob
                 from harbor_clerk.models.enums import JobStatus
+                from harbor_clerk.worker.pipeline import without_embed_retry_schedule
 
                 heartbeat_cutoff = now - timedelta(seconds=90)
                 orphan_result = await db.execute(
@@ -183,6 +184,9 @@ async def _session_reaper_loop() -> None:
                     job.started_at = None
                     job.heartbeat_at = None
                     job.error = None
+                    # An orphan is not an embed deferred for an outage (#619):
+                    # drop any stale retry schedule so status stays truthful.
+                    job.metrics = without_embed_retry_schedule(job.metrics)
 
                 await db.commit()
                 total = len(stale_sessions) + len(done_sessions)

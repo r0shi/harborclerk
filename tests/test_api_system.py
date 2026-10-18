@@ -58,11 +58,19 @@ async def test_health_check(client):
 
 @pytest.fixture(autouse=True)
 def _fresh_embedder_probe(monkeypatch):
-    """The embedder probe is cached for EMBEDDER_PROBE_TTL_SECONDS; no test may read another's."""
+    """The embedder probe is cached for EMBEDDER_PROBE_TTL_SECONDS, and search's query
+    embeds leave evidence health reads; no test may read another's."""
+    from harbor_clerk import query_embed_health
+
     monkeypatch.setattr("harbor_clerk.api.routes.system._embedder_probe_cache", None)
+    query_embed_health.reset()
+    yield
+    query_embed_health.reset()
 
 
-def _stub_embedder(monkeypatch, *, health_status: int = 200, embed_status: int = 200, embed_json=None):
+def _stub_embedder(
+    monkeypatch, *, health_status: int = 200, embed_status: int = 200, embed_json=None, embed_delay: float = 0.0
+):
     """Answer the embedder's /health and /embed; every other request goes through.
 
     Returns the list of embedder URLs requested, in order. Resolved from config:
@@ -86,6 +94,10 @@ def _stub_embedder(monkeypatch, *, health_status: int = 200, embed_status: int =
     async def _post(self, url, *args, **kwargs):
         if str(url) == f"{base}/embed":
             calls.append(str(url))
+            if embed_delay:
+                import asyncio
+
+                await asyncio.sleep(embed_delay)
             body = embed_json if embed_json is not None else {"embeddings": [[0.1] * 4], "dimensions": 4}
             if embed_status != 200:
                 body = {"detail": "Internal Server Error"}
@@ -139,6 +151,109 @@ async def test_health_check_caches_the_embedder_probe(client, monkeypatch):
         assert (await client.get("/api/system/health")).json()["checks"]["embedder"] == "ok"
 
     assert len([c for c in calls if c.endswith("/embed")]) == 1, f"probe was not cached: {calls}"
+
+
+async def test_concurrent_health_calls_share_one_probe(monkeypatch):
+    """The route is unauthenticated and the Mac app polls it every 2 s: N concurrent
+    callers must cost one encode, not N (a reviewer reproduced 5 from 5)."""
+    import asyncio
+
+    from harbor_clerk.api.routes import system
+    from harbor_clerk.config import get_settings
+
+    calls = _stub_embedder(monkeypatch, embed_delay=0.3)
+
+    results = await asyncio.wait_for(
+        asyncio.gather(*(system._embedder_check(get_settings().embedder_url) for _ in range(5))), timeout=10
+    )
+
+    assert results == [("ok", None)] * 5
+    assert len([c for c in calls if c.endswith("/embed")]) == 1, f"{calls}"
+
+
+async def test_a_busy_embedder_is_ok_not_degraded(client, monkeypatch, caplog):
+    """During a heavy ingest the probe queues behind batches in the one-at-a-time
+    embedder. Timing out there is the embedder working, not failing."""
+    import logging
+
+    monkeypatch.setattr("harbor_clerk.api.routes.system.EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS", 0.2)
+    _stub_embedder(monkeypatch, embed_delay=3.0)
+
+    with caplog.at_level(logging.INFO, logger="harbor_clerk.api.routes.system"):
+        data = (await client.get("/api/system/health")).json()
+
+    assert data["checks"]["embedder"] == "ok"
+    assert data["notes"]["embedder"].startswith("busy")
+    embedder_errors = [r for r in caplog.records if r.levelno >= logging.ERROR and "Embedder" in r.getMessage()]
+    assert not embedder_errors, f"a busy embedder was logged as a failure: {embedder_errors}"
+
+
+async def test_a_503_from_embed_is_degraded(client, monkeypatch):
+    _stub_embedder(monkeypatch, embed_status=503)
+
+    data = (await client.get("/api/system/health")).json()
+
+    assert data["checks"]["embedder"] == "error: /embed returned HTTP 503"
+    assert data["status"] == "degraded"
+    assert "embedder" not in data["notes"]
+
+
+async def test_a_recent_failed_query_embed_is_degraded_even_if_the_probe_passes(client, monkeypatch):
+    """Search's own failure is better evidence than a one-text probe that happens to pass."""
+    import harbor_clerk.search as search_mod
+
+    async def _down(texts, **kwargs):
+        raise RuntimeError("embedder returned HTTP 500")
+
+    monkeypatch.setattr(search_mod, "embed_texts_async", _down)
+    with pytest.raises(RuntimeError):
+        await search_mod._embed_query("lighthouse")
+    calls = _stub_embedder(monkeypatch)  # the probe would pass
+
+    data = (await client.get("/api/system/health")).json()
+
+    assert data["checks"]["embedder"].startswith("error: search's query embed failed"), data["checks"]["embedder"]
+    assert "HTTP 500" in data["checks"]["embedder"]
+    assert data["status"] == "degraded"
+    assert not calls, "with search's evidence in hand, no probe is needed"
+
+
+async def test_a_recent_successful_query_embed_skips_the_probe(client, monkeypatch):
+    import harbor_clerk.search as search_mod
+
+    async def _up(texts, **kwargs):
+        return [[0.01] * 768]
+
+    monkeypatch.setattr(search_mod, "embed_texts_async", _up)
+    await search_mod._embed_query("lighthouse")
+    calls = _stub_embedder(monkeypatch, embed_status=500)  # a probe would say degraded
+
+    data = (await client.get("/api/system/health")).json()
+
+    assert data["checks"]["embedder"] == "ok"
+    assert not calls, f"probed despite a fresh successful query embed: {calls}"
+
+
+async def test_a_success_after_a_failure_clears_the_failure(client, monkeypatch):
+    import harbor_clerk.search as search_mod
+
+    outcomes = iter([RuntimeError("HTTP 500"), [[0.01] * 768]])
+
+    async def _flaky(texts, **kwargs):
+        result = next(outcomes)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(search_mod, "embed_texts_async", _flaky)
+    with pytest.raises(RuntimeError):
+        await search_mod._embed_query("a")
+    await search_mod._embed_query("b")
+    _stub_embedder(monkeypatch)
+
+    data = (await client.get("/api/system/health")).json()
+
+    assert data["checks"]["embedder"] == "ok"
 
 
 async def test_health_check_exposes_allow_source_download_default_false(client):

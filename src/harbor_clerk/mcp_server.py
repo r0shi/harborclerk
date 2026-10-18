@@ -50,7 +50,12 @@ from harbor_clerk.search import (
     find_all,
     hybrid_search,
 )
-from harbor_clerk.search_types import SEMANTIC_OK, SEMANTIC_UNAVAILABLE_NOTICE
+from harbor_clerk.search_types import (
+    SEMANTIC_OK,
+    SEMANTIC_PARTIAL,
+    SEMANTIC_PARTIAL_NOTICE,
+    SEMANTIC_UNAVAILABLE_NOTICE,
+)
 from harbor_clerk.source_ref import (
     SourceRef,
     SourceRefContext,
@@ -689,8 +694,8 @@ async def _resolve_headings(
     return result_map
 
 
-def _semantic_fields(semantic_status: str) -> dict:
-    """The degraded-search flag for an MCP payload: present only when the vector leg failed.
+def _semantic_fields(semantic_status: str, semantic_coverage: float | None = None) -> dict:
+    """The degraded-search flag for an MCP payload: present only when the vector leg failed or saw little.
 
     Absent on a healthy result, so a healthy payload is byte-for-byte what it
     was; when present it carries a sentence for the model, because a bare flag
@@ -698,6 +703,12 @@ def _semantic_fields(semantic_status: str) -> dict:
     """
     if semantic_status == SEMANTIC_OK:
         return {}
+    if semantic_status == SEMANTIC_PARTIAL:
+        return {
+            "semantic_status": semantic_status,
+            "semantic_coverage": semantic_coverage,
+            "semantic_notice": SEMANTIC_PARTIAL_NOTICE,
+        }
     return {"semantic_status": semantic_status, "semantic_notice": SEMANTIC_UNAVAILABLE_NOTICE}
 
 
@@ -756,7 +767,7 @@ def _format_search_response(
         "hits": hits,
         "total_candidates": result.total_candidates,
         "has_more": has_more,
-        **_semantic_fields(result.semantic_status),
+        **_semantic_fields(result.semantic_status, result.semantic_coverage),
     }
     if has_more:
         # Active continuation nudge in the response payload. `has_more: true`
@@ -1161,7 +1172,7 @@ async def kb_search(
             "documents": doc_groups,
             "total_candidates": result.total_candidates,
             "has_more": base_resp["has_more"],
-            **_semantic_fields(result.semantic_status),
+            **_semantic_fields(result.semantic_status, result.semantic_coverage),
         }
         # Carry the continuation nudge into the faceted shape too — pagination
         # semantics are identical, just grouped by document.
@@ -1485,7 +1496,7 @@ async def kb_find_all(
         "truncated": result.truncated,
         "sort_by": result.sort_by,
         "presentation": result.presentation,
-        **_semantic_fields(result.semantic_status),
+        **_semantic_fields(result.semantic_status, result.semantic_coverage),
         **scope_note,
     }
     return json.dumps(resp, indent=2)
