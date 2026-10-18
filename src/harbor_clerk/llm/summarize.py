@@ -23,7 +23,7 @@ from enum import Enum
 import httpx
 
 from harbor_clerk.config import get_settings, refresh_llm_settings
-from harbor_clerk.llm.health import llm_server_ready
+from harbor_clerk.llm.health import UNAVAILABLE, llm_server_state, wait_while_loading
 from harbor_clerk.llm.models import context_budget, get_model
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,16 @@ class _Tier(Enum):
     SHORT = "short"
     MEDIUM = "medium"
     LONG = "long"
+
+
+def _local_server_unavailable() -> bool:
+    """Whether llama-server is not there at all, after waiting out a load in progress (#654).
+
+    Only under Docker Compose can this be True: elsewhere the server's state is READY, unprobed. Waiting
+    out LOADING (every `compose up`, a restart, the first load after a download) is what keeps a summary
+    from being stored extractive just because it was claimed during the load; past the wait the request
+    goes out anyway and its own 503 retries take over."""
+    return wait_while_loading() == UNAVAILABLE
 
 
 def _llm_intentionally_deactivated() -> bool:
@@ -305,13 +315,20 @@ def _call_llm(
             # full minute of wall time per stalled summarize, which the
             # user feels. On loading / genuine-transient cases we still
             # retry with backoff.
-            # Under Compose a refused connection also means the server's model is not loaded (#654): it
-            # is waiting for its file or failed to load it, which a retry does not wait out.
-            if isinstance(e, httpx.ConnectError) and (
-                _llm_intentionally_deactivated() or not llm_server_ready(fresh=True)
-            ):
+            if isinstance(e, httpx.ConnectError) and _llm_intentionally_deactivated():
                 logger.info(
                     "LLM call phase=%s elapsed=%.1fs ConnectError + LLM deactivated — skipping %d remaining retries",
+                    phase,
+                    elapsed,
+                    max_attempts - attempt,
+                )
+                return None
+            # Under Compose a refused connection with nothing listening means llama-server is waiting for
+            # its file or exited after a failed load (#654), which a retry does not wait out. A server that
+            # is loading answers /health, so that case still retries.
+            if isinstance(e, httpx.ConnectError) and llm_server_state(fresh=True) == UNAVAILABLE:
+                logger.info(
+                    "LLM call phase=%s elapsed=%.1fs ConnectError + llama-server unavailable — skipping %d remaining retries",
                     phase,
                     elapsed,
                     max_attempts - attempt,
@@ -871,8 +888,10 @@ def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
         logger.info("Apple Intelligence unavailable while forced for doc_type — using MIME fallback")
         return _mime_to_doc_type(mime_type)
 
-    # Try local LLM first (if a model is active, and loaded: llm_server_ready is True except under Compose)
-    if settings.llm_model_id and llm_server_ready():
+    # Try local LLM first, if a model is active and its server is there (only Compose can say it is not, #654)
+    if settings.llm_model_id and _local_server_unavailable():
+        logger.info("llama-server is unavailable — trying Apple Intelligence for doc_type")
+    elif settings.llm_model_id:
         sample = "\n\n".join(chunks)[:2000]
         prompt = (
             "Classify this document with a short phrase (2-4 words) like: "
@@ -977,10 +996,11 @@ def generate_summary(
         logger.error("Apple Intelligence unavailable while forced; refusing extractive fallback (%s)", reason)
         raise AppleIntelligenceUnavailableError(f"Apple Intelligence summaries are enabled but unavailable: {reason}")
 
-    # Try LLM if a model is active and loaded. Under Compose a model is active while its file is in the
-    # volume, which a failed load does not change; llm_server_ready (True elsewhere) asks the server (#654).
-    if settings.llm_model_id and not llm_server_ready():
-        logger.info("llama-server is not ready; summarizing without the local model %s", settings.llm_model_id)
+    # Try LLM if a model is active and its server is there. Under Compose a model is active while its file
+    # is in the volume, which a failed load does not change, so the server is asked (#654); a load in
+    # progress is waited out, not fallen back from.
+    if settings.llm_model_id and _local_server_unavailable():
+        logger.info("llama-server is unavailable; summarizing without the local model %s", settings.llm_model_id)
     elif settings.llm_model_id:
         model = get_model(settings.llm_model_id)
         context_window = context_budget(model, settings.llm_yarn_enabled) if model else None

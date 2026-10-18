@@ -150,3 +150,59 @@ async def test_macos_deletes_the_active_model_as_before(
     assert resp.status_code == 204
     assert not (models_dir / SERVED).exists()
     assert json.loads(macos.read_text())["llm_model_id"] == ""
+
+
+@pytest.fixture
+def compose_no_model(monkeypatch, models_dir: Path) -> None:
+    """Compose with LLM_MODEL_FILE set empty, the documented "no local model", and a stale LLM_MODEL_ID."""
+    monkeypatch.delenv("NATIVE_CONFIG_FILE", raising=False)
+    monkeypatch.setenv("HC_DEPLOYMENT", "compose")
+    monkeypatch.setenv("LLM_MODEL_FILE", "")
+    monkeypatch.setenv("LLM_MODEL_ID", "qwen35-9b")
+    config._settings = None
+
+
+async def test_compose_without_a_model_file_refuses_activation(
+    client, admin_user, admin_token, compose_no_model
+) -> None:
+    # Nothing listens on llama-server's port: an activation would show a model no server serves.
+    resp = await client.put("/api/chat/models/qwen35-9b/activate", headers=auth_header(admin_token))
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "no local model is configured (LLM_MODEL_FILE is empty)" in detail
+    assert f"set LLM_MODEL_FILE={OTHER}" in detail
+    assert config.get_settings().llm_model_id == ""
+    listed = await client.get("/api/chat/models", headers=auth_header(admin_token))
+    assert [m["id"] for m in listed.json() if m["active"]] == []
+
+
+async def test_compose_without_a_model_file_allows_deactivation(
+    client, admin_user, admin_token, compose_no_model
+) -> None:
+    # Already the state: nothing is served, so deactivating changes nothing and is not refused.
+    resp = await client.put("/api/chat/models/deactivate", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert config.get_settings().llm_model_id == ""
+
+
+async def test_research_sees_a_download_that_finished_after_startup(
+    client, admin_user, admin_token, compose, models_dir: Path, monkeypatch
+) -> None:
+    # The route reads the active model fresh, as chat does: Research started right after the download
+    # must not answer "No LLM model configured".
+    (models_dir / SERVED).unlink()
+    config._settings = None
+    assert config.get_settings().llm_model_id == ""
+    (models_dir / SERVED).write_bytes(b"GGUF")  # the download lands
+
+    async def no_stream(*args, **kwargs):
+        yield b'data: {"type": "done"}\n\n'
+
+    monkeypatch.setattr("harbor_clerk.api.routes.research.research_stream", no_stream)
+    resp = await client.post(
+        "/api/research",
+        json={"question": "What are the termination clauses?", "time_limit_minutes": 15, "depth": "light"},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert config.get_settings().llm_model_id == "qwen35-4b"

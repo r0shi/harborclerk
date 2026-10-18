@@ -71,13 +71,18 @@ def test_a_file_that_is_not_curated_activates_nothing(compose_env: Path, monkeyp
     assert "not a curated model's file" in caplog.text
 
 
-def test_an_empty_model_file_leaves_the_model_id_alone(compose_env: Path, monkeypatch) -> None:
+def test_an_empty_model_file_means_no_model_whatever_llm_model_id_says(compose_env: Path, monkeypatch, caplog) -> None:
+    # The documented "no local model": llama-server is not started, so the UI must not show one active.
+    (compose_env / "Qwen3.5-9B-Q4_K_M.gguf").write_bytes(b"GGUF")
     monkeypatch.setenv("LLM_MODEL_FILE", "")
     monkeypatch.setenv("LLM_MODEL_ID", "qwen35-9b")
     config._settings = None
-    assert config.get_settings().llm_model_id == "qwen35-9b"
-    config.refresh_llm_settings()
-    assert config.get_settings().llm_model_id == "qwen35-9b"
+    with caplog.at_level(logging.INFO, logger="harbor_clerk.config"):
+        assert config.get_settings().llm_model_id == ""
+        config.refresh_llm_settings()
+        assert config.get_settings().llm_model_id == ""
+    assert "LLM_MODEL_ID=qwen35-9b is ignored" in caplog.text
+    assert caplog.text.count("LLM_MODEL_FILE is empty") == 1  # said once, not on every refresh
 
 
 def test_the_macos_app_ignores_llm_model_file(compose_env: Path, monkeypatch, tmp_path: Path) -> None:

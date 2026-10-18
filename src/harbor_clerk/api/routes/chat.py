@@ -23,7 +23,13 @@ from harbor_clerk.api.schemas.chat import (
     SendMessageRequest,
 )
 from harbor_clerk.api.scope_validation import validate_scope_folders
-from harbor_clerk.config import compose_model_file, get_settings, refresh_llm_settings, sync_native_config
+from harbor_clerk.config import (
+    compose_model_file,
+    get_settings,
+    is_compose,
+    refresh_llm_settings,
+    sync_native_config,
+)
 from harbor_clerk.db import get_session
 from harbor_clerk.llm.chat import chat_stream
 from harbor_clerk.llm.download import (
@@ -382,24 +388,29 @@ def _refuse_model_switch_under_compose(model_id: str | None) -> None:
     it with another file (the macOS launcher is what does that on a Mac). The active model there is derived
     from LLM_MODEL_FILE on every refresh (`config._apply_model_file`), so an activation would show one model
     while another answered, until the next refresh put it back. Activating the served model is allowed and
-    changes nothing. `model_id` None is a deactivation. Under the macOS app this does nothing."""
+    changes nothing. `model_id` None is a deactivation, allowed when LLM_MODEL_FILE is empty (nothing is
+    served, so there is nothing to change). Under the macOS app this does nothing."""
     settings = get_settings()
-    model_file = compose_model_file(settings)
-    if not model_file:
+    if not is_compose(settings):
         return
+    model_file = settings.llm_model_file
     model = get_model(model_id) if model_id else None
-    if model is not None and model.filename == model_file:
+    if model is not None and model_file and model.filename == model_file:
+        return
+    if model is None and not model_file:
         return
     if model is not None:
         change = f"To use {model.name}, set LLM_MODEL_FILE={model.filename}"
     else:
         change = "To run no local model, set LLM_MODEL_FILE= (empty)"
+    served = (
+        f"the model is the one llama-server is started with, LLM_MODEL_FILE={model_file}"
+        if model_file
+        else "no local model is configured (LLM_MODEL_FILE is empty)"
+    )
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
-        detail=(
-            f"Under Docker Compose the model is the one llama-server is started with, LLM_MODEL_FILE={model_file}. "
-            f"{change} in .env and run `docker compose up -d`."
-        ),
+        detail=f"Under Docker Compose {served}. {change} in .env and run `docker compose up -d`.",
     )
 
 

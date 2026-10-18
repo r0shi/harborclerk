@@ -206,9 +206,9 @@ def get_settings() -> Settings:
         _apply_to(settings)
         configured_model_id = settings.llm_model_id
         _apply_model_file(settings)
-        if configured_model_id and compose_model_file(settings) and configured_model_id != settings.llm_model_id:
+        if configured_model_id and is_compose(settings) and configured_model_id != settings.llm_model_id:
             logger.warning(
-                "LLM_MODEL_ID=%s is ignored: under Docker Compose LLM_MODEL_FILE (%s) chooses the model",
+                "LLM_MODEL_ID=%s is ignored: under Docker Compose LLM_MODEL_FILE (%r) chooses the model",
                 configured_model_id,
                 settings.llm_model_file,
             )
@@ -246,13 +246,21 @@ def _apply_model_file(settings: Settings) -> None:
     so Ask says no model is configured and summaries fall back at once, instead of sending requests to a
     server that is not listening (a summary would spend ~95 s of retries on each). A file that is not a
     curated model's activates nothing: the registry is what budgets, tools and research flags come from.
+    An empty LLM_MODEL_FILE is the documented "no local model": llama-server is not started, so nothing is
+    active, whatever LLM_MODEL_ID says.
 
     Runs when the settings are built and on every `refresh_llm_settings()`, which the chat and research
     routes and the summarize stage call per request, so a download finishing is picked up without a
     restart."""
     global _model_file_reported
-    filename = compose_model_file(settings)
+    if not is_compose(settings):
+        return
+    filename = settings.llm_model_file
     if not filename:
+        if _model_file_reported != ("", "none"):
+            _model_file_reported = ("", "none")
+            logger.info("LLM_MODEL_FILE is empty: no local model is configured, and LLM_MODEL_ID is ignored")
+        settings.llm_model_id = ""
         return
     from harbor_clerk.llm.models import model_for_file  # llm.models imports nothing from this package
 
@@ -264,14 +272,8 @@ def _apply_model_file(settings: Settings) -> None:
         if model is None:
             logger.warning("LLM_MODEL_FILE %r is not a curated model's file; no local model is active", filename)
         elif not present:
-            # The services that read .env but never mount the volume (watcher, io and cpu workers) say this
-            # at debug: they run no LLM stage, and "not in ./data/models" there would only mislead.
-            level = logging.INFO if os.path.isdir(settings.models_dir) else logging.DEBUG
-            logger.log(
-                level,
-                "LLM_MODEL_FILE %s is not in %s; no local model is active until it is",
-                filename,
-                settings.models_dir,
+            logger.info(
+                "LLM_MODEL_FILE %s is not in %s; no local model is active until it is", filename, settings.models_dir
             )
         else:
             logger.info("Local model %s is active: LLM_MODEL_FILE %s is in %s", model.id, filename, settings.models_dir)
