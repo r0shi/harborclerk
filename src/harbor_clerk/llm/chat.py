@@ -111,25 +111,35 @@ _FINAL_ANSWER_THINKING_SECONDS = 120.0
 # alone, the table followed whichever conversation ran last: alternating twenty-exchange conversations at 1.8x and
 # 1.0x on a 16,384 slot moved it 1.8, 1.4, 1.6, 1.3, the third conversation's first prompt went at 89% of the slot and
 # the English ones kept 6 and 8 exchanges of the 16 that fit (#810). So every prose measurement is also kept for its
-# conversation and model (``_conversation_prose_ratios``), and every read of the prose ratio in a turn takes the
+# conversation and model (``_conversation_prose_ratios``), and a turn whose history holds no tool row reads the
 # conversation's own (``_conversation_prose_ratio``) before the model's table, which is what a conversation this
 # process has not measured starts from. The conversation's entry is replaced by each measurement, not blended: the
 # next prompt is the measured one plus an exchange, so the last count is the nearest density there is, and a
-# conversation that changes language follows it a turn behind rather than at half a step a turn. The tool ratio stays
-# per model: results are the corpus's passages in the tools' JSON, whatever the conversation's language, and it is
-# re-measured inside every searching turn. The entries live as long as the process (the oldest past
-# _CONVERSATION_PROSE_MAX go): the stored rows cannot rebuild one, since ``tokens_used`` adds every completion,
-# reasoning included, to the count, and the rows a count covered depend on the trim of the time. After a restart a
-# conversation starts from the model's table, as every conversation did before, and its first prose prompt measures
-# it again (a refused one included, which is then retried as above).
+# conversation that changes language follows it a turn behind rather than at half a step a turn. So the turn-one
+# sample, mostly the system prompt and the schema, is replaced as the history grows, and needs no minimum share of
+# history to be trusted: the prompt it is applied to has the same mix, and the trim it governs only bites once the
+# history, re-measured every turn, is long. The entry applies only while it is re-measured: once the history holds a
+# tool row, every first prompt is tool-bearing and measures nothing, and an entry kept would be the last tool-less
+# sample for the life of the process (the turn-one prompt of a conversation that searched at once: a CJK one read
+# at 1.05 where the model's table, fed by other CJK conversations, said 1.8; the review of #844). Such a turn, and
+# every read after a turn has searched, takes the model's table as before #810, and the entry is dropped
+# (``_forget_conversation_prose_ratio``), so a history whose tool rows have left the window starts again from the
+# model's table until its first tool-less prompt measures it. The context-budget stop and the forced call's
+# deadline read the model's table outright: they act once a turn has searched. The tool ratio stays per model:
+# results are the corpus's passages in the tools' JSON, whatever the conversation's language, and it is re-measured
+# inside every searching turn. The entries live as long as the process (the oldest past _CONVERSATION_PROSE_MAX go):
+# the stored rows cannot rebuild one, since ``tokens_used`` adds every completion, reasoning included, to the count,
+# and the rows a count covered depend on the trim of the time. After a restart a conversation starts from the model's
+# table, as every conversation did before, and its first prose prompt measures it again (a refused one included,
+# which is then retried as above).
 #
 # The tool ratio's default is the tool-heavy figure, 2.0: too high stops a search a round before the server would
 # have (soft); too low admits a prompt the server refuses (hard). It is never replaced: every measurement is blended
 # in at half weight from whatever stands, since the next increment is like the last and the half kept guards against
 # a single odd count. The tool table is process-wide, so two conversations running at once blend their measurements
-# in it; every model runs one slot, so that is rare. A measurement is clamped before it is blended: a count the estimate cannot explain moves a
-# ratio at most half way to the clamp, never off the scale. The clamp's top is 3.0: it covers the 2.31 observed on
-# tool results with margin.
+# in it; every model runs one slot, so that is rare. A measurement is clamped before it is blended: a count the
+# estimate cannot explain moves a ratio at most half way to the clamp, never off the scale. The clamp's top is 3.0:
+# it covers the 2.31 observed on tool results with margin.
 #
 # The forced prompt goes as the calibrated estimate stands, not trimmed beforehand: the server refuses before it reads
 # and names its count, so a refused prompt is trimmed against that count, with the response reserve, and sent once
@@ -463,6 +473,12 @@ def _record_conversation_prose_ratio(
     return ratio
 
 
+def _forget_conversation_prose_ratio(conversation_id: uuid.UUID | str, model_id: str | None) -> None:
+    """Drop the conversation's entry on ``model_id``: its history holds a tool row, so its prose is no longer
+    re-measured and the model's table is what it reads (module comment)."""
+    _conversation_prose_ratios.pop((str(conversation_id), model_id or ""), None)
+
+
 def _predict_messages_tokens(messages: list[dict], ratio: float, prose: float) -> float:
     """The tokenizer's count of ``messages`` as predicted with no server count to go on: each message's raw estimate
     (with its per-message overhead) at the measured tool ``ratio`` for a tool result or the assistant call that asked
@@ -748,15 +764,24 @@ async def chat_stream(
                 entry["tool_call_id"] = msg.tool_call_id
             messages.append(entry)
 
+        # The conversation's own prose ratio applies while its prose is re-measured: while the history it sends holds
+        # no tool row and the turn has not searched. Otherwise the model's table, as before #810, and an entry kept
+        # from an earlier tool-less prompt is dropped: it would stand for the life of the process (module comment).
+        history_has_tool_row = any(m["role"] == "tool" for m in messages)
+        if history_has_tool_row:
+            _forget_conversation_prose_ratio(conversation_id, active_model_id)
+        searched_this_turn = False  # a tool result came back in this turn (history may hold earlier turns' results)
+
+        def turn_prose_ratio() -> float:
+            if history_has_tool_row or searched_this_turn:
+                return _prose_ratio(active_model_id)
+            return _conversation_prose_ratio(conversation_id, active_model_id)
+
         # Trim history to fit within context budget, at the last measured ratios of tokenizer count to estimate
-        # (#805): prose at the conversation's own (#810), or the model's for a conversation not measured in this
-        # process; a model not yet measured at the defaults.
+        # (#805): prose at the conversation's own (#810, above), or the model's; a model not yet measured at the
+        # defaults.
         messages = _trim_to_budget(
-            messages,
-            context_tokens,
-            model,
-            _estimate_ratio(active_model_id),
-            _conversation_prose_ratio(conversation_id, active_model_id),
+            messages, context_tokens, model, _estimate_ratio(active_model_id), turn_prose_ratio()
         )
 
         # Tool-calling loop — runs until the model produces a text response,
@@ -779,7 +804,6 @@ async def chat_stream(
         deadline = started_at + time_budget if time_budget > 0 else None
         time_exhausted = False
         streamed_prefix = ""  # text the user watched arrive before a cut dropped the tool call beside it
-        searched_this_turn = False  # a tool result came back in this turn (history may hold earlier turns' results)
 
         # Accumulated citations parsed from each tool result. Deduped+attached
         # to the assistant ChatMessage row (``rag_context`` column) and emitted
@@ -793,9 +817,10 @@ async def chat_stream(
             # at the model's measured ratio. The stop needs a search to answer from, so it is keyed on the turn
             # having searched, not on the round: a first prompt refused and retried runs at round one with nothing
             # searched, and a retry trimmed to the floor that the prediction puts over the budget must still be sent
-            # (the server, not the prediction, says whether it fits; the fifth review of #808).
+            # (the server, not the prediction, says whether it fits; the fifth review of #808). Prose at the model's
+            # table: the stop acts only once the turn has searched, when the conversation's own ratio no longer applies.
             estimate_ratio = _estimate_ratio(active_model_id)
-            prose_ratio = _conversation_prose_ratio(conversation_id, active_model_id)
+            prose_ratio = _prose_ratio(active_model_id)
             predicted = _predict_prompt_tokens(
                 messages, prompt_tokens_last, counted_upto, _get_tool_schema_tokens(model), estimate_ratio, prose_ratio
             )
@@ -940,7 +965,7 @@ async def chat_stream(
                             # weights are doubled, which halves the history. Before the turn has searched the last
                             # message is the user's question, which the trim keeps.
                             tool_ratio = _estimate_ratio(active_model_id)
-                            prose_ratio = _conversation_prose_ratio(conversation_id, active_model_id)
+                            prose_ratio = turn_prose_ratio()
                             if counted:
                                 at_least = counted / sent_estimate * _FORCED_CALL_RETRY_SAFETY
                                 tool_ratio, prose_ratio = max(tool_ratio, at_least), max(prose_ratio, at_least)
@@ -1288,14 +1313,15 @@ async def chat_stream(
             forced_messages = [*messages, {"role": "user", "content": search_over}]
             forced_estimate = _estimate_messages_tokens(forced_messages)
             # What the outer deadline reads the prompt at: predicted from the server's last count (#805), which held
-            # the tools this prompt does not, so the allowance errs long, not short.
+            # the tools this prompt does not, so the allowance errs long, not short. Prose at the model's table, as for
+            # the budget stop: a forced call follows a search, but for a time budget spent before any result.
             deadline_prediction = _predict_prompt_tokens(
                 forced_messages,
                 prompt_tokens_last,
                 counted_upto,
                 0,
                 _estimate_ratio(active_model_id),
-                _conversation_prose_ratio(conversation_id, active_model_id),
+                _prose_ratio(active_model_id),
             )
             if deadline is not None:
                 outer_deadline = _forced_call_outer_deadline(stopped_at, deadline_prediction)
@@ -1536,7 +1562,7 @@ async def chat_stream(
             used_tokens: float = prompt_tokens_last + completion_tokens_last
         else:
             tool_ratio = _estimate_ratio(active_model_id)
-            prose_ratio = _conversation_prose_ratio(conversation_id, active_model_id)
+            prose_ratio = turn_prose_ratio()
             used_tokens = _predict_prompt_tokens(
                 messages, None, 0, _get_tool_schema_tokens(model), tool_ratio, prose_ratio
             )
