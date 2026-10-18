@@ -24,7 +24,7 @@ from harbor_clerk.watcher.events import (
     handle_event,
     is_sidecar,
 )
-from tests.watcher._fs import case_insensitive_only, normalization_insensitive_only
+from tests.watcher._fs import case_insensitive_only, normalization_insensitive_only, volume_is_case_insensitive
 
 
 @pytest.fixture
@@ -640,12 +640,16 @@ class TestSidecarClassification:
     def test_unlistable_directory_is_not_a_sidecar(self, tmp_path):
         assert is_sidecar(str(tmp_path / "missing-dir" / "x.json")) is False
 
-    def test_suffix_case_is_exact_on_both_sides(self, tmp_path):
-        """`with_suffix(".json")` never reads `INV-001.JSON`, so on a
-        case-sensitive filesystem it is a document; the watcher agrees."""
-        (tmp_path / "INV-001.pdf").write_bytes(b"%PDF-1.4")
+    def test_suffix_case_follows_what_the_extractor_opens(self, tmp_path):
+        """`with_suffix(".json")` opens `INV-001.JSON` on a case-insensitive
+        volume (a sidecar there) and not on a case-sensitive one (a document
+        there); the watcher agrees with the extractor on either."""
+        pdf = tmp_path / "INV-001.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
         (tmp_path / "INV-001.JSON").write_text('{"vendor": "Acme"}')
-        assert is_sidecar(str(tmp_path / "INV-001.JSON")) is False
+        attached = SidecarExtractor().extract(doc=SimpleNamespace(doc_id="d"), raw_bytes=b"", source_path=str(pdf))
+        assert is_sidecar(str(tmp_path / "INV-001.JSON")) is (attached is not None)
+        assert (attached is not None) is volume_is_case_insensitive(tmp_path)
 
     @pytest.mark.parametrize(
         ("payload", "attached"),
@@ -1639,3 +1643,95 @@ def test_directory_delete_under_its_old_case_retires_its_files(sync_session, fol
     )
     sync_session.commit()
     assert wf.status == WatchedFileStatus.removed
+
+
+# ---------------------------------------------------------------------------
+# Fifth review of #860: sidecars judged on disk, directory re-creation, queued extracts
+# ---------------------------------------------------------------------------
+
+
+@case_insensitive_only
+def test_case_only_rename_keeps_the_sidecar_a_sidecar(sync_session, folder, tmp_path):
+    """`mv Report.txt report.txt` beside Report.json: the extractor opens
+    `report.json`, which the volume resolves to Report.json, so it stays the
+    document's sidecar: not a second document, and nothing to extract again."""
+    txt = tmp_path / "Report.txt"
+    txt.write_text("report body")
+    sidecar = tmp_path / "Report.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    wf, doc = _index(sync_session, folder, txt, "Report.txt")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "Report.json", str(sidecar)))
+    sync_session.commit()
+    _mark_extracted_with_sidecar(sync_session, doc)
+
+    txt.rename(tmp_path / "report.txt")
+    handle_event(sync_session, _moved(folder, tmp_path, "Report.txt", "report.txt"))
+    sync_session.commit()
+
+    assert [(r.relative_path, r.status) for r in sync_session.query(WatchedFile).all()] == [
+        ("report.txt", WatchedFileStatus.active)
+    ]
+    assert (doc.status, doc.pipeline_seq) == ("active", 0)
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 0
+    assert is_sidecar(str(sidecar))
+
+
+@case_insensitive_only
+def test_a_case_variant_sidecar_indexed_as_a_document_is_retired_by_its_owner(sync_session, folder, tmp_path):
+    """The duplicate a case-only rename used to leave heals: the owner's next
+    event finds the sidecar under the spelling on disk and retires its row."""
+    txt = tmp_path / "report.txt"
+    txt.write_text("report body")
+    sidecar = tmp_path / "Report.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    json_wf, json_doc = _index_as_a_document(sync_session, folder, sidecar, "Report.json")
+
+    txt.write_text("report body, edited")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "report.txt", str(txt)))
+    sync_session.commit()
+    assert (json_wf.status, json_doc.status) == (WatchedFileStatus.removed, "removed")
+
+
+def _index_as_a_document(sync_session, folder, path, rel):
+    """Index a `.json` as an earlier build would have, before sidecar rules applied."""
+    import harbor_clerk.watcher.events as ev
+
+    real = ev.sidecar_owner_names
+    ev.sidecar_owner_names = lambda _path, sibling_names=None: []
+    try:
+        return _index(sync_session, folder, path, rel)
+    finally:
+        ev.sidecar_owner_names = real
+
+
+def test_a_directory_delete_reported_after_the_directory_is_back_keeps_its_live_files(sync_session, folder, tmp_path):
+    """FSEvents can deliver the deletion of `sub/` after `sub/` was re-created and
+    refilled (a restore, a sync client): the files there now stay."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "a.txt").write_text("a")
+    wf, doc = _index(sync_session, folder, sub / "a.txt", "sub/a.txt")
+    (sub / "a.txt").unlink()
+    sub.rmdir()
+    sub.mkdir()
+    (sub / "a.txt").write_text("a")
+
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "sub", str(sub), is_directory=True))
+    sync_session.commit()
+    assert (wf.status, doc.status) == (WatchedFileStatus.active, "active")
+
+
+def test_a_move_with_an_extract_still_queued_does_not_extract_twice(sync_session, folder, tmp_path):
+    """The queued extract reads the document as it is when it runs (new path,
+    new type), so the move adds no second extraction."""
+    src = tmp_path / "notes.txt"
+    src.write_text("# notes\n")
+    wf, doc = _index(sync_session, folder, src, "notes.txt")
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 1
+    src.rename(tmp_path / "notes.md")
+
+    handle_event(sync_session, _moved(folder, tmp_path, "notes.txt", "notes.md"))
+    sync_session.commit()
+    assert (wf.relative_path, doc.mime_type) == ("notes.md", guess_mime_type("notes.md"))
+    assert doc.pipeline_seq == 0
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 1

@@ -21,6 +21,7 @@ import unicodedata
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import case, null, update
 from sqlalchemy.orm import sessionmaker
 
 from harbor_clerk.config import get_settings
@@ -38,7 +39,14 @@ from harbor_clerk.models.watched import (
 )
 from harbor_clerk.watcher.db_listener import listen_for_folder_changes
 from harbor_clerk.watcher.discovery import scan_watch_root
-from harbor_clerk.watcher.events import EventKind, FileEvent, SkipReason, classify_skip, handle_event
+from harbor_clerk.watcher.events import (
+    EventKind,
+    FileEvent,
+    SkipReason,
+    classify_skip,
+    handle_event,
+    sha256_of,
+)
 from harbor_clerk.watcher.failure_streak import FailureStreak
 from harbor_clerk.watcher.mail_observer import MailObserver
 from harbor_clerk.watcher.observer import FolderObserver, RootState
@@ -62,7 +70,7 @@ ROOT_CHECK_INTERVAL_SECS = 5.0
 # A failing re-attach is retried with backoff, at least once every this many checks plus one (~5 min).
 REATTACH_MAX_SKIPPED_CHECKS = 59
 
-StatKey = tuple[int, int, int, int, int]
+StatKey = tuple[int, int, int, int]
 
 
 def _fold(relative_path: str) -> str:
@@ -94,12 +102,19 @@ def _under(relative_path: str, directories: list[str]) -> bool:
 
 
 def _stat_key(path: str) -> StatKey | None:
-    """What a reconciliation compares to call a file unchanged. ctime moves on any write and cannot be set."""
+    """What a reconciliation compares to call a file unchanged.
+
+    Not ctime: evicting an iCloud file to a dataless placeholder (or
+    downloading it again) changes its ctime and nothing else, so a ctime key
+    would re-hash, and so re-download, every evicted file on every pass. A
+    rewrite that keeps size, mtime and inode is missed only by this backstop;
+    the live observer reports it, and the next start hashes everything.
+    """
     try:
         st = os.stat(path)
     except OSError:
         return None
-    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
 class WatcherDaemon:
@@ -125,6 +140,8 @@ class WatcherDaemon:
         # The watcher reason each folder's last pass recorded (`_record_pass`), so `_check_roots` can
         # notice a root that is back without waiting for the periodic pass.
         self._reasons: dict[uuid.UUID, str] = {}
+        # Per (folder, path) whose events keep failing: one traceback per streak.
+        self._event_failures: dict[tuple[uuid.UUID, str], FailureStreak] = {}
         # Per folder whose observer failed to attach: [consecutive failures, root checks still to skip].
         self._reattach_failures: dict[uuid.UUID, list[int]] = {}
         self._stop = threading.Event()
@@ -140,19 +157,75 @@ class WatcherDaemon:
             return self._folder_locks.setdefault(folder_id, threading.Lock())
 
     def _on_event(self, event: FileEvent) -> bool:
-        """Apply one event in its own transaction. Returns False when it failed (logged)."""
+        """Apply one event in its own transaction. Returns False when it failed (logged).
+
+        A file that fails the same way on every pass (unreadable: mode 000, or
+        TCC-protected) logs its traceback once per failure streak, then at
+        debug, with #593's FailureStreak; a success ends the streak.
+        """
+        key = (event.folder_id, event.relative_path)
         with self._folder_lock(event.folder_id):
             sess = self._session_factory()
             try:
                 handle_event(sess, event)
                 sess.commit()
-                return True
-            except Exception:
+            except Exception as exc:
                 sess.rollback()
-                logger.exception("watcher: failed to handle event %r", event)
+                streak = self._event_failures.setdefault(key, FailureStreak())
+                loudness = streak.record(exc)
+                if loudness == "first":
+                    logger.exception("watcher: failed to handle event %r", event)
+                elif loudness is not None:
+                    logger.warning(
+                        "watcher: event for %s still failing (failure %d, %s): %s",
+                        event.relative_path,
+                        streak.failures,
+                        "error changed" if loudness == "changed" else "same error",
+                        describe_error(exc),
+                        exc_info=loudness == "changed",
+                    )
+                else:
+                    logger.debug(
+                        "watcher: event for %s failed again (failure %d): %s",
+                        event.relative_path,
+                        streak.failures,
+                        describe_error(exc),
+                    )
                 return False
             finally:
                 sess.close()
+        streak = self._event_failures.pop(key, None)
+        if streak is not None:
+            logger.info("watcher: %s handled after %d failed attempt(s)", event.relative_path, streak.failures)
+        if self._reasons.get(event.folder_id) == ROOT_EMPTY and event.kind != EventKind.deleted:
+            self._clear_root_empty_if_indexed(event)
+        return True
+
+    def _clear_root_empty_if_indexed(self, event: FileEvent) -> None:
+        """A live event that indexed a file ends `root_empty` now, not at the next periodic pass."""
+        rel = event.dest_relative_path or event.relative_path
+        sess = self._session_factory()
+        try:
+            indexed = (
+                sess.query(WatchedFile.file_id)
+                .filter_by(folder_id=event.folder_id, relative_path=rel, status=WatchedFileStatus.active)
+                .first()
+                is not None
+            )
+            if not indexed:
+                return
+            sess.execute(
+                update(WatchedFolder)
+                .where(WatchedFolder.folder_id == event.folder_id, WatchedFolder.unavailable_reason == ROOT_EMPTY)
+                .values(unavailable_reason=None)
+            )
+            sess.commit()
+            self._reasons.pop(event.folder_id, None)
+        except Exception:
+            sess.rollback()
+            logger.exception("watcher: failed to clear root_empty for %s", event.folder_id)
+        finally:
+            sess.close()
 
     def _sync_observers(self) -> None:
         sess = self._session_factory()
@@ -415,7 +488,7 @@ class WatcherDaemon:
                 "watcher: reconcile of %s could not list %d directories (first: %s); nothing under them removed",
                 root,
                 len(unlisted),
-                walk_errors[0],
+                walk_errors[0] if walk_errors else unlisted[0],
             )
 
         moved_from: set[str] = set()
@@ -424,7 +497,10 @@ class WatcherDaemon:
                 (
                     p
                     for p in active_by_fold.get(_fold(rel_path), [])
-                    if p not in present and p not in moved_from and not _under(p, unlisted)
+                    if p not in present
+                    and p not in moved_from
+                    and not _under(p, unlisted)
+                    and self._same_file_or_content(folder_id, root, p, abs_path)
                 ),
                 None,
             )
@@ -503,27 +579,61 @@ class WatcherDaemon:
         sets and clears only its own: "unmounted" belongs to Docker discovery, which re-enables a folder only
         while it reads "unmounted", so it is never overwritten here.
         """
+        reason = WatchedFolder.unavailable_reason
+        ours = reason.in_(WATCHER_UNAVAILABLE_REASONS)
+        if unavailable is None:
+            new_reason = case((ours, null()), else_=reason)
+        else:
+            # Set only over nothing or our own, and never on a disabled folder.
+            new_reason = case(((reason.is_(None) | ours) & WatchedFolder.enabled, unavailable), else_=reason)
+        values: dict = {"last_scan_at": datetime.now(UTC), "unavailable_reason": new_reason}
+        if skipped_count is not None:
+            values["skipped_count"] = skipped_count
+            values["skipped_extensions"] = sorted(skipped_exts or ())
         sess = self._session_factory()
         try:
-            folder = sess.query(WatchedFolder).filter_by(folder_id=folder_id).one_or_none()
-            if folder is not None:
-                folder.last_scan_at = datetime.now(UTC)
-                # Never over another owner's reason ("unmounted").
-                if folder.unavailable_reason is None or folder.unavailable_reason in WATCHER_UNAVAILABLE_REASONS:
-                    folder.unavailable_reason = unavailable
-                if skipped_count is not None:
-                    folder.skipped_count = skipped_count
-                    folder.skipped_extensions = sorted(skipped_exts or ())
-                sess.commit()
-            if unavailable is None:
-                self._reasons.pop(folder_id, None)
+            # One statement: a read-then-write would let discovery's "unmounted",
+            # committed in between, be overwritten.
+            stored = sess.execute(
+                update(WatchedFolder)
+                .where(WatchedFolder.folder_id == folder_id)
+                .values(**values)
+                .returning(WatchedFolder.unavailable_reason)
+            ).scalar_one_or_none()
+            sess.commit()
+            if stored in WATCHER_UNAVAILABLE_REASONS:
+                self._reasons[folder_id] = stored
             else:
-                self._reasons[folder_id] = unavailable
+                self._reasons.pop(folder_id, None)
         except Exception:
             sess.rollback()
             logger.exception("watcher: failed to update last_scan_at for %s", folder_id)
         finally:
             sess.close()
+
+    def _same_file_or_content(self, folder_id: uuid.UUID, root: str, old: str, new_abs: str) -> bool:
+        """Whether a re-spelled path may inherit the vanished one's document.
+
+        On a case-insensitive volume the old spelling still resolves to the new
+        file. On a case-sensitive one (Docker's ext4) it is another file that
+        merely differs by case, and inherits only if its content is the same.
+        """
+        try:
+            if os.path.samefile(os.path.join(root, old), new_abs):
+                return True
+        except OSError:
+            pass
+        sess = self._session_factory()
+        try:
+            row_sha = sess.query(WatchedFile.sha256).filter_by(folder_id=folder_id, relative_path=old).scalar()
+        finally:
+            sess.close()
+        if row_sha is None:
+            return False
+        try:
+            return sha256_of(new_abs) == row_sha
+        except OSError:
+            return False
 
     def _active_paths(self, folder_id: uuid.UUID) -> set[str]:
         sess = self._session_factory()

@@ -34,6 +34,42 @@ export function unavailableReasonLabel(reason: string | null | undefined): strin
   return WATCHER_REASON_LABELS[reason] ?? 'unavailable'
 }
 
+interface FolderStatusInput {
+  enabled: boolean
+  unavailable_reason: string | null
+}
+
+interface FolderProgressInput {
+  scan_status?: string
+  ingest_status?: string
+}
+
+type FolderPill = 'active' | 'running' | 'idle' | 'error' | 'pending'
+
+/**
+ * The Folders page pill. Precedence: unmounted is the one error; a disabled folder
+ * shows neither a note nor "scanning"/"processing" even if a stale scan is in flight;
+ * a watcher note (root missing, unreadable or empty) is informational, never red.
+ */
+export function folderPillState(f: FolderStatusInput, p?: FolderProgressInput): FolderPill {
+  if (folderIsUnavailable(f.unavailable_reason)) return 'error'
+  if (!f.enabled) return 'idle'
+  if (f.unavailable_reason) return 'pending'
+  if (p?.scan_status === 'scanning' || p?.ingest_status === 'processing') return 'running'
+  return 'active'
+}
+
+/** The Folders page status label: unmounted, then disabled, then the watcher's note, then activity. */
+export function folderStatusLabel(f: FolderStatusInput, p?: FolderProgressInput): string {
+  if (folderIsUnavailable(f.unavailable_reason)) return 'unmounted'
+  if (!f.enabled) return 'disabled'
+  const reasonLabel = unavailableReasonLabel(f.unavailable_reason)
+  if (reasonLabel) return reasonLabel
+  if (p?.scan_status === 'scanning') return 'scanning'
+  if (p?.ingest_status === 'processing') return 'processing'
+  return 'idle'
+}
+
 // How a count of folders with each note reads in a summary line ("1 not found").
 const NOTE_COUNT_LABELS: Record<string, string> = {
   root_missing: 'not found',

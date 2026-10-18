@@ -28,6 +28,12 @@ normalization_insensitive_only = pytest.mark.skipif(
 )
 
 
+# A test that only means something where `Doc` and `doc` are different files (CI's ext4).
+case_sensitive_only = pytest.mark.skipif(
+    volume_is_case_insensitive(), reason="needs a case-sensitive volume (ext4); APFS's default is not"
+)
+
+
 # A test that only means something where `Doc` and `doc` are the same file.
 # On a case-sensitive volume it would pass without exercising anything.
 case_insensitive_only = pytest.mark.skipif(

@@ -551,6 +551,24 @@ async def test_folder_serializer_skip_fields_defaults(client, admin_token, db_se
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("reason", "after"),
+    [("root_missing", None), ("root_unreadable", None), ("root_empty", None), ("unmounted", "unmounted")],
+)
+async def test_disabling_a_folder_clears_only_the_watchers_reasons(client, admin_token, db_session, reason, after):
+    """A note about a folder the watcher no longer watches would stick forever;
+    discovery's "unmounted" is not the API's to clear."""
+    folder = WatchedFolder(path="/w", display_name="w", bookmark_data=None, unavailable_reason=reason)
+    db_session.add(folder)
+    await db_session.flush()
+    r = await client.patch(
+        f"/api/watch/folders/{folder.folder_id}", json={"enabled": False}, headers=auth_header(admin_token)
+    )
+    assert r.status_code == 200
+    await db_session.refresh(folder)
+    assert (folder.enabled, folder.unavailable_reason) == (False, after)
+
+
 async def test_patch_folder_sets_display_name(client, admin_token, two_folder_corpus):
     """PATCH with display_name='Receipts' updates the row and returns 200."""
     folder_a, _, _, _ = two_folder_corpus

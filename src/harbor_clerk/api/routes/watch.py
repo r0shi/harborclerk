@@ -24,7 +24,13 @@ from harbor_clerk.models.document import Document
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus, UploadSource
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
-from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder, folder_is_unavailable
+from harbor_clerk.models.watched import (
+    WATCHER_UNAVAILABLE_REASONS,
+    WatchedFile,
+    WatchedFileStatus,
+    WatchedFolder,
+    folder_is_unavailable,
+)
 from harbor_clerk.watcher.notify import notify_folder_change_async
 from harbor_clerk.watcher.relocate import apply_move, move_needs_reextract
 from harbor_clerk.watcher.visibility import restore_document, retire_watched_file
@@ -433,6 +439,11 @@ async def patch_folder(
     if body.enabled is not None and body.enabled != folder.enabled:
         folder.enabled = body.enabled
         enabled_changed_to = body.enabled
+        if not body.enabled and folder.unavailable_reason in WATCHER_UNAVAILABLE_REASONS:
+            # The watcher's notes describe passes over a folder it no longer
+            # watches; it never sets one on a disabled folder. Discovery's
+            # "unmounted" is not the API's to clear.
+            folder.unavailable_reason = None
     if body.last_event_id is not None:
         folder.last_event_id = body.last_event_id
     if body.display_name is not None:

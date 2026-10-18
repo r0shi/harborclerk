@@ -9,6 +9,7 @@ Pure functions over loaded rows, plus reads of the destination's metadata
 sidecar: no session, so the sync watcher and the async API call the same code.
 """
 
+import os
 import posixpath
 from pathlib import Path
 
@@ -57,8 +58,17 @@ def sidecar_changes_with_move(
     old name (``metadata.sidecar`` is set) is stale, and one waiting under the
     new name has not been read.
     """
-    if sidecar_relative_path(old_relative_path) == sidecar_relative_path(new_relative_path):
+    old_sidecar, new_sidecar = sidecar_relative_path(old_relative_path), sidecar_relative_path(new_relative_path)
+    if old_sidecar == new_sidecar:
         return False
+    # A case-only rename on a case-insensitive volume reads the very same file.
+    if new_absolute_path.endswith(new_relative_path):
+        base = new_absolute_path[: len(new_absolute_path) - len(new_relative_path)]
+        try:
+            if os.path.samefile(base + old_sidecar, base + new_sidecar):
+                return False
+        except OSError:
+            pass
     if doc is not None and "sidecar" in (doc.doc_metadata or {}):
         return True
     sidecar = Path(new_absolute_path).with_suffix(SIDECAR_SUFFIX)

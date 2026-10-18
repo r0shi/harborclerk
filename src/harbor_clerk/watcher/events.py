@@ -140,18 +140,22 @@ def sidecar_owner_names(absolute_path: str, sibling_names: Iterable[str] | None 
     """Names of the documents beside ``absolute_path`` that it is the sidecar of; empty when it is not one.
 
     Two conditions, the same two ``SidecarExtractor`` applies from the other
-    side: a file with exactly the same stem that the watcher would itself
-    admit sits beside it (``report.json`` beside ``report.exe`` is an
-    ordinary document), and ``load_sidecar`` accepts the contents (an
-    oversize, malformed, non-object or empty ``.json`` is an ordinary
-    document, because the extractor would decline it and it must not vanish
-    from both). A ``.json`` that no longer exists cannot be read, so it is
-    judged by its siblings here; ``handle_event`` then asks the database
+    side: a file the watcher would itself admit sits beside it whose sidecar,
+    as the extractor opens it (``Path(source).with_suffix(".json")``), is this
+    very file (``report.json`` beside ``report.exe`` is an ordinary document),
+    and ``load_sidecar`` accepts the contents (an oversize, malformed,
+    non-object or empty ``.json`` is an ordinary document, because the
+    extractor would decline it and it must not vanish from both). "This very
+    file" is decided on disk, as the extractor's open is: on a
+    case-insensitive volume ``report.txt`` reads ``Report.json``, so after
+    ``mv Report.txt report.txt`` the ``.json`` is still a sidecar, not a
+    duplicate document. A ``.json`` that no longer exists cannot be read, so
+    it is judged by exact name here; ``handle_event`` then asks the database
     whether it was read as a sidecar or indexed as a document. One listing
     and one read per call; the caller keeps the names.
     """
     path = Path(absolute_path)
-    if path.suffix != SIDECAR_SUFFIX:
+    if path.suffix.lower() != SIDECAR_SUFFIX:
         return []
     owners = _admitted_sibling_names(path, sibling_names)
     if not owners:
@@ -162,11 +166,14 @@ def sidecar_owner_names(absolute_path: str, sibling_names: Iterable[str] | None 
 
 
 def _admitted_sibling_names(path: Path, names: Iterable[str] | None = None) -> list[str]:
-    """Files beside ``path`` with its exact stem that the watcher would admit, by name.
+    """Files beside ``path`` the watcher would admit whose extractor-side sidecar is ``path``.
 
-    Lists the directory unless ``names`` is given. A directory that cannot
-    be listed has no siblings: the ordinary path handles the file's own I/O
-    errors.
+    The exact name always counts (``INV-001.pdf`` reads ``INV-001.json``,
+    wherever). A name that differs only by case or normalisation counts when
+    the file exists and the sibling's ``<stem>.json`` resolves to it on disk,
+    which only a case- or normalisation-insensitive volume does. Lists the
+    directory unless ``names`` is given. A directory that cannot be listed
+    has no siblings: the ordinary path handles the file's own I/O errors.
     """
     if names is None:
         try:
@@ -174,16 +181,59 @@ def _admitted_sibling_names(path: Path, names: Iterable[str] | None = None) -> l
                 names = [entry.name for entry in entries if entry.is_file()]
         except OSError:
             return []
+    exists: bool | None = None
     admitted = []
     for name in names:
         if name == path.name:
             continue
         sibling = Path(name)
-        if sibling.stem != path.stem or sibling.suffix == SIDECAR_SUFFIX:
+        if sibling.suffix.lower() == SIDECAR_SUFFIX or _fold(sibling.stem) != _fold(path.stem):
             continue
-        if classify_skip(name) is None:
+        if classify_skip(name) is not None:
+            continue
+        if sibling.stem == path.stem and path.suffix == SIDECAR_SUFFIX:
+            admitted.append(name)
+            continue
+        if exists is None:
+            exists = path.exists()
+        if exists and _same_file(path.parent / sibling.with_suffix(SIDECAR_SUFFIX), path):
             admitted.append(name)
     return admitted
+
+
+def _fold(name: str) -> str:
+    """A name as a case- and normalisation-insensitive volume compares it."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _same_file(a: Path | str, b: Path | str) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def sidecar_entry_on_disk(source_path: str) -> str | None:
+    """The directory entry the extract stage reads as ``source_path``'s sidecar, or None when there is none.
+
+    ``Path(source).with_suffix(".json")`` as the filesystem resolves it: on a
+    case-insensitive volume ``report.txt`` opens ``Report.json``, whose row
+    must then be found under that spelling.
+    """
+    target = Path(source_path).with_suffix(SIDECAR_SUFFIX)
+    if not target.is_file():
+        return None
+    try:
+        names = os.listdir(target.parent)
+    except OSError:
+        return target.name
+    if target.name in names:
+        return target.name
+    folded = _fold(target.name)
+    return next(
+        (n for n in names if _fold(n) == folded and _same_file(target.parent / n, target)),
+        target.name,
+    )
 
 
 def _should_ignore(relative_path: str) -> bool:
@@ -204,7 +254,7 @@ def _should_ignore(relative_path: str) -> bool:
     return classify_skip(relative_path) is not None
 
 
-def _sha256_of(path: str) -> bytes:
+def sha256_of(path: str) -> bytes:
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
@@ -345,7 +395,7 @@ def handle_event(session: Session, event: FileEvent) -> None:
         return
 
     # Create / modified events: compute sha then dispatch
-    sha = _sha256_of(event.absolute_path)
+    sha = sha256_of(event.absolute_path)
 
     # Defensive: even if the size check above somehow lets one through
     # (race between getsize and read; truncate-to-zero between syscalls),
@@ -363,10 +413,12 @@ def handle_event(session: Session, event: FileEvent) -> None:
     # Only a file the extract stage will read is retired, by the same
     # predicate: a same-stem `.json` it would decline is a document in its
     # own right, and a missing one has its own delete event.
-    if Path(event.relative_path).suffix != SIDECAR_SUFFIX:
+    if Path(event.relative_path).suffix.lower() != SIDECAR_SUFFIX:
+        entry = sidecar_entry_on_disk(event.absolute_path)
         sidecar = Path(event.absolute_path).with_suffix(SIDECAR_SUFFIX)
-        if load_sidecar(sidecar, owner=event.absolute_path, quiet=True) is not None:
-            _retire_sidecar_row(session, event.folder_id, sidecar_relative_path(event.relative_path))
+        if entry is not None and load_sidecar(sidecar, owner=event.absolute_path, quiet=True) is not None:
+            rel_dir = posixpath.dirname(event.relative_path)
+            _retire_sidecar_row(session, event.folder_id, posixpath.join(rel_dir, entry) if rel_dir else entry)
 
     # Branch 1: existing+active+same → no-op
     if existing is not None and existing.status == WatchedFileStatus.active and existing.sha256 == sha:
@@ -477,14 +529,21 @@ def _rejudge_old_sidecar(session: Session, event: FileEvent) -> None:
     the file gone from beside it, it is either an ordinary document or the
     sidecar of another same-stem sibling; ``handle_event`` decides which.
     """
-    if Path(event.relative_path).suffix == SIDECAR_SUFFIX:
-        return
-    old_rel = sidecar_relative_path(event.relative_path)
-    if event.dest_relative_path is not None and old_rel == sidecar_relative_path(event.dest_relative_path):
+    if Path(event.relative_path).suffix.lower() == SIDECAR_SUFFIX:
         return
     base, _rel = _event_base(event)
-    if not file_exists_exact(base, old_rel):
+    old_target = os.path.join(base, sidecar_relative_path(event.relative_path))
+    if event.dest_relative_path is not None:
+        new_target = os.path.join(base, sidecar_relative_path(event.dest_relative_path))
+        if old_target == new_target or _same_file(old_target, new_target):
+            # A case-only rename on a case-insensitive volume: the new name
+            # reads the same sidecar, which stays where it is.
+            return
+    entry = sidecar_entry_on_disk(os.path.join(base, event.relative_path))
+    if entry is None:
         return
+    rel_dir = posixpath.dirname(event.relative_path)
+    old_rel = posixpath.join(rel_dir, entry) if rel_dir else entry
     handle_event(session, FileEvent(EventKind.modified, event.folder_id, old_rel, os.path.join(base, old_rel)))
 
 

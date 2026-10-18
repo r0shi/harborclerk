@@ -137,3 +137,20 @@ def test_health_tells_missing_from_replaced(tmp_path):
         assert obs.health() is RootState.ok
     finally:
         obs.stop()
+
+
+def test_a_lost_root_reads_detached_even_while_its_emitter_still_runs(tmp_path):
+    """The root-lost event can arrive before the emitter stops, or with the
+    root back under the same inode: the flag alone must make it re-attach."""
+    root = tmp_path / "root"
+    root.mkdir()
+    obs = FolderObserver(uuid.uuid4(), str(root), lambda _e: None)
+    obs.start()
+    try:
+        assert obs.health() is RootState.ok
+        obs._handler.on_deleted(DirDeletedEvent(str(root)))
+        assert obs.health() is RootState.detached
+        obs.restart()
+        assert obs.health() is RootState.ok, "a fresh attach clears the flag"
+    finally:
+        obs.stop()

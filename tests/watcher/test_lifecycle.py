@@ -22,7 +22,7 @@ from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.watcher.main import WatcherDaemon
 from harbor_clerk.watcher.visibility import retire_watched_file
-from tests.watcher._fs import case_insensitive_only
+from tests.watcher._fs import case_insensitive_only, case_sensitive_only
 
 WAIT_SECS = 10.0
 ACTIVE = WatchedFileStatus.active
@@ -847,3 +847,243 @@ def test_an_observer_that_cannot_attach_still_records_a_pass_and_backs_off(facto
     finally:
         root.chmod(0o755)
         daemon.stop()
+
+
+# ---------------------------------------------------------------------------
+# Fifth review of #860
+# ---------------------------------------------------------------------------
+
+
+@case_insensitive_only
+def test_case_only_rename_with_a_sidecar_live(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "Report.txt").write_text("report body")
+    (root / "Report.json").write_text('{"vendor": "Acme"}')
+    folder_id = _add_folder(factory, root)
+    with _Running(factory, folder_id) as run:
+        doc_id = run.state()["Report.txt"][1]
+        assert list(run.state()) == ["Report.txt"], "the sidecar is not a document"
+        (root / "Report.txt").rename(root / "report.txt")
+        run.wait_for("the row to follow the rename", lambda st: "report.txt" in st and "Report.txt" not in st)
+        time.sleep(1.0)
+        st = run.state()
+    assert list(st) == ["report.txt"], f"the sidecar stayed a sidecar: {st}"
+    assert st["report.txt"][:3] == (ACTIVE, doc_id, "active")
+
+
+@case_insensitive_only
+def test_case_only_rename_with_a_sidecar_while_down(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "Report.txt").write_text("report body")
+    (root / "Report.json").write_text('{"vendor": "Acme"}')
+    folder_id = _add_folder(factory, root)
+    with _Running(factory, folder_id) as run:
+        doc_id = run.state()["Report.txt"][1]
+    (root / "Report.txt").rename(root / "report.txt")
+    time.sleep(2.0)  # past FSEvents' delivery window
+    with _Running(factory, folder_id) as run:
+        st = run.state()
+    assert list(st) == ["report.txt"], f"the sidecar stayed a sidecar: {st}"
+    assert st["report.txt"][:3] == (ACTIVE, doc_id, "active")
+
+
+def test_an_unreadable_file_logs_one_traceback_per_failure_streak(factory, tmp_path, caplog):
+    """288 passes a day at the default interval: the traceback once, then quiet,
+    and a recovery ends the streak so the next failure is loud again."""
+    import logging
+
+    root = _root(tmp_path)
+    locked = root / "locked.txt"
+    locked.write_text("secret")
+    locked.chmod(0)
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    try:
+        if os.access(locked, os.R_OK):
+            pytest.skip("running with privileges that read a mode-0 file")
+        with caplog.at_level(logging.DEBUG, logger="harbor_clerk.watcher"):
+            for _ in range(5):
+                daemon._reconcile_folder(folder_id, str(root))
+        tracebacks = [r for r in caplog.records if r.exc_info and "locked.txt" in r.getMessage()]
+        assert len(tracebacks) == 1, [r.getMessage() for r in tracebacks]
+
+        locked.chmod(0o644)
+        daemon._reconcile_folder(folder_id, str(root))
+        assert _state(factory, folder_id)["locked.txt"][0:3:2] == (ACTIVE, "active")
+        assert not daemon._event_failures, "a success ends the streak"
+
+        locked.write_text("secret, edited")
+        locked.chmod(0)
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="harbor_clerk.watcher"):
+            daemon._reconcile_folder(folder_id, str(root))
+        assert len([r for r in caplog.records if r.exc_info]) == 1, "a new streak is loud again"
+    finally:
+        locked.chmod(0o644)
+
+
+def test_a_respelled_path_is_never_taken_from_under_an_unlisted_directory(factory, tmp_path, monkeypatch):
+    """A file under a directory that could not be listed may still be there:
+    it is not the source of a re-spelling, so its document is not handed on."""
+    root = _root(tmp_path)
+    (root / "sub").mkdir()
+    (root / "sub" / "a.txt").write_text("alpha")
+    folder_id = _reconcile_once(factory, root)
+    doc_id = _state(factory, folder_id)["sub/a.txt"][1]
+    (root / "sub").rename(root / "SUB")
+    monkeypatch.setattr(watcher_main, "_unlisted_dirs", lambda _root, _errors: ["sub"])
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert st["sub/a.txt"][:3] == (ACTIVE, doc_id, "active"), "protected, not moved"
+    assert st["SUB/a.txt"][0] == ACTIVE and st["SUB/a.txt"][1] != doc_id
+
+
+def test_a_respelled_path_inherits_only_the_same_file_or_the_same_content(factory, tmp_path, monkeypatch):
+    """On a case-sensitive volume `X.txt` beside a vanished `x.txt` is another
+    file: it inherits the document only if its content is the same. Simulated
+    here by making every samefile answer no, as ext4 would."""
+    root = _root(tmp_path)
+    (root / "x.txt").write_text("the old file")
+    folder_id = _reconcile_once(factory, root)
+    doc_id = _state(factory, folder_id)["x.txt"][1]
+    (root / "x.txt").unlink()
+    (root / "X.txt").write_text("a different file")
+    monkeypatch.setattr(watcher_main.os.path, "samefile", lambda _a, _b: False)
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert st["x.txt"][0:3:2] == (REMOVED, "removed")
+    assert st["X.txt"][0] == ACTIVE and st["X.txt"][1] != doc_id
+
+
+def test_a_respelled_path_with_the_same_content_inherits_on_a_case_sensitive_volume(factory, tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    (root / "x.txt").write_text("the same file")
+    folder_id = _reconcile_once(factory, root)
+    doc_id = _state(factory, folder_id)["x.txt"][1]
+    (root / "x.txt").rename(root / "X.txt")
+    monkeypatch.setattr(watcher_main.os.path, "samefile", lambda _a, _b: False)
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    assert _state(factory, folder_id) == {"X.txt": (ACTIVE, doc_id, "active", _sha("the same file"), 0)}
+
+
+@case_sensitive_only
+def test_a_case_variant_file_added_while_down_is_its_own_document(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "x.txt").write_text("the old file")
+    folder_id = _reconcile_once(factory, root)
+    doc_id = _state(factory, folder_id)["x.txt"][1]
+    (root / "x.txt").unlink()
+    (root / "X.txt").write_text("a different file")
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert st["x.txt"][0:3:2] == (REMOVED, "removed")
+    assert st["X.txt"][0] == ACTIVE and st["X.txt"][1] != doc_id
+
+
+def test_a_disabled_folder_gets_no_watcher_reason(factory, tmp_path):
+    root = tmp_path / "gone"
+    folder_id = _add_folder(factory, root)
+    sess = factory()
+    try:
+        sess.query(WatchedFolder).filter_by(folder_id=folder_id).one().enabled = False
+        sess.commit()
+    finally:
+        sess.close()
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    stamped, reason = _folder_row(factory, folder_id)
+    assert (stamped is not None, reason) == (True, None)
+
+
+def test_a_live_event_that_indexes_a_file_clears_root_empty(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _reconcile_once(factory, root)
+    (root / "a.txt").unlink()
+    daemon = WatcherDaemon(factory)
+    daemon._reconcile_folder(folder_id, str(root))
+    assert _folder_row(factory, folder_id)[1] == watcher_main.ROOT_EMPTY
+
+    (root / ".DS_Store").write_bytes(b"noise")
+    daemon._on_event(
+        watcher_main.FileEvent(watcher_main.EventKind.created, folder_id, ".DS_Store", str(root / ".DS_Store"))
+    )
+    assert _folder_row(factory, folder_id)[1] == watcher_main.ROOT_EMPTY, "noise indexes nothing"
+
+    (root / "b.txt").write_text("beta")
+    daemon._on_event(watcher_main.FileEvent(watcher_main.EventKind.created, folder_id, "b.txt", str(root / "b.txt")))
+    assert _folder_row(factory, folder_id)[1] is None
+
+
+def test_record_pass_never_overwrites_an_unmounted_written_while_it_runs(factory, _sync_engine, tmp_path):
+    """Discovery writes "unmounted" from another connection while a pass is
+    recording root_missing. A read-then-write lets the pass overwrite it; one
+    conditional UPDATE does not (discovery's write waits for the row lock and
+    lands after it)."""
+    import threading
+
+    from sqlalchemy import event as sa_event
+    from sqlalchemy import text
+
+    root = tmp_path / "gone"
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    recording = threading.Event()
+    real_record_pass = daemon._record_pass
+
+    def recording_pass(*args, **kwargs):
+        recording.set()
+        try:
+            return real_record_pass(*args, **kwargs)
+        finally:
+            recording.clear()
+
+    daemon._record_pass = recording_pass
+    writer: list[threading.Thread] = []
+
+    def discovery_writes_unmounted():
+        with _sync_engine.begin() as conn:
+            conn.execute(
+                text("UPDATE watched_folders SET unavailable_reason = 'unmounted' WHERE folder_id = :fid"),
+                {"fid": folder_id},
+            )
+
+    def after_execute(conn, cursor, statement, parameters, context, executemany):
+        if recording.is_set() and not writer and "watched_folders" in statement:
+            t = threading.Thread(target=discovery_writes_unmounted, daemon=True)
+            writer.append(t)
+            t.start()
+            # A single UPDATE holds the row lock, so the writer blocks until our
+            # commit; after a plain read it commits at once.
+            t.join(timeout=1.0)
+
+    sa_event.listen(_sync_engine, "after_cursor_execute", after_execute)
+    try:
+        daemon._reconcile_folder(folder_id, str(root))
+    finally:
+        sa_event.remove(_sync_engine, "after_cursor_execute", after_execute)
+    assert writer, "the interleaving hook fired"
+    writer[0].join(timeout=WAIT_SECS)
+    assert not writer[0].is_alive(), "discovery's write never finished"
+    assert _folder_row(factory, folder_id)[1] == "unmounted"
+
+
+def test_a_metadata_only_change_is_not_hashed_again(factory, tmp_path, monkeypatch):
+    """Evicting an iCloud file to a dataless placeholder, or downloading it
+    back, changes its ctime and nothing else; hashing it again on every pass
+    would download it again. A chmod is the same kind of change."""
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    daemon._reconcile_folder(folder_id, str(root))
+    os.chmod(root / "a.txt", 0o600)
+    dispatched = []
+    real_on_event = daemon._on_event
+    daemon._on_event = lambda event: dispatched.append(event.relative_path) or real_on_event(event)
+
+    daemon._reconcile_folder(folder_id, str(root))
+    assert dispatched == []

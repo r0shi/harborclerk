@@ -36,9 +36,11 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# The sidecar is `<stem>.json` with this exact suffix, on both sides: what
-# `with_suffix` produces here is what the watcher looks for. `INV-001.JSON` is
-# a document on a case-sensitive filesystem, and is treated as one everywhere.
+# The sidecar is the file `with_suffix(".json")` opens, on both sides: the
+# watcher judges ownership by what that open resolves to on disk
+# (`watcher/events.py::sidecar_owner_names`). On a case-insensitive volume it
+# opens `INV-001.JSON` or `Report.json` beside `report.txt`; on a case-sensitive
+# one those are documents.
 SIDECAR_SUFFIX = ".json"
 
 # Above this the payload would bloat doc_metadata (and every search row that

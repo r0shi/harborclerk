@@ -3,6 +3,8 @@ import {
   folderDeleteProtected,
   folderIsUnavailable,
   folderNotesSummary,
+  folderPillState,
+  folderStatusLabel,
   unavailableReasonLabel,
 } from './watchedFolders'
 
@@ -25,6 +27,29 @@ describe('folderDeleteProtected', () => {
     expect(folderDeleteProtected(mount('root_empty'))).toBe(true)
     expect(folderDeleteProtected(mount('unmounted'))).toBe(false)
     expect(folderDeleteProtected({ auto_discovered: false, unavailable_reason: null })).toBe(false)
+  })
+})
+
+describe('folderStatusLabel and folderPillState', () => {
+  const folder = (enabled: boolean, unavailable_reason: string | null) => ({ enabled, unavailable_reason })
+
+  it('reads a disabled folder as disabled, whatever note the watcher left', () => {
+    expect(folderStatusLabel(folder(false, 'root_missing'))).toBe('disabled')
+    expect(folderStatusLabel(folder(false, null))).toBe('disabled')
+    expect(folderPillState(folder(false, 'root_empty'))).toBe('idle')
+  })
+
+  it('keeps unmounted ahead of disabled (discovery disables an unmounted folder)', () => {
+    expect(folderStatusLabel(folder(false, 'unmounted'))).toBe('unmounted')
+    expect(folderPillState(folder(false, 'unmounted'))).toBe('error')
+  })
+
+  it('shows an enabled folder’s note as a neutral pill, then activity', () => {
+    expect(folderStatusLabel(folder(true, 'root_empty'))).toBe('empty')
+    expect(folderPillState(folder(true, 'root_missing'))).toBe('pending')
+    expect(folderStatusLabel(folder(true, null), { scan_status: 'scanning' })).toBe('scanning')
+    expect(folderPillState(folder(true, null), { ingest_status: 'processing' })).toBe('running')
+    expect(folderStatusLabel(folder(true, null))).toBe('idle')
   })
 })
 

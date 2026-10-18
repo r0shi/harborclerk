@@ -38,10 +38,10 @@ the filesystem directly. `STORAGE_BACKEND` selects the implementation.
 
 Watched-folder documents are read in place from `source_path`, never written to;
 IMAP content alone is fetched and stored (legacy uploads: `originals/<doc_id>/<name>`).
-Watcher: a gone file is hidden via `watcher/visibility.py` (shared with
-`/watch/remove`), a move keeps its doc_id via `watcher/relocate.py` (shared with
-`/watch/rename`). A delete is believed only once `file_exists_exact` agrees on
-every path component (atomic saves report live files deleted; APFS ignores case).
+Watcher: gone files hide via `watcher/visibility.py` (with `/watch/remove`), moves
+keep the doc_id via `watcher/relocate.py` (with `/watch/rename`). APFS ignores case:
+a delete is believed once `file_exists_exact` agrees on every path component, and
+a sidecar is the file `with_suffix(".json")` opens on disk (`samefile`), not a name.
 A reconcile removes nothing for a missing, unlistable or empty root (noise files
 don't count), nor under an unlistable dir, and says so in `unavailable_reason`
 (`root_*`: shown, never blocking; only discovery's `unmounted` makes a folder
