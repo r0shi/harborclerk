@@ -298,6 +298,8 @@ def test_a_description_of_the_clause_is_not_a_verdict_on_the_item(text, expected
         ("The Skylight brief excludes the retail segment.", {SKYLIGHT}),
         ("Harbour Lights was crafted exclusively for Acme Corp.", {HARBOUR}),
         ("Harbour Lights' launch date is not set.", {HARBOUR}),
+        # a quotation is the document's words, so a verdict inside it is not the answer's
+        ('The brief reads "Skylight is excluded from retail placements" and targets Acme Corp.', {SKYLIGHT}),
     ],
 )
 def test_campaign_descriptions_keep_their_campaign(text, expected):
@@ -345,12 +347,17 @@ def test_a_sentence_ends_before_a_backtick_or_a_lower_case_word():
     text = f"Staar (`{SID}`) has one. `{EID}` is not one. Papa (`{PID}`) has one. and `{EID}` was read."
     assert contracts(text) == {STAAR, PAPA, EDIETS}, "eDiets is listed without a verdict in its last sentence"
     assert contracts(f"Staar (`{SID}`) has one. `{EID}` is not one.") == {STAAR}
+    # The one-name forms count the names in the sentence, so where it ends decides them.
+    assert contracts(f"Staar (`{SID}`) has one. `{EID}` was read in full — excluded.") == {STAAR}
+    assert named("Harbour Lights targets Acme Corp. skylight was read in full — excluded.") == {HARBOUR}
 
 
 def test_a_label_naming_no_item_rejects_the_names_after_it_and_one_naming_an_item_is_read_by_the_patterns():
     assert named("- **Excluded near-misses:** Skylight (Jan 3), Northstar (Jan 9).") == set()
     assert named("Nothing was excluded: Skylight, Northstar.") == {SKYLIGHT, NORTHSTAR}
     assert named("Skylight: targets Acme Corp.") == {SKYLIGHT}
+    # A label that names its item is a verdict on that item, not on the names after its colon.
+    assert named("Skylight was excluded: only Harbour Lights targets Acme Corp.") == {HARBOUR}
     assert named("Harbour Lights targets Acme Corp.\nSkylight - excluded: it targets Northwind.") == {HARBOUR}
 
 
