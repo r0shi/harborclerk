@@ -182,6 +182,12 @@ final class AuthManager: ObservableObject {
         }
     }
 
+    /// The remembered login, for the login form to fill in. Through the same
+    /// store as everything else here, so a test's fake answers it too.
+    func savedLogin() -> KeychainCredentials? {
+        credentials.load()
+    }
+
     // MARK: - Server went away
 
     /// Back to waiting, and any sign-in still in flight no longer decides

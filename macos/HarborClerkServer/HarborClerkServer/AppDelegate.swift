@@ -22,7 +22,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let environment = ProcessInfo.processInfo.environment
-        Self.launch(environment: environment) { self.bootLiveStack(environment: environment) }
+        Self.launch(environment: environment) {
+            Self.launchOutcome = self.bootLiveStack(environment: environment) ? .booted : .stoppedAtBootGuard
+        }
+    }
+
+    /// Everything booting the live stack does that reaches outside this
+    /// process, behind one seam: a test calls `bootLiveStack` with recording
+    /// stand-ins, so even with its guard broken nothing live runs.
+    struct LiveBoot {
+        /// Reads (or on first launch creates) the master key in the Keychain.
+        var bootstrapMasterKey: () -> Void
+        /// Creates the service manager and health checker, the status item and
+        /// the observers, and starts every service: the orphan kill from
+        /// child-pids.txt, the port kills, the launchd agents.
+        var startServices: @MainActor (AppDelegate) -> Void
+
+        static let real = LiveBoot(
+            bootstrapMasterKey: { _ = MasterKeyManager.production.loadOrGenerate() },
+            startServices: { $0.startServices() }
+        )
     }
 
     /// The first of two start-nothing guards: with `XCTestConfigurationFilePath`
@@ -50,27 +69,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         boot()
     }
 
-    /// The second guard, checked again where the live stack starts, so a
-    /// change that breaks the first one (a mutation test, a refactor of the
-    /// launch path) still cannot reach anything live from a test host.
+    /// The predicate of the second guard.
     static func mayBootLiveStack(environment: [String: String]) -> Bool {
         environment["XCTestConfigurationFilePath"] == nil
     }
 
-    private func bootLiveStack(environment: [String: String]) {
+    /// The second guard and what it protects: checked again where the live
+    /// stack starts, so a change that breaks the first one (a mutation test, a
+    /// refactor of the launch path) still cannot reach anything live from a
+    /// test host. Returns whether it booted. Its side effects go through
+    /// `boot`, which a test replaces with recording stand-ins to check this
+    /// call site, not only the predicate.
+    func bootLiveStack(environment: [String: String], boot: LiveBoot = .real) -> Bool {
         guard Self.mayBootLiveStack(environment: environment) else {
             Log.logger("lifecycle").notice("XCTest host launch — the boot guard stopped service startup")
-            Self.launchOutcome = .stoppedAtBootGuard
-            return
+            return false
         }
-        Self.launchOutcome = .booted
-
         // First-launch master key bootstrap. Idempotent — generates the key in
         // Keychain only on the very first launch; subsequent launches just read.
         // Must run before ServiceManager.startAll() because the Python subprocesses
         // need this key in their environment (Task 10 injects it).
-        _ = MasterKeyManager.production.loadOrGenerate()
+        boot.bootstrapMasterKey()
+        boot.startServices(self)
+        return true
+    }
 
+    private func startServices() {
         serviceManager = ServiceManager()
         healthChecker = HealthChecker(serviceManager: serviceManager)
         serviceManager.healthChecker = healthChecker
@@ -109,8 +133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isQuitting else { return .terminateNow }
         isQuitting = true
-        // Optional: under an XCTest host launch this was never created, and
-        // anything terminating the host via NSApp.terminate would crash here.
+        // Nil when the live stack never booted (a test host, the signing
+        // probe): nothing was started, so there is nothing to stop. Force-using
+        // it below crashed anything that terminated such a host.
+        guard let serviceManager else { return .terminateNow }
         healthChecker?.stopPolling()
 
         // 30-second hard deadline. The audit memo
@@ -132,11 +158,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             Log.logger("lifecycle").error(
                 "Shutdown exceeded \(deadlineSeconds, privacy: .public)s deadline — force-killing tracked children and exiting"
             )
-            await self.serviceManager.forceKillEverything()
+            await serviceManager.forceKillEverything()
             // launchd-managed agents — bootout so KeepAlive doesn't
             // resurrect the postmaster / Tika JVM after our SIGKILL.
-            await self.serviceManager.postgresService.stop()
-            await self.serviceManager.tikaService.stop()
+            await serviceManager.postgresService.stop()
+            await serviceManager.tikaService.stop()
             // exit(0) bypasses any further AppKit teardown. We've signalled
             // every child we know about; the kernel will reparent any
             // survivors to launchd. Reaching this line means stopAll() was
@@ -145,7 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         Task {
-            await self.serviceManager.stopAll()
+            await serviceManager.stopAll()
             // stopAll() completed cleanly — cancel the deadline before it
             // fires, then signal AppKit that termination can proceed.
             deadlineTask.cancel()

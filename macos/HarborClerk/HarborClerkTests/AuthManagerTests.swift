@@ -51,6 +51,10 @@ final class AuthManagerTests: XCTestCase {
     private var setupCalls = 0
     private var loginCalls = 0
     private var cookiesSet: [HTTPCookie] = []
+    /// Run inside the cookie write, after recording it.
+    private var duringSetCookie: (@MainActor () -> Void)?
+    /// What the setup-status request answers for `needs_setup`; may suspend.
+    private var setupAnswer: (@MainActor () async -> Bool)?
 
     override func setUp() {
         super.setUp()
@@ -61,6 +65,8 @@ final class AuthManagerTests: XCTestCase {
         setupCalls = 0
         loginCalls = 0
         cookiesSet = []
+        duringSetCookie = nil
+        setupAnswer = nil
     }
 
     override func tearDown() {
@@ -75,14 +81,18 @@ final class AuthManagerTests: XCTestCase {
         AuthTransport(
             setupStatus: { [unowned self] url in
                 setupCalls += 1
-                let body = try JSONSerialization.data(withJSONObject: ["needs_setup": false])
+                let needs = await setupAnswer?() ?? false
+                let body = try JSONSerialization.data(withJSONObject: ["needs_setup": needs])
                 return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
             },
             login: { [unowned self] request in
                 loginCalls += 1
                 return try await answer(request)
             },
-            setCookie: { [unowned self] cookie in cookiesSet.append(cookie) }
+            setCookie: { [unowned self] cookie in
+                cookiesSet.append(cookie)
+                duringSetCookie?()
+            }
         )
     }
 
@@ -323,6 +333,79 @@ final class AuthManagerTests: XCTestCase {
 
         XCTAssertEqual(auth.state, newer)
         XCTAssertTrue(cookiesSet.isEmpty, "a superseded session's cookie is not installed")
+    }
+
+    /// Superseded while the session cookie is being written: the request has
+    /// answered, but the attempt is no longer the latest by the time it would
+    /// say `.authenticated`.
+    func testASignInSupersededDuringTheCookieWriteIsNotAuthenticated() async {
+        let store = FakeCredentialStore(stored: Self.saved)
+        let auth = makeManager(store: store) { request in
+            let headers = ["Set-Cookie": "refresh_token=abc; Path=/api/auth; HttpOnly"]
+            let body = Data(#"{"access_token":"t"}"#.utf8)
+            return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: headers)!)
+        }
+        duringSetCookie = { auth.serverBecameUnavailable() }
+
+        await bounded("onServerBecameAvailable") { await auth.onServerBecameAvailable() }
+
+        XCTAssertEqual(cookiesSet.count, 1, "the cookie write happened, and the supersession inside it")
+        XCTAssertEqual(auth.state, .waitingForServer)
+    }
+
+    /// A manual sign-in in flight when the server goes away, whose request
+    /// then fails: the failure is not shown over the waiting view.
+    func testAManualLoginSupersededMidRequestLeavesTheStateAlone() async {
+        let store = FakeCredentialStore(stored: nil)
+        let gate = Gate()
+        let auth = makeManager(store: store) { _ in
+            await gate.wait()
+            throw URLError(.networkConnectionLost)
+        }
+
+        let login = Task { @MainActor in await auth.login(email: "a@example.test", password: "pw", rememberMe: true) }
+        await bounded("the login to reach the server") {
+            while self.loginCalls < 1 && !Task.isCancelled { await Task.yield() }
+        }
+        auth.serverBecameUnavailable()
+        await gate.open()
+        await bounded("the late failure") { await login.value }
+
+        XCTAssertEqual(auth.state, .waitingForServer)
+        XCTAssertEqual(store.calls, 0)
+    }
+
+    /// The setup-status answer arrives after the attempt was superseded. A
+    /// late `needs_setup: true` must not switch to the setup page, and a late
+    /// `false` must not go on to read the saved login or send it.
+    private func assertALateSetupAnswerIsIgnored(needsSetup: Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        let store = FakeCredentialStore(stored: Self.saved)
+        let gate = Gate()
+        setupAnswer = {
+            await gate.wait()
+            return needsSetup
+        }
+        let auth = makeManager(store: store, login: Self.status(200, body: #"{"access_token":"t"}"#))
+
+        let first = Task { @MainActor in await auth.onServerBecameAvailable() }
+        await bounded("the setup check to reach the server") {
+            while self.setupCalls < 1 && !Task.isCancelled { await Task.yield() }
+        }
+        auth.serverBecameUnavailable()
+        await gate.open()
+        await bounded("the late setup answer") { await first.value }
+
+        XCTAssertEqual(auth.state, .waitingForServer, file: file, line: line)
+        XCTAssertEqual(store.loads, 0, "a superseded attempt does not read the saved login", file: file, line: line)
+        XCTAssertEqual(loginCalls, 0, "nor send it", file: file, line: line)
+    }
+
+    func testALateNeedsSetupAnswerIsIgnored() async {
+        await assertALateSetupAnswerIsIgnored(needsSetup: true)
+    }
+
+    func testALateSetupDoneAnswerDoesNotGoOnToSignIn() async {
+        await assertALateSetupAnswerIsIgnored(needsSetup: false)
     }
 
     /// The server going away supersedes a sign-in in flight as well.

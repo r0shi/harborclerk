@@ -737,4 +737,27 @@ final class TestHostGuardTests: XCTestCase {
         XCTAssertFalse(AppDelegate.mayBootLiveStack(environment: Self.switchSet))
         XCTAssertTrue(AppDelegate.mayBootLiveStack(environment: [:]))
     }
+
+    /// The second guard at its call site. Every side effect of booting goes
+    /// through the stand-ins, which only record: never the real LiveBoot,
+    /// because with the guard broken that would boot the live stack.
+    func testTheBootGuardStopsEverySideEffectUnderTheSwitch() {
+        var calls: [String] = []
+        let recording = AppDelegate.LiveBoot(
+            bootstrapMasterKey: { calls.append("masterKey") },
+            startServices: { _ in calls.append("startServices") }
+        )
+
+        XCTAssertFalse(AppDelegate().bootLiveStack(environment: Self.switchSet, boot: recording))
+        XCTAssertEqual(calls, [], "under the switch nothing may reach the Keychain or start a service")
+
+        XCTAssertTrue(AppDelegate().bootLiveStack(environment: [:], boot: recording))
+        XCTAssertEqual(calls, ["masterKey", "startServices"], "without it the stand-ins run, in order")
+    }
+
+    /// A host that never booted has nothing to stop; terminating it used to
+    /// force-unwrap the service manager it never created.
+    func testTerminatingAHostThatNeverBootedReturnsAtOnce() {
+        XCTAssertEqual(AppDelegate().applicationShouldTerminate(NSApplication.shared), .terminateNow)
+    }
 }
