@@ -219,14 +219,26 @@ def wait_for_server(*, fresh: bool = False) -> str:
 MODEL_STARTING_MESSAGE = (
     "The local model is starting; try again in a moment. If this persists, check `docker compose logs llama-server`."
 )
+# The same requests under Compose when llama-server accepted them and then stopped answering (a read timeout, a
+# connection cut mid-answer). Activating a model, the macOS advice, is refused under Compose; the likely cause
+# there is a model too big for the container.
+MODEL_STOPPED_MESSAGE = (
+    "The local model stopped answering; check `docker compose logs llama-server` "
+    "(it may need more memory than the container has)."
+)
 
 
 def server_unready_message(default: str, *, status_code: int | None = None, exc: BaseException | None = None) -> str:
     """The user-facing text for a chat or research request llama-server did not serve.
 
-    Under Compose, a refused connection (`exc` an `httpx.ConnectError`) or a 503 (`status_code`) means it is
-    starting or loading its model: `MODEL_STARTING_MESSAGE`. A read timeout or a connection cut mid-answer is
-    something else and keeps `default`, as does everything outside Compose."""
-    if server_is_probed() and (status_code == 503 or isinstance(exc, httpx.ConnectError)):
+    Under Compose, a refused or unanswered connection (`httpx.ConnectError`, `httpx.ConnectTimeout`) or a 503 means it is
+    starting or loading its model: `MODEL_STARTING_MESSAGE`. Any other transport error means it accepted the
+    request and stopped answering: `MODEL_STOPPED_MESSAGE`. Other HTTP errors, and everything outside Compose,
+    keep `default`."""
+    if not server_is_probed():
+        return default
+    if status_code == 503 or isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
         return MODEL_STARTING_MESSAGE
+    if isinstance(exc, httpx.TransportError):
+        return MODEL_STOPPED_MESSAGE
     return default

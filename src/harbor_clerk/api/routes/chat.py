@@ -347,7 +347,7 @@ async def list_available_models(
     return [
         ModelOut(
             memory_bytes=memory_bytes(m, here(m)[0] if compose else requested_context(m, yarn)),
-            min_ram_gb=min_ram_gb(m, requested_context(m, yarn)),
+            min_ram_gb=min_ram_gb(m, here(m)[0] if compose else requested_context(m, yarn)),
             max_context_here=here(m)[0],
             fits_here=here(m)[1],
             system_ram_gb=round(ram / GIB, 1),
@@ -412,7 +412,7 @@ def _refuse_model_switch_under_compose(model_id: str | None) -> bool:
     if not is_compose(settings):
         return False
     refresh_llm_settings()  # the active model follows the file, which may have arrived since
-    model_file = settings.llm_model_file
+    model_file = compose_model_file(settings)
     model = get_model(model_id) if model_id else None
     if model is not None and model_file and model.filename == model_file:
         return True
@@ -616,6 +616,9 @@ async def llm_status(
         "does_not_fit_here": does_not_fit_here,
         # Under Compose, what to do when no model is active: download LLM_MODEL_FILE, not activate (#654).
         "setup_hint": no_model_message(settings) if not model_id and is_compose(settings) else None,
+        # Under Compose, the LLM_MODEL_FILE value (possibly empty); null elsewhere. The Models page reads it to
+        # hide Activate and YaRN, which do not apply there, and to say what chooses the model.
+        "compose_model_file": settings.llm_model_file if is_compose(settings) else None,
     }
 
 

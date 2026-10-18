@@ -27,6 +27,9 @@ export interface LLMStatus {
   does_not_fit_here?: DoesNotFitHere | null
   // Docker Compose only: what to do when no model is active (download LLM_MODEL_FILE in Settings → Models).
   setup_hint?: string | null
+  // Docker Compose only: the LLM_MODEL_FILE value (possibly empty). null or absent outside Compose, where models
+  // are activated from the Models page.
+  compose_model_file?: string | null
 }
 
 const IDLE_INTERVAL_MS = 8000 // poll every 8s when nothing seems to be transitioning

@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.llm import research as research_module
-from harbor_clerk.llm.health import MODEL_STARTING_MESSAGE, server_unready_message
+from harbor_clerk.llm.health import MODEL_STARTING_MESSAGE, MODEL_STOPPED_MESSAGE, server_unready_message
 from tests.test_chat_time_budget import (  # noqa: F401 — the fixture, requested by name
     _Clock,
     _conversation,
@@ -115,7 +115,7 @@ async def test_ask_says_the_model_is_starting_when_llama_server_is_loading(
     ],
 )
 @pytest.mark.asyncio
-async def test_ask_keeps_its_advice_for_other_transport_errors(
+async def test_ask_says_the_model_stopped_answering_for_other_transport_errors(
     db_session,
     admin_user,
     chat_session_factory,  # noqa: F811
@@ -123,18 +123,27 @@ async def test_ask_keeps_its_advice_for_other_transport_errors(
     compose,
     exc,
 ):
+    # It accepted the request and stopped answering: not starting, and "activate a model" is refused here.
     stored = await _ask(db_session, admin_user, monkeypatch, AsyncMock(side_effect=exc))
-    assert stored == [f"Error: {NOT_RUNNING}"]
+    assert stored == [f"Error: {MODEL_STOPPED_MESSAGE}"]
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(httpx.ConnectError("refused"), id="refused"),
+        pytest.param(httpx.ReadTimeout("no answer in time"), id="read-timeout"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_outside_compose_ask_keeps_its_advice(
+async def test_outside_compose_ask_keeps_its_advice_for_any_transport_error(
     db_session,
     admin_user,
     chat_session_factory,  # noqa: F811
     monkeypatch,
+    exc,
 ):
-    stored = await _ask(db_session, admin_user, monkeypatch, AsyncMock(side_effect=httpx.ConnectError("refused")))
+    stored = await _ask(db_session, admin_user, monkeypatch, AsyncMock(side_effect=exc))
     assert stored == [f"Error: {NOT_RUNNING}"]
 
 
@@ -175,7 +184,7 @@ async def test_research_says_the_model_is_starting_when_synthesis_is_loading(
     ],
 )
 @pytest.mark.asyncio
-async def test_research_keeps_its_advice_for_other_transport_errors(
+async def test_research_says_the_model_stopped_answering_for_other_transport_errors(
     db_session,
     admin_user,
     unscoped_research_state,  # noqa: F811
@@ -185,15 +194,34 @@ async def test_research_keeps_its_advice_for_other_transport_errors(
 ):
     conv, _ = unscoped_research_state
     errors = await _research(conv, admin_user, AsyncMock(side_effect=exc))
+    assert errors and errors[-1]["message"] == MODEL_STOPPED_MESSAGE, errors
+
+
+@pytest.mark.asyncio
+async def test_outside_compose_research_keeps_its_advice(
+    db_session,
+    admin_user,
+    unscoped_research_state,  # noqa: F811
+    mock_research_session_factory,  # noqa: F811
+):
+    conv, _ = unscoped_research_state
+    errors = await _research(conv, admin_user, AsyncMock(side_effect=httpx.ReadTimeout("no answer in time")))
     assert errors and errors[-1]["message"] == NOT_RUNNING, errors
 
 
 # --- the rule ---
 
 
-def test_only_a_refusal_or_a_503_reads_as_starting(compose) -> None:
+def test_which_failure_reads_as_starting_and_which_as_stopped(compose) -> None:
     assert server_unready_message("raw", exc=httpx.ConnectError("refused")) == MODEL_STARTING_MESSAGE
+    assert server_unready_message("raw", exc=httpx.ConnectTimeout("nothing")) == MODEL_STARTING_MESSAGE
     assert server_unready_message("LLM error (503)", status_code=503) == MODEL_STARTING_MESSAGE
+    assert server_unready_message("raw", exc=httpx.ReadTimeout("slow")) == MODEL_STOPPED_MESSAGE
+    assert server_unready_message("raw", exc=httpx.RemoteProtocolError("cut")) == MODEL_STOPPED_MESSAGE
     assert server_unready_message("LLM error (500)", status_code=500) == "LLM error (500)"
+
+
+def test_outside_compose_every_failure_keeps_its_text() -> None:
+    assert server_unready_message("raw", exc=httpx.ConnectError("refused")) == "raw"
     assert server_unready_message("raw", exc=httpx.ReadTimeout("slow")) == "raw"
-    assert server_unready_message("raw", exc=httpx.ConnectTimeout("nothing")) == "raw"
+    assert server_unready_message("LLM error (503)", status_code=503) == "LLM error (503)"

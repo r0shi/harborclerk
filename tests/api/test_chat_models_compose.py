@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import harbor_clerk.config as config
-from harbor_clerk.llm.models import GIB
+from harbor_clerk.llm.models import GIB, memory_bytes, min_ram_gb
 from tests.conftest import auth_header
 
 SERVED = "Qwen3.5-4B-Q4_K_M.gguf"  # qwen35-4b
@@ -264,6 +264,9 @@ async def test_compose_models_page_shows_the_servers_context_and_no_mac_fit_warn
     for m in resp.json():
         assert m["fits_here"] is True, m["id"]
         assert m["max_context_here"] == min(MODELS[m["id"]].context_window, 8192), m["id"]
+        # The memory figures are both at that context, never at a YaRN window the server does not use.
+        assert m["memory_bytes"] == memory_bytes(MODELS[m["id"]], m["max_context_here"]), m["id"]
+        assert m["min_ram_gb"] == min_ram_gb(MODELS[m["id"]], m["max_context_here"]), m["id"]
 
 
 async def test_a_source_run_models_page_keeps_the_mac_arithmetic(
@@ -285,6 +288,7 @@ async def test_compose_with_no_model_yet_says_to_download_it(
     status = (await client.get("/api/chat/models/status", headers=auth_header(admin_token))).json()
     assert status["state"] == "deactivated"
     assert status["setup_hint"] == f"No local model is loaded yet. Download {SERVED} in Settings → Models."
+    assert status["compose_model_file"] == SERVED
     resp = await client.post(
         "/api/research",
         json={"question": "What are the termination clauses?", "time_limit_minutes": 15, "depth": "light"},
@@ -300,3 +304,13 @@ async def test_outside_compose_no_model_keeps_its_advice(
     (models_dir / SERVED).unlink()
     status = (await client.get("/api/chat/models/status", headers=auth_header(admin_token))).json()
     assert status["setup_hint"] is None
+    assert status["compose_model_file"] is None
+
+
+async def test_compose_activates_the_served_model_written_with_dot_slash(
+    client, admin_user, admin_token, compose, monkeypatch
+) -> None:
+    monkeypatch.setenv("LLM_MODEL_FILE", f"./{SERVED}")
+    config._settings = None
+    resp = await client.put("/api/chat/models/qwen35-4b/activate", headers=auth_header(admin_token))
+    assert resp.status_code == 200, resp.text

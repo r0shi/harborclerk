@@ -45,7 +45,10 @@ function formatSize(bytes: number): string {
 
 export default function ModelsPage() {
   const { token } = useAuth()
-  const { markTransitioning } = useLLMStatusContext()
+  const { status: llmStatus, markTransitioning } = useLLMStatusContext()
+  // Under Docker Compose the served model is LLM_MODEL_FILE: Activate, Deactivate and YaRN do not apply (#654).
+  const composeModelFile = llmStatus.compose_model_file ?? null
+  const compose = composeModelFile !== null
   const [models, setModels] = useState<ModelInfo[]>([])
   const [orphans, setOrphans] = useState<OrphanInfo[]>([])
   const [loading, setLoading] = useState(true)
@@ -337,15 +340,21 @@ export default function ModelsPage() {
           <span>{model.context_window.toLocaleString()}</span>
           {model.max_context_here > 0 &&
             model.max_context_here <
-              (yarnEnabled && model.yarn_extended_context ? model.yarn_extended_context : model.context_window) && (
+              (yarnEnabled && !compose && model.yarn_extended_context
+                ? model.yarn_extended_context
+                : model.context_window) && (
               <span
                 className="ml-1 text-xs text-amber-700 dark:text-amber-400"
-                title="Clamped to what this Mac's memory fits"
+                title={
+                  compose
+                    ? 'The context the Compose server runs at (LLM_CONTEXT_TOKENS)'
+                    : "Clamped to what this Mac's memory fits"
+                }
               >
                 ({model.max_context_here.toLocaleString()} here)
               </span>
             )}
-          {model.yarn_available && model.yarn_extended_context && (
+          {!compose && model.yarn_available && model.yarn_extended_context && (
             <span className="ml-1 text-xs text-gray-400 dark:text-gray-500">
               ({yarnEnabled ? '' : '→ '}
               {model.yarn_extended_context.toLocaleString()}
@@ -403,7 +412,7 @@ export default function ModelsPage() {
         </td>
         <td className="px-4 py-3 text-right">
           <div className="flex items-center justify-end gap-2">
-            {model.active && (
+            {model.active && !compose && (
               <button
                 onClick={() => handleDeactivate()}
                 className="rounded-lg border border-gray-400 px-3 py-1 text-xs font-medium text-gray-600 shadow-xs hover:bg-gray-50 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-700/50"
@@ -421,7 +430,7 @@ export default function ModelsPage() {
             )}
             {model.downloaded && !model.active && (
               <>
-                {model.max_context_here > 0 && (
+                {model.max_context_here > 0 && !compose && (
                   <button
                     onClick={() => handleActivate(model.id)}
                     className="rounded-lg border border-blue-600 px-3 py-1 text-xs font-medium text-blue-600 shadow-xs hover:bg-blue-50 dark:text-blue-400 dark:border-blue-400 dark:hover:bg-blue-900/20"
@@ -460,26 +469,42 @@ export default function ModelsPage() {
         </div>
       )}
 
-      <Card className="mb-4 p-4">
-        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Download, then activate one model.</div>
-        <div className="mt-2 grid gap-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)]">
-          <div className="space-y-2">
-            <p>
-              Ask and Research need one active local AI model. Larger models are better for research and synthesis;
-              smaller models are still useful for quick lookup.
-            </p>
-            <p>
-              You can skip this setup and still use Search, Documents, Folders, and Integrations. Important AI answers
-              should be checked against citations.
-            </p>
+      {compose && (
+        <Card className="mb-4 p-4">
+          <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+            {composeModelFile
+              ? `The served model is chosen by LLM_MODEL_FILE in .env: ${composeModelFile}.`
+              : 'The served model is chosen by LLM_MODEL_FILE in .env, which is empty: no local model runs.'}
           </div>
-          <ol className="space-y-1 border-l-2 border-blue-500/70 pl-4 text-gray-600 dark:text-gray-300">
-            <li>1. Pick a model for this Mac.</li>
-            <li>2. Download it.</li>
-            <li>3. Activate it when ready.</li>
-          </ol>
-        </div>
-      </Card>
+          <p className="mt-2 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+            Download that model here and it starts on its own. To use another, set LLM_MODEL_FILE to its file and run{' '}
+            <code>docker compose up -d</code>.
+          </p>
+        </Card>
+      )}
+
+      {!compose && (
+        <Card className="mb-4 p-4">
+          <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Download, then activate one model.</div>
+          <div className="mt-2 grid gap-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)]">
+            <div className="space-y-2">
+              <p>
+                Ask and Research need one active local AI model. Larger models are better for research and synthesis;
+                smaller models are still useful for quick lookup.
+              </p>
+              <p>
+                You can skip this setup and still use Search, Documents, Folders, and Integrations. Important AI answers
+                should be checked against citations.
+              </p>
+            </div>
+            <ol className="space-y-1 border-l-2 border-blue-500/70 pl-4 text-gray-600 dark:text-gray-300">
+              <li>1. Pick a model for this Mac.</li>
+              <li>2. Download it.</li>
+              <li>3. Activate it when ready.</li>
+            </ol>
+          </div>
+        </Card>
+      )}
 
       <Card className="overflow-hidden">
         <table className="w-full text-sm">
@@ -567,8 +592,8 @@ export default function ModelsPage() {
         </Card>
       )}
 
-      {/* YaRN Extended Context */}
-      {models.some((m) => m.yarn_available) && (
+      {/* YaRN Extended Context: the Compose server runs without RoPE scaling */}
+      {!compose && models.some((m) => m.yarn_available) && (
         <Card className="mt-6 p-4">
           <div className="flex items-center justify-between">
             <div>

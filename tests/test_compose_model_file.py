@@ -69,6 +69,27 @@ def test_a_file_that_is_not_curated_activates_nothing(compose_env: Path, monkeyp
     with caplog.at_level(logging.WARNING, logger="harbor_clerk.config"):
         assert config.get_settings().llm_model_id == ""
     assert "not a curated model's file" in caplog.text
+    # The file is there and served: "download it" would be wrong advice.
+    assert config.no_model_message(config.get_settings()) == (
+        "LLM_MODEL_FILE my-own-model.gguf is not one of the models listed in Settings → Models; "
+        "set it to one of their files in .env."
+    )
+
+
+def test_a_dot_slash_model_file_is_the_bare_file(compose_env: Path, monkeypatch) -> None:
+    # llama-server reads /models/./name as /models/name, so the app treats `./name` as `name`.
+    (compose_env / MODEL_FILE).write_bytes(b"GGUF")
+    monkeypatch.setenv("LLM_MODEL_FILE", f"./{MODEL_FILE}")
+    config._settings = None
+    assert config.get_settings().llm_model_id == "qwen35-4b"
+    assert config.compose_model_file(config.get_settings()) == MODEL_FILE
+
+
+def test_a_model_file_in_a_subdirectory_is_kept_as_written(compose_env: Path, monkeypatch) -> None:
+    monkeypatch.setenv("LLM_MODEL_FILE", f"sub/{MODEL_FILE}")
+    config._settings = None
+    assert config.compose_model_file(config.get_settings()) == f"sub/{MODEL_FILE}"
+    assert config.get_settings().llm_model_id == ""  # no curated file lives in a directory
 
 
 def test_an_empty_model_file_means_no_model_whatever_llm_model_id_says(compose_env: Path, monkeypatch, caplog) -> None:

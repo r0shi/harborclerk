@@ -236,16 +236,35 @@ def no_model_message(settings: Settings) -> str:
     is to download that file, not to activate a model, which Compose refuses. Elsewhere, activate one."""
     if not is_compose(settings):
         return NO_MODEL_MESSAGE
-    if not settings.llm_model_file:
+    filename = compose_model_file(settings)
+    if not filename:
         return "No local model is configured: LLM_MODEL_FILE is empty in .env."
-    return f"No local model is loaded yet. Download {settings.llm_model_file} in Settings → Models."
+    from harbor_clerk.llm.models import model_for_file  # llm.models imports nothing from this package
+
+    if model_for_file(filename) is None:
+        # Served, perhaps, but not one the app can budget for: downloading does not help.
+        return (
+            f"LLM_MODEL_FILE {settings.llm_model_file} is not one of the models listed in Settings → Models; "
+            "set it to one of their files in .env."
+        )
+    return f"No local model is loaded yet. Download {filename} in Settings → Models."
+
+
+def _normalised_model_file(value: str) -> str:
+    """LLM_MODEL_FILE as a file name in the models volume: `./name` is `name`, as llama-server reads
+    `/models/./name`. Anything with a directory left in it is kept as written: no curated file is in one."""
+    if not value:
+        return ""
+    normalised = os.path.normpath(value)
+    return normalised if os.path.basename(normalised) == normalised else value
 
 
 def compose_model_file(settings: Settings) -> str:
-    """The model file Compose's llama-server is started with, or "" when the model is not chosen that way.
+    """The model file Compose's llama-server is started with, normalised (`./name` is `name`), or "" when the
+    model is not chosen that way.
 
     Under the macOS app, or any run that is not a Compose service, `llm_model_file` never applies."""
-    return settings.llm_model_file if is_compose(settings) else ""
+    return _normalised_model_file(settings.llm_model_file) if is_compose(settings) else ""
 
 
 # The last (file, state) `_apply_model_file` logged, so the per-stage refreshers report a change once.
@@ -270,7 +289,7 @@ def _apply_model_file(settings: Settings) -> None:
     global _model_file_reported
     if not is_compose(settings):
         return
-    filename = settings.llm_model_file
+    filename = compose_model_file(settings)
     if not filename:
         if _model_file_reported != ("", "none"):
             _model_file_reported = ("", "none")
