@@ -1,16 +1,16 @@
-"""Under Docker Compose, a document waits for llama-server within one budget, then falls back (#654).
+"""Under Docker Compose, a document waits for llama-server within one budget of waiting, then falls back (#654).
 
 The active model follows its file being in the volume, and a present file can still fail to load (too big
-for the container, a hand copy cut short): llama-server then crash-loops through its load while the model
-looks active. `llm_server_state` (a `/health` probe only Compose consults) tells READY (200), LOADING (503,
-or a probe that timed out) and UNAVAILABLE (nothing listening) apart, and `wait_for_server` decides:
+for the container, a hand copy cut short). `llm_server_state` (a `/health` probe only Compose consults) tells
+READY (200), LOADING (503, or a read timeout) and UNAVAILABLE (nothing listening, or a connect timeout) apart,
+and `wait_for_server` waits until READY or until the document's `DOCUMENT_WAIT_SECONDS` of waiting are spent:
 
-- each document has one `DOCUMENT_WAIT_SECONDS` budget for every wait at every call site (the checks before
-  a summary and a doc type, and the retries after a refused connection or a 503); a load or a restart is
-  waited out within it, and a document whose budget runs out falls back;
-- a document that spends its whole budget without ever seeing READY sets a "server failing" flag: later
-  documents fall back at once, after one probe each, and only a READY probe clears it (LOADING does not);
-- the last attempt of a call never waits.
+- every wait at every call site (the checks before a summary and a doc type, and the retries after a refused
+  connection or a 503) draws on the one budget, which only waiting is charged with, never inference or yields;
+- a load or a restart is waited out within it; a document whose budget runs out falls back;
+- there is no memory across documents: in a crash loop or a long outage each document waits its own budget
+  (accepted: bounded per document, far inside the stage timeout, and summarize gates nothing);
+- the last attempt of a call never waits; a 503 while /health says ready waits the jittered 5-15 s.
 """
 
 from __future__ import annotations
@@ -104,7 +104,6 @@ def compose(monkeypatch, tmp_path: Path, clock: Clock) -> None:
     monkeypatch.setenv("LLM_CONTEXT_TOKENS", "8192")
     monkeypatch.setenv("LLAMA_SERVER_URL", "http://llama-server.invalid:8080")
     monkeypatch.setattr(health, "_state_probe", None)
-    monkeypatch.setattr(health, "_failing_since", None)
     monkeypatch.setattr(summarize, "_apple_intelligence_summary", lambda *a, **k: None)
     monkeypatch.setattr(summarize, "_apple_intelligence_doc_type", lambda *a, **k: None)
     config._settings = None
@@ -142,7 +141,6 @@ def test_a_restart_under_the_budget_gives_a_model_summary(compose, clock, monkey
     text, model_used, doc_type = _document()
     assert (text, model_used, doc_type) == (SUMMARY, "qwen35-4b", "Invoice")
     assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS
-    assert not health.server_failing()
 
 
 def test_a_load_under_the_budget_gives_a_model_summary(compose, clock, monkeypatch, llm) -> None:
@@ -156,91 +154,6 @@ def test_a_load_under_the_budget_gives_a_model_summary(compose, clock, monkeypat
 
     monkeypatch.setattr(health.time, "sleep", finish_loading)
     assert _document()[:2] == (SUMMARY, "qwen35-4b")
-
-
-# --- a server that keeps failing: one document waits, the next ones do not ---
-
-
-def test_a_crash_looping_load_costs_one_document_the_budget_and_the_rest_nothing(
-    compose, clock, monkeypatch, llm
-) -> None:
-    server = CrashLoop(clock)
-    monkeypatch.setattr(health.httpx, "get", server)
-    _, model_used, doc_type = _document()
-    assert (model_used, doc_type) == ("extractive", summarize._mime_to_doc_type(PDF)) and llm == []
-    assert health.DOCUMENT_WAIT_SECONDS <= clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS
-    assert health.server_failing()
-    for _ in range(3):
-        clock.slept.clear()
-        probes = server.probes
-        clock.now += 7  # documents arrive at different points of the loop, loading or not listening
-        _, model_used, _ = _document()
-        assert model_used == "extractive" and clock.slept == [], "a later document waited for a failing server"
-        assert server.probes > probes, "a later document did not look whether the server had come back"
-    assert health.server_failing()  # LOADING answers did not clear it
-    server.state = lambda: 200  # the model loads at last
-    assert _document()[:2] == (SUMMARY, "qwen35-4b")
-    assert not health.server_failing()
-
-
-def test_loading_does_not_clear_the_failing_flag(compose, clock, monkeypatch, llm) -> None:
-    monkeypatch.setattr(health, "_failing_since", clock.now)
-    monkeypatch.setattr(health.httpx, "get", Server(clock, up_at=clock.now, code=503))
-    assert _document()[1] == "extractive" and clock.slept == []
-    assert health.server_failing()
-
-
-def test_an_old_failure_cleared_by_ready_lets_a_later_restart_be_waited_out(compose, clock, monkeypatch, llm) -> None:
-    server = Server(clock)  # gone
-    monkeypatch.setattr(health.httpx, "get", server)
-    assert _document()[1] == "extractive"
-    assert health.server_failing()
-    clock.now += 3600
-    server.up_at = clock.now  # back, and a document sees it
-    assert _document()[1] == "qwen35-4b"
-    assert not health.server_failing()
-    clock.now += 3600  # an hour later, a short restart
-    server.up_at = clock.now + 5
-    clock.slept.clear()
-    text, model_used, _ = _document()
-    assert (text, model_used) == (SUMMARY, "qwen35-4b"), "an old failure made a later restart fall back"
-    assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS
-
-
-def test_a_server_that_recovered_unobserved_gets_its_next_restart_waited_out(compose, clock, monkeypatch, llm) -> None:
-    # The review's sim_stale shape: an outage fails a document and flags the server; it comes back while no
-    # document runs, so no READY probe clears the flag; much later it restarts for 5 s and a job is claimed.
-    server = Server(clock)
-    monkeypatch.setattr(health.httpx, "get", server)
-    assert _document()[1] == "extractive"
-    assert health.server_failing()
-    server.up_at = clock.now + 10  # back, unobserved
-    clock.now += health.FAILING_FLAG_TTL_SECONDS + 7200  # a quiet period past the flag's life
-    server.up_at = clock.now + 5  # a short restart, and a job claimed in it
-    clock.slept.clear()
-    text, model_used, _ = _document()
-    assert (text, model_used) == (SUMMARY, "qwen35-4b"), "a stale failing flag made a restart fall back"
-    assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS
-    assert not health.server_failing()
-
-
-def test_a_server_that_stays_broken_costs_one_wait_per_flag_lifetime(compose, clock, monkeypatch, llm) -> None:
-    # A document a minute against a crash loop for most of an hour: one document per flag lifetime waits
-    # its budget (and re-flags the server), every other one falls back at once.
-    monkeypatch.setattr(health.httpx, "get", CrashLoop(clock))
-    waited_at: list[float] = []
-    for _ in range(50):
-        clock.slept.clear()
-        started = clock.now
-        assert _document()[1] == "extractive"
-        if clock.slept:
-            assert health.DOCUMENT_WAIT_SECONDS <= clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS
-            waited_at.append(started)
-        clock.now += 60
-    assert len(waited_at) == 4, f"documents that waited: {len(waited_at)} of 50"
-    gaps = [b - a for a, b in zip(waited_at, waited_at[1:], strict=False)]
-    ttl = health.FAILING_FLAG_TTL_SECONDS
-    assert all(ttl <= gap <= ttl + 60 + health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS for gap in gaps), gaps
 
 
 # --- inside a call ---
@@ -327,43 +240,6 @@ def test_a_probe_whose_connection_timed_out_is_gone(compose, monkeypatch) -> Non
     assert health.llm_server_state() == health.UNAVAILABLE
 
 
-# --- a slow load is not a crash loop ---
-
-
-def test_a_slow_load_with_a_queue_of_documents_costs_at_most_the_first_one(compose, clock, monkeypatch, llm) -> None:
-    # 150 s of loading (503 throughout, nothing ever refused) with 80 documents queued a second apart. The
-    # first document waits its 90 s and falls back; it saw only LOADING, so it flags nothing, and the second
-    # waits out the rest of the load. Flagging it made 59 of 80 summaries extractive for good.
-    t0 = clock.now
-    server = Server(clock, up_at=t0, code=503)
-    monkeypatch.setattr(health.httpx, "get", server)
-
-    def finish_loading(seconds: float) -> None:
-        Clock.sleep(clock, seconds)
-        if clock.now >= t0 + 150:
-            server.code = 200
-
-    monkeypatch.setattr(health.time, "sleep", finish_loading)
-    used = []
-    for i in range(80):
-        clock.now = max(clock.now, t0 + i)  # the worker takes the next queued document
-        used.append(_document()[1])
-        assert not health.server_failing(), f"a slow load flagged the server at document {i}"
-    assert used.count("extractive") <= 1, f"{used.count('extractive')} of 80 summaries stored extractive"
-    assert used[1:] == ["qwen35-4b"] * 79
-
-
-def test_a_load_that_never_finishes_costs_each_document_its_own_budget(compose, clock, monkeypatch, llm) -> None:
-    # Accepted: a wedged loader is rare, and it is bounded per document. Each one waits its 90 s and falls
-    # back; none flags the server, because it never stopped answering.
-    monkeypatch.setattr(health.httpx, "get", Server(clock, up_at=clock.now, code=503))
-    for _ in range(3):
-        clock.slept.clear()
-        assert _document()[1] == "extractive"
-        assert health.DOCUMENT_WAIT_SECONDS <= clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS
-        assert not health.server_failing()
-
-
 def test_a_503_from_a_ready_server_retries_after_the_jittered_delay(compose, clock, monkeypatch) -> None:
     # /health says ready, the completion answers 503: a busy server, not a load. The retries are spaced by
     # the old 5-15 s jittered delay, not fired in the same instant; the last attempt does not wait.
@@ -403,7 +279,6 @@ def test_outside_compose_nothing_is_probed_or_waited_for(monkeypatch, clock) -> 
 
     monkeypatch.setattr(health.httpx, "get", no_probe)
     monkeypatch.setattr(health, "_state_probe", None)
-    monkeypatch.setattr(health, "_failing_since", None)
     monkeypatch.setenv("LLM_MODEL_FILE", MODEL_FILE)  # set, but no HC_DEPLOYMENT marker
     config._settings = None
     assert health.llm_server_state() == health.READY
@@ -432,8 +307,8 @@ def test_the_stage_holds_one_budget_for_the_summary_and_the_type(monkeypatch) ->
 
 class OomOnPrompt(Server):
     """A model that loads but dies on its first prompt: READY, then every request kills it, and it comes
-    back through 3 s with nothing listening and 27 s of loading. It is READY again and again, so the
-    failing flag never trips; only the document's budget bounds the waiting."""
+    back through 3 s with nothing listening and 27 s of loading. It is READY again and again, so every
+    call site's wait succeeds; only the document's one budget bounds the waiting."""
 
     def __init__(self, clock: Clock) -> None:
         super().__init__(clock)
@@ -465,31 +340,6 @@ def test_a_server_that_dies_on_every_prompt_costs_a_long_document_one_budget(com
     _, model_used, _ = _document(chunks)
     assert model_used == "extractive"
     assert clock.now - started <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS < STAGE_TIMEOUT_SECONDS
-
-
-def test_a_document_that_saw_the_server_ready_does_not_flag_it(compose, clock, monkeypatch) -> None:
-    # Ready when the document starts, gone for the rest of it: the server was not failing to load, so the
-    # next document still waits for it, and gets the model when it is back.
-    server = Server(clock, up_at=clock.now)
-    monkeypatch.setattr(health.httpx, "get", server)
-    gone = [True]
-
-    def post(url, **kwargs):
-        if gone[0]:
-            server.up_at = float("inf")
-            raise httpx.ConnectError("refused", request=httpx.Request("POST", url))
-        return _completion(json.dumps({"summary": SUMMARY}))
-
-    monkeypatch.setattr(summarize.httpx, "post", post)
-    assert _document()[1] == "extractive"
-    assert not health.server_failing()
-    clock.now += 600
-    server.up_at = clock.now + 5  # back after a short restart
-    gone[0] = False
-    clock.slept.clear()
-    text, model_used, _ = _document()
-    assert (text, model_used) == (SUMMARY, "qwen35-4b")
-    assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS
 
 
 # --- the budget is waiting time, not elapsed time ---
@@ -542,11 +392,58 @@ def test_a_restart_late_in_a_long_document_is_waited_out_through_the_stage(compo
     assert 10 <= clock.waited() < 2 * 5 + 2 * health.POLL_SECONDS + 1
 
 
+# --- a load, a crash loop, an outage: each document waits at most its own budget ---
+
+
+class GapThenLoad(Server):
+    """A real first load (after a download, or a restart): nothing listening for `gap` seconds (the entrypoint's
+    poll, its stability check, the process starting), then 503 for `load` seconds, then READY."""
+
+    def __init__(self, clock: Clock, *, gap: float, load: float) -> None:
+        super().__init__(clock)
+        self.t0, self.gap, self.load = clock.now, gap, load
+
+    def state(self) -> int | None:
+        since = self.clock.now - self.t0
+        return None if since < self.gap else 503 if since < self.gap + self.load else 200
+
+
+def test_a_startup_gap_and_a_slow_load_cost_at_most_the_first_of_80_documents(compose, clock, monkeypatch, llm) -> None:
+    # 12 s with nothing listening, then 150 s of loading, with 80 documents queued a second apart. The first
+    # waits its 90 s and falls back; the second waits out the rest of the load; the other 78 find it ready. A
+    # memory of "it failed last time" made every one of the 80 extractive (#654, seventh review).
+    t0 = clock.now
+    monkeypatch.setattr(health.httpx, "get", GapThenLoad(clock, gap=12, load=150))
+    used = []
+    for i in range(80):
+        clock.now = max(clock.now, t0 + i)  # the worker takes the next queued document
+        used.append(_document()[1])
+    assert used.count("extractive") <= 1, f"{used.count('extractive')} of 80 summaries stored extractive"
+    assert used[1:] == ["qwen35-4b"] * 79
+
+
+@pytest.mark.parametrize("server", ["crash-loop", "gone", "never-loads"])
+def test_a_failing_server_costs_each_document_at_most_its_own_budget(compose, clock, monkeypatch, llm, server) -> None:
+    # A crash loop, a long outage, a load that never finishes: each document waits its 90 s of waiting and falls
+    # back, and none waits more. Accepted: bounded per document, far inside the stage's timeout.
+    servers = {
+        "crash-loop": CrashLoop(clock),
+        "gone": Server(clock),
+        "never-loads": Server(clock, up_at=clock.now, code=503),
+    }
+    monkeypatch.setattr(health.httpx, "get", servers[server])
+    for _ in range(4):
+        clock.slept.clear()
+        clock.now += 7  # documents arrive at different points of the loop
+        _, model_used, doc_type = _document()
+        assert (model_used, doc_type) == ("extractive", summarize._mime_to_doc_type(PDF))
+        assert health.DOCUMENT_WAIT_SECONDS <= clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS
+
+
 @pytest.mark.parametrize("after", ["crash-loop", "gone"])
 def test_after_long_work_a_failing_server_costs_one_budget_of_waiting(compose, clock, monkeypatch, after) -> None:
     # Ready for the first 150 s of a long document (calls take 30 s each), then the server crash-loops or is
-    # gone for good. That document waits at most one budget in all, however long it has run; the next one,
-    # which never sees it ready, waits one budget and flags it; the ones after fall back at once.
+    # gone for good: that document waits at most one budget in all, however long it has run.
     switch_at = clock.now + 150
     loop = CrashLoop(clock)
 
@@ -576,12 +473,12 @@ def test_after_long_work_a_failing_server_costs_one_budget_of_waiting(compose, c
     _document(LONG_CHUNKS)
     assert clock.now - started > health.DOCUMENT_WAIT_SECONDS + INFERENCE_SECONDS  # long in elapsed time
     assert clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS, "more than one budget waited"
-    assert not health.server_failing()  # it saw the server ready
-    clock.slept.clear()
-    assert _document()[1] == "extractive"
-    assert health.DOCUMENT_WAIT_SECONDS <= clock.waited() <= health.DOCUMENT_WAIT_SECONDS + health.POLL_SECONDS
-    assert health.server_failing()
-    for _ in range(3):
-        clock.slept.clear()
-        clock.now += 5
-        assert _document()[1] == "extractive" and clock.slept == []
+
+
+def test_a_lone_doc_type_call_gets_a_budget_of_its_own(compose, clock, monkeypatch) -> None:
+    # classify_doc_type outside the stage: its one wait (the check before its single attempt) takes a budget
+    # of its own in wait_for_server, so it needs no wrapper of its own.
+    monkeypatch.setattr(health.httpx, "get", Server(clock, up_at=clock.now + 5))
+    monkeypatch.setattr(summarize, "_call_llm", lambda *a, **k: "Invoice")
+    assert summarize.classify_doc_type(CHUNKS, PDF) == "Invoice"
+    assert 5 <= clock.waited() < health.DOCUMENT_WAIT_SECONDS

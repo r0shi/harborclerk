@@ -212,10 +212,9 @@ graph TB
 > `llama-server` runs one model, `-m /models/$LLM_MODEL_FILE`, at `-c $LLM_CONTEXT_TOKENS`; `app` and
 > `worker-llm` are given both and `HC_DEPLOYMENT=compose` (the marker that makes a process Compose; a copied
 > `.env` cannot), treat that model as active while its file is in the `llama_models` volume, summarize without it
-> when it is not ready within 90 s per document (a load or a restart is waited out within that; a document that
-> never sees it ready and finds it not listening makes later ones fall back at once until a probe finds it ready, or for
-> 15 minutes; a load answering 503 throughout flags nothing), and budget prompts to that
-> context. Its entrypoint
+> when it is not ready within 90 s of waiting per document (a load or a restart is waited out within that; there
+> is no memory across documents, so a server that keeps failing costs each document its own 90 s), and budget
+> prompts to that context. Its entrypoint
 > (`docker/llama-server-entrypoint.sh`) waits for a whole GGUF, so the container is healthy only once a model is
 > loaded, and traps SIGTERM while it waits (#654). Setup: [README](../README.md#local-ai-on-docker).
 

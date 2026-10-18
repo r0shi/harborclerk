@@ -27,6 +27,7 @@ from harbor_clerk.config import (
     compose_model_file,
     get_settings,
     is_compose,
+    no_model_message,
     refresh_llm_settings,
     sync_native_config,
 )
@@ -294,7 +295,7 @@ async def send_message(
     if not settings.llm_model_id:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No LLM model configured. Select and activate a model in Settings.",
+            detail=no_model_message(settings),
         )
 
     # Update conversation timestamp
@@ -613,6 +614,8 @@ async def llm_status(
         "model_name": model_name,
         "summarize": summarize,
         "does_not_fit_here": does_not_fit_here,
+        # Under Compose, what to do when no model is active: download LLM_MODEL_FILE, not activate (#654).
+        "setup_hint": no_model_message(settings) if not model_id and is_compose(settings) else None,
     }
 
 

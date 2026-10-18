@@ -16,7 +16,7 @@ from harbor_clerk.api.schemas.research import (
     ResearchSummary,
     StartResearchRequest,
 )
-from harbor_clerk.config import get_settings, refresh_llm_settings
+from harbor_clerk.config import get_settings, no_model_message, refresh_llm_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.llm.models import default_research_strategy
 from harbor_clerk.llm.research import research_stream
@@ -221,7 +221,7 @@ async def start_research(
     if not settings.llm_model_id:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No LLM model configured. Select and activate a model in Settings.",
+            detail=no_model_message(settings),
         )
 
     # Block research on models that aren't reliable in research mode (e.g.

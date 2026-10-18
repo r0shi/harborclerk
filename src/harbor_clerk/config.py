@@ -226,6 +226,21 @@ def is_compose(settings: Settings) -> bool:
     return settings.hc_deployment == "compose" and not settings.native_config_file
 
 
+NO_MODEL_MESSAGE = "No LLM model configured. Select and activate a model in Settings."
+
+
+def no_model_message(settings: Settings) -> str:
+    """What to tell someone who asks for the local model when none is active.
+
+    Under Docker Compose the model is LLM_MODEL_FILE, active once its file is in the volume (#654): the action
+    is to download that file, not to activate a model, which Compose refuses. Elsewhere, activate one."""
+    if not is_compose(settings):
+        return NO_MODEL_MESSAGE
+    if not settings.llm_model_file:
+        return "No local model is configured: LLM_MODEL_FILE is empty in .env."
+    return f"No local model is loaded yet. Download {settings.llm_model_file} in Settings → Models."
+
+
 def compose_model_file(settings: Settings) -> str:
     """The model file Compose's llama-server is started with, or "" when the model is not chosen that way.
 

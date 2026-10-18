@@ -106,30 +106,12 @@ POLL_SECONDS = 2.0
 # it. A load or a restart (an edited command and `up -d`, a crash) is waited out within it; a document
 # whose budget runs out falls back. Only waiting is charged, never inference or idle yields. Bounded per
 # document, so a server that keeps failing (a model too big, crash-looping through its load) adds at most
-# this much to a document, far inside the stage's 900 s timeout.
+# this much to a document, far inside the stage's 900 s timeout. There is deliberately no memory across
+# documents: a real load nearly always starts with seconds of nothing listening (the entrypoint's poll and
+# stability check, a restart), so "it failed for the last document" cannot tell a crash loop from a slow
+# load, and treating a load as a failure stored every document claimed during it extractive (#654 review).
 DOCUMENT_WAIT_SECONDS = 90.0
-# How long the "server failing" flag lasts unless a READY probe clears it first. Then the next document
-# waits its normal budget again, which sets the flag again if the server is still broken: a server that
-# stays broken costs one budget per this long, and one that recovered while no document was looking gets
-# its next restart waited out rather than fallen back from.
-FAILING_FLAG_TTL_SECONDS = 15 * 60.0
-
 _state_probe: tuple[float, str] | None = None
-# When a document spent its whole budget without the server ever being READY; None when the server is not
-# flagged. Cleared by a READY probe (LOADING does not: a crash loop is LOADING most of the time) or by age
-# (FAILING_FLAG_TTL_SECONDS). While set, documents fall back at once, each after one probe, so the server
-# coming back is seen by the next document.
-_failing_since: float | None = None
-
-
-def server_failing() -> bool:
-    """Whether the server is flagged as failing: set by a spent budget, not yet cleared by READY or by age."""
-    global _failing_since
-    with _lock:
-        if _failing_since is not None and time.monotonic() - _failing_since >= FAILING_FLAG_TTL_SECONDS:
-            _failing_since = None
-            logger.info("llama-server failing flag expired; the next document waits for the server again")
-        return _failing_since is not None
 
 
 def llm_server_state(*, fresh: bool = False) -> str:
@@ -138,10 +120,10 @@ def llm_server_state(*, fresh: bool = False) -> str:
     Compose's active model follows its file being in the volume, but a present file can still fail to load
     (too big for the container, a hand copy cut short), and llama-server then exits and restarts while the
     model looks active. Callers wait through `wait_for_server`, within the document's budget. The verdict is
-    reused per `_STATE_TTL_SECONDS` unless `fresh`. A READY verdict clears the "server failing" flag.
+    reused per `_STATE_TTL_SECONDS` unless `fresh`.
 
     Everywhere else READY, unprobed: the macOS launcher owns llama-server, and its retries are the design."""
-    global _state_probe, _failing_since
+    global _state_probe
     from harbor_clerk.config import get_settings
 
     settings = get_settings()
@@ -163,8 +145,6 @@ def llm_server_state(*, fresh: bool = False) -> str:
         state = UNAVAILABLE
     with _lock:
         _state_probe = (now, state)
-        if state == READY:
-            _failing_since = None
     if cached is None or cached[1] != state:
         logger.info("llama-server at %s is %s", settings.llama_server_url, state)
     return state
@@ -178,7 +158,7 @@ def server_is_probed() -> bool:
 
 
 class WaitBudget:
-    """The time one document may still spend waiting for the server, and whether it has seen it READY.
+    """The time one document may still spend waiting for the server.
 
     Charged only with time spent waiting (`wait_for_server`'s sleeps and probes), never with elapsed time:
     inference and the long tier's idle yields can take minutes on a CPU-only container, and a restart late
@@ -187,10 +167,6 @@ class WaitBudget:
     def __init__(self, seconds: float) -> None:
         self.seconds = seconds
         self.spent = 0.0
-        self.saw_ready = False
-        # Whether a probe in this budget found nothing listening. A crash loop shows such gaps; a slow but
-        # healthy load answers 503 throughout and does not, and must not flag the server.
-        self.saw_unavailable = False
 
     def remaining(self) -> float:
         return max(0.0, self.seconds - self.spent)
@@ -225,35 +201,15 @@ def document_wait_budget():
 def wait_for_server(*, fresh: bool = False) -> str:
     """The server's state once it is READY, or once the document's wait budget is spent (then not READY).
 
-    While the server is flagged as failing, nothing is waited: one probe, and its answer. A budget spent
-    without ever seeing READY sets that flag, for at most `FAILING_FLAG_TTL_SECONDS`. Only the time spent in
-    this loop is charged to the budget. Outside a `document_wait_budget` the call gets a budget of its own.
-    READY at once, unprobed, outside Compose."""
-    global _failing_since
-    failing = server_failing()
-    state = llm_server_state(fresh=fresh or failing)
+    Only the time spent in this loop is charged to the budget. Outside a `document_wait_budget` the call gets a
+    budget of its own. READY at once, unprobed, outside Compose."""
+    state = llm_server_state(fresh=fresh)
     budget = _document_budget.get() or WaitBudget(DOCUMENT_WAIT_SECONDS)
-    budget.saw_unavailable |= state == UNAVAILABLE
-    if state != READY and not failing:
-        while state != READY and budget.remaining() > 0:
-            started = time.monotonic()
-            time.sleep(min(POLL_SECONDS, budget.remaining()))
-            state = llm_server_state(fresh=True)
-            budget.charge(time.monotonic() - started)
-            budget.saw_unavailable |= state == UNAVAILABLE
-        # Flag only a server that failed: never READY in this budget, and found not listening at least once.
-        # A budget spent on a load that answered 503 throughout falls this document back but flags nothing,
-        # so the next document waits again (a load that never finishes costs each document its own budget).
-        if state != READY and not budget.saw_ready and budget.saw_unavailable:
-            with _lock:
-                _failing_since = time.monotonic()
-            logger.warning(
-                "llama-server was not ready within %.0fs; summaries fall back at once until it is, or for %.0f min",
-                DOCUMENT_WAIT_SECONDS,
-                FAILING_FLAG_TTL_SECONDS / 60,
-            )
-    if state == READY:
-        budget.saw_ready = True
+    while state != READY and budget.remaining() > 0:
+        started = time.monotonic()
+        time.sleep(min(POLL_SECONDS, budget.remaining()))
+        state = llm_server_state(fresh=True)
+        budget.charge(time.monotonic() - started)
     return state
 
 

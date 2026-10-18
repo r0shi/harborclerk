@@ -82,7 +82,7 @@ def _local_server_not_ready() -> bool:
     Only under Docker Compose can this be True: elsewhere the server's state is READY, unprobed. Waiting out
     a load (every `compose up`, the first load after a download) or a restart is what keeps a summary from
     being stored extractive just because it was claimed then; the wait is bounded by the document's
-    `DOCUMENT_WAIT_SECONDS`, and while the server is flagged as failing there is no wait at all."""
+    `DOCUMENT_WAIT_SECONDS` of waiting, with no memory across documents."""
     return wait_for_server() != READY
 
 
@@ -920,7 +920,6 @@ def _mime_to_doc_type(mime_type: str) -> str:
     return "Document"
 
 
-@_within_document_budget
 def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
     """Classify document type. Fallback chain: local LLM → Apple Intelligence → MIME type."""
     settings = get_settings()

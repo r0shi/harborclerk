@@ -117,6 +117,16 @@ def test_the_context_is_never_more_than_the_model_asks_for(compose_env: Path, mo
     assert effective_context(model, False, ram_bytes=64 * GIB) == 32768
 
 
+def test_yarn_does_not_stretch_the_compose_context(compose_env: Path, monkeypatch) -> None:
+    # The Compose server runs without RoPE scaling, and the YaRN toggle is the app's in-memory setting, which
+    # worker-llm never sees: the window budgeted to is the unscaled one, toggle or not.
+    model = get_model("qwen3-8b")  # 32,768 tokens, 131,072 with YaRN
+    monkeypatch.setenv("LLM_CONTEXT_TOKENS", "65536")
+    config._settings = None
+    assert effective_context(model, True, ram_bytes=64 * GIB) == 32768
+    assert context_budget(model, True) == 32768
+
+
 def test_without_a_server_context_the_memory_arithmetic_decides(compose_env: Path, monkeypatch) -> None:
     model = get_model("qwen35-4b")
     monkeypatch.setenv("LLM_CONTEXT_TOKENS", "0")

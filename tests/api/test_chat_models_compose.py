@@ -273,3 +273,30 @@ async def test_a_source_run_models_page_keeps_the_mac_arithmetic(
     resp = await client.get("/api/chat/models", headers=auth_header(admin_token))
     by_id = {m["id"]: m for m in resp.json()}
     assert by_id["qwen35-4b"]["fits_here"] is False and by_id["qwen35-4b"]["max_context_here"] == 0
+
+
+async def test_compose_with_no_model_yet_says_to_download_it(
+    client, admin_user, admin_token, compose, models_dir: Path
+) -> None:
+    # A fresh install: LLM_MODEL_FILE is set but not downloaded. "Select and activate a model" is the wrong
+    # advice under Compose (activating is refused); the action is to download that file.
+    (models_dir / SERVED).unlink()
+    config._settings = None
+    status = (await client.get("/api/chat/models/status", headers=auth_header(admin_token))).json()
+    assert status["state"] == "deactivated"
+    assert status["setup_hint"] == f"No local model is loaded yet. Download {SERVED} in Settings → Models."
+    resp = await client.post(
+        "/api/research",
+        json={"question": "What are the termination clauses?", "time_limit_minutes": 15, "depth": "light"},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == status["setup_hint"]
+
+
+async def test_outside_compose_no_model_keeps_its_advice(
+    client, admin_user, admin_token, source_run, models_dir: Path
+) -> None:
+    (models_dir / SERVED).unlink()
+    status = (await client.get("/api/chat/models/status", headers=auth_header(admin_token))).json()
+    assert status["setup_hint"] is None
