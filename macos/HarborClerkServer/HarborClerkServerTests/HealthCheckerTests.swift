@@ -286,7 +286,7 @@ final class HealthCheckerTests: XCTestCase {
         XCTAssertEqual(svc.state, .running, "a process that answers its health check is running, whatever the start-up wait concluded")
         XCTAssertEqual(svc.healthCalls, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: sm.pidFileURL.path),
-                      "promoted through the same ready path as a start, which records the pid for orphan cleanup")
+                      "promoted through markReady, the same ready path as a start: its savePidFile ran and wrote the pid file (empty here, since the mock has no pid)")
     }
 
     @MainActor
@@ -353,6 +353,23 @@ final class HealthCheckerTests: XCTestCase {
         await bounded("one tick") { await hc.tickForTesting() }
 
         XCTAssertEqual(svc.state, .stopping)
+    }
+
+    /// An auto-restart that pauses the service while the probe is in flight
+    /// owns it from then on, even though the state still reads `errored`
+    /// (attemptAutoRestart pauses before it stops anything); a late answer
+    /// must not promote it under the restart.
+    @MainActor
+    func testAServicePausedDuringTheProbeIsNotPromoted() async {
+        let svc = MockProcessService(name: "LLM", state: .errored, holdsLiveProcess: true)
+        svc.healthy = true
+        let (_, hc) = makeChecker(for: svc)
+        svc.duringHealthCheck = { [unowned svc] in hc.pausedServices.insert(svc.name) }
+
+        await bounded("one tick") { await hc.tickForTesting() }
+
+        XCTAssertEqual(svc.healthCalls, 1, "probed: the pause landed after the pre-check")
+        XCTAssertEqual(svc.state, .errored)
     }
 
     /// An answer from the port after our child has exited is not our child
