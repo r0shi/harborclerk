@@ -57,3 +57,5 @@ Per list question (F1, precision, recall): key-15 customer non-solicitation 0.82
 ### Not verified
 
 No human read the 20 answers end to end. The run used the v0.9.3 app build. The universe is 79 of 80 contracts (#815).
+
+Since 2026-10-18 the universe is 80: rescored over 80, this run's lists are 0.871 (key-18 0.741 → 0.759, key-19 0.977 → 0.978) and its list and overall means read the same at two places; see `2026-10-18-rescore-cuad-key-universe-80.md`.
