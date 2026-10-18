@@ -1,6 +1,8 @@
 # Watched Folders on Docker
 
-Harbor Clerk's Docker deployment ingests documents from watched folders that you mount into the `watcher` container. There is no "Add Folder" button in the web UI on Docker — folders appear automatically when you mount them.
+Harbor Clerk's Docker deployment ingests documents from watched folders that you mount under `/data/watch`. There is no "Add Folder" button in the web UI on Docker — folders appear automatically when you mount them.
+
+Documents are read in place, never copied, so every service that reads them sees the same mounts: `watcher` (discovery), `worker-io` (extract), `worker-cpu` (OCR) and `app` (downloads). All of them mount the watch root read-only, at the same container path; Harbor Clerk never writes to your files.
 
 ## How it works
 
@@ -14,16 +16,18 @@ The `watcher` service watches `WATCH_ROOT` (default `/data/watch`) for new top-l
    mkdir -p ./data/watch/contracts
    ```
 
-2. The default `docker-compose.yml` already mounts `./data/watch` at `/data/watch` in the `watcher` container, and read-only at the same path in `app`, `worker-io` and `worker-cpu`. New subdirectories of `./data/watch` are auto-discovered every 60 seconds — no restart needed.
+2. The default `docker-compose.yml` already mounts `./data/watch` read-only at `/data/watch` in `watcher`, `app`, `worker-io` and `worker-cpu`. New subdirectories of `./data/watch` are auto-discovered every 60 seconds — no restart needed.
 
-3. To mount a directory that lives elsewhere on the host, edit `docker-compose.yml` (or your `compose.override.yml`). Add the same mount to `watcher` and, read-only, to every service that reads document bytes — `app` (downloads), `worker-io` (extract) and `worker-cpu` (OCR):
+3. To mount a directory that lives elsewhere on the host, first create its mountpoint under `./data/watch` on the host (step 1, e.g. `mkdir -p ./data/watch/contracts`). `./data/watch` is mounted read-only, so Docker cannot create the mountpoint for a nested mount itself, and the container fails to start without it.
+
+   Then edit `docker-compose.yml` (or your `compose.override.yml`) and add the same mount, read-only and at the same container path, to `watcher` and to every service that reads document bytes — `app` (downloads), `worker-io` (extract) and `worker-cpu` (OCR):
 
    ```yaml
    services:
      watcher:
        volumes:
-         - ./data/watch:/data/watch
-         - /Users/alice/Documents/Contracts:/data/watch/contracts
+         - ./data/watch:/data/watch:ro
+         - /Users/alice/Documents/Contracts:/data/watch/contracts:ro
      app:
        volumes:
          - llama_models:/models
@@ -51,7 +55,7 @@ The `watcher` service watches `WATCH_ROOT` (default `/data/watch`) for new top-l
 
 ## Removing a folder
 
-Remove the bind mount or delete the host directory. Within ~60 seconds the folder appears as **unmounted** (red pill) in the web UI; you can then click **Delete** on its row to remove the registry entry. Documents that were ingested from that folder remain in the corpus and stay queryable.
+Remove the bind mount (from every service it was added to, then remove its now-empty mountpoint under `./data/watch`, or the folder stays registered as an empty folder) or delete the host directory. Within ~60 seconds the folder appears as **unmounted** (red pill) in the web UI; you can then click **Delete** on its row to remove the registry entry. Documents that were ingested from that folder remain in the corpus and stay queryable.
 
 > Note: while the folder is still actively mounted (auto-discovered with no `unavailable_reason`), the API rejects `DELETE` with **409 Conflict**. Unmount first, then delete.
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { get, patch, post, ApiError } from '../api'
 import { Card } from './Card'
+import { WATCHED_FOLDERS_DOCKER_GUIDE_URL } from '../data/docsLinks'
 
 interface SystemInfo {
   platform: 'macos' | 'docker'
@@ -40,8 +41,8 @@ interface Props {
  *   - macOS: "Pick a folder to watch" → window.harborclerk.pickFolder() →
  *     POST /api/watch/folders → advance to page 2 on success. Cancelling
  *     NSOpenPanel keeps the user on page 1.
- *   - Docker: "Read folder setup docs" → opens /docs/watched-folders-docker
- *     in a new tab. Page 2 reachable via Next regardless.
+ *   - Docker: "Read folder setup docs" → opens the watched-folders guide on
+ *     GitHub in a new tab. Page 2 reachable via Next regardless.
  *
  * Page 2: optional non-English language picker. English is bundled and
  * always on. Other languages download per-tool model files (~15-20 MB
@@ -55,6 +56,7 @@ export default function OnboardingWizard({ onComplete }: Props) {
   const navigate = useNavigate()
   const [page, setPage] = useState(1)
   const [system, setSystem] = useState<SystemInfo | null>(null)
+  const isDocker = system?.platform === 'docker'
   const [error, setError] = useState('')
   const [picking, setPicking] = useState(false)
   const [languages, setLanguages] = useState<LanguageRow[]>([])
@@ -158,10 +160,6 @@ export default function OnboardingWizard({ onComplete }: Props) {
     }
   }
 
-  function handleDockerDocs() {
-    window.open('/docs/watched-folders-docker', '_blank', 'noopener,noreferrer')
-  }
-
   return (
     <div
       role="dialog"
@@ -187,8 +185,17 @@ export default function OnboardingWizard({ onComplete }: Props) {
               Welcome to Harbor Clerk
             </h2>
             <p className="mb-4 text-sm text-(--color-text-secondary)">
-              Drop documents into a folder on this Mac, Harbor Clerk indexes them locally, and you can query them from
-              chat or search. Your files never leave this machine. To get started, pick a folder to watch.
+              {isDocker ? (
+                <>
+                  Mount a folder of documents under <code>{system?.watch_root}</code>, Harbor Clerk indexes it on this
+                  server, and you can query it from chat or search. To get started, follow the folder setup guide.
+                </>
+              ) : (
+                <>
+                  Drop documents into a folder on this Mac, Harbor Clerk indexes them locally, and you can query them
+                  from chat or search. Your files never leave this machine. To get started, pick a folder to watch.
+                </>
+              )}
             </p>
             {error && (
               <div className="mb-3 rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-400">
@@ -205,12 +212,14 @@ export default function OnboardingWizard({ onComplete }: Props) {
                   {picking ? 'Picking…' : 'Pick a folder to watch'}
                 </button>
               ) : system?.picker === 'none' ? (
-                <button
-                  onClick={handleDockerDocs}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
+                <a
+                  href={WATCHED_FOLDERS_DOCKER_GUIDE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-block rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
                 >
                   Read folder setup docs
-                </button>
+                </a>
               ) : (
                 // System info still loading
                 <button disabled className="rounded-lg bg-gray-300 dark:bg-gray-700 px-4 py-2 text-sm text-white">
@@ -334,7 +343,7 @@ export default function OnboardingWizard({ onComplete }: Props) {
             <div className="mb-5 border-l-2 border-blue-500/70 pl-3 text-sm text-(--color-text-secondary)">
               <div className="font-medium text-(--color-text-primary)">Setup path</div>
               <ol className="mt-2 list-decimal space-y-1 pl-4">
-                <li>Download a model that fits this Mac.</li>
+                <li>Download a model that fits this {isDocker ? 'server' : 'Mac'}.</li>
                 <li>Activate it after the download completes.</li>
                 <li>Return to Ask or Research when the local AI status is ready.</li>
               </ol>
@@ -375,13 +384,15 @@ export default function OnboardingWizard({ onComplete }: Props) {
             </h2>
             <p className="mb-3 text-sm text-(--color-text-secondary)">
               Documents go through a 7-stage pipeline (extract → OCR → chunk → entities → embed → summarize → finalize).
-              Two places to watch:
+              {isDocker ? ' Where to watch:' : ' Two places to watch:'}
             </p>
             <ul className="mb-6 space-y-2 text-sm text-(--color-text-secondary)">
-              <li>
-                <strong className="text-(--color-text-primary)">Server menubar</strong> — click the Harbor Clerk icon in
-                your menu bar to see backend services running locally (Postgres, workers, the LLM if active).
-              </li>
+              {!isDocker && (
+                <li>
+                  <strong className="text-(--color-text-primary)">Server menubar</strong> — click the Harbor Clerk icon
+                  in your menu bar to see backend services running locally (Postgres, workers, the LLM if active).
+                </li>
+              )}
               <li>
                 <strong className="text-(--color-text-primary)">Observatory tab</strong> — visit <code>/stats</code> for
                 the live pipeline diagram and per-stage timing charts.

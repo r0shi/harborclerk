@@ -8,6 +8,7 @@ import { Card } from '../components/Card'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
 import EmailSection from '../components/EmailSection'
+import { WATCHED_FOLDERS_DOCKER_GUIDE_URL } from '../data/docsLinks'
 
 interface FolderInfo {
   folder_id: string
@@ -245,7 +246,7 @@ export default function FoldersPage() {
       {system.picker === 'none' && (
         <div className="mb-4 rounded-md bg-blue-50 dark:bg-blue-900/20 p-3 text-xs text-blue-700 dark:text-blue-400">
           Folders are managed by mounting them under <code>{system.watch_root}</code> in your Docker setup.{' '}
-          <a href="/docs/watched-folders-docker" className="underline">
+          <a href={WATCHED_FOLDERS_DOCKER_GUIDE_URL} target="_blank" rel="noopener noreferrer" className="underline">
             How to add a folder →
           </a>
         </div>
@@ -264,7 +265,7 @@ export default function FoldersPage() {
           <p className="text-sm text-(--color-text-secondary)">
             {system.picker === 'native'
               ? 'Add a folder to start watching for documents to ingest.'
-              : 'Mount a folder under WATCH_ROOT to begin.'}
+              : `Mount a folder under ${system.watch_root ?? 'WATCH_ROOT'} to begin.`}
           </p>
           {system.picker === 'native' && <AddFolderButton onClick={handleAdd} />}
         </Card>

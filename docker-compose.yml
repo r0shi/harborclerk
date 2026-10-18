@@ -133,7 +133,8 @@ services:
       WATCH_ROOT: ${WATCH_ROOT:-/data/watch}
       HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
     volumes:
-      - ./data/watch:/data/watch
+      # Read-only: the watcher only reads, and sources are never modified.
+      - ./data/watch:/data/watch:ro
     depends_on:
       postgres:
         condition: service_healthy
