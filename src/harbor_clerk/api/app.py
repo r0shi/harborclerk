@@ -430,8 +430,9 @@ def _static_file(static_root: Path, full_path: str) -> str | object | None:
     nothing inside the directory has that name (a client-side route), or
     ``_OUTSIDE`` when the path is malformed, resolves (symlinks followed) to
     somewhere outside the directory, or cannot be looked up at all. Every
-    filesystem call is inside the ``try``: Python 3.12's ``is_file`` raises on a
-    name too long for the filesystem where 3.14's returns False.
+    filesystem call is inside the ``try``, defensively: ``os.path.realpath`` and
+    ``os.path.isfile`` swallow most lookup errors themselves, and any that gets
+    through is a 404, never a 500.
     """
     if "\x00" in full_path or "\\" in full_path:
         return _OUTSIDE

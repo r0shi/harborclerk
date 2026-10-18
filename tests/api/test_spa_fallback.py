@@ -126,7 +126,7 @@ async def test_symlink_out_of_static_dir_is_not_served(app, raw_path):
 
 
 async def test_lookup_error_is_a_404_not_a_500(app, monkeypatch):
-    """An OSError from the file lookup (a name too long, on Python 3.12) is a 404."""
+    """An OSError that escapes the file lookup is a 404 (defensive: os.path swallows most)."""
     import os
 
     long_segment = "x" * 300
