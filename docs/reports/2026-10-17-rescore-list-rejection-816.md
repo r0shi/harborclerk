@@ -34,20 +34,23 @@ A label does not reject when:
   excluded");
 - an opening participle describes something else ("Excluded from the cap", "Rejected offers go to third parties",
   "Rejected-offer matching rights", "Excluded from the total liability cap"), unless what it names is the list
-  ("Excluded from the (final) list / consideration / tally", "Excluded from the count", "Excluded due to scope");
+  ("Excluded from the (final) list / consideration / tally", "Excluded from the count (above)", "Excluded due to
+  scope", "Rejected for lack of a covenant");
 - after a contrast in its leading clause, it says the item qualifies with no negation ("Not counted above, but
   qualifies"); a contrast past the leading clause ("Excluded (but the keyword matches)") or one that says only that
   a clause applies or a keyword matches does not count;
 - what follows it, after its own colon or on the next line, is only "none", "nothing", "n/a", "zero" or the like,
-  alone or before punctuation or a conjunction ("## Exclusions: none"; not "None of these contains …", not
-  "Zero-rated:");
+  alone or before punctuation, a dash (a spaced hyphen counts) or a conjunction ("## Excluded: none", "**Excluded:**
+  none - both qualify"; not "None of these contains …", not "Zero-rated:");
 - it is a hedge ("Borderline / related", "Mentions / borderline (… not operative ROFRs …)");
 - it denies a category ("Not a non-disparagement clause").
 
 A lead-in is judged on its whole label: the bold words when a colon or a dash follows them ("**Excluded** — Papa"),
 else the bold words and any words after them up to a colon ("**Excluded** from the cap: …" is the label "Excluded
 from the cap"). A bold span followed by running words with no colon is a sentence, not a label, and a bulleted or
-indented bold line is not a lead-in; either still ends the section above it, as on main. "Exclusions" is not a reject phrase:
+indented bold line is not a lead-in; either still ends the section above it, as on main. A spaced hyphen counts as a
+dash ("**Excluded** - Papa"); an unspaced one does not. "Exclusions" may frame a closing phrase ("Exclusions and
+near-misses") but does not reject on its own. "Exclusions" is not a reject phrase:
 policy and liability exclusions are ordinary content.
 
 ## What the rule does not do

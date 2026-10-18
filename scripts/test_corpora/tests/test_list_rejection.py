@@ -987,3 +987,51 @@ def test_review_8_probes(text, expected):
 )
 def test_review_8_labels(label, rejects):
     assert rejecting_label(label) is rejects
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # review 9: a spaced ASCII hyphen is a dash, after "none" and after a bold label; an unspaced one is not.
+        ("Harbour Lights.\n\n**Excluded:** none - Skylight and Northstar both target Acme.", set(CAMPAIGNS)),
+        ("Harbour Lights.\n\n**Excluded:** none — Skylight and Northstar both target Acme.", set(CAMPAIGNS)),
+        ("Harbour Lights.\n\n**Excluded** - Skylight, Northstar", {HARBOUR}),
+        ("Harbour Lights.\n\n**Excluded** — Skylight, Northstar", {HARBOUR}),
+        ("Harbour Lights.\n\n**Excluded:** zero-rated Skylight", {HARBOUR}),
+        ("Harbour Lights.\n\n**Excluded:** none-such Skylight", {HARBOUR}),
+        ("Harbour Lights.\n\n**Excluded**-Skylight", {HARBOUR, SKYLIGHT}),
+    ],
+)
+def test_review_9_probes(text, expected):
+    assert named(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("label", "rejects"),
+    [
+        # review 9: "non-matching", "exclusions" as framing, "the count above", "for lack of".
+        ("Non-matching", True),
+        ("Non-matches", True),
+        ("Non-match", True),
+        ("Rejected-offer matching rights", False),
+        ("Exclusions and near-misses", True),
+        ("Exclusions", False),
+        ("Excluded from the count above", True),
+        ("Excluded from the total below", True),
+        ("Excluded from the review here", True),
+        ("Excluded from the count of days above", False),
+        ("Excluded for not meeting the criteria", True),
+        ("Rejected for lack of a covenant", True),
+        ("Excluded for failing the test", True),
+        ("Excluded for failure to qualify", True),
+        ("Excluded for the indemnity", False),
+        # review 9: "counts as" and "is a match only by keyword" are not the item qualifying.
+        ("Excluded, though it counts as related", True),
+        ("Not counted, but it is a match only by keyword", True),
+        ("Not counted, but it is a match merely in name", True),
+        ("Rejected, but it counts", False),
+        ("Not counted, but it is a match", False),
+    ],
+)
+def test_review_9_labels(label, rejects):
+    assert rejecting_label(label) is rejects

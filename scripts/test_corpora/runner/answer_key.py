@@ -248,7 +248,7 @@ _LEAD_IN_LEVEL = 7  # below any heading: a heading's section takes its lead-ins 
 # non-disparagement clause" is not read, because "Not a New York law contract" and "Not a post-termination
 # non-disparagement clause" use the same words to deny a subtype the question does not ask about.
 _REJECT_PHRASE = (
-    r"(?:excluded|not counted|not included|not (?:an? )?match(?:es)?|non[- ]?match(?:es)?"
+    r"(?:excluded|not counted|not included|not (?:an? )?match(?:es)?|non[- ]?match(?:es|ing)?"
     r"|near[- ]?miss(?:es)?|false positives?|rejected|ruled out|(?:does|do) not qualify|(?:doesn|don)'t qualify"
     r"|exclue?s?|ecartee?s?|rejetee?s?|non retenue?s?|faux positifs?|ne correspond(?:ent)? pas)(?![-\w])"
 )
@@ -272,7 +272,7 @@ _PREPOSITIONS = frozenset(("from", "by", "under", "in", "for", "on", "of", "towa
 _DESCRIBES = re.compile(
     r"\s+\(?(?:from|by|under|in|for|on|of|toward|towards|du|de|par)\s+(?!(?:the |my |this |la |le |les )?(?:final )?"
     r"(?:list|answer|results?|matches|table|tally|consideration|liste|decompte)\b"
-    r"|(?:the |my )?(?:final )?(?:count|total|scope|review)[\s:.)]*$)"
+    r"|(?:the |my )?(?:final )?(?:count|total|scope|review)(?: above| below| here)?[\s:.)]*$)"
 )
 # A leading clause that ends with a reject phrase rejects only when every word before the phrase is one of these:
 # words for the items themselves, framing, and grammar ("Context on what was excluded", "Reviewed and excluded",
@@ -286,10 +286,11 @@ _FRAME = frozenset((
     "context", "notable", "close", "reviewed", "checked", "examined", "considered", "screened", "read", "what", "was",
     "were", "is", "are", "be", "been", "being", "have", "has", "had", "also", "those", "these", "that", "which", "the",
     "a", "an", "and", "or", "but", "on", "of", "for", "in", "to", "by", "all", "any", "both", "some", "several",
-    "few", "here", "there", "then", "why", "i", "we", "they", "it", "them", "ultimately", "finally", "remaining",
+    "few", "here", "there", "then", "why", "i", "we", "they", "it", "them", "ultimately", "finally", "remaining", "exclusions",
     "contrats", "contrat", "documents", "factures", "autres", "candidats", "examines", "verifies", "et", "ou", "les",
     "des", "ceux", "qui", "ont", "ete", "sont", "le", "la", "l'", "un", "une",
 ))  # fmt: skip
+_FOR_REASON = re.compile(r"\s+for\s+(?:not|lack|failing|failure)\b")
 _CLAUSE_END = re.compile(r"[(,;:—–]")
 # A label whose leading clause goes on, after a contrast, to say the items qualify does not reject them: "Not included
 # above but also qualifies", "Not counted above, but qualifies" (the comma before the contrast word does not end the
@@ -299,7 +300,9 @@ _CLAUSE_END = re.compile(r"[(,;:—–]")
 # qualifying.
 _AFFIRM_END = re.compile(r"[(;:—–]|,(?!\s*(?:but|however|though|although|yet|mais)\b)")
 _CONTRAST = re.compile(r"\b(?:but|however|though|although|yet|mais)\b")
-_QUALIFIES = re.compile(r"\b(?:qualif(?:y|ies)|counts|is a match|also included|belongs)\b")
+_QUALIFIES = re.compile(
+    r"\b(?:qualif(?:y|ies)|counts(?!\s+as\b)|is a match(?!\s+(?:only|merely|just)\b)|also included|belongs)\b"
+)
 _NEGATED = re.compile(r"\b(?:not|no|none|nothing|never|neither|nor|pas)\b|n't\b")
 
 
@@ -326,6 +329,8 @@ def rejecting_label(label: str) -> bool:
     if opened := _OPENS.match(low):
         if not _PARTICIPLE.search(opened.group()):
             return True
+        if _FOR_REASON.match(low, opened.end()):
+            return True  # "Excluded for not meeting the criteria", "Rejected for lack of a covenant"
         if _DESCRIBES.match(low, opened.end()):
             return False
         following = re.match(r"\s+([a-z]+(?:-[a-z]+)*)", low[opened.end() :])
@@ -339,9 +344,9 @@ def rejecting_label(label: str) -> bool:
 # What follows a rejecting label to say it rejects nothing: the word alone, or followed at once by punctuation or a
 # conjunction ("Exclusions: none; Staar and Papa John's both qualify", "False positives: none, both are real"). Never
 # "None of these contains a genuine covenant:", which is a rejection, never a bare "No <noun>", and never a compound
-# ("Zero-rated:", "Nil-rated contracts").
+# ("Zero-rated:", "Nil-rated contracts"); a hyphen counts as a dash only when spaced ("none - both qualify").
 _EMPTY = re.compile(
-    r"[\s*_:—–-]*(?:none|nothing|n/a|nil|zero|aucune?|rien|neant)(?=[\s*_]*(?:$|[;.,:!—–]|(?:and|but|or|so|et|mais)\b))",
+    r"[\s*_:—–-]*(?:none|nothing|n/a|nil|zero|aucune?|rien|neant)(?=[\s*_]*(?:$|[;.,:!—–]|(?<=\s)-(?=\s)|(?:and|but|or|so|et|mais)\b))",
     re.IGNORECASE,
 )
 
@@ -358,8 +363,8 @@ def _lead_in(line: str) -> tuple[str, str] | None:
     label, rest = bold.group(1), bold.group(2)
     if label.rstrip().endswith(":") or not rest.strip():
         return label, rest
-    if rest.lstrip()[:1] in (":", "—", "–"):  # "**Excluded** — Papa", "**Not counted**: X"
-        return label, rest.lstrip()[1:]
+    if dash := re.match(r"\s*[:—–]|\s+-\s", rest):  # "**Excluded** — Papa", "**Excluded** - Papa", "**Not counted**: X"
+        return label, rest[dash.end() :]
     if ":" in rest:
         before, after = rest.split(":", 1)
         return label + before, after
