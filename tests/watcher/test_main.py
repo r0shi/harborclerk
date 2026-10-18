@@ -490,9 +490,14 @@ def test_discovery_survives_a_failed_observer_sync(monkeypatch):
     monkeypatch.setattr(watcher_main, "DISCOVERY_INTERVAL_SECS", 0.01)
 
     class _Session:
-        def commit(self): ...
-        def rollback(self): ...
-        def close(self): ...
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
 
     calls = []
     second_pass = threading.Event()
@@ -637,9 +642,14 @@ def test_discovery_logs_an_unusable_watch_root_at_startup(monkeypatch, caplog):
     monkeypatch.setattr(watcher_main, "scan_watch_root", lambda sess, root: None)
 
     class _Session:
-        def commit(self): ...
-        def rollback(self): ...
-        def close(self): ...
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
 
     daemon = WatcherDaemon(_Session)
     monkeypatch.setattr(daemon, "_sync_observers", lambda: None)
