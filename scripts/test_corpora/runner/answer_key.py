@@ -19,25 +19,28 @@ A list answer's labels are read before its items are counted (#814, #816), and n
 or bold lead-in (`**...**` opening a line) that rejects takes its section out, to the next heading of its level or
 higher (a lead-in's to the next lead-in or heading); the answer's first section is never dropped
 (`without_excluded_sections`). A line or bullet that opens with a rejecting label naming no item ("- **Excluded
-near-misses:** ... `0050` ...", "Not counted: X") loses the rest of its line. A label rejects only when it opens
-with a reject phrase ("excluded", "exclusions", "not counted", "not included", "not a match", "non-match",
-"near-miss", "false positive", "rejected", "ruled out", "does not qualify", and the French) or with a denial of the
-category ("Not a non-disparagement clause"), or when its leading clause ends with one ("Reviewed and excluded",
-"Context on what was excluded"); `rejecting_label` has the exceptions (a negation, a condition, a denied degree or
-form, "excluded from the cap").
+near-misses:** ... `0050` ...", "Not counted: X") loses the rest of its line. A label rejects when it opens with a
+reject phrase ("excluded", "exclusions", "not counted", "not included", "not a match", "non-match", "near-miss",
+"false positive", "rejected", "ruled out", "does not qualify", and the French), or with a denial of the question's
+own category ("Not a non-disparagement clause" against a question about non-disparagement clauses, read only when
+the scoring site passes the question), or when its leading clause, the words before the first parenthesis, comma,
+colon, semicolon or dash, ends with a reject phrase ("Reviewed and excluded", "Context on what was excluded"). It
+does not when the leading clause opens with a negation ("No contracts were excluded"), when a closing phrase is
+attached to something else by a condition or attachment word ("once the offer is rejected", "with employees
+excluded"), when the words after the label say it rejects nothing ("Exclusions: none; ..."), or in the narrower
+cases `rejecting_label` lists.
 
 Why so little: a false drop silently lowers recall on a right answer, while a false keep lowers only precision,
-which the reports already read as a floor for a narrating model. Two reviewed versions of #816 read negation in
-headings and verdicts in prose; each review found true matches dropped on plausible answers ("Irrevocable licenses
-(may not be revoked)", "if the offer is rejected, STAAR may sell", "is not a Delaware corporation"), and across the
-154 stored list answers the prose rule had made two drops. So a reject word later in a label does nothing, prose is
-not read, and hedges count ("Borderline / related": the decision #816 made, since #814 read "borderline" as a reject
-and dropped three CUAD positives from bench-20261015-2259-cuad-fable-rerun's cuad-key-16). The costs, accepted and
-pinned in the tests: an item rejected only in prose ("so I'll exclude it") or under a label whose reject word comes
-late ("One additional keyword match, not counted above") is counted; a hedged section the answer itself does not
-count is counted (the rerun's "Borderline / special case"); a leading clause that ends in a reject participle about
-something else ("Clauses with consequential damages excluded") rejects; and a lead-in followed by `###` items
-excludes nothing but itself, because a heading ends a lead-in's section.
+which the reports already read as a floor for a narrating model. Earlier versions of #816 that read negation in
+headings and verdicts in prose each dropped true matches on plausible answers ("Irrevocable licenses (may not be
+revoked)", "if the offer is rejected, STAAR may sell", "is not a Delaware corporation"), and across the 154 stored
+list answers the prose rule had made two drops. So prose is not read, a reject word after a label's leading clause
+does nothing, a denial counts only when it names the question's category, and hedges count ("Borderline / related":
+#814 read "borderline" as a reject and dropped three CUAD positives from bench-20261015-2259-cuad-fable-rerun's
+cuad-key-16). The costs, accepted and pinned in the tests: an item rejected only in prose ("so I'll exclude it") or
+under a label whose reject word comes late ("One additional keyword match, not counted above") is counted; a hedged
+section the answer itself does not count is counted (the rerun's "Borderline / special case"); and a lead-in
+followed by `###` items excludes nothing but itself, because a heading ends a lead-in's section.
 
 The fact matcher accepts negation ("New York law, not Delaware" finds "Delaware"); a key is one phrase, so this has
 not mattered yet, and is stated so that a score of 1.0 is read as "the phrase is present", nothing more. The one
@@ -232,28 +235,53 @@ _BOLD_LEAD = re.compile(r"^[ \t]*\*\*([^*\r\n]+?)\*\*")
 _LEAD_IN_LEVEL = 7  # below any heading: a heading's section takes its lead-ins with it, not the other way round
 
 # What a label says about the items it heads, read in its own words, lower-cased and accents folded (`_label_view`).
-# A reject phrase is one of these, in English or French:
+# A reject phrase is one of these, in English or French ("exclusions" plural: "Exclusion clauses" is a clause type),
+# never the first half of a compound ("Rejected-offer matching rights"):
 _REJECT_PHRASE = (
-    r"(?:excluded|exclusions?|not counted|not included|not (?:an? )?match(?:es)?|non[- ]?match(?:es)?"
+    r"(?:excluded|exclusions|not counted|not included|not (?:an? )?match(?:es)?|non[- ]?match(?:es)?"
     r"|near[- ]?miss(?:es)?|false positives?|rejected|ruled out|(?:does|do) not qualify|(?:doesn|don)'t qualify"
-    r"|exclue?s?|ecartee?s?|rejetee?s?|non retenue?s?|faux positifs?|ne correspond(?:ent)? pas)"
+    r"|exclue?s?|ecartee?s?|rejetee?s?|non retenue?s?|faux positifs?|ne correspond(?:ent)? pas)(?![-\w])"
 )
-# ...or a denial of the category ("Not a non-disparagement clause"), unless what is denied is a degree or a form
-# ("Not a classic covenant") or the denial goes on ("Not a party but bound").
+# ...or a denial of the category ("Not a non-disparagement clause"), when the question is known and the denied
+# phrase's last content word is one of the question's (`_denies_the_question`), unless what is denied is a degree or
+# a form ("Not a classic covenant") or the label goes on to say what it is instead ("Not a party but bound", "Not a
+# ROFR (a right of first negotiation)", "Not a Delaware entity (Delaware law still governs)").
 _QUALIFIER = (
     r"(?:classic(?:al)?|typical|standard|true|genuine|pure|strict|formal|traditional|conventional|general|stand"
     r"|standalone|full|complete|exhaustive|separate|express|explicit|mutual|reciprocal|one|two|bilateral|unilateral"
     r"|perpetual|irrevocable|exclusive|broad|narrow|written|specific|single|direct"
     r"|classique|typique|explicite|expresse|formelle|exhaustive|mutuelle|reciproque|exclusive)\b"
 )
-_DENIAL = rf"(?:not an?|(?:ce )?n'est pas une?|pas une?)\s+(?!{_QUALIFIER})[a-z0-9]"
-_OPENS = re.compile(rf"(?:{_REJECT_PHRASE}\b|{_DENIAL})")
+_DENIAL = rf"(?:not an?|(?:ce )?n'est pas une?|pas une?)\s+(?!{_QUALIFIER})(?=[a-z0-9])"
+_OPENS = re.compile(rf"(?:{_REJECT_PHRASE}|{_DENIAL})")
 _CLOSES = re.compile(rf"\b{_REJECT_PHRASE}$")
-_GOES_ON = re.compile(r"\b(?:but|though|although|yet|however|mais|pourtant)\b")
-# "Excluded from the cap: ..." describes the clause; "Excluded from the list: ..." is a verdict.
+_GOES_ON = re.compile(
+    r"\b(?:but|though|although|yet|however|still|rather|instead|mais|pourtant|plutot)\b|[(—–:;]\s*(?:it is |c'est )?(?:an?|une?)\s"
+)
+# Words that say nothing about which category is denied, and the question's grammar.
+_GENERIC = frozenset((
+    "a", "an", "the", "of", "or", "and", "to", "in", "on", "for", "by", "with", "is", "are", "be", "that",
+    "which", "who", "what", "any", "every", "one", "you", "can", "find", "list", "all", "each", "contract",
+    "contracts", "agreement", "agreements", "clause", "clauses", "provision", "provisions", "covenant",
+    "covenants", "right", "rights", "term", "terms", "obligation", "obligations", "requirement", "requirements",
+    "grant", "grants", "restriction", "restrictions", "party", "parties", "contain", "contains", "containing",
+    "quels", "quelles", "les", "des", "une", "un", "de", "la", "le", "du", "et", "ou", "contrats", "contrat",
+    "clause", "clauses",
+))  # fmt: skip
+# An opening participle used before a noun ("Rejected offers go to third parties", "Excluded Products carve-out")
+# describes the clause; before one of these, or before nothing, it is a verdict ("Excluded near-misses").
+_ITEM_NOUN = frozenset((
+    "candidates", "contracts", "documents", "items", "matches", "hits", "invoices", "campaigns", "briefs",
+    "agreements", "results", "entries", "ones", "near-misses", "near-miss", "after", "because", "as", "since",
+    "here", "above", "below", "entirely", "outright", "also", "too", "contrats", "documents", "factures",
+    "candidats", "campagnes",
+))  # fmt: skip
+_PARTICIPLE = re.compile(r"(?:excluded|rejected|included|counted|exclue?s?|ecartee?s?|rejetee?s?)$")
+_PREPOSITIONS = frozenset(("from", "by", "under", "in", "for", "on", "of", "du", "de", "par"))
+# "Excluded from the cap: ..." describes the clause; "Excluded from the list / consideration: ..." is a verdict.
 _DESCRIBES = re.compile(
-    r"\s+(?:from|by|under|in|for|on|of|du|de|par)\s+"
-    r"(?!(?:the |my |this |la |le |les )?(?:list|count|answer|results?|matches|table|tally|total|liste|decompte)\b)"
+    r"\s+(?:from|by|under|in|for|on|of|du|de|par)\s+(?!(?:the |my |this |la |le |les )?"
+    r"(?:list|count|answer|results?|matches|table|tally|total|consideration|scope|review|liste|decompte)\b)"
 )
 # A leading clause that opens with a negation and holds a reject word does not reject: "No contracts were excluded",
 # "None of these were excluded", "Nothing excluded", "No false positives", "Not a near-miss".
@@ -262,8 +290,11 @@ _REJECT_WORD = re.compile(
     r"\b(?:excluded|exclusions?|rejected|ruled out|near[- ]?miss(?:es)?|false positives?|non[- ]?match(?:es)?"
     r"|exclue?s?|ecartee?s?|rejetee?s?|faux positifs?)\b"
 )
-# A leading clause that opens as a condition is not a verdict: "If the first offer is rejected: ...".
-_CONDITION = re.compile(r"(?:if|when|whenever|once|unless|after|where|si|lorsque|quand|une fois)\b")
+# A leading clause that ends with a reject phrase rejects only when nothing in it attaches the phrase to something
+# else: a condition ("once the first offer is rejected") or an attachment ("with employees excluded").
+_ATTACHED = re.compile(
+    r"\b(?:once|after|when|whenever|if|unless|until|provided|with|without|where|except|si|lorsque|quand|avec|sans)\b"
+)
 _CLAUSE_END = re.compile(r"[(,;:—–]| - ")
 
 
@@ -275,40 +306,72 @@ def _label_view(label: str) -> str:
     return re.sub(r"^[a-z][.)]\s+", "", low)
 
 
-def rejecting_label(label: str) -> bool:
+def _content_words(text: str) -> list[str]:
+    """`text`'s words, folded, without `_GENERIC` and with a plural "s" dropped, so "campaigns" meets "campaign"."""
+    words = re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)*", fold(text).lower().replace("’", "'"))
+    return [w[:-1] if w.endswith("s") and len(w) > 3 else w for w in words if w not in _GENERIC]
+
+
+def _denies_the_question(denied: str, question: str | None) -> bool:
+    """Whether a denied phrase ("non-disparagement clause") names the question's category: its last content word is
+    one of the question's. Without the question no denial is read."""
+    words = _content_words(denied)
+    return bool(question and words and words[-1] in set(_content_words(question)))
+
+
+def rejecting_label(label: str, question: str | None = None) -> bool:
     """Whether a heading, lead-in or line label says the items it heads are not in the answer's list: the label opens
-    with a reject phrase or a denial of the category (`_OPENS`), or its leading clause, the words before the first
-    parenthesis, comma, colon, semicolon or dash, ends with a reject phrase (`_CLOSES`: "Reviewed and excluded",
-    "Context on what was excluded"). A reject phrase anywhere else does nothing ("Insurance required (limits not
-    listed)", "ROFR (seller may sell once the offer is rejected)"); nor does a leading clause that opens with a
-    negation ("No contracts were excluded") or a condition ("If the offer is rejected")."""
+    with a reject phrase, or with a denial of the question's category (`_OPENS`), or its leading clause, the words
+    before the first parenthesis, comma, colon, semicolon or dash, ends with a reject phrase (`_CLOSES`: "Reviewed and
+    excluded", "Context on what was excluded"). A reject phrase anywhere else does nothing ("Insurance required (limits
+    not listed)"), and neither does a leading clause that opens with a negation ("No contracts were excluded") or, for
+    the closing phrase, holds a condition or attachment ("once the offer is rejected", "with employees excluded")."""
     low = _label_view(label)
     clause = re.sub(r"[^a-z0-9']+$", "", _CLAUSE_END.split(low, maxsplit=1)[0])
-    if (_NEGATION.match(clause) and _REJECT_WORD.search(clause)) or _CONDITION.match(clause):
+    if _NEGATION.match(clause) and _REJECT_WORD.search(clause):
         return False
     if opened := _OPENS.match(low):
-        if opened.group().startswith(("not a", "n'est", "ce n'est", "pas un")):
-            return not _GOES_ON.search(low)
-        return not _DESCRIBES.match(low, opened.end())
-    return bool(_CLOSES.search(clause))
+        if not re.fullmatch(_REJECT_PHRASE, opened.group()):  # a denial: the match stops where the denied phrase starts
+            rest = low[opened.end() :]
+            denied = _CLAUSE_END.split(rest, maxsplit=1)[0]
+            return _denies_the_question(denied, question) and not _GOES_ON.search(rest)
+        if not _PARTICIPLE.search(opened.group()):
+            return True
+        if _DESCRIBES.match(low, opened.end()):
+            return False
+        following = re.match(r"\s+([a-z]+(?:-[a-z]+)*)", low[opened.end() :])
+        return not following or following.group(1) in _ITEM_NOUN or following.group(1) in _PREPOSITIONS
+    return bool(_CLOSES.search(clause)) and not _ATTACHED.search(clause)
 
 
-def without_excluded_sections(text: str) -> str:
+# What follows a rejecting label to say it rejects nothing: "Exclusions: none; Staar and Papa John's both qualify".
+_EMPTY = re.compile(r"[\s*_:—–-]*(?:none|nothing|n/?a|no|zero|nil|aucune?|rien|neant)\b", re.IGNORECASE)
+
+
+def without_excluded_sections(text: str, question: str | None = None) -> str:
     """`text` without the sections its headings or bold lead-ins mark as rejected (`rejecting_label`): the marked
     line and everything to the next heading of the same or a higher level (for a heading) or to the next lead-in or
     heading (for a lead-in). The first section, with or without a heading, is never dropped: an answer that opens
-    with its rejects is not an answer this rule can read, and it is left whole rather than emptied."""
+    with its rejects is not an answer this rule can read, and it is left whole rather than emptied. Nor is a section
+    whose first words after its label say it rejects nothing ("**Excluded:** none — both hits qualify")."""
+    lines = text.splitlines()
     kept: list[str] = []
     dropping: int | None = None  # the level of the section being dropped
     first = True  # nothing kept yet: the section about to open is the answer's first
-    for line in text.splitlines():
+    for n, line in enumerate(lines):
         heading, lead = _HEADING.match(line), _BOLD_LEAD.match(line)
         if heading or lead:
             level = len(heading.group(1)) if heading else _LEAD_IN_LEVEL
             label = heading.group(2) if heading else lead.group(1)
             if dropping is not None and level <= dropping:
                 dropping = None
-            if dropping is None and not first and rejecting_label(label):
+            after = line[lead.end() :] if lead else next((x for x in lines[n + 1 :] if x.strip()), "")
+            if (
+                dropping is None
+                and not first
+                and rejecting_label(label, question)
+                and not (_EMPTY.match(after) and after.strip(" \t*_:—–-"))
+            ):
                 dropping = level
         if line.strip():
             first = False
@@ -348,6 +411,7 @@ def named_contracts(
     universe: list[str],
     aliases: dict[str, list[str]] | None = None,
     doc_ids: dict[str, str] | None = None,
+    question: str | None = None,
 ) -> set[str]:
     """Which items of `universe` an answer names, in its text: an item is named if its whole title appears, or if
     its filer's name appears and that filer has exactly one contract in the universe and a name of eight
@@ -357,8 +421,10 @@ def named_contracts(
     stem and aliases it by its invoice number and its total, where unique in the corpus; `corpora/synthetic_key.py`
     says which. The answer's labels are read first: a section whose heading or lead-in rejects is not read
     (`without_excluded_sections`), and neither is the rest of a line whose label rejects and names no item
-    (`_LINE_LABEL`). Prose is not read for rejection at all. It misses an item referred to only by paraphrase ("the
-    Papa John's deal").
+    (`_LINE_LABEL`), unless what follows the label says it rejects nothing ("Exclusions: none; ..."). `question`, the
+    question's text, lets a label that denies the question's category reject ("Not a non-disparagement clause");
+    without it no denial is read. Prose is not read for rejection at all. It misses an item referred to only by
+    paraphrase ("the Papa John's deal").
 
     `doc_ids` is document id -> title, built by the scoring site from the citations the answer's tools returned
     (`titles_by_doc_id` for a phase-4 response; a baseline's `cited_doc_ids` zipped with its `cited_doc_titles`).
@@ -373,14 +439,15 @@ def named_contracts(
     saying "none" after one search would score like one that listed the hits (review of #697). The map only
     resolves ids the answer itself wrote out."""
     kept = []
-    for line in without_excluded_sections(text).splitlines():
+    for line in without_excluded_sections(text, question).splitlines():
         label = _LINE_LABEL.match(line)
         words = label and (label.group("bold") or label.group("under") or label.group("plain"))
         if (
             words
             and len(words.split()) <= _LABEL_MAX_WORDS
-            and rejecting_label(words)
+            and rejecting_label(words, question)
             and not _found(words, universe, aliases, doc_ids)
+            and not _EMPTY.match(line[label.end() :])
         ):
             line = line[: label.end()]
         kept.append(line)
@@ -653,7 +720,7 @@ def refuse_foreign_keys(keys_by_corpus: dict[str, dict], corpora: Iterable[str],
             check_generation(header["generation"], header.get("corpus", corpus))
 
 
-def score(entry: dict, answer: str, doc_ids: dict[str, str] | None = None) -> dict:
+def score(entry: dict, answer: str, doc_ids: dict[str, str] | None = None, question: str | None = None) -> dict:
     """{"score": 0..1, ...detail}. An empty answer scores 0, and so does a fact, date, count or amount answer whose
     opening sentence says the thing is absent, before its text is searched (#713). "Absent" is any of quality.py's
     no-findings phrasings: the ones the baseline check reads anywhere ("no information about ...") and the ones
@@ -689,7 +756,7 @@ def score(entry: dict, answer: str, doc_ids: dict[str, str] | None = None) -> di
         return {"score": 1.0 if _has_amount(answer, entry["amount"]) else 0.0}
     if kind == "list":
         want = set(entry["positives"])
-        got = named_contracts(answer, entry["universe"], entry.get("aliases"), doc_ids)
+        got = named_contracts(answer, entry["universe"], entry.get("aliases"), doc_ids, question)
         right = len(want & got)
         precision = right / len(got) if got else 0.0
         recall = right / len(want) if want else 0.0

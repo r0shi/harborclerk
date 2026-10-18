@@ -521,6 +521,27 @@ def test_a_cloud_subject_baseline_that_names_a_contract_by_its_doc_id_is_scored_
     assert "| cuad | `claude-fable-5-1` | 4 | 9 | 1 | 0.50 | 0.50 | 1.00 | 0.00 | 1.8500 |" in _render(run)
 
 
+def test_a_cloud_subject_baseline_is_scored_with_its_question_so_a_heading_can_deny_the_category(tmp_path):
+    """#816: "Not a non-disparagement clause" rejects its section only against the question it denies, which the
+    baseline records; the report passes it to the scorer."""
+    run = _subject_run(tmp_path)
+    record = {
+        "question_id": "cuad-key-4",
+        "question": "Which contracts contain a widget clause?",
+        "answer": "Found one.\n\n## Matches\n\n- A_x\n\n## Not a widget clause\n\n- B_y\n",
+        "model": "claude-fable-5-1",
+        "stopped_by": "end_turn",
+        "model_call_count": 2,
+    }
+    path = run / "baselines" / "cuad" / "cuad-key-4.json"
+    path.write_text(json.dumps(record))
+    assert "| cuad | `claude-fable-5-1` | 4 | 9 | 1 | 0.75 | 0.50 | 1.00 | 1.00 | 1.8500 |" in _render(run)
+    path.write_text(json.dumps({k: v for k, v in record.items() if k != "question"}))
+    assert "| cuad | `claude-fable-5-1` | 4 | 9 | 1 | 0.67 | 0.50 | 1.00 | 0.67 | 1.8500 |" in _render(run), (
+        "without the question the denial is not read, and B_y is named"
+    )
+
+
 def test_a_cloud_subject_run_from_before_the_call_count_takes_its_calls_from_the_ledger(tmp_path):
     """The ledger counts the whole run's baseline calls; they are this row's only when every baseline is keyed."""
     run = _subject_run(tmp_path, model="claude-sonnet-4-6", calls=False)
@@ -560,8 +581,8 @@ def test_a_kind_the_key_declares_beyond_the_three_gets_a_column_and_one_the_scor
         )
     original = answer_key.score
 
-    def score(entry, answer, doc_ids=None):
-        return {"score": 1.0} if entry["kind"] == "number" else original(entry, answer, doc_ids)
+    def score(entry, answer, doc_ids=None, question=None):
+        return {"score": 1.0} if entry["kind"] == "number" else original(entry, answer, doc_ids, question)
 
     monkeypatch.setattr(report.answer_key, "score", score)
     text = _render(run)

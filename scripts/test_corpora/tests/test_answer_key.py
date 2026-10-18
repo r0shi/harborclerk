@@ -377,6 +377,11 @@ def test_the_metrics_cell_is_the_keys_score_or_empty_without_a_key():
     # An outage is not a wrong answer: the judge columns of that row are blank, and so is this one.
     assert key_score_cell(fact, None, Status.ERROR) == "" and key_score_cell(fact, {"answer": "Texas"}, None) == ""
     assert key_score_cell(None, result, Status.DONE) == "" and key_score_cell({}, result, Status.DONE) == ""
+    # The question lets a heading deny its category (#816); without it the denial is not read.
+    denied = {"answer": f"One.\n\n## Matches\n\n- {STAAR}\n\n## Not a distributor clause\n\n- {EDIETS}\n"}
+    listed = {"kind": "list", "positives": [STAAR], "universe": UNIVERSE}
+    assert key_score_cell(listed, denied, Status.DONE, "Which contracts contain a distributor clause?") == "1.000"
+    assert key_score_cell(listed, denied, Status.DONE) == "0.667"
 
 
 def test_the_metrics_cell_resolves_a_document_id_the_answer_wrote_through_the_responses_citations():

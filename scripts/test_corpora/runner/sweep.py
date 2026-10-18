@@ -623,18 +623,21 @@ def load_questions(questions_dir: Path | None) -> tuple[dict[str, dict], dict[st
     return questions, keys
 
 
-def key_score_cell(key_entry: dict | None, result: dict | None, status: Status | None) -> str:
+def key_score_cell(
+    key_entry: dict | None, result: dict | None, status: Status | None, question: str | None = None
+) -> str:
     """The answer_key_score cell for a unit: the key's score of the answer text, to three places. "" when the
     question has no key, and "" when the unit did not finish (an outage is not a wrong answer: the judge columns
     of that row are blank too, and a reader of the CSV must not count it as 0). The result's `citations` are read
     only as the dictionary that resolves a document id the answer wrote out to its title (`answer_key.score`);
-    a citation the answer does not mention counts for nothing."""
+    a citation the answer does not mention counts for nothing. `question`, the text asked, lets a list answer's
+    label deny the question's category (`answer_key.named_contracts`)."""
     if not key_entry or status not in (Status.DONE, Status.DEGRADED):
         return ""
     result = result or {}
     try:
         doc_ids = answer_key.titles_by_doc_id(result.get("citations"))
-        return f"{answer_key.score(key_entry, result.get('answer') or '', doc_ids)['score']:.3f}"
+        return f"{answer_key.score(key_entry, result.get('answer') or '', doc_ids, question)['score']:.3f}"
     except answer_key.CorpusMismatch as exc:  # refused at the start of a run; here only if the corpus changed since
         log.error("answer key not scored: %s", exc)
         return ""
@@ -2230,7 +2233,7 @@ def main(argv: list[str] | None = None) -> int:
                 answer_key_score = ""
                 if phase in (4, 5):
                     answer_key_score = key_score_cell(
-                        answer_keys.get(u.corpus, {}).get(u.question_id), out.get("result"), final_status
+                        answer_keys.get(u.corpus, {}).get(u.question_id), out.get("result"), final_status, text
                     )
                 judge_verdict = ""
                 judge_completeness = 0
