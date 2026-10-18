@@ -17,7 +17,15 @@ from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedF
 from harbor_clerk.storage import get_storage
 
 
-async def _ocr_watched_scan(db_session, tmp_path: Path, monkeypatch, *, delete_file: bool) -> tuple[list[bytes], str]:
+async def _ocr_watched_scan(
+    db_session,
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    delete_file: bool,
+    stored_name: str = "scan.png",
+    mime_type: str = "image/png",
+) -> tuple[list[bytes], str]:
     """OCR a watched image whose file holds b"edited on disk" and whose stored
     original holds b"stale stored". Returns (bytes OCR saw, page text)."""
     from harbor_clerk.worker.stages import ocr
@@ -32,7 +40,7 @@ async def _ocr_watched_scan(db_session, tmp_path: Path, monkeypatch, *, delete_f
 
     src = tmp_path / "scan.png"
     src.write_bytes(b"edited on disk")
-    key = f"originals/docs/{uuid.uuid4()}/scan.png"
+    key = f"originals/docs/{uuid.uuid4()}/{stored_name}"
     get_storage().put_object("originals", key, io.BytesIO(b"stale stored"), len(b"stale stored"), "image/png")
 
     doc = Document(
@@ -41,7 +49,7 @@ async def _ocr_watched_scan(db_session, tmp_path: Path, monkeypatch, *, delete_f
         status="active",
         sha256=hashlib.sha256(b"edited on disk").digest(),
         pipeline_status=PipelineStatus.queued,
-        mime_type="image/png",
+        mime_type=mime_type,
         source_path=str(src),
         original_bucket="originals",
         original_object_key=key,
@@ -95,3 +103,28 @@ async def test_ocr_reads_storage_when_the_watched_file_is_gone(db_session, tmp_p
     seen, text = await _ocr_watched_scan(db_session, tmp_path, monkeypatch, delete_file=True)
     assert seen == [b"stale stored"]
     assert text == "stale stored"
+
+
+@pytest.mark.asyncio
+async def test_ocr_does_not_treat_a_watched_file_as_pdf_because_of_a_stale_original_name(
+    db_session, tmp_path: Path, monkeypatch
+):
+    """The PDF check reads the file's name (scan.png), not the stale stored original's (scan.pdf)."""
+    from harbor_clerk.worker.stages import ocr
+
+    pdf_calls: list[bytes] = []
+
+    def fake_pdf_to_images(data: bytes):
+        pdf_calls.append(data)
+        return []
+
+    monkeypatch.setattr(ocr, "_pdf_to_images", fake_pdf_to_images)
+    await _ocr_watched_scan(
+        db_session,
+        tmp_path,
+        monkeypatch,
+        delete_file=False,
+        stored_name="scan.pdf",
+        mime_type="application/octet-stream",
+    )
+    assert pdf_calls == []
