@@ -34,11 +34,15 @@ Tika. Don't invent a fourth.
 ## Storage
 
 All storage access goes through the `StorageBackend` ABC — never touch MinIO or
-the filesystem directly. `STORAGE_BACKEND` selects the implementation.
+the filesystem directly. `STORAGE_BACKEND` selects the implementation. Legacy
+uploads store originals at `originals/<doc_id>/<original_filename>` in the
+`originals` bucket; watched-folder and IMAP documents do **not** use it.
 
-Watched-folder documents are read in place from `source_path` and are never
-written to. IMAP messages and attachments are the one case where content is
-fetched and stored, because there is no file on disk to reference.
+Watched-folder documents are read in place from `source_path` and never written to; IMAP is the one case where content is fetched and stored (no file on disk).
+Read a document's bytes only through `watched_source` (`read_document_bytes`, `watched_state*`): a document with any `WatchedFile` is watched, read in place only from an active one
+whose computed path its `source_path` is exactly. Never read an unverified `source_path` or a watched document's stored original; refuse `new_version` of a watched document (409).
+Under Compose every reader of `source_path` (`app`, and the workers whose `QUEUE_STAGES` claim extract or OCR) mounts the watch directory read-only at the fixed `/data/watch`,
+the watcher too; `WATCH_ROOT` must be that directory or below it (#869, #871). A new byte-reading stage goes in `BYTE_READING_STAGES` (`tests/test_docker_compose_watch_mount.py`).
 
 ## Retrieval
 
@@ -87,7 +91,7 @@ alone. A new model states its `checkpoint_bytes`, in the registry and in Swift. 
 (`Settings.swift`: filenames, slots, windows, `kvBytesPerToken`,
 `kvFixedBytes`, `MemoryBudget`) is held to the registry by a test; a new model
 needs all of them. `HC_GGUF_LIVE=1` checks headers from the Hub for models not
-downloaded.
+downloaded. **Docker Compose follows `LLM_MODEL_FILE`** (#654, gated on `config.is_compose()`): switching away from the served model, or deleting it, is refused; prompts are budgeted to `LLM_CONTEXT_TOKENS`; a summary waits at most 90 s per document. Details: [docs/architecture.md](../../docs/architecture.md#local-model-under-docker-compose).
 
 ## API keys over REST
 
@@ -153,7 +157,7 @@ stream carries, once, after it. A new estimate-derived figure takes the
 prediction or the weights; a new streamed call asks for usage, records it and
 tolerates the empty-choices chunk (`research.py`'s streaming reader does not
 ask for usage and still indexes `choices[0]`: asking without fixing the reader
-crashes it).
+crashes it). Orphan tool results 500 on gpt-oss: `_whole_tool_exchanges` (#839).
 
 ## Paths over MCP
 
@@ -191,10 +195,3 @@ whose extract stage failed on a path-quoting OSError.
   endpoint blocks the event loop — wrap it in `run_in_executor`.
 - SQLAlchemy enum members must be **lowercase** to match Postgres values: both
   `postgresql.ENUM` and `sa.Enum` send `.name`, not `.value`.
-
-## Legacy upload storage
-
-The legacy upload path stores originals in the `originals` bucket under
-`originals/<doc_id>/<original_filename>`. Watched-folder and IMAP documents do
-**not** use it — watched files are read in place from `source_path`, and mail
-content is stored via the normal document path.

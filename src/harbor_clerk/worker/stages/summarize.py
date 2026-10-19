@@ -3,12 +3,14 @@
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
 
 from harbor_clerk.config import refresh_llm_settings
 from harbor_clerk.db_sync import get_sync_session
+from harbor_clerk.llm.health import document_wait_budget
 from harbor_clerk.llm.summarize import (
     AppleIntelligenceDocumentError,
     AppleIntelligenceUnavailableError,
@@ -81,6 +83,50 @@ def _wait_for_idle_llm(budget_sec: int = _YIELD_BUDGET_SEC) -> None:
         elapsed += _YIELD_POLL_SEC
 
 
+def _summary_and_type(
+    doc_id: uuid.UUID,
+    chunks: list[str],
+    mime_type: str,
+    *,
+    progress_callback: Callable[[int, int], None] | None = None,
+    yield_check: Callable[[], None] | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """The document's summary, the model that made it, and its type, computed before the race check.
+
+    Both calls run under one wait budget (#654): under Docker Compose a load or a restart of llama-server is
+    waited out at most DOCUMENT_WAIT_SECONDS for the summary and the type together, not that much each.
+
+    ``yield_check`` (default: wait for an idle LLM, looked up at call time) runs before every map-reduce LLM
+    sub-call. When it raises _SummarizeRunStopped (the run
+    was cancelled or superseded), nothing more is computed: (None, None, None), with no classification call."""
+    with document_wait_budget():
+        try:
+            summary, model_used = generate_summary(
+                chunks,
+                yield_check=yield_check or _wait_for_idle_llm,
+                progress_callback=progress_callback,
+            )
+        except _SummarizeRunStopped:
+            logger.info("summarize: run for %s cancelled or superseded; stopping", doc_id)
+            return None, None, None
+        except AppleIntelligenceUnavailableError:
+            logger.warning("Summary generation blocked for %s because Apple Intelligence is unavailable", doc_id)
+            raise
+        except AppleIntelligenceDocumentError:
+            logger.warning("Summary generation rejected for %s by Apple Intelligence", doc_id)
+            raise
+        except Exception:
+            logger.warning("Summary generation failed for %s", doc_id, exc_info=True)
+            summary, model_used = None, None
+
+        doc_type = None
+        try:
+            doc_type = classify_doc_type(chunks, mime_type=mime_type)
+        except Exception:
+            logger.warning("Doc type classification failed for %s", doc_id, exc_info=True)
+    return summary, model_used, doc_type
+
+
 def run_summarize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
     """Generate a summary for the document from all its chunks."""
     # Yield-to-interactive: if the user is chatting or researching right
@@ -141,46 +187,19 @@ def run_summarize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                 finally:
                     inner_session.close()
 
-            stopped = False
-
             def _yield_or_stop() -> None:
                 # Called before every map-reduce LLM sub-call: the natural point
-                # to notice a cancel or queue clear (job row set to error) and
-                # stop spending the LLM on a document nobody wants summarized.
+                # to notice a cancel or queue clear (job row set to error), or a
+                # newer claim of the row, and stop spending the LLM on a document
+                # nobody wants summarized by this run.
                 if not stage_run_is_current(session, doc_id, JobStage.summarize, worker_seq):
                     raise _SummarizeRunStopped()
                 _wait_for_idle_llm()
 
-            # Generate summary (compute before race check)
-            try:
-                summary, model_used = generate_summary(
-                    list(chunks),
-                    yield_check=_yield_or_stop,
-                    progress_callback=_progress,
-                )
-            except _SummarizeRunStopped:
-                # Nothing is written (no summary, no classification call), and
-                # mark_stage_done below declines the cancelled row.
-                logger.info("summarize: run for %s cancelled or superseded; stopping", doc_id)
-                stopped = True
-                summary, model_used = None, None
-            except AppleIntelligenceUnavailableError:
-                logger.warning("Summary generation blocked for %s because Apple Intelligence is unavailable", doc_id)
-                raise
-            except AppleIntelligenceDocumentError:
-                logger.warning("Summary generation rejected for %s by Apple Intelligence", doc_id)
-                raise
-            except Exception:
-                logger.warning("Summary generation failed for %s", doc_id, exc_info=True)
-                summary, model_used = None, None
-
-            # Classify document type (compute before race check)
-            doc_type = None
-            try:
-                if not stopped:
-                    doc_type = classify_doc_type(list(chunks), mime_type=doc.mime_type or "")
-            except Exception:
-                logger.warning("Doc type classification failed for %s", doc_id, exc_info=True)
+            # Compute before the race check, under one per-document wait budget.
+            summary, model_used, doc_type = _summary_and_type(
+                doc_id, list(chunks), doc.mime_type or "", progress_callback=_progress, yield_check=_yield_or_stop
+            )
 
             # Race check before writing results: the seq, a cancel, or a newer claim.
             if not stage_run_is_current(session, doc_id, JobStage.summarize, worker_seq):

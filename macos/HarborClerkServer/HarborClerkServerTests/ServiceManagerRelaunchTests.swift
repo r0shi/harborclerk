@@ -22,6 +22,12 @@ final class MockProcessService: ManagedService {
     /// What `healthCheck()` moves the state to before answering, or nil.
     /// Models a stop that landed during the probe.
     var stateDuringHealthCheck: ServiceState?
+    /// What `healthCheck()` sets `holdsLiveProcess` to before answering, or
+    /// nil. Models the child exiting during the probe.
+    var holdsLiveProcessDuringHealthCheck: Bool?
+    /// Run inside `healthCheck()` before it answers, or nil. Models something
+    /// else on the MainActor acting while the probe is in flight.
+    var duringHealthCheck: (@MainActor () -> Void)?
     var healthy = false
     /// A standing refusal (#709), as LlamaService reports one for a model
     /// whose weights do not fit this Mac.
@@ -47,6 +53,8 @@ final class MockProcessService: ManagedService {
     func healthCheck() async -> Bool {
         healthCalls += 1
         if let next = stateDuringHealthCheck { state = next }
+        if let alive = holdsLiveProcessDuringHealthCheck { holdsLiveProcess = alive }
+        if let hook = duringHealthCheck { await hook() }
         return healthy
     }
 }

@@ -851,8 +851,9 @@ export default function DocumentsPage() {
       {isAdmin && llmStatus.state === 'deactivated' && (
         <div className="mb-3 flex items-center justify-between rounded-md border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm">
           <span className="text-amber-900 dark:text-amber-200">
-            No language model is active. Document summaries fall back to an extractive heuristic — for higher-quality
-            summaries, activate a model.
+            {llmStatus.setup_hint
+              ? `${llmStatus.setup_hint} Until then, document summaries fall back to an extractive heuristic.`
+              : 'No language model is active. Document summaries fall back to an extractive heuristic — for higher-quality summaries, activate a model.'}
           </span>
           <Link
             to="/settings/models"

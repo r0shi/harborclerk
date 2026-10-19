@@ -71,6 +71,11 @@ final class HealthChecker {
         guard !paused else { return }
         var changed = false
         for service in serviceManager.services {
+            if service.state == .errored {
+                failureCounts[service.name] = nil
+                if await promoteIfServing(service) { changed = true }
+                continue
+            }
             guard service.state == .running else {
                 // Reset stale counters for non-running services
                 failureCounts[service.name] = nil
@@ -124,5 +129,32 @@ final class HealthChecker {
         if changed {
             serviceManager.notifyStateChanged()
         }
+    }
+
+    /// Probe an errored service that still holds a live process, and mark it
+    /// running if it answers. Returns whether it did.
+    ///
+    /// `startService` gives up after its timeout (120 s for the LLM) and marks
+    /// the service errored, but keeps the process: a big model on a cold page
+    /// cache is still loading, and goes on to serve for hours. Probing only
+    /// `running` services left that one red for the life of the server, and
+    /// with no health-driven restart, since that path starts from `running`
+    /// (#767). The same holds for a child the flap guard left alive.
+    ///
+    /// Not for launchd-managed services: launchd holds their process, so
+    /// there is nothing here to tell a recovered agent from a stale state.
+    /// Not for one paused for an auto-restart: that restart owns its state.
+    private func promoteIfServing(_ service: any ManagedService) async -> Bool {
+        guard service.holdsLiveProcess, !service.isLaunchdManaged,
+              !pausedServices.contains(service.name) else { return false }
+        let healthy = await service.healthCheck()
+        // Re-checked after the await: a stop, a relaunch or an auto-restart may
+        // have taken the service over meanwhile, and the process may be gone.
+        guard healthy, service.state == .errored, service.holdsLiveProcess,
+              !pausedServices.contains(service.name) else { return false }
+        Log.logger("health").notice(
+            "[\(service.name, privacy: .public)] Errored, but its process now answers its health check; marked running")
+        serviceManager.markReady(service)
+        return true
     }
 }

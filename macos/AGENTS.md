@@ -38,6 +38,9 @@ which is why macOS gets variables like `LLAMA_SERVER_URL` for free. Docker
 Compose has no equivalent — each service opts in individually, and forgetting
 one there caused summarize to silently produce extractive summaries. When adding
 a variable a worker needs, check whether the Compose side needs it too.
+**Nothing a launched process runs may write into the bundle**: it breaks the code
+seal (numba did, #846). Every launch path ends with `applyingRuntimeCacheRules`
+in `ServiceManager`, whose comments hold the cache rules; never bypass it.
 
 ## Networking
 
@@ -63,15 +66,12 @@ hardened-runtime and JIT policy can all change behavior with no source change at
 all. So an SDK bump is a behavioral change, not housekeeping.
 
 **The bump has already happened**, and nothing recorded it: the deployment
-target is still 15.0, but the SDK follows whatever Xcode is on the build machine,
-so installing Xcode 26 silently moved it. Measured on the shipped bundles with
-`vtool -show-build /Applications/HarborClerkServer.app/Contents/MacOS/HarborClerkServer`:
-`minos 15.0`, `sdk 26.5`.
-
-So the stricter rules are **already live in every build since that Xcode
-upgrade**, and have been through a full field test (an 11,436-document corpus,
-IMAP sync, search and Research) with no observed breakage. The `#561` ATS gap
-is therefore running *under* the stricter regime today, not waiting for it.
+target is still 15.0, but the SDK follows whatever Xcode is on the build machine:
+Xcode 26 moved it, then the release machine's Xcode 27.1 (SDK 27.0): `vtool
+-show-build` on both apps' executables, built 2026-10-17, gives `minos 15.0`, `sdk
+27.0`. The stricter rules are **already live in every build**: SDK 26.5 builds passed
+a full field test (11,436 documents, IMAP sync, search, Research), 27.0 builds have
+not had one yet. The `#561` ATS gap runs *under* the stricter regime today.
 
 Two consequences:
 
@@ -173,7 +173,7 @@ inside what is free. YaRN is off by default; use the app's defaults.
 `make apps` compiles PostgreSQL and pgvector from source. Where a macOS beta
 updated the Command Line Tools, the bare `cc` that `configure` runs resolves the
 **CLT** SDK (`/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`) even though `xcode-select -p` points at Xcode.app. When that SDK is
-newer than Xcode's linker (CLT 27.0 against Xcode 26.5 here) every link fails with
+newer than Xcode's linker (CLT 27.0 against Xcode 26.5, pre-Xcode 27) every link fails with
 
 ```
 ld: tapi error: malformed file

@@ -35,6 +35,7 @@ from harbor_clerk.file_types import ALLOWED_EXTENSIONS, is_excalidraw
 from harbor_clerk.models import Document, Upload, UploadSession
 from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.storage import get_storage
+from harbor_clerk.watched_source import watched_state_async
 from harbor_clerk.worker.pipeline import queue_extract_for_current_pipeline, reset_and_queue_extract_for_doc
 
 logger = logging.getLogger(__name__)
@@ -263,6 +264,13 @@ async def _confirm_single(
         doc = doc_result.scalar_one_or_none()
         if doc is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        if (await watched_state_async(session, doc)).watched:
+            # A watched document is its file (harbor_clerk.watched_source); an upload
+            # replacing it would shadow the file, or be lost on the next edit.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This document is read in place from a watched folder; edit the file instead.",
+            )
 
         safe_name = os.path.basename(upload.original_filename) or "file"
         canonical_key = f"originals/docs/{doc_id}/{safe_name}"

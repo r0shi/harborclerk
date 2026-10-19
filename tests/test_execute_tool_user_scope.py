@@ -234,14 +234,44 @@ async def test_execute_tool_verify_identifier_scope_hides_the_other_folder_on_ev
     assert unscoped["status"] == "ambiguous" and unscoped["count"] == 2, unscoped
 
 
+# Per match path: (identifier, how the i-th out-of-scope decoy matches it, how the in-scope document does).
+# Each is (title, filename, metadata). Decoy titles sort before the in-scope one ("zzz ..."), so a pass that
+# limited before applying the scope would fill its cap with decoys and drop the one the key may see.
+_SCOPE_CAP_DECOYS = 150
+_SCOPE_CAP_PATHS = {
+    "metadata_id": (
+        "K-CAP-724",
+        lambda i: (f"Decoy {i:03d}", f"decoy{i:03d}.pdf", {"sidecar": {"contract_id": "K-CAP-724"}}),
+        ("zzz the one in A", "a-cap.pdf", {"sidecar": {"contract_id": "K-CAP-724"}}),
+    ),
+    "title": (
+        "Scope Cap Title",
+        lambda i: (f"Scope Cap Title {i:03d}", f"decoy{i:03d}.pdf", None),
+        ("Scope Cap Title zzz in A", "a-cap.pdf", None),
+    ),
+    "tika_title": (
+        "Scope Cap Tika 724",
+        lambda i: (f"Decoy {i:03d}", f"decoy{i:03d}.pdf", {"tika": {"title": "Scope Cap Tika 724"}}),
+        ("zzz the one in A", "a-cap.pdf", {"tika": {"title": "Scope Cap Tika 724"}}),
+    ),
+    "words": (
+        "the Arca US Treasury Fund development agreement",
+        lambda i: (f"ArcaUsTreasuryFund_{i:03d}_Development Agreement", f"decoy{i:03d}.pdf", None),
+        ("zzz ArcaUsTreasuryFund_Development Agreement", "a-cap.pdf", None),
+    ),
+}
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", list(_SCOPE_CAP_PATHS))
 async def test_kb_verify_identifier_scoped_key_applies_the_scope_before_the_metadata_cap(
-    db_session, admin_user, two_folder_corpus, mock_session_factory
+    db_session, admin_user, two_folder_corpus, mock_session_factory, path
 ):
-    """The MCP surface with a scoped API key. The metadata pass reads at most 100 documents, so the scope must
-    restrict that read, not its result: with a hundred out-of-scope documents carrying the identifier, a key
-    scoped to A still resolves A's one. A key scoped to a folder with no documents finds nothing, even for a
-    title that exists."""
+    """The MCP surface with a scoped API key. verify_identifier keeps at most 100 candidates (it asks each pass
+    for 101), so every pass must apply the scope inside its query, before its limit (#724): with 150
+    out-of-scope documents matching the identifier on this path, all sorting ahead of the in-scope one, a key
+    scoped to A still resolves A's document, by the same path (not by the looser word pass). A key scoped to a
+    folder with no documents finds nothing, even for a title that exists."""
     from harbor_clerk.api.deps import Principal
     from harbor_clerk.mcp_server import _mcp_principal, kb_verify_identifier
     from harbor_clerk.models.watched import WatchedFolder
@@ -250,28 +280,29 @@ async def test_kb_verify_identifier_scoped_key_applies_the_scope_before_the_meta
     empty = WatchedFolder(path="/c", display_name="Folder C", auto_discovered=False)
     db_session.add(empty)
     await db_session.flush()
-    # The unscoped read below is an unordered LIMIT 100 over the documents with metadata, and the overflow
-    # assertion needs every row it takes to carry the identifier. That holds because these 101 are the only
-    # documents with metadata: two_folder_corpus's four have none and are excluded by `doc_metadata != {}`.
-    sidecar = {"sidecar": {"contract_id": "K-CAP-724"}}
-    for i in range(100):
-        await _doc_in_folder(db_session, folder_b, title=f"Decoy {i}", filename=f"decoy{i}.pdf", metadata=sidecar)
-    in_a = await _doc_in_folder(db_session, folder_a, title="The one in A", filename="a-cap.pdf", metadata=sidecar)
+    identifier, decoy, (a_title, a_filename, a_metadata) = _SCOPE_CAP_PATHS[path]
+    for i in range(_SCOPE_CAP_DECOYS):
+        title, filename, metadata = decoy(i)
+        await _doc_in_folder(db_session, folder_b, title=title, filename=filename, metadata=metadata)
+    in_a = await _doc_in_folder(db_session, folder_a, title=a_title, filename=a_filename, metadata=a_metadata)
     key_for = _key_scoped_to
 
     token = _mcp_principal.set(key_for(folder_a.folder_id))
     try:
-        seen = json.loads(await kb_verify_identifier("K-CAP-724"))
+        seen = json.loads(await kb_verify_identifier(identifier))
     finally:
         _mcp_principal.reset(token)
     assert seen["status"] == "unique" and seen["match"]["doc_id"] == str(in_a.doc_id), seen
+    assert ("matched_by" in seen) is (path == "words"), seen
 
     token = _mcp_principal.set(Principal(type="user", id=admin_user.user_id, role="admin"))
     try:
-        everyone = json.loads(await kb_verify_identifier("K-CAP-724"))
+        everyone = json.loads(await kb_verify_identifier(identifier))
     finally:
         _mcp_principal.reset(token)
+    # Unscoped, 151 documents match: past the cap, so overflow is set and the in-scope one (sorting last) is cut.
     assert everyone["status"] == "ambiguous" and everyone.get("overflow") is True, "unscoped, the cap is reached"
+    assert str(in_a.doc_id) not in {c["doc_id"] for c in everyone["candidates"]}, "the decoys fill the cap"
 
     token = _mcp_principal.set(key_for(empty.folder_id))
     try:

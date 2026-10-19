@@ -6,18 +6,25 @@ import os
 struct MigrationRunner {
     private let maxAttempts = 3
     private let retryDelay: UInt64 = 3_000_000_000 // 3 seconds
+    private let settings: AppSettings
+    private let launch: (Process) async throws -> Int32
+
+    /// Both default to the real thing. A test passes scratch settings and a
+    /// `launch` that captures the process (and the environment `run()` gave
+    /// it) and returns an exit code without spawning anything.
+    init(
+        settings: AppSettings = .shared,
+        launch: @escaping (Process) async throws -> Int32 = { try await $0.runAndAwait() }
+    ) {
+        self.settings = settings
+        self.launch = launch
+    }
 
     func run() async throws {
         let bundle = Bundle.main.resourceURL!
         let python = bundle.appendingPathComponent("venv/bin/python")
 
-        let settings = AppSettings.shared
-        let env = [
-            "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
-            "PATH": bundle.appendingPathComponent("venv/bin").path + ":/usr/bin:/bin",
-            "PYTHONPATH": bundle.appendingPathComponent("venv/lib").path,
-            "PYTHONDONTWRITEBYTECODE": "1",
-        ]
+        let env = Self.environment(settings: settings, bundle: bundle)
 
         var lastError: Error?
 
@@ -40,6 +47,17 @@ struct MigrationRunner {
         throw lastError ?? ServiceError.startFailed("Alembic", "all \(maxAttempts) attempts failed")
     }
 
+    /// Alembic's environment. Its own closed dict, not the services' one, but
+    /// the same cache rule: nothing it imports may write into the bundle (#846).
+    static func environment(settings: AppSettings, bundle: URL) -> [String: String] {
+        let env = [
+            "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
+            "PATH": bundle.appendingPathComponent("venv/bin").path + ":/usr/bin:/bin",
+            "PYTHONPATH": bundle.appendingPathComponent("venv/lib").path,
+        ]
+        return ServiceManager.applyingRuntimeCacheRules(to: env)
+    }
+
     private func runAlembic(python: URL, workDir: URL, env: [String: String]) async throws {
         let proc = Process()
         proc.executableURL = python
@@ -56,7 +74,7 @@ struct MigrationRunner {
         // runs for seconds, so the short-lived-child race that hung
         // launchctl in the wild doesn't apply here, but use the same
         // helper everywhere so we have one wait pattern to reason about.
-        let exitCode = try await proc.runAndAwait()
+        let exitCode = try await launch(proc)
 
         if exitCode != 0 {
             throw ServiceError.startFailed("Alembic", "exit code \(exitCode)")

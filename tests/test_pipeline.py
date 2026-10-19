@@ -11,6 +11,7 @@ from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 from harbor_clerk.worker.stages.finalize import run_finalize
+from tests.conftest import watch_document
 
 
 @pytest.mark.asyncio
@@ -1125,6 +1126,7 @@ async def test_run_chunk_markdown_aligns_with_headings_and_preserves_code_fence(
     )
     db_session.add(doc)
     await db_session.flush()
+    await watch_document(db_session, doc, md_path)
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.chunk, status=JobStatus.queued))
     await db_session.commit()
@@ -1203,6 +1205,7 @@ async def test_run_extract_markdown_writes_headings_and_overrides_title(db_sessi
     )
     db_session.add(doc)
     await db_session.flush()
+    await watch_document(db_session, doc, md_path)
 
     db_session.add(
         IngestionJob(
@@ -1267,6 +1270,7 @@ async def test_run_extract_image_renamed_as_office_persists_image_mime(db_sessio
     )
     db_session.add(doc)
     await db_session.flush()
+    await watch_document(db_session, doc, path)
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
     await db_session.commit()
 
@@ -1311,6 +1315,7 @@ async def test_run_extract_office_renamed_as_pdf_routes_to_tika_autodetect(db_se
     )
     db_session.add(doc)
     await db_session.flush()
+    await watch_document(db_session, doc, path)
     db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
     await db_session.commit()
 
@@ -1379,6 +1384,7 @@ async def test_wikilink_graph_resolves_and_kb_find_related_returns_linked(db_ses
         )
         db_session.add(doc)
         await db_session.flush()
+        await watch_document(db_session, doc, md_path)
         db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
         db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.queued))
         await db_session.commit()

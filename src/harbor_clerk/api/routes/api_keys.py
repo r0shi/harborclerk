@@ -396,7 +396,10 @@ async def get_key_requests(
     rows = (
         (
             await session.execute(
-                base.order_by(ApiRequestLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+                # request_id breaks created_at ties (one transaction shares now()), so pages partition the log.
+                base.order_by(ApiRequestLog.created_at.desc(), ApiRequestLog.request_id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
             )
         )
         .scalars()

@@ -332,6 +332,128 @@ def test_a_single_contract_key_must_be_in_that_contracts_own_words(tmp_path, mon
     assert delaware["positives"] == sorted([ACME_A, ACME_B])
 
 
+HARPOON = "HarpoonTherapeuticsInc_20200312_10-K_EX-10.18_12051356_EX-10.18_Development Agreement_Option Agreement"
+KALLO = "KALLOINC_11_03_2011-EX-10.1-STRATEGIC ALLIANCE AGREEMENT"  # a real CUAD name with no accession number
+
+
+def _row(name: str, **answers: str) -> dict:
+    return {"Filename": f"{name}.pdf", **answers}
+
+
+def test_a_truncated_csv_filename_matches_its_title_and_the_title_joins_the_key(tmp_path, monkeypatch, caplog):
+    """master_clauses.csv names Harpoon's PDF `..._Development Agreement.PDF`, cutting `_Option Agreement`, so the
+    key described 79 of the 80 ingested contracts (#815). Its identifiers to the accession number are its alone."""
+    texts = {STAAR: "", HARPOON: ""}
+    rows = [
+        _row(STAAR, **{"Insurance-Answer": "No"}),
+        {
+            "Filename": "HarpoonTherapeuticsInc_20200312_10-K_EX-10.18_12051356_EX-10.18_Development Agreement.PDF",
+            "Insurance-Answer": "Yes",
+        },
+    ]
+    monkeypatch.setattr(cuad_key, "_text", lambda pdf: texts[pdf.stem])
+    with caplog.at_level("INFO", logger=cuad_key.__name__):
+        questions, key = cuad_key.build(_workdir(tmp_path, texts, rows))
+    lists = [e for e in key.values() if e["kind"] == "list"]
+    assert lists and all(e["universe"] == sorted([STAAR, HARPOON]) for e in lists)
+    by_text = {q["text"]: key[q["id"]] for q in questions["ask"]}
+    insurance = by_text[
+        "Which contracts contain a requirement that a party maintain insurance? List every one you can find."
+    ]
+    assert insurance["positives"] == [HARPOON]
+    assert [r.message for r in caplog.records] == [
+        f"cuad key: {HARPOON!r} matched inexactly (identifiers to the accession number) to row "
+        "'HarpoonTherapeuticsInc_20200312_10-K_EX-10.18_12051356_EX-10.18_Development Agreement'"
+    ]
+
+
+def test_a_name_without_identifiers_falls_back_to_a_prefix_that_only_it_has(caplog):
+    with caplog.at_level("INFO", logger=cuad_key.__name__):
+        rows = cuad_key.annotation_rows([KALLO, STAAR], [_row(KALLO[:-10]), _row(STAAR)])
+    assert rows == {KALLO: _row(KALLO[:-10]), STAAR: _row(STAAR)}
+    assert [r.message for r in caplog.records] == [
+        f"cuad key: {KALLO!r} matched inexactly (the row's name is a prefix of the title) to row {KALLO[:-10]!r}"
+    ]
+
+
+def test_an_ambiguous_inexact_match_is_refused_and_logged(caplog):
+    """Never one row for two contracts, nor two rows for one: each is refused, said, and left outside the key."""
+    amendment = f"{KALLO} AMENDMENT"
+    with caplog.at_level("INFO", logger=cuad_key.__name__):
+        # The truncated row is a prefix of both titles: neither gets it.
+        assert cuad_key.annotation_rows([KALLO, amendment], [_row(KALLO[:-10])]) == {}
+        assert len(caplog.records) == 2 and all("not matched" in r.message for r in caplog.records)
+        assert all(r.levelname == "WARNING" for r in caplog.records)
+        caplog.clear()
+        # ... and it stays ambiguous when the other contract is in the release but not in the sample.
+        assert cuad_key.annotation_rows([KALLO], [_row(KALLO[:-10])], release=[KALLO, amendment]) == {}
+        assert [r.message for r in caplog.records] == [
+            f"cuad key: {KALLO!r} not matched (the row's name is a prefix of the title): row {KALLO[:-10]!r} fits "
+            f"{sorted([KALLO, amendment])}"
+        ]
+        caplog.clear()
+        # Two rows carry Harpoon's identifiers: it gets neither, and the prefix rule is not tried after.
+        two = [_row(HARPOON[:-17]), _row(HARPOON[:-30])]
+        assert cuad_key.annotation_rows([HARPOON], two) == {}
+        assert [r.message for r in caplog.records] == [
+            f"cuad key: {HARPOON!r} not matched (identifiers to the accession number): rows "
+            f"{[HARPOON[:-17], HARPOON[:-30]]}"
+        ]
+        caplog.clear()
+        # A row whose name is another contract's is that contract's, even when this one's prefix fits it.
+        assert cuad_key.annotation_rows([amendment], [_row(KALLO)], release=[KALLO, amendment]) == {}
+        assert [r.message for r in caplog.records] == [
+            f"cuad key: {amendment!r} not matched (the row's name is a prefix of the title): row {KALLO!r} is "
+            "another contract's"
+        ]
+        caplog.clear()
+        # One row that two contracts fit by different rules: one by its identifiers, one (named with spaces, so it
+        # has none) by prefix. Each rule alone finds one contract for the row; neither gets it, whether the second
+        # contract is in the sample or only in the release.
+        row = "FooInc_20200101_10-K_EX-10.1_123_EX-10.1_Supply"
+        by_ids = "FooInc_20200101_10-K_EX-10.1_123_EX-10.1_Distribution Agreement"
+        by_prefix = "FooInc 20200101 10-K EX-10.1 123 EX-10.1 Supply Agreement"
+        both = sorted([by_ids, by_prefix])
+        assert cuad_key.annotation_rows([by_ids, by_prefix], [_row(row)]) == {}
+        assert [r.message for r in caplog.records] == [
+            f"cuad key: {by_ids!r} not matched (identifiers to the accession number): row {row!r} fits {both}",
+            f"cuad key: {by_prefix!r} not matched (the row's name is a prefix of the title): row {row!r} fits {both}",
+        ]
+        caplog.clear()
+        assert cuad_key.annotation_rows([by_ids], [_row(row)], release=[by_ids, by_prefix]) == {}
+        assert [r.message for r in caplog.records] == [
+            f"cuad key: {by_ids!r} not matched (identifiers to the accession number): row {row!r} fits {both}"
+        ]
+
+
+@pytest.mark.parametrize("suffix", [".PDF", ".pdf"])
+def test_build_refuses_a_row_that_a_release_pdf_outside_the_sample_also_fits(tmp_path, monkeypatch, caplog, suffix):
+    """`build` reads the release's PDFs, both spellings of the extension, as contracts a row could belong to: the
+    truncated row fits the sampled KALLO and an amendment the sample did not take, so KALLO is left out."""
+    amendment = f"{KALLO} AMENDMENT"
+    texts = {STAAR: "", KALLO: ""}
+    workdir = _workdir(tmp_path, texts, [_row(STAAR), _row(KALLO[:-10])])
+    part = workdir / "cuad" / "extracted" / "CUAD_v1" / "full_contract_pdf" / "Part_I"
+    part.mkdir(parents=True)
+    (part / f"{amendment}{suffix}").write_bytes(b"%PDF-1.4 stub")
+    monkeypatch.setattr(cuad_key, "_text", lambda pdf: texts[pdf.stem])
+    with caplog.at_level("INFO", logger=cuad_key.__name__):
+        _, key = cuad_key.build(workdir)
+    assert all(e["universe"] == [STAAR] for e in key.values() if e["kind"] == "list")
+    assert [r.message for r in caplog.records] == [
+        f"cuad key: {KALLO!r} not matched (the row's name is a prefix of the title): row {KALLO[:-10]!r} fits "
+        f"{sorted([KALLO, amendment])}"
+    ]
+
+
+def test_an_exact_match_is_unaffected_by_rows_that_would_match_it_inexactly(caplog):
+    """A title whose own name is a row's takes that row, whatever else fits it, and nothing is logged."""
+    rows = [_row(HARPOON[:-17]), _row(HARPOON, **{"Insurance-Answer": "Yes"}), _row(STAAR)]
+    with caplog.at_level("INFO", logger=cuad_key.__name__):
+        assert cuad_key.annotation_rows([HARPOON, STAAR], rows) == {HARPOON: rows[1], STAAR: rows[2]}
+    assert caplog.records == []
+
+
 def test_the_committed_key_answers_the_committed_questions():
     questions = yaml.safe_load((KEYED / "cuad.yaml").read_text())
     key = json.loads((KEYED / "cuad.key.json").read_text())
@@ -341,7 +463,8 @@ def test_the_committed_key_answers_the_committed_questions():
     for entry in key.values():
         if entry["kind"] == "list":
             assert 5 <= len(entry["positives"]) <= 25 and set(entry["positives"]) <= set(entry["universe"])
-            assert len(entry["universe"]) == 79, "the 80 sampled contracts, less the one CUAD's CSV does not annotate"
+            # Harpoon's row names it `..._Development Agreement`, truncated; it is matched by its identifiers (#815).
+            assert len(entry["universe"]) == 80, "every one of the 80 sampled contracts"
 
 
 def test_the_sweep_loads_the_key_beside_the_questions_and_scores_against_it(tmp_path):

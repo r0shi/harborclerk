@@ -194,8 +194,8 @@ Harbor Clerk can run in two ways:
 | | macOS Native | Docker Compose |
 |---|---|---|
 | **Best for** | Small teams and independent operators with a Mac | DIY / Linux servers |
-| **Services** | Managed by menubar app as subprocesses | Eleven Docker containers |
-| **Folder picker** | Native folder picker in the UI | Operator mounts host paths into the watcher container |
+| **Services** | Managed by menubar app as subprocesses | Twelve Docker containers ([list](docs/architecture.md#docker-compose-services)) |
+| **Folder picker** | Native folder picker in the UI | Operator mounts host paths read-only into `watcher`, `app`, `worker-io` and `worker-cpu` ([guide](docs/watched-folders-docker.md)) |
 | **Originals** | Read in place from your filesystem | Read in place from bind-mounted volumes |
 | **HTTPS** | Direct localhost access | Caddy reverse proxy with self-signed cert |
 
@@ -223,16 +223,18 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 
 Open **https://localhost/** and accept the self-signed certificate. Create your admin account on the setup page.
 
-**Watched folders on Docker** are operator-controlled: the `watcher` service auto-discovers any top-level subdirectory of `WATCH_ROOT` (`/data/watch` inside the container, bind-mounted from `./data/watch` on the host) and ingests files dropped into it. There is no "Add Folder" button on Docker — you create directories, or mount external paths into `/data/watch/<name>`. See [docs/watched-folders-docker.md](docs/watched-folders-docker.md) for the full operator guide.
+**Watched folders on Docker** are operator-controlled: the `watcher` service auto-discovers any top-level subdirectory of `WATCH_ROOT` (`/data/watch` inside the container, bind-mounted from `./data/watch` on the host) and ingests files dropped into it. There is no "Add Folder" button on Docker — you create directories, or mount external paths at `/data/watch/<name>`. Files are read in place, so an external path must be mounted read-only, at the same container path, into `watcher`, `app`, `worker-io` and `worker-cpu`: mounted into the watcher alone, its documents are discovered but fail extraction and cannot be downloaded. See [docs/watched-folders-docker.md](docs/watched-folders-docker.md) for the full operator guide.
 
 | Variable | Default | Description |
 |---|---|---|
 | `SECRET_KEY` | `change-me-in-production` | JWT signing key — **change this** |
 | `DATABASE_URL` | `postgresql+asyncpg://harbor_clerk:...` | PostgreSQL connection string |
-| `WATCH_ROOT` | `/data/watch` | Container path whose top-level subdirs become watched folders |
+| `WATCH_ROOT` | `/data/watch` | Container path whose top-level subdirs become watched folders. Must be `/data/watch` (where `./data/watch` is mounted) or a directory under it; see the [guide](docs/watched-folders-docker.md) |
 | `MINIO_ENDPOINT` | `minio:9000` | MinIO endpoint (currently used by legacy upload API; watched-folder originals are read in place from `./data/watch`) |
 | `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
 | `MINIO_SECRET_KEY` | `minioadmin123` | MinIO secret key |
+| `LLM_MODEL_FILE` | `Qwen3.5-4B-Q4_K_M.gguf` | The GGUF `llama-server` serves, from the `llama_models` volume (see [Local AI on Docker](#local-ai-on-docker)); empty runs no local model |
+| `LLM_CONTEXT_TOKENS` | `8192` | `llama-server`'s context (`-c`), which the app also budgets prompts to |
 | `ALLOW_SOURCE_DOWNLOAD` | `false` | Set `true` to expose `/api/docs/{id}/download` (see [Source files](#source-files-reveal-vs-download) below) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
@@ -244,6 +246,12 @@ docker compose down -v            # stop and delete all data
 docker compose logs -f app        # tail app logs
 docker compose logs -f watcher    # see what the watcher is picking up
 ```
+
+#### Local AI on Docker
+
+`llama-server` serves one model, the file `LLM_MODEL_FILE` names in the `llama_models` volume; by default the smallest current tier, Qwen3.5 4B. Download it from **Settings → Models** in the web app (or put the GGUF in the volume yourself): `llama-server` starts as soon as the file is there, and the app treats that model as active, so Ask, Research and LLM summaries work without a restart. Until then Ask reports that no model is configured, summaries are extractive, and the `llama-server` container waits for the file and reports unhealthy (`docker compose logs llama-server` says which file it is waiting for). While it starts and loads the model, Ask and Research say the local model is starting. For summaries, a load or a restart of `llama-server` is waited out, up to 90 seconds of waiting per document; a document whose wait runs out is summarized without it. There is no memory across documents: while `llama-server` keeps failing (a crash loop, a model that fails to load), each document waits its own 90 seconds before falling back. Summarizing runs in the background and does not hold up search. If you copy a GGUF into the volume by hand, copy it under a temporary name and rename it into place: the container waits while the file is still growing, but a rename is what guarantees it never starts on a partial file.
+
+To use another curated model, set `LLM_MODEL_FILE` to its file name and run `docker compose up -d`; under Compose the Models page shows no **Activate** button and names the file it serves. Set it empty to run no local model. The context is fixed at `LLM_CONTEXT_TOKENS` because a container cannot size it to the host the way the macOS app does; memory grows with it, so raise `--cache-ram` in `docker-compose.yml` with it. The Compose server runs without RoPE scaling, so the Models page shows no YaRN toggle. The `llama.cpp` server image is CPU-only.
 
 **Services:** `gateway` (Caddy), `app` (FastAPI + React SPA), `watcher` (folder watching + ingest queueing), `worker-io`, `worker-cpu`, `worker-llm` (summarize), `embedder` (Granite-R2 multilingual, 768-dim), `reranker` (cross-encoder re-ranking), `llama-server` (local LLM inference), `postgres` (pgvector + pg_trgm), `minio`, `tika`.
 

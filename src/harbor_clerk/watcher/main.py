@@ -22,11 +22,13 @@ from sqlalchemy.orm import sessionmaker
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_engine
+from harbor_clerk.error_text import describe_error
 from harbor_clerk.log_setup import setup_logging
 from harbor_clerk.models.watched import WatchedFolder
 from harbor_clerk.watcher.db_listener import listen_for_folder_changes
-from harbor_clerk.watcher.discovery import scan_watch_root
+from harbor_clerk.watcher.discovery import log_watch_root_problem, scan_watch_root
 from harbor_clerk.watcher.events import EventKind, FileEvent, SkipReason, classify_skip, handle_event
+from harbor_clerk.watcher.failure_streak import FailureStreak
 from harbor_clerk.watcher.mail_observer import MailObserver
 from harbor_clerk.watcher.observer import FolderObserver
 
@@ -34,6 +36,15 @@ logger = logging.getLogger(__name__)
 
 DISCOVERY_INTERVAL_SECS = 60.0
 NOTIFY_POLL_INTERVAL_SECS = 1.0
+# Reconnect backoff for the folder-change listener (#593). One dropped LISTEN
+# connection (a Postgres restart) used to end the listener thread for good, and
+# live folder add/remove/enable/disable from the API stopped taking effect until
+# the watcher restarted.
+LISTENER_RETRY_BASE_SECS = 2.0
+LISTENER_RETRY_MAX_SECS = 60.0
+# A LISTEN connection that stayed up this long was working; its loss starts a new
+# failure streak at the base delay rather than continuing the old one.
+LISTENER_HEALTHY_SECS = 120.0
 
 
 class WatcherDaemon:
@@ -199,6 +210,9 @@ class WatcherDaemon:
         watch_root = get_settings().watch_root
         if not watch_root:
             return
+        # Once, at startup: the scan below skips a missing root at debug level on
+        # every pass, which left a misconfigured WATCH_ROOT invisible (#871).
+        log_watch_root_problem(watch_root, "watcher")
         while not self._stop.is_set():
             sess = self._session_factory()
             try:
@@ -209,17 +223,65 @@ class WatcherDaemon:
                 logger.exception("watcher: discovery scan failed")
             finally:
                 sess.close()
-            self._sync_observers()
+            # Guarded on its own: it queries the database too, and an exception
+            # here used to end the discovery thread for good (#593).
+            try:
+                self._sync_observers()
+            except Exception:
+                logger.exception("watcher: observer sync after discovery failed; retrying next pass")
             self._stop.wait(timeout=DISCOVERY_INTERVAL_SECS)
 
     def _listener_loop(self) -> None:
         # We don't need the payload itself — any NOTIFY arrival means a folder
         # row changed; _sync_observers() reads the current world from DB.
-        try:
-            for _ in listen_for_folder_changes(self._stop, poll_interval=NOTIFY_POLL_INTERVAL_SECS):
+        streak = FailureStreak()
+        listening_since: float | None = None
+        announced = False  # the "reconnected" line, once per streak
+
+        def _on_listening() -> None:
+            nonlocal listening_since, announced
+            listening_since = time.monotonic()
+            if streak.failures:
+                # NOTIFYs sent while disconnected are lost; resync once LISTEN is
+                # back in place, so nothing changed in the gap is missed.
+                if not announced:
+                    logger.info("watcher: listener reconnected after %d failed attempt(s)", streak.failures)
+                    announced = True
                 self._sync_observers()
-        except Exception:
-            logger.exception("watcher: listener loop crashed")
+
+        while not self._stop.is_set():
+            try:
+                for _ in listen_for_folder_changes(
+                    self._stop, poll_interval=NOTIFY_POLL_INTERVAL_SECS, on_listening=_on_listening
+                ):
+                    self._sync_observers()
+            except Exception as exc:
+                # The streak ends only once a connection has stayed up a while.
+                # Ending it on a successful LISTEN let a connection that accepts
+                # LISTEN and drops at the first poll() retry at the base delay
+                # forever, with a traceback, a resync and a "reconnected" line
+                # every time.
+                if listening_since is not None and time.monotonic() - listening_since >= LISTENER_HEALTHY_SECS:
+                    streak.reset()
+                    announced = False
+                listening_since = None
+                loudness = streak.record(exc)
+                if loudness == "first":
+                    logger.exception("watcher: folder-change listener failed; reconnecting with backoff")
+                elif loudness is not None:
+                    logger.warning(
+                        "watcher: folder-change listener still failing (failure %d, %s): %s",
+                        streak.failures,
+                        "error changed" if loudness == "changed" else "same error",
+                        describe_error(exc),
+                        exc_info=loudness == "changed",
+                    )
+                else:
+                    logger.debug(
+                        "watcher: listener failed again (failure %d): %s", streak.failures, describe_error(exc)
+                    )
+                delay = min(LISTENER_RETRY_MAX_SECS, LISTENER_RETRY_BASE_SECS * 2 ** min(streak.failures - 1, 8))
+                self._stop.wait(timeout=delay)
 
     def start(self) -> None:
         self._sync_observers()

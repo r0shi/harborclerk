@@ -14,7 +14,7 @@ import os
 import posixpath
 import uuid
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -31,7 +31,13 @@ from harbor_clerk.models.document_page import DocumentPage
 from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
-from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
+from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+from harbor_clerk.watched_source import (
+    failed_for_a_missing_source,
+    is_file_exact_case,
+    repaired_source_path,
+    watched_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +217,14 @@ def handle_event(session: Session, event: FileEvent) -> None:
         logger.debug("watcher: ignored event for %s", event.relative_path)
         return
 
+    # An atomic save on macOS can end with a delete event for a file that is still
+    # there (the replaced inode's flag): marking it removed would make the document
+    # unreadable. A delete for a regular file present under that exact name is a
+    # modify; a dangling symlink or a directory in its place is a delete.
+    if event.kind == EventKind.deleted and is_file_exact_case(event.absolute_path):
+        logger.debug("watcher: delete event for %s, but the file is present; treated as a modify", event.relative_path)
+        event = replace(event, kind=EventKind.modified)
+
     existing = (
         session.query(WatchedFile).filter_by(folder_id=event.folder_id, relative_path=event.relative_path).one_or_none()
     )
@@ -284,8 +298,12 @@ def handle_event(session: Session, event: FileEvent) -> None:
         if load_sidecar(sidecar, owner=event.absolute_path, quiet=True) is not None:
             _retire_sidecar_row(session, event.folder_id, _sidecar_relative_path(event.relative_path))
 
-    # Branch 1: existing+active+same → no-op
+    # Branch 1: existing+active+same → no-op, but for an aliased source_path, which is
+    # canonicalized so the document verifies as read in place (the startup scan
+    # visits every file, so this heals rows older clients stored).
     if existing is not None and existing.status == WatchedFileStatus.active and existing.sha256 == sha:
+        _repair_source_path(session, existing)
+        _bring_up_to_date(session, existing, sha)
         return
 
     # Branch 2: existing+active+different → reprocess in place
@@ -299,6 +317,8 @@ def handle_event(session: Session, event: FileEvent) -> None:
         existing.status = WatchedFileStatus.active
         existing.removed_at = None
         _unhide_document(session, existing.doc_id)
+        _repair_source_path(session, existing)
+        _bring_up_to_date(session, existing, sha)
         return
 
     # Branch 4: existing+removed+different → resurrect + reprocess
@@ -312,6 +332,51 @@ def handle_event(session: Session, event: FileEvent) -> None:
 
     # No existing row → create Document + WatchedFile + extract job
     _create_doc_and_enqueue(session, event, sha)
+
+
+def _repair_source_path(session: Session, watched_file: WatchedFile) -> None:
+    """Rewrite the document's source_path to this watched file's canonical path when
+    it is anything else and that file is present (``watched_source.repaired_source_path``)."""
+    if watched_file.doc_id is None:
+        return
+    folder = session.get(WatchedFolder, watched_file.folder_id)
+    doc = session.get(Document, watched_file.doc_id)
+    if folder is None or doc is None:
+        return
+    repaired = repaired_source_path(doc.source_path, folder.path, watched_file.relative_path)
+    if repaired is not None:
+        logger.info("watcher: canonicalized the source_path of doc %s", doc.doc_id)
+        doc.source_path = repaired
+
+
+def _bring_up_to_date(session: Session, watched_file: WatchedFile, sha: bytes) -> None:
+    """Queue the document's extract again, from its file, when its index does not
+    reflect the file it is read from:
+
+    - its last run failed because its file could not be read
+      (``watched_source.failed_for_a_missing_source``): mid atomic save, or deleted
+      and later restored with the same bytes. Other errors are left;
+    - its sha256 is not the watched file's: a new version confirmed before that was
+      refused (#859) indexed an upload, while reads now come from the file.
+
+    The unchanged-file branches would otherwise leave either for good.
+    """
+    if watched_file.doc_id is None:
+        return
+    doc = session.get(Document, watched_file.doc_id)
+    if doc is None:
+        return
+    stale = doc.sha256 != sha
+    if not stale and not failed_for_a_missing_source(doc):
+        return
+    # Only a document that now verifies as read in place: one whose repair was
+    # declined stays as it is (it would fail again), and the path handed on is the
+    # verified one, never a source_path that did not verify.
+    in_place = watched_state(session, doc).path
+    if in_place is None:
+        return
+    logger.info("watcher: queueing doc %s again (%s)", doc.doc_id, "stale index" if stale else "after a failed run")
+    _reprocess_doc(session, doc.doc_id, sha, in_place)
 
 
 def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path: str) -> None:

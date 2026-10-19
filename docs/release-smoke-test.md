@@ -63,7 +63,11 @@ macOS native:
 - Launch **Harbor Clerk Server**.
 - Confirm the menu app starts Postgres, API, workers, Tika, embedder, reranker,
   and local AI services without manual terminal commands.
-- Open the Harbor Clerk app window.
+- Open the Harbor Clerk app window from Finder or the Dock (not from a script
+  that sets `XCTestConfigurationFilePath`). Confirm it shows the waiting view,
+  then the login form or the web UI once the server answers: that is the only
+  release check that runs the client's real window. The signing launch probe
+  shows an inert placeholder instead.
 - With an empty corpus, confirm onboarding routes to **Folders**, not Search.
 - Confirm model setup can be skipped and Search/Documents/Folders remain usable.
 - If no local AI model is configured, open Ask/Research and confirm the setup
@@ -74,11 +78,33 @@ Docker:
 - Start with `docker compose up --build`.
 - Open `https://localhost` and accept the self-signed certificate.
 - Confirm admin account creation and watched-folder setup work.
+- Watched folder end to end: `mkdir -p ./data/watch/smoke` (on Linux, if Docker
+  created `./data/watch`, it is root-owned and the `mkdir` needs `sudo`) and copy
+  in a text-native PDF and a scanned (OCR-needed) PDF. Within ~60 seconds the folder
+  appears under **Folders** and a phrase from the text PDF is found by Search
+  (its summary may arrive later). The scanned PDF takes longer, since OCR runs
+  page by page, but must also become searchable (extract and OCR run in
+  `worker-io` and `worker-cpu`, which read the file in place). Then set
+  `ALLOW_SOURCE_DOWNLOAD=true` in `.env` (download is off by default),
+  `docker compose up -d app`, and confirm **Download** on the document detail
+  page returns the original file (served by `app`). A watched document failing
+  with "No source for doc", or a download answering "Source file unavailable",
+  means that service cannot see the watch mount.
 - Confirm Docker setup docs explain mounted watched folders and self-signed TLS.
+- Before any model is downloaded, confirm `docker compose ps` shows `llama-server`
+  unhealthy, its log names the model file it is waiting for, and Ask says no
+  model is configured rather than failing a request.
+- Download the `LLM_MODEL_FILE` model from Settings → Models. Confirm
+  `llama-server` turns healthy without a restart, the model shows as active, and
+  section 5 (Ask and Research) passes on Docker too.
 
 Release blockers:
 
 - App cannot launch without manual service surgery.
+- The Harbor Clerk window crashes, or never leaves the waiting view while the
+  server is up.
+- Docker: Ask or Research fails with a model downloaded, or `llama-server`
+  reports healthy with no model loaded.
 - Empty-state onboarding strands the user away from folder setup.
 - Skipping local AI breaks non-AI surfaces.
 

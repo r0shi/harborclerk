@@ -743,8 +743,10 @@ class ServiceManager: ObservableObject {
         // figures a start computes do not change between attempts, so a
         // restart would refuse again (#709). Defensive: today no caller
         // reaches here from a refusal, since a refused start spawns nothing
-        // for `onUnexpectedExit` to report and the health checker probes
-        // only `running` services. The guard is for the caller that does.
+        // for `onUnexpectedExit` to report and the health checker restarts
+        // only services it saw `running` (it probes an errored one only while
+        // it holds a live process, which a refusal never does). The guard is
+        // for the caller that does.
         if let refusal = service.startRefusal {
             Log.logger("lifecycle").notice(
                 "[\(service.name, privacy: .public)] Not restarting \(refusal.modelId, privacy: .public): \(refusal.message, privacy: .public)")
@@ -877,13 +879,7 @@ class ServiceManager: ObservableObject {
                 // of that transition finishes it, not this loop.
                 guard service.state == .starting else { return }
                 if healthy {
-                    service.state = .running
-                    // Reset crash counter now that the service is confirmed healthy
-                    if let pySvc = service as? PythonService {
-                        pySvc.resetRestartCount()
-                    }
-                    savePidFile()
-                    notifyStateChanged()
+                    markReady(service)
                     return
                 }
                 // Not `Task.sleep`: this loop keeps driving after its Task is
@@ -902,8 +898,10 @@ class ServiceManager: ObservableObject {
             if service.holdsLiveProcess {
                 // Kept, not killed: a model that loads slowly is still coming
                 // up and will serve. Every stop and relaunch path now acts on
-                // the process rather than this state, so it is not a leak.
-                Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Health check timeout; the process is still running and is stopped by the next stop or relaunch")
+                // the process rather than this state, so it is not a leak, and
+                // the health checker keeps probing it and promotes it to
+                // `running` once it answers (#767).
+                Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Health check timeout; the process is still running, and is marked running if it starts answering")
             } else {
                 Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Health check timeout")
             }
@@ -915,6 +913,23 @@ class ServiceManager: ObservableObject {
             notifyStateChanged()
             Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Start failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// A service's health check has passed: record it as `running`, the one
+    /// way a service gets there. `startService` calls this when the start-up
+    /// probe answers, and the health checker when a service it had given up
+    /// on (errored by a start-up timeout, process kept) starts answering
+    /// later (#767). Either way the service then gets what any running service
+    /// gets: a fresh crash budget, a pid in the orphan file, and the health
+    /// checker's consecutive-failure restarts.
+    func markReady(_ service: any ManagedService) {
+        service.state = .running
+        // Reset crash counter now that the service is confirmed healthy
+        if let pySvc = service as? PythonService {
+            pySvc.resetRestartCount()
+        }
+        savePidFile()
+        notifyStateChanged()
     }
 
     /// Put a start refusal in front of the user, once per launch per model.
@@ -1339,11 +1354,237 @@ class ServiceManager: ObservableObject {
 
     // MARK: - Environment
 
+    /// Where the Python processes may write caches, all outside the bundle.
+    ///
+    /// The bundle is signed and must stay byte-for-byte what was signed: any
+    /// file a process adds under `Contents/` breaks `codesign --verify --deep
+    /// --strict` and can draw a Gatekeeper or App Management prompt. numba did
+    /// exactly that, writing `*.nbi`/`*.nbc` into
+    /// `venv/.../{umap,pynndescent}/__pycache__/` (#846), because its default
+    /// is the source's own `__pycache__` whenever that is writable.
+    ///
+    /// Swept for other writers at the same time; none reach the bundle:
+    /// the dicts these processes get are closed (no `HOME`), so Python resolves
+    /// `~` from the password database and Hugging Face, torch, tokenizers and
+    /// any `XDG_CACHE_HOME` default land under the user's home; the embedder
+    /// and reranker load their models from bundle paths, read-only; matplotlib,
+    /// NLTK and tiktoken are not in the venv. Bytecode is the one other
+    /// writer, and `PYTHONDONTWRITEBYTECODE` has covered it for every process.
+    ///
+    /// Applied by each launch path through `applyingRuntimeCacheRules`: a
+    /// Python service's `launchEnvironment()` and Alembic's
+    /// `MigrationRunner.environment`.
+    ///
+    /// numba (0.64) is held to the directory given here by
+    /// `NUMBA_CACHE_LOCATOR_CLASSES`: only its user-provided locator, so the
+    /// in-tree one (the source's `__pycache__`, in the bundle) is never
+    /// consulted, even if that directory later fails numba's own probe.
+    ///
+    /// The directory is the first of these that can be created and written:
+    /// the Caches folder, the app's Application Support folder (which it
+    /// already writes: Postgres's data is there), `$TMPDIR`, and a fresh
+    /// `mkdtemp` directory under `/tmp`. If none can, `NUMBA_CACHE_DIR` is
+    /// left unset and the error logged: numba then refuses to cache, and
+    /// because umap and pynndescent declare `cache=True` functions,
+    /// `import umap` raises "cannot cache function ...: no locator
+    /// available", so topic computation fails rather than writing into the
+    /// bundle. Measured with the locked numba 0.64.0, pynndescent 0.6.0 and
+    /// umap 0.5.11: no other locator or variable (the zip and IPython
+    /// locators, `NUMBA_DISABLE_JIT`, which still caches `@vectorize`
+    /// functions) lets umap import without a writable directory.
+    nonisolated static func runtimeCacheEnvironment(
+        cachesDir: URL = AppSettings.cachesDir,
+        fallbackDirs: [URL] = runtimeCacheFallbackDirs,
+        makeTemporaryDir: () -> URL? = makeFreshTemporaryDir
+    ) -> [String: String] {
+        var env = [
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "NUMBA_CACHE_LOCATOR_CLASSES": "UserProvidedCacheLocator",
+        ]
+        if let dir = usableCacheDirectory(
+            [cachesDir.appendingPathComponent("numba")] + fallbackDirs, makeTemporaryDir: makeTemporaryDir
+        ) {
+            env["NUMBA_CACHE_DIR"] = dir.path
+        } else {
+            Log.logger("lifecycle").error(
+                "No writable numba cache directory anywhere; numba will refuse to cache, so umap cannot be imported and topic computation will fail (the bundle is not written)")
+        }
+        return env
+    }
+
+    /// Variables a library writes through: a cache it fills, or a directory it
+    /// downloads into. One pointing into the bundle is dropped at launch (see
+    /// `applyingRuntimeCacheRules`); the first two the launch also sets itself.
+    /// The Hugging Face variables (`HF_HOME`, `HF_HUB_CACHE`,
+    /// `TRANSFORMERS_CACHE`, `SENTENCE_TRANSFORMERS_HOME`) can name shipped,
+    /// read-only models, but the same libraries download into them whenever a
+    /// model is missing, so they count as write caches and are dropped too.
+    nonisolated static let writeCacheVariables = [
+        "NUMBA_CACHE_DIR", "PYTHONPYCACHEPREFIX", "XDG_CACHE_HOME", "MPLCONFIGDIR", "TORCH_HOME",
+        "HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE", "SENTENCE_TRANSFORMERS_HOME",
+    ]
+
+    /// Data search paths a library only reads. A bundle entry there is
+    /// legitimate (shipped data) and is left in place, only logged. NLTK
+    /// would download into the first writable entry if code called
+    /// `nltk.download()`; nothing does, and NLTK is not in the venv.
+    nonisolated static let readOnlyDataVariables = ["NLTK_DATA"]
+
+    /// The cache rules every launched Python process gets, applied last over
+    /// everything else in `env`. A write-cache variable whose value (or any
+    /// entry of a colon-separated list) lies inside `bundle` is dropped and
+    /// logged; a read-only data path into the bundle is kept and logged. Then
+    /// the runtime cache variables, resolved once per app run, are laid over
+    /// the result. Neither the shared dict nor a service's own overrides can
+    /// point a cache into the signed bundle (#846): any file a process adds
+    /// under `Contents/` breaks `codesign --verify --deep --strict`.
+    ///
+    /// The rule for every Python process the app launches, so every launch
+    /// path calls this last: `PythonService.launchEnvironment()` (what
+    /// `start()` hands the process) and `MigrationRunner.environment` (what
+    /// `run()` hands Alembic). Where the numba cache goes, and what happens
+    /// when no directory is writable, is in `runtimeCacheEnvironment`.
+    /// `tests/test_numba_cache_env.py` runs the real `import umap` under
+    /// these variables, and `docs/releasing.md` checks the seal on an
+    /// installed copy after a smoke run.
+    nonisolated static func applyingRuntimeCacheRules(
+        to env: [String: String],
+        bundle: URL = Bundle.main.bundleURL
+    ) -> [String: String] {
+        func pointsIntoBundle(_ value: String) -> Bool {
+            value.split(separator: ":").contains { isPath(String($0), inside: bundle) }
+        }
+        var result = env
+        for key in writeCacheVariables {
+            guard let value = env[key], pointsIntoBundle(value) else { continue }
+            Log.logger("lifecycle").error(
+                "Dropped \(key, privacy: .public)=\(value, privacy: .public): it points into the app bundle")
+            result.removeValue(forKey: key)
+        }
+        for key in readOnlyDataVariables {
+            guard let value = env[key], pointsIntoBundle(value) else { continue }
+            Log.logger("lifecycle").notice(
+                "Kept \(key, privacy: .public)=\(value, privacy: .public): a read-only data path into the app bundle")
+        }
+        return result.merging(sharedRuntimeCacheEnvironment()) { _, cache in cache }
+    }
+
+    /// `runtimeCacheEnvironment()`, resolved once per app run (per Caches
+    /// folder) and reused by every launch. Resolving it on each launch made
+    /// every start and restart in the last-resort case call `mkdtemp` again:
+    /// a new directory each time, no cache reuse, and directories piling up
+    /// in `/tmp`.
+    nonisolated static func sharedRuntimeCacheEnvironment(cachesDir: URL = AppSettings.cachesDir) -> [String: String] {
+        RuntimeCacheResolution.resolved(for: cachesDir) {
+            runtimeCacheEnvironment(
+                cachesDir: cachesDir,
+                fallbackDirs: RuntimeCacheResolution.fallbackDirsOverride ?? runtimeCacheFallbackDirs,
+                makeTemporaryDir: RuntimeCacheResolution.makeTemporaryDirOverride ?? makeFreshTemporaryDir
+            )
+        }
+    }
+
+    /// Whether `path` is `root` or lies under it, whichever way either is
+    /// spelled: as given, with symlinks resolved, and with or without the
+    /// `/private` that macOS puts in front of `/tmp`, `/var` and `/etc`
+    /// (`resolvingSymlinksInPath` drops it for a path that exists and keeps
+    /// it for one that does not yet).
+    nonisolated static func isPath(_ path: String, inside root: URL) -> Bool {
+        func forms(_ p: String) -> Set<String> {
+            let url = URL(fileURLWithPath: p)
+            var out: Set<String> = []
+            for s in [url.standardizedFileURL.path, url.resolvingSymlinksInPath().standardizedFileURL.path] {
+                out.insert(s)
+                if s.hasPrefix("/private/") {
+                    out.insert(String(s.dropFirst("/private".count)))
+                } else if ["/tmp/", "/var/", "/etc/"].contains(where: { s.hasPrefix($0) }) {
+                    out.insert("/private" + s)
+                }
+            }
+            return out
+        }
+        let roots = forms(root.path).map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        return forms(path).contains { p in
+            roots.contains { (p + "/").hasPrefix($0) }
+        }
+    }
+
+    /// Where the numba cache goes, in order, when the Caches folder cannot
+    /// take it: the app's Application Support folder, then `$TMPDIR`.
+    nonisolated static let runtimeCacheFallbackDirs = [
+        AppSettings.dataDir.appendingPathComponent("caches/numba", isDirectory: true),
+        FileManager.default.temporaryDirectory.appendingPathComponent("harbor-clerk-numba", isDirectory: true),
+    ]
+
+    /// The last candidate: a fresh directory under `/tmp` (not `$TMPDIR`), or
+    /// nil if even that cannot be made.
+    nonisolated static func makeFreshTemporaryDir() -> URL? {
+        var template = Array("/private/tmp/harbor-clerk-numba.XXXXXX".utf8CString)
+        guard let made = mkdtemp(&template) else { return nil }
+        return URL(fileURLWithPath: String(cString: made), isDirectory: true)
+    }
+
+    /// The first of `candidates` that can be created and written, then a
+    /// directory from `makeTemporaryDir` if that one can, otherwise nil.
+    /// Probed with a write, as numba probes it: a directory that exists but
+    /// cannot be written is unusable too. Every miss is logged.
+    nonisolated static func usableCacheDirectory(_ candidates: [URL], makeTemporaryDir: () -> URL?) -> URL? {
+        for dir in candidates {
+            guard let problem = cacheDirectoryProblem(dir) else { return dir }
+            Log.logger("lifecycle").error(
+                "Cache directory \(dir.path, privacy: .public) unusable (\(problem, privacy: .public)); trying the next")
+        }
+        guard let fresh = makeTemporaryDir() else {
+            Log.logger("lifecycle").error("Could not make a temporary cache directory either")
+            return nil
+        }
+        if let problem = cacheDirectoryProblem(fresh) {
+            Log.logger("lifecycle").error(
+                "Temporary cache directory \(fresh.path, privacy: .public) unusable too (\(problem, privacy: .public))")
+            return nil
+        }
+        return fresh
+    }
+
+    /// Why `dir` cannot serve as a cache directory, or nil if it can: it is
+    /// created if missing, then probed with a write the way numba probes it.
+    private nonisolated static func cacheDirectoryProblem(_ dir: URL) -> String? {
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let probe = dir.appendingPathComponent(".write-probe-\(UUID().uuidString)")
+            try Data().write(to: probe)
+            try? fm.removeItem(at: probe)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     /// Build the full environment dict for Python services.
     nonisolated static func pythonEnvironment() -> [String: String] {
-        let settings = AppSettings.shared
-        let bundle = Bundle.main.resourceURL!
+        // Master encryption key for secret storage. See MasterKeyManager and the
+        // Python harbor_clerk.secrets module. Read from Keychain (the bootstrap
+        // call in AppDelegate.applicationDidFinishLaunching ensures it exists)
+        // and exported to subprocesses as the same env var Docker operators set
+        // directly — one Python code path on both deployments.
+        let masterKey = MasterKeyManager.production.loadOrGenerate()
+        return pythonEnvironment(
+            settings: AppSettings.shared,
+            bundle: Bundle.main.resourceURL!,
+            masterKeyB64: MasterKeyManager.production.base64Encoded(key: masterKey)
+        )
+    }
 
+    /// The environment for Python services from explicit inputs, so a test can
+    /// build it without the live settings, the Keychain or the app bundle.
+    /// The cache variables are not here: `PythonService.launchEnvironment()`
+    /// applies them last, over this dict and the service's own overrides.
+    nonisolated static func pythonEnvironment(
+        settings: AppSettings,
+        bundle: URL,
+        masterKeyB64: String
+    ) -> [String: String] {
         let hashFile = bundle.appendingPathComponent("venv/build-hash.txt")
         let buildHash = (try? String(contentsOf: hashFile, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
@@ -1356,18 +1597,9 @@ class ServiceManager: ObservableObject {
         let buildVersion = (try? String(contentsOf: versionFile, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        // Master encryption key for secret storage. See MasterKeyManager and the
-        // Python harbor_clerk.secrets module. Read from Keychain (the bootstrap
-        // call in AppDelegate.applicationDidFinishLaunching ensures it exists)
-        // and exported to subprocesses as the same env var Docker operators set
-        // directly — one Python code path on both deployments.
-        let masterKey = MasterKeyManager.production.loadOrGenerate()
-        let masterKeyB64 = MasterKeyManager.production.base64Encoded(key: masterKey)
-
         return [
             "BUILD_HASH": buildHash,
             "BUILD_VERSION": buildVersion,
-            "PYTHONDONTWRITEBYTECODE": "1",
             "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
             "STORAGE_BACKEND": "filesystem",
             "STORAGE_PATH": settings.originalsDir.path,
@@ -1402,5 +1634,36 @@ class ServiceManager: ObservableObject {
             // in api/routes/system.py.
             "BUNDLE_RESOURCES": bundle.path,
         ]
+    }
+}
+
+/// The memo behind `ServiceManager.sharedRuntimeCacheEnvironment`, and the
+/// hooks a test uses to drive the fallback without touching the live
+/// Application Support folder or `/tmp`.
+enum RuntimeCacheResolution {
+    private static let lock = NSLock()
+    private static var resolvedByCachesDir: [String: [String: String]] = [:]
+
+    /// Set by a test, in place of the production fallbacks.
+    static var fallbackDirsOverride: [URL]?
+    /// Set by a test, in place of `mkdtemp` under `/tmp`.
+    static var makeTemporaryDirOverride: (() -> URL?)?
+
+    static func resolved(for cachesDir: URL, compute: () -> [String: String]) -> [String: String] {
+        lock.lock()
+        defer { lock.unlock() }
+        if let known = resolvedByCachesDir[cachesDir.path] { return known }
+        let env = compute()
+        resolvedByCachesDir[cachesDir.path] = env
+        return env
+    }
+
+    /// Forget every resolution and test hook.
+    static func resetForTesting() {
+        lock.lock()
+        defer { lock.unlock() }
+        resolvedByCachesDir = [:]
+        fallbackDirsOverride = nil
+        makeTemporaryDirOverride = nil
     }
 }

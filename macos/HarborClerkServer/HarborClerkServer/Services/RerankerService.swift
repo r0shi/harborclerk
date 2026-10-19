@@ -17,15 +17,15 @@ final class RerankerService: PythonService {
             // unreachable on this platform — and macOS is the only place the
             // MPS allocator code does anything at all.
             "RERANKER_MODEL": modelPath,
-            "GPU_CACHE_HIGH_WATER_MB": String(AppSettings.shared.gpuCacheHighWaterMB),
-            "RERANK_BATCH_SIZE": String(AppSettings.shared.rerankBatchSize),
+            "GPU_CACHE_HIGH_WATER_MB": String(settings.gpuCacheHighWaterMB),
+            "RERANK_BATCH_SIZE": String(settings.rerankBatchSize),
             "HOST": "127.0.0.1",
-            "PORT": String(AppSettings.shared.rerankerPort),
+            "PORT": String(settings.rerankerPort),
         ]
     }
 
     override func healthCheck() async -> Bool {
-        let port = AppSettings.shared.rerankerPort
+        let port = settings.rerankerPort
         guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
         return await httpProbeOK(url)
     }

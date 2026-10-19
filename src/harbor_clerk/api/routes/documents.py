@@ -7,6 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_admin, require_read_access
@@ -168,9 +169,14 @@ async def list_documents(
         "created": Document.created_at,
         "title": Document.title,
     }[sort]
-    order = sort_column.asc() if sort_dir == "asc" else sort_column.desc()
+    # doc_id last: titles repeat and timestamps tie (one transaction shares now()), and each page is its own
+    # query, so without a total order the pages skip and repeat documents.
+    if sort_dir == "asc":
+        order = (sort_column.asc(), Document.doc_id.asc())
+    else:
+        order = (sort_column.desc(), Document.doc_id.desc())
 
-    query = base.order_by(order).offset(offset)
+    query = base.order_by(*order).offset(offset)
     if limit > 0:
         query = query.limit(limit)
 
@@ -700,7 +706,9 @@ async def get_document_entities(
 
     total = (await session.execute(select(func.count()).select_from(count_q.subquery()))).scalar() or 0
 
-    rows = (await session.execute(count_q.order_by(func.count().desc()).offset(offset).limit(limit))).all()
+    # Tie-broken on the group key: a total order, so the pages neither skip nor repeat entities.
+    paged = count_q.order_by(func.count().desc(), Entity.entity_text, Entity.entity_type)
+    rows = (await session.execute(paged.offset(offset).limit(limit))).all()
 
     entities = [EntityOut(entity_text=r[0], entity_type=r[1], mention_count=r[2]) for r in rows]
 
@@ -841,23 +849,47 @@ async def download_document(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    import os
+    import asyncio
     from pathlib import Path
 
-    # Read from storage if available; fall back to source_path for watched folder files
-    if doc.original_object_key:
+    from harbor_clerk.file_types import guess_mime_type
+    from harbor_clerk.watched_source import log_read_error, watched_state_async
+
+    # Read as the extract stage does (watched_source): a watched document from its
+    # file (even with a stored original, #859), else the stored original. A failed
+    # lookup is a 503, and a watched document whose file cannot be read in place a
+    # 404, never the stored original: that would serve the wrong bytes. An
+    # unverified source_path is never read.
+    try:
+        state = await watched_state_async(session, doc)
+    except SQLAlchemyError:
+        logger.warning("watched-file lookup failed for doc %s", doc_id, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Source file temporarily unavailable; try again.",
+        )
+    content_type = doc.mime_type or "application/octet-stream"
+    if state.watched:
+        if state.path is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file is missing")
+        try:
+            file_bytes = await asyncio.to_thread(Path(state.path).read_bytes)
+        except OSError as exc:
+            # Missing, a path component no longer a directory, no permission...: the
+            # file cannot be read in place. Logged with the path; the detail names none.
+            log_read_error(exc, doc_id, state.path)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file is missing")
+        filename = posixpath.basename(state.path)
+        # doc.mime_type is what the extract stage set from this file and its magic
+        # bytes; the extension is the fallback when it is unset.
+        content_type = doc.mime_type or guess_mime_type(state.path)
+    elif doc.original_object_key:
         storage = get_storage()
         obj = storage.get_object(doc.original_bucket, doc.original_object_key)
         file_bytes = obj.read()
         filename = posixpath.basename(doc.original_object_key)
-    elif doc.source_path and os.path.exists(doc.source_path):
-        # Watched folder file — no stored object, read from original location
-        file_bytes = Path(doc.source_path).read_bytes()
-        filename = posixpath.basename(doc.source_path)
     else:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file unavailable")
-
-    content_type = doc.mime_type or "application/octet-stream"
 
     from urllib.parse import quote
 

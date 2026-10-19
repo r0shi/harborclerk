@@ -17,16 +17,40 @@ from harbor_clerk.models import Chunk, Document, DocumentPage, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.worker.pipeline import cancel_doc_jobs
 
+_STORED_KEYS: list[str] = []
+
+
+def _store_original(name: str, body: bytes, mime: str) -> str:
+    """Store ``body`` as a document's original (read through watched_source, #851); removed after the test."""
+    import io
+    import uuid
+
+    from harbor_clerk.storage import get_storage
+
+    key = f"originals/docs/{uuid.uuid4()}/{name}"
+    get_storage().put_object("originals", key, io.BytesIO(body), len(body), mime)
+    _STORED_KEYS.append(key)
+    return key
+
+
+@pytest.fixture(autouse=True)
+def _remove_stored_originals():
+    yield
+    from harbor_clerk.storage import get_storage
+
+    while _STORED_KEYS:
+        get_storage().remove_object("originals", _STORED_KEYS.pop())
+
 
 async def _make_doc(db_session, stage: JobStage, tmp_path, *, pages: int = 0, chunks: int = 0):
-    source = tmp_path / "scan.pdf"
-    source.write_bytes(b"%PDF-1.4 stand-in; rendering is stubbed")
+    key = _store_original("scan.pdf", b"%PDF-1.4 stand-in; rendering is stubbed", "application/pdf")
     doc = Document(
         title="scan",
         canonical_filename="scan.pdf",
         status="active",
         sha256=hashlib.sha256(stage.value.encode()).digest(),
-        source_path=str(source),
+        original_bucket="originals",
+        original_object_key=key,
         mime_type="application/pdf",
         needs_ocr=True,
         extracted_chars=123,

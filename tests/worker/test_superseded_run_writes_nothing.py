@@ -24,18 +24,44 @@ from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 NEW_RUN_CHUNKS = 6
 
 
+_STORED_KEYS: list[str] = []
+
+
+def _store_original(name: str, body: bytes, mime: str) -> str:
+    """Store ``body`` as a document's original (read through watched_source, #851); removed after the test."""
+    import io
+    import uuid
+
+    from harbor_clerk.storage import get_storage
+
+    key = f"originals/docs/{uuid.uuid4()}/{name}"
+    get_storage().put_object("originals", key, io.BytesIO(body), len(body), mime)
+    _STORED_KEYS.append(key)
+    return key
+
+
+@pytest.fixture(autouse=True)
+def _remove_stored_originals():
+    yield
+    from harbor_clerk.storage import get_storage
+
+    while _STORED_KEYS:
+        get_storage().remove_object("originals", _STORED_KEYS.pop())
+
+
 async def _make_doc(db_session, stage: JobStage, tmp_path, *, mime="text/plain", page_text=None, chunks=0):
     """A document whose `stage` row is running under a claim made 30 s ago; returns (doc_id, claim)."""
     suffix = {"text/plain": "txt", "application/pdf": "pdf", "image/png": "png"}[mime]
-    source = tmp_path / f"{stage.value}.{suffix}"
-    source.write_bytes(b"The old run's text about leases. " * 40)
+    name = f"{stage.value}.{suffix}"
+    key = _store_original(name, b"The old run's text about leases. " * 40, mime)
     claim = datetime.now(UTC) - timedelta(seconds=30)
     doc = Document(
         title=f"superseded-{stage.value}",
-        canonical_filename=source.name,
+        canonical_filename=name,
         status="active",
         sha256=hashlib.sha256(f"superseded-{stage.value}-{mime}".encode()).digest(),
-        source_path=str(source),
+        original_bucket="originals",
+        original_object_key=key,
         mime_type=mime,
         needs_ocr=stage == JobStage.ocr,
         pipeline_status=PipelineStatus.chunking,

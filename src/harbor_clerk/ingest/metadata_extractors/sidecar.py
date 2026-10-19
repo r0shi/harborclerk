@@ -23,7 +23,9 @@ not an object, empty), is an ordinary document. `load_sidecar` is the one
 predicate both sides use, so a file is either attached or indexed, never
 neither.
 
-Returns None for docs without source_path (legacy uploads), without a
+Returns None for docs without source_path (`run_all` passes none unless the
+document is read in place from a watched folder, so uploads and mail never
+read a sidecar, whatever source_path they carry), without a
 matching sidecar file, with malformed JSON, with an empty object, or
 with a non-object top-level JSON value (list/string/etc).
 """
@@ -101,6 +103,8 @@ class SidecarExtractor:
     name = "sidecar"
 
     def extract(self, *, doc, raw_bytes: bytes, source_path: str | None) -> dict | None:
+        # `run_all` passes a source_path only for a document read in place from a
+        # watched folder; an upload's source_path is a label, not a file here.
         if not source_path:
             return None
         return load_sidecar(sidecar_path_for(source_path), owner=f"doc {getattr(doc, 'doc_id', '<unknown>')}")

@@ -45,20 +45,20 @@ ask:
 - id: cuad-key-15
   text: Which contracts contain a clause prohibiting the solicitation of the other party's customers? List every
     one you can find.
-  notes: No-Solicit Of Customers-Answer = Yes for 8 of 79 annotated contracts in the sample
+  notes: No-Solicit Of Customers-Answer = Yes for 8 of 80 annotated contracts in the sample
 - id: cuad-key-16
   text: Which contracts contain a non-disparagement clause? List every one you can find.
-  notes: Non-Disparagement-Answer = Yes for 9 of 79 annotated contracts in the sample
+  notes: Non-Disparagement-Answer = Yes for 9 of 80 annotated contracts in the sample
 - id: cuad-key-17
   text: Which contracts contain an irrevocable or perpetual license grant? List every one you can find.
-  notes: Irrevocable Or Perpetual License-Answer = Yes for 10 of 79 annotated contracts in the sample
+  notes: Irrevocable Or Perpetual License-Answer = Yes for 11 of 80 annotated contracts in the sample
 - id: cuad-key-18
   text: Which contracts contain a right of first refusal, first offer or first negotiation? List every one you can
     find.
-  notes: Rofr/Rofo/Rofn-Answer = Yes for 16 of 79 annotated contracts in the sample
+  notes: Rofr/Rofo/Rofn-Answer = Yes for 17 of 80 annotated contracts in the sample
 - id: cuad-key-19
   text: Which contracts contain a requirement that a party maintain insurance? List every one you can find.
-  notes: Insurance-Answer = Yes for 21 of 79 annotated contracts in the sample
+  notes: Insurance-Answer = Yes for 22 of 80 annotated contracts in the sample
 - id: cuad-key-20
   text: Which contracts are governed by Delaware law? List every one you can find.
-  notes: Governing Law-Answer = 'Delaware' for 7 of 79
+  notes: Governing Law-Answer = 'Delaware' for 8 of 80

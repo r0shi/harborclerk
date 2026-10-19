@@ -54,6 +54,14 @@ final class MockServiceManager: ServiceManager {
     /// callers can observe `cancelInFlightRestarts()` behaviour.
     var attemptAutoRestartDelay: Duration = .seconds(0)
 
+    /// The pid file in a scratch location: a service reaching `running`
+    /// writes it, and the default path is the live app's data folder.
+    override init() {
+        super.init()
+        pidFileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HealthCheckerTests-\(UUID().uuidString)-child-pids.txt")
+    }
+
     override func attemptAutoRestart(_ service: any ManagedService) async {
         // Honor the shutdown guard so tests can exercise the real
         // early-return path. Mirrors the production guard at the top of
@@ -235,5 +243,173 @@ final class HealthCheckerTests: XCTestCase {
         XCTAssertTrue(mockServices.attemptAutoRestartCalled.isEmpty, "must not call attemptAutoRestart")
         // Service still moves to .errored — only the restart path is skipped.
         XCTAssertEqual(svc.state, .errored)
+    }
+
+    // MARK: - An errored service whose process serves is promoted (#767)
+
+    /// Run `body` and fail the test if it has not returned within `seconds`,
+    /// so a mutation that makes a tick or a restart hang fails instead of
+    /// stalling the run.
+    @MainActor
+    private func bounded(_ what: String, seconds: TimeInterval = 10, _ body: @escaping @MainActor () async -> Void) async {
+        let returned = expectation(description: "\(what) returned within \(seconds)s")
+        let task = Task { @MainActor in
+            await body()
+            returned.fulfill()
+        }
+        await fulfillment(of: [returned], timeout: seconds)
+        task.cancel()
+    }
+
+    /// A manager and checker around one service, with the pid file removed
+    /// afterwards.
+    @MainActor
+    private func makeChecker(for svc: any ManagedService) -> (MockServiceManager, HealthChecker) {
+        let sm = MockServiceManager()
+        sm.services = [svc]
+        let url = sm.pidFileURL
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return (sm, HealthChecker(serviceManager: sm))
+    }
+
+    /// The #767 case: the start-up wait timed out (120 s for the LLM) and
+    /// marked the service errored, keeping the process; the model finished
+    /// loading and serves. The next tick must say so.
+    @MainActor
+    func testErroredServiceWhoseProcessAnswersIsPromotedToRunning() async {
+        let svc = MockProcessService(name: "LLM", state: .errored, holdsLiveProcess: true)
+        svc.healthy = true
+        let (sm, hc) = makeChecker(for: svc)
+
+        await bounded("one tick") { await hc.tickForTesting() }
+
+        XCTAssertEqual(svc.state, .running, "a process that answers its health check is running, whatever the start-up wait concluded")
+        XCTAssertEqual(svc.healthCalls, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sm.pidFileURL.path),
+                      "promoted through markReady, the same ready path as a start: its savePidFile ran and wrote the pid file (empty here, since the mock has no pid)")
+    }
+
+    @MainActor
+    func testErroredServiceWhoseProcessDoesNotAnswerStaysErroredAndIsNotRestarted() async {
+        let svc = MockProcessService(name: "LLM", state: .errored, holdsLiveProcess: true)
+        svc.healthy = false
+        let (sm, hc) = makeChecker(for: svc)
+
+        await bounded("seven ticks") { for _ in 0..<7 { await hc.tickForTesting() } }
+
+        XCTAssertEqual(svc.state, .errored)
+        XCTAssertEqual(svc.healthCalls, 7, "probed on every tick while the process is alive")
+        XCTAssertEqual(hc.inFlightTaskCount, 0, "an errored service is not counted towards a restart; it is already errored")
+        XCTAssertTrue(sm.attemptAutoRestartCalled.isEmpty)
+    }
+
+    @MainActor
+    func testErroredServiceWithoutALiveProcessIsNotProbed() async {
+        let svc = MockProcessService(name: "LLM", state: .errored, holdsLiveProcess: false)
+        svc.healthy = true  // e.g. something else answering on the port
+        let (_, hc) = makeChecker(for: svc)
+
+        await bounded("one tick") { await hc.tickForTesting() }
+
+        XCTAssertEqual(svc.state, .errored, "nothing of ours is serving; a crash or a refusal stays errored")
+        XCTAssertEqual(svc.healthCalls, 0)
+    }
+
+    @MainActor
+    func testErroredServicePausedForARestartIsLeftToTheRestart() async {
+        let svc = MockProcessService(name: "LLM", state: .errored, holdsLiveProcess: true)
+        svc.healthy = true
+        let (_, hc) = makeChecker(for: svc)
+        hc.pausedServices.insert(svc.name)
+
+        await bounded("one tick") { await hc.tickForTesting() }
+
+        XCTAssertEqual(svc.state, .errored)
+        XCTAssertEqual(svc.healthCalls, 0)
+    }
+
+    @MainActor
+    func testErroredLaunchdManagedServiceIsNotPromoted() async {
+        let svc = MockProcessService(name: "Tika", state: .errored, holdsLiveProcess: true)
+        svc.isLaunchdManaged = true
+        svc.healthy = true
+        let (_, hc) = makeChecker(for: svc)
+
+        await bounded("one tick") { await hc.tickForTesting() }
+
+        XCTAssertEqual(svc.state, .errored)
+        XCTAssertEqual(svc.healthCalls, 0)
+    }
+
+    /// A stop or relaunch that lands while the probe is in flight owns the
+    /// state; a late answer must not drag it back to `running`.
+    @MainActor
+    func testAStateChangeDuringTheProbeIsNotOverwritten() async {
+        let svc = MockProcessService(name: "LLM", state: .errored, holdsLiveProcess: true)
+        svc.healthy = true
+        svc.stateDuringHealthCheck = .stopping
+        let (_, hc) = makeChecker(for: svc)
+
+        await bounded("one tick") { await hc.tickForTesting() }
+
+        XCTAssertEqual(svc.state, .stopping)
+    }
+
+    /// An auto-restart that pauses the service while the probe is in flight
+    /// owns it from then on, even though the state still reads `errored`
+    /// (attemptAutoRestart pauses before it stops anything); a late answer
+    /// must not promote it under the restart.
+    @MainActor
+    func testAServicePausedDuringTheProbeIsNotPromoted() async {
+        let svc = MockProcessService(name: "LLM", state: .errored, holdsLiveProcess: true)
+        svc.healthy = true
+        let (_, hc) = makeChecker(for: svc)
+        svc.duringHealthCheck = { [unowned svc] in hc.pausedServices.insert(svc.name) }
+
+        await bounded("one tick") { await hc.tickForTesting() }
+
+        XCTAssertEqual(svc.healthCalls, 1, "probed: the pause landed after the pre-check")
+        XCTAssertEqual(svc.state, .errored)
+    }
+
+    /// An answer from the port after our child has exited is not our child
+    /// serving (a stale server from an earlier run, say); it stays errored.
+    @MainActor
+    func testAProcessThatExitsDuringTheProbeIsNotPromoted() async {
+        let svc = MockProcessService(name: "LLM", state: .errored, holdsLiveProcess: true)
+        svc.healthy = true
+        svc.holdsLiveProcessDuringHealthCheck = false
+        let (_, hc) = makeChecker(for: svc)
+
+        await bounded("one tick") { await hc.tickForTesting() }
+
+        XCTAssertEqual(svc.state, .errored)
+    }
+
+    /// Once promoted, the service is an ordinary running one: six failed
+    /// probes error it and dispatch the health-driven restart that #767 lost
+    /// for the life of the server.
+    @MainActor
+    func testAPromotedServiceGetsTheUsualHealthDrivenRestart() async {
+        let svc = MockProcessService(name: "LLM", state: .errored, holdsLiveProcess: true)
+        svc.healthy = true
+        let (sm, hc) = makeChecker(for: svc)
+        // Keeps the dispatched restart in flight to be counted; cancelled below.
+        sm.attemptAutoRestartDelay = .seconds(30)
+
+        await bounded("promotion tick") { await hc.tickForTesting() }
+        XCTAssertEqual(svc.state, .running)
+
+        svc.healthy = false
+        await bounded("six failing ticks") { for _ in 0..<6 { await hc.tickForTesting() } }
+
+        XCTAssertEqual(svc.state, .errored)
+        XCTAssertEqual(hc.inFlightTaskCount, 1, "the sixth consecutive failure dispatches an auto-restart")
+        await bounded("the dispatched restart") {
+            // Stops on cancellation too, so a timed-out wait does not spin on.
+            while sm.attemptAutoRestartCalled.isEmpty && !Task.isCancelled { await Task.yield() }
+        }
+        XCTAssertEqual(sm.attemptAutoRestartCalled, ["LLM"])
+        await bounded("draining the restart") { await hc.cancelInFlightRestarts() }
     }
 }

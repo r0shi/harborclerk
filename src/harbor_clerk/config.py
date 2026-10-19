@@ -108,6 +108,18 @@ class Settings(BaseSettings):
     # for summaries while still wanting the LLM for chat / research.
     summary_force_apple_intelligence: bool = Field(default=False)
     models_dir: str = Field(default="./data/models")
+    # Docker Compose only (#654): the GGUF file the `llama-server` service is started with (`-m`), and
+    # the context it runs at (`-c`). Compose has no launcher to start llama-server per model, so the
+    # model is chosen there, and the app follows it rather than the other way round: `llm_model_id` is
+    # the registry id of that file while the file is in `models_dir`, and empty while it is not
+    # (`_apply_model_file`); the context bounds what prompts are budgeted to
+    # (`llm/models.py::effective_context`). Both apply only under `is_compose()`: HC_DEPLOYMENT=compose,
+    # which only docker-compose.yml's `environment:` sets, and no native config.json. A `.env` copied
+    # from .env.example (Settings reads it from the working directory) does not make a source run
+    # Compose, and the macOS app, whose launcher sizes `-c` itself, never is.
+    hc_deployment: str = Field(default="")
+    llm_model_file: str = Field(default="")
+    llm_context_tokens: int = Field(default=0)
 
     # Native macOS app config file (set by Swift via env var)
     native_config_file: str = Field(default="")
@@ -189,6 +201,31 @@ class Settings(BaseSettings):
         ),
     )
 
+    @field_validator("llm_context_tokens", mode="before")
+    @classmethod
+    def _lenient_context_tokens(cls, value: object) -> int:
+        """LLM_CONTEXT_TOKENS is read by every service from `.env`, so a malformed value (`8k`, `16,384`, `-1`)
+        must not stop Settings() from constructing, which would crash-loop the app, the watcher and every worker
+        (main ignored the variable). It is used only when `parse_context_tokens` accepts it. Unset or zero is 0
+        (not set). Anything else is logged once, naming the value, and is 0 too. Under Compose,
+        `_check_compose_context` then applies the compose default, as the entrypoint does."""
+        global _context_tokens_rejected
+        text = str(value)
+        tokens = parse_context_tokens(text)
+        if tokens is not None:
+            return tokens
+        if text.strip(ASCII_WHITESPACE).strip("0") == "":  # unset, or zero: no logging here (see the Compose check)
+            return 0
+        _context_tokens_rejected = True
+        logger.error(
+            "LLM_CONTEXT_TOKENS=%r is not a whole number of tokens from 1 to %d; ignoring it (under Docker Compose "
+            "the compose default, %d, applies)",
+            value,
+            CONTEXT_TOKENS_MAX,
+            COMPOSE_DEFAULT_CONTEXT_TOKENS,
+        )
+        return 0
+
     @field_validator("public_url", "local_mcp_url")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
@@ -208,10 +245,174 @@ def get_settings() -> Settings:
         # watcher alone starts several threads that all call this at once
         # (watcher/main.py: discovery, listener, per-folder scans, mail
         # observer), so one of them would silently get env-only values.
+        global _context_tokens_rejected
+        _context_tokens_rejected = False
         settings = Settings()
         _apply_to(settings)
+        _check_compose_context(settings)
+        configured_model_id = settings.llm_model_id
+        _apply_model_file(settings)
+        if configured_model_id and is_compose(settings) and configured_model_id != settings.llm_model_id:
+            logger.warning(
+                "LLM_MODEL_ID=%s is ignored: under Docker Compose LLM_MODEL_FILE (%r) chooses the model",
+                configured_model_id,
+                settings.llm_model_file,
+            )
         _settings = settings
     return _settings
+
+
+# Set by `Settings._lenient_context_tokens` when it rejected a malformed LLM_CONTEXT_TOKENS (and logged it), so
+# the Compose check does not log the same mistake twice. Reset by get_settings() before each construction.
+_context_tokens_rejected = False
+
+# The whitespace `str.strip()` would remove if it were ASCII-only (the entrypoint's `[:space:]` in the C locale).
+ASCII_WHITESPACE = " \t\n\r\f\v"
+# At most 7 digits: far below INT_MAX, which llama-server's std::stoi throws above.
+CONTEXT_TOKENS_MAX = 9_999_999
+
+
+def parse_context_tokens(text: str) -> int | None:
+    """The one rule for LLM_CONTEXT_TOKENS, which `docker/llama-server-entrypoint.sh` (`context_value`) applies
+    identically, so the context llama-server runs at and the one prompts are budgeted to cannot disagree: trim
+    ASCII whitespace, then 1 to 7 ASCII digits whose value is at least 1. Anything else is None (invalid).
+    tests/test_context_tokens_rule.py runs one table through both."""
+    trimmed = text.strip(ASCII_WHITESPACE)
+    if not 1 <= len(trimmed) <= 7 or not (trimmed.isascii() and trimmed.isdigit()):
+        return None
+    tokens = int(trimmed)
+    return tokens if tokens >= 1 else None
+
+
+# What docker-compose.yml passes as `-c` when LLM_CONTEXT_TOKENS is unset (`${LLM_CONTEXT_TOKENS:-8192}`);
+# tests/test_docker_compose_llama.py holds the two together.
+COMPOSE_DEFAULT_CONTEXT_TOKENS = 8192
+
+
+def _check_compose_context(settings: Settings) -> None:
+    """Under Compose, LLM_CONTEXT_TOKENS=0 is a mistake: llama-server would read `-c 0` as the model's training
+    context (262,144 for Qwen3.5). Compose interpolation cannot refuse a 0, so the entrypoint replaces it with the
+    compose default and the app budgets to the same, so the two agree."""
+    if is_compose(settings) and settings.llm_context_tokens <= 0:
+        if not _context_tokens_rejected:  # a malformed value was already logged, naming it
+            logger.error(
+                "LLM_CONTEXT_TOKENS=0 is not supported under Docker Compose; the llama-server entrypoint replaces "
+                "it with %d and prompts are budgeted to the same. Set LLM_CONTEXT_TOKENS in .env to change it.",
+                COMPOSE_DEFAULT_CONTEXT_TOKENS,
+            )
+        settings.llm_context_tokens = COMPOSE_DEFAULT_CONTEXT_TOKENS
+
+
+def is_compose(settings: Settings) -> bool:
+    """Whether this process is a Docker Compose service whose llama-server the compose file starts (#654).
+
+    Only docker-compose.yml sets HC_DEPLOYMENT=compose, in the `environment:` of `app` and `worker-llm`.
+    The marker is explicit because the variables it gates can arrive by accident: Settings reads `.env`
+    from the working directory, so a source run beside the `.env` the Docker quick start copies would
+    otherwise become Compose. A native config.json means the macOS app, never Compose, whatever is set."""
+    return settings.hc_deployment == "compose" and not settings.native_config_file
+
+
+NO_MODEL_MESSAGE = "No LLM model configured. Select and activate a model in Settings."
+
+
+def no_model_message(settings: Settings) -> str:
+    """What to tell someone who asks for the local model when none is active.
+
+    Under Docker Compose the model is LLM_MODEL_FILE, active once its file is in the volume (#654): the action
+    is to download that file, not to activate a model, which Compose refuses. Elsewhere, activate one."""
+    if not is_compose(settings):
+        return NO_MODEL_MESSAGE
+    filename = compose_model_file(settings)
+    if settings.llm_model_file.endswith("/"):
+        return (
+            f"No local model is configured: LLM_MODEL_FILE {settings.llm_model_file} ends in '/'; "
+            "set it to a model's file name in .env."
+        )
+    if not filename:
+        return "No local model is configured: LLM_MODEL_FILE is empty in .env."
+    from harbor_clerk.llm.models import model_for_file  # llm.models imports nothing from this package
+
+    if model_for_file(filename) is None:
+        # Served, perhaps, but not one the app can budget for: downloading does not help.
+        return (
+            f"LLM_MODEL_FILE {settings.llm_model_file} is not one of the models listed in Settings → Models; "
+            "set it to one of their files in .env."
+        )
+    return f"No local model is loaded yet. Download {filename} in Settings → Models."
+
+
+def _normalised_model_file(value: str) -> str:
+    """LLM_MODEL_FILE as a file name in the models volume: a leading `./` is dropped, as llama-server reads
+    `/models/./name` as `/models/name`. Nothing else is normalised: any other path component (a `/` left after
+    that) keeps the value as written, which is no curated file name. A lexical normalisation would claim the
+    curated model for `nosuch/../name` or `name/.`, paths the kernel does not open as that file. A value ending in
+    "/" names a directory, which the entrypoint will not start llama-server on: no file ("")."""
+    if not value or value.endswith("/"):
+        return ""
+    bare = value.removeprefix("./")
+    return value if "/" in bare else bare
+
+
+def compose_model_file(settings: Settings) -> str:
+    """The model file Compose's llama-server is started with, normalised (`./name` is `name`), or "" when the
+    model is not chosen that way.
+
+    Under the macOS app, or any run that is not a Compose service, `llm_model_file` never applies."""
+    return _normalised_model_file(settings.llm_model_file) if is_compose(settings) else ""
+
+
+# The last (file, state) `_apply_model_file` logged, so the per-stage refreshers report a change once.
+_model_file_reported: tuple[str, str] | None = None
+
+
+def _apply_model_file(settings: Settings) -> None:
+    """Under Docker Compose, make `llm_model_id` the model llama-server serves (#654).
+
+    Compose starts llama-server with `-m /models/$LLM_MODEL_FILE` and its entrypoint waits for that file,
+    so the model is loaded exactly when the file is in the shared volume. The app and `worker-llm` see
+    the same volume: the model is active while the file is there, and nothing is active while it is not,
+    so Ask says no model is configured and summaries fall back at once, instead of sending requests to a
+    server that is not listening (a summary would spend ~95 s of retries on each). A file that is not a
+    curated model's activates nothing: the registry is what budgets, tools and research flags come from.
+    An empty LLM_MODEL_FILE is the documented "no local model": llama-server is not started, so nothing is
+    active, whatever LLM_MODEL_ID says.
+
+    Runs when the settings are built and on every `refresh_llm_settings()`, which the chat and research
+    routes and the summarize stage call per request, so a download finishing is picked up without a
+    restart."""
+    global _model_file_reported
+    if not is_compose(settings):
+        return
+    filename = compose_model_file(settings)
+    if not filename:
+        if _model_file_reported != ("", "none"):
+            _model_file_reported = ("", "none")
+            if settings.llm_model_file:
+                logger.error(
+                    "LLM_MODEL_FILE %r ends in '/', a directory: no local model is configured, and LLM_MODEL_ID is ignored",
+                    settings.llm_model_file,
+                )
+            else:
+                logger.info("LLM_MODEL_FILE is empty: no local model is configured, and LLM_MODEL_ID is ignored")
+        settings.llm_model_id = ""
+        return
+    from harbor_clerk.llm.models import model_for_file  # llm.models imports nothing from this package
+
+    model = model_for_file(filename)
+    present = os.path.isfile(os.path.join(settings.models_dir, filename))
+    state = "unknown" if model is None else "present" if present else "missing"
+    if _model_file_reported != (filename, state):
+        _model_file_reported = (filename, state)
+        if model is None:
+            logger.warning("LLM_MODEL_FILE %r is not a curated model's file; no local model is active", filename)
+        elif not present:
+            logger.info(
+                "LLM_MODEL_FILE %s is not in %s; no local model is active until it is", filename, settings.models_dir
+            )
+        else:
+            logger.info("Local model %s is active: LLM_MODEL_FILE %s is in %s", model.id, filename, settings.models_dir)
+    settings.llm_model_id = model.id if model is not None and present else ""
 
 
 # Keys in config.json that deliberately do not map onto a Settings field.
@@ -357,7 +558,9 @@ def refresh_llm_settings() -> None:
 
     Workers are separate processes from the API server, so when the user
     changes the active model via the API, the worker's cached Settings
-    object is stale.  Call this before any LLM-dependent stage.
+    object is stale.  Call this before any LLM-dependent stage. Under Docker
+    Compose it also re-derives the active model from LLM_MODEL_FILE
+    (`_apply_model_file`).
     """
     apply_native_config(
         only={
@@ -368,6 +571,7 @@ def refresh_llm_settings() -> None:
             "research_verifier_revision_enabled",
         }
     )
+    _apply_model_file(get_settings())
 
 
 def sync_native_config(key: str, value: str | bool | int) -> None:

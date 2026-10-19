@@ -10,6 +10,12 @@ so the key is the same on every machine, and an experiment should cite a file, n
 Only questions the annotations answer without interpretation are asked: a contract's governing law, a date, and
 "which contracts have clause X" for clause types labelled Yes or No. A contract is asked about only if its filer
 has one contract in the sample, so that its name in a question is unambiguous.
+
+A contract is joined to its annotation row by its file name, normalised (`normalize`). `master_clauses.csv` truncates
+some names (`HarpoonTherapeuticsInc_20200312_10-K_EX-10.18_12051356_EX-10.18_Development Agreement` for the PDF that
+goes on to `_Option Agreement`; #815), so a contract with no exact row is matched by `annotation_rows`'s two inexact
+rules, each logged, and refused, also logged, whenever it could pair one row with two contracts or one contract with
+two rows.
 """
 
 from __future__ import annotations
@@ -17,15 +23,27 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import re
 import sys
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import yaml
 
 from scripts.test_corpora.runner.answer_key import company, normalize, score
 
+log = logging.getLogger(__name__)
+
 OUT_DIR = Path(__file__).resolve().parent.parent / "questions" / "keyed"
+
+# What a CUAD file name carries before its exhibit's description: filer, filing date, form, exhibit number and EDGAR
+# accession number (`HarpoonTherapeuticsInc_20200312_10-K_EX-10.18_12051356`). They narrow the candidates; they do
+# not identify a contract. In the 510-PDF release 11 groups are shared by two to four PDFs of one split exhibit, and
+# 329 names are not in this shape at all (`KALLOINC_11_03_2011-EX-10.1-STRATEGIC ALLIANCE AGREEMENT`) and have none.
+# A match is unique only because `annotation_rows` refuses every row another contract could also claim: loosen
+# those refusals and the identifiers alone will pair a row with the wrong half of a split exhibit.
+_IDENTIFIERS = re.compile(r"[^_]+_\d{8}_[^_]+_[^_]+_\d+(?=_)")
 
 # (clause column, how the question says it). Chosen for a positive count in the sample that is neither a
 # handful nor most of it, so that precision and recall both have room to move.
@@ -63,14 +81,75 @@ def _iso(mdy: str) -> str | None:
     return f"{year:04d}-{month:02d}-{day:02d}"
 
 
+def identifiers(name: str) -> str | None:
+    """The normalised leading identifiers of a CUAD file name, up to and including its accession number, or None
+    for a name not in that shape (`_IDENTIFIERS`)."""
+    m = _IDENTIFIERS.match(name)
+    return normalize(m.group(0)) if m else None
+
+
+def _same_identifiers(row: str, name: str) -> bool:
+    return identifiers(row) is not None and identifiers(row) == identifiers(name)
+
+
+def _truncated(row: str, name: str) -> bool:
+    """The row's name is the beginning of the contract's: their longest common prefix is the whole row name."""
+    return normalize(name).startswith(normalize(row))
+
+
+_RULES: tuple[tuple[str, Callable[[str, str], bool]], ...] = (
+    ("identifiers to the accession number", _same_identifiers),
+    ("the row's name is a prefix of the title", _truncated),
+)
+
+
+def annotation_rows(titles: list[str], rows: list[dict], release: Iterable[str] = ()) -> dict[str, dict]:
+    """title -> its annotation row, for each title that has one. A title whose normalised name is a row's is that
+    row's. Otherwise the rules in `_RULES` are tried in order, and the first that finds any row for the title
+    decides, matching only if it finds exactly one row, that row is no contract's by name, and no other contract
+    fits that row by any rule; anything else is refused and logged, and the title stays outside the key.
+    "Contract" is any ingested title or any PDF of the CUAD release (`release`, the stems of the files the sample
+    was drawn from), since a row that could be a contract outside the sample's is not this one's. So a row two
+    titles reach, by the same rule or by different ones, goes to neither. Every inexact match is logged."""
+    by_stem = {Path(r["Filename"]).stem: r for r in rows}
+    exact = {normalize(stem): r for stem, r in by_stem.items()}
+    names = sorted(set(titles) | set(release))
+    taken = {normalize(n) for n in names}  # a row whose name is a contract's is that contract's
+    out: dict[str, dict] = {}
+    for title in titles:
+        if normalize(title) in exact:
+            out[title] = exact[normalize(title)]
+            continue
+        for rule_name, rule in _RULES:
+            found = [stem for stem in by_stem if rule(stem, title)]
+            if not found:
+                continue
+            row = found[0]
+            if len(found) > 1:
+                log.warning("cuad key: %r not matched (%s): rows %s", title, rule_name, found)
+            elif normalize(row) in taken:
+                log.warning("cuad key: %r not matched (%s): row %r is another contract's", title, rule_name, row)
+            elif (claimants := [n for n in names if any(fits(row, n) for _, fits in _RULES)]) != [title]:
+                log.warning("cuad key: %r not matched (%s): row %r fits %s", title, rule_name, row, claimants)
+            else:
+                log.info("cuad key: %r matched inexactly (%s) to row %r", title, rule_name, row)
+                out[title] = by_stem[row]
+            break
+        else:
+            log.warning("cuad key: %r has no annotation row", title)
+    return out
+
+
 def build(workdir: Path) -> tuple[dict, dict]:
     base = workdir / "cuad"
     with open(
         base / "extracted" / "CUAD_v1" / "master_clauses.csv", newline="", encoding="utf-8", errors="replace"
     ) as f:
-        annotated = {normalize(Path(r["Filename"]).stem): r for r in csv.DictReader(f)}
+        annotated = list(csv.DictReader(f))
     titles = sorted(p.stem for p in (base / "ingest").glob("*.pdf"))
-    rows = {t: annotated[normalize(t)] for t in titles if normalize(t) in annotated}
+    # Every contract of the release, `.pdf` or `.PDF` (the sample took only the first; the release has both).
+    release = sorted(p.stem for p in (base / "extracted").rglob("*") if p.suffix.lower() == ".pdf")
+    rows = annotation_rows(titles, annotated, release)
     universe = sorted(rows)
     filers: dict[str, int] = {}
     for t in universe:
@@ -131,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--workdir", required=True, type=Path)
     p.add_argument("--out-dir", type=Path, default=OUT_DIR)
     args = p.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     questions, key = build(args.workdir.expanduser())
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "cuad.yaml").write_text(yaml.safe_dump(questions, sort_keys=False, allow_unicode=True, width=110))

@@ -1,7 +1,6 @@
 """Pipeline orchestrator — enqueue stages, advance pipeline, handle failures."""
 
 import logging
-import os
 import threading
 import uuid
 from contextlib import contextmanager
@@ -30,13 +29,11 @@ def _is_ner_available() -> bool:
     return _ner_available
 
 
-def _doc_filename(doc: Document) -> str:
-    """Return the filename portion of doc.source_path or original_object_key, or empty string."""
-    if doc.original_object_key:
-        return os.path.basename(doc.original_object_key)
-    if doc.source_path:
-        return os.path.basename(doc.source_path)
-    return ""
+def _doc_filename(doc: Document, session=None) -> str:
+    """The document's filename for job events (``watched_source.display_filename``)."""
+    from harbor_clerk.watched_source import display_filename
+
+    return display_filename(session, doc)
 
 
 def check_pipeline_seq(session, doc_id: uuid.UUID, expected_seq: int) -> bool:
@@ -482,7 +479,7 @@ def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> N
 
         session.commit()
 
-        filename = _doc_filename(doc)
+        filename = _doc_filename(doc, session)
 
         # Notify workers on per-queue channel for instant wakeup
         session.execute(
@@ -572,7 +569,7 @@ def advance_pipeline(doc_id: uuid.UUID) -> None:
     session = get_sync_session()
     try:
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
-        filename = _doc_filename(doc)
+        filename = _doc_filename(doc, session)
         current_seq = doc.pipeline_seq or 0
 
         # Gather completed and in-flight stages
@@ -810,7 +807,7 @@ def _mark_stage_done(
         # would regress it from ready back to summarized. Either is wrong.
         if stage not in _BACKGROUND_STAGES:
             doc.pipeline_status = done_status
-        filename = _doc_filename(doc)
+        filename = _doc_filename(doc, session)
 
         session.commit()
     finally:
@@ -892,7 +889,7 @@ def mark_stage_running(
                 doc_id,
             )
             return False
-        filename = _doc_filename(doc)
+        filename = _doc_filename(doc, session)
         session.commit()
     finally:
         session.close()
@@ -929,7 +926,7 @@ def cancel_doc_jobs(doc_id: uuid.UUID) -> int:
 
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
         if doc:
-            filename = _doc_filename(doc)
+            filename = _doc_filename(doc, session)
             if doc.pipeline_status not in (PipelineStatus.ready, PipelineStatus.error):
                 doc.pipeline_status = PipelineStatus.error
                 doc.error = "Cancelled by user"

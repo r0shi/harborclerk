@@ -24,6 +24,7 @@ from harbor_clerk.db import async_session_factory
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
 from harbor_clerk.models.document import Document
 from harbor_clerk.storage import get_storage
+from harbor_clerk.watched_source import log_read_error, watched_state_async
 
 log = logging.getLogger("reextract_metadata")
 
@@ -39,11 +40,26 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
 
         for doc in docs:
             processed += 1
-            # Load raw bytes from source_path (watched folder) or storage (legacy upload)
+            # Load raw bytes as the extract stage does (harbor_clerk.watched_source): a
+            # watched document from its file, else the stored original (uploads, mail;
+            # their source_path is only a label). A watched document whose file cannot
+            # be read in place, or a document with neither, is skipped: never a watched
+            # document's stored original, never an unverified source_path.
             raw_bytes: bytes | None = None
-            if doc.source_path and Path(doc.source_path).is_file():
-                raw_bytes = Path(doc.source_path).read_bytes()
-            elif doc.original_bucket and doc.original_object_key:
+            state = await watched_state_async(session, doc)
+            in_place = state.path
+            if state.watched:
+                if in_place is not None:
+                    try:
+                        raw_bytes = Path(in_place).read_bytes()
+                    except OSError as exc:
+                        log_read_error(exc, doc.doc_id, in_place)
+                        in_place = None
+                if in_place is None:
+                    log.warning("doc %s: its watched file cannot be read in place; skipping", doc.doc_id)
+                    skipped += 1
+                    continue
+            elif doc.original_object_key:
                 try:
                     response = storage.get_object(doc.original_bucket, doc.original_object_key)
                     raw_bytes = response.read()
@@ -52,15 +68,11 @@ async def reextract_all(*, dry_run: bool = False) -> tuple[int, int, int]:
                     skipped += 1
                     continue
             else:
-                log.info("doc %s has no source_path or storage object; skipping", doc.doc_id)
+                log.info("doc %s is not watched and has no stored original; skipping", doc.doc_id)
                 skipped += 1
                 continue
 
-            metadata = run_metadata_extractors(
-                doc=doc,
-                raw_bytes=raw_bytes,
-                source_path=doc.source_path,
-            )
+            metadata = run_metadata_extractors(doc=doc, raw_bytes=raw_bytes, in_place_path=in_place)
             if metadata == doc.doc_metadata:
                 continue  # idempotent no-op
             if dry_run:

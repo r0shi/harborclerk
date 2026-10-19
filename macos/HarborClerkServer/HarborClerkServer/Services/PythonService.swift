@@ -8,6 +8,13 @@ class PythonService: ManagedService {
     var process: Process?
     var holdsLiveProcess: Bool { process?.isRunning == true }
     var baseEnvironment: [String: String] = [:]
+    /// The settings a service's own environment and health check read. A test
+    /// points it at a config file of its own; the default is the live app's.
+    var settingsOverride: AppSettings?
+    var settings: AppSettings { settingsOverride ?? AppSettings.shared }
+    /// Spawns the configured process. A test replaces it to capture the
+    /// process `start()` built (its environment above all) without spawning.
+    var launcher: (Process) throws -> Void = { try $0.runAsProcessGroupLeader() }
 
     /// Seconds to wait after SIGTERM before sending SIGKILL.
     /// API server needs more time when mid-research (SSE streams, agent threads, DB sessions).
@@ -36,12 +43,7 @@ class PythonService: ManagedService {
         proc.executableURL = executable
         proc.arguments = arguments
 
-        // Merge base Python env with service-specific overrides
-        var env = baseEnvironment
-        for (k, v) in extraEnvironment {
-            env[k] = v
-        }
-        proc.environment = env
+        proc.environment = launchEnvironment()
 
         let category = name.lowercased()
         let pipe = Log.createPipe(category: category)
@@ -66,8 +68,20 @@ class PythonService: ManagedService {
             }
         }
 
-        try proc.runAsProcessGroupLeader()
+        try launcher(proc)
         process = proc
+    }
+
+    /// The environment the process is launched with: the shared base dict,
+    /// then this service's overrides, then the runtime cache variables, last,
+    /// so neither of the others can point a cache back into the signed bundle
+    /// (#846).
+    func launchEnvironment() -> [String: String] {
+        var env = baseEnvironment
+        for (k, v) in extraEnvironment {
+            env[k] = v
+        }
+        return ServiceManager.applyingRuntimeCacheRules(to: env)
     }
 
     /// Reset the restart counter. Called by ServiceManager after health check passes.

@@ -45,6 +45,7 @@ from harbor_clerk.mail.sync import (
 )
 from harbor_clerk.models import MailAccount, WatchedLabel
 from harbor_clerk.secrets import get_cipher
+from harbor_clerk.watcher.failure_streak import FailureStreak
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +63,28 @@ def _default_session_factory() -> async_sessionmaker:
 _BASE_RESPAWN_BACKOFF = 5.0
 _MAX_RESPAWN_BACKOFF = 300.0
 # Clamp the *exponent*, not just the resulting delay. `2 ** (failures - 1)` is an
-# int, and 5.0 * 2**1024 raises OverflowError — which unwinds _reconcile and
-# run(), so watcher/main.py logs "mail observer exited" and every label stops
-# syncing until the process restarts. At the 300s cap a label failing in under
-# _HEALTHY_RUN_SECONDS on every attempt reaches that in ~3.5 days, which is
-# ordinary uptime for an always-on appliance. That is the failure this respawn
-# logic exists to prevent, reintroduced one level up.
+# int, and 5.0 * 2**1024 raises OverflowError, which unwinds _reconcile. Before
+# run() guarded it (#593) that ended the supervisor and every label stopped
+# syncing until the process restarted. Even guarded, every reap of that label
+# would abort the rest of its tick, unthrottled. At the 300s cap a label failing
+# in under _HEALTHY_RUN_SECONDS on every attempt reaches that in ~3.5 days, which
+# is ordinary uptime for an always-on appliance.
 _MAX_BACKOFF_EXPONENT = 8
 # A task that stayed up this long was working; its death is a new incident, not
 # a continuation of an earlier streak.
 _HEALTHY_RUN_SECONDS = 120.0
+# Supervisor backoff when `_reconcile` itself fails (#593). It queries Postgres on
+# every tick, so a Postgres restart or a dropped pool connection used to unwind
+# run(): watcher/main.py logged "mail observer exited" and mail sync stopped for
+# good, with nothing to restart the thread. The label tasks already running do not
+# depend on the supervisor's query, so they keep syncing while it backs off; the
+# cap bounds how long a recovered database waits before new labels are picked up.
+_MAX_RECONCILE_BACKOFF = 60.0
+
+
+def _reconcile_backoff(interval: float, failures: int) -> float:
+    """Delay before the next supervisor tick after `failures` consecutive failures."""
+    return min(_MAX_RECONCILE_BACKOFF, interval * (2 ** min(failures - 1, _MAX_BACKOFF_EXPONENT)))
 
 
 class MailObserver:
@@ -107,11 +120,46 @@ class MailObserver:
     async def run(self) -> None:
         """Supervisor loop. Returns when stop() is called."""
         session_factory = self._session_factory or _default_session_factory()
+        streak = FailureStreak()
         try:
             while not self._stop_event.is_set():
-                await self._reconcile(session_factory)
+                # `except Exception` leaves CancelledError (a BaseException) to
+                # propagate, so a cancelled run() still ends at once.
                 try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=self.supervisor_interval)
+                    await self._reconcile(session_factory)
+                except Exception as exc:
+                    loudness = streak.record(exc)
+                    delay = _reconcile_backoff(self.supervisor_interval, streak.failures)
+                    if loudness == "first":
+                        logger.warning(
+                            "mail observer: reconcile failed; running label tasks continue, retrying with backoff "
+                            "(up to %.0fs): %s",
+                            _MAX_RECONCILE_BACKOFF,
+                            describe_error(exc),
+                            exc_info=True,
+                        )
+                    elif loudness is not None:
+                        # A changed error carries its traceback; a heartbeat
+                        # repeats one already logged, so it does not.
+                        logger.warning(
+                            "mail observer: reconcile still failing (failure %d, %s): %s",
+                            streak.failures,
+                            "error changed" if loudness == "changed" else "same error",
+                            describe_error(exc),
+                            exc_info=loudness == "changed",
+                        )
+                    else:
+                        logger.debug(
+                            "mail observer: reconcile failed again (failure %d): %s",
+                            streak.failures,
+                            describe_error(exc),
+                        )
+                else:
+                    if streak.failures:
+                        logger.info("mail observer: reconcile recovered after %d failed attempt(s)", streak.reset())
+                    delay = self.supervisor_interval
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
                     break  # stop_event was set
                 except TimeoutError:
                     continue  # tick again
@@ -136,6 +184,15 @@ class MailObserver:
 
     async def _reconcile(self, session_factory: async_sessionmaker) -> None:
         """Spawn / cancel per-label tasks to match the desired-state DB query."""
+        # Take the tasks to reap *before* the query. A task that marks its account
+        # auth_error or key_mismatch commits before it returns, so the rows below
+        # already reflect any task finished by now. One that finishes while the
+        # query is in flight waits for the next tick and fresh rows. Reaping
+        # whatever was done at reap time judged that task against a stale
+        # desired_ids: it still looked desired, so a backoff was armed and
+        # "respawning in 5s" logged for a respawn that never came (#593).
+        finished = [(lid, task) for lid, task in self._tasks.items() if task.done()]
+
         async with session_factory() as session:
             rows = (
                 (
@@ -160,9 +217,9 @@ class MailObserver:
         # one layer out, and it only became reachable once EXAMINE started
         # entering the selected state and the IDLE path went live.
         now = time.monotonic()
-        for lid, task in list(self._tasks.items()):
-            if not task.done():
-                continue
+        for lid, task in finished:
+            if self._tasks.get(lid) is not task:
+                continue  # stop() cleared it during the query
             self._tasks.pop(lid, None)
             ran_for = now - self._spawned_at.pop(lid, now)
 
@@ -258,6 +315,12 @@ class MailObserver:
         # restarting at the base delay.
         known = set(self._tasks).union(*self._per_label_state)
         for lid in known - desired_ids:
+            pending = self._tasks.get(lid)
+            if pending is not None and pending.done():
+                # Finished during the query, so not reaped above. Leave it for
+                # the next tick's reap, which logs it and retrieves its
+                # exception; dropping it here would lose both.
+                continue
             task = self._tasks.pop(lid, None)
             self._forget(lid)
             if task is not None:
