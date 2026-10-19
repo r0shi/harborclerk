@@ -1395,6 +1395,13 @@ async def _first_user_question(session: AsyncSession, conversation_id: uuid.UUID
     return result.scalar_one_or_none()
 
 
+def _synthesis_error(message: str) -> str:
+    """`state.error` for a synthesis that could not reach the model: the phase prefix the schema documents
+    (`ResearchStateResponse.error`), then the text the stream showed, so a reload says the same thing."""
+    prefix = "Synthesis failed: "
+    return message if message.startswith(prefix) else prefix + message
+
+
 async def research_stream(
     conversation_id: uuid.UUID,
     user_id: uuid.UUID | None = None,
@@ -1963,7 +1970,7 @@ async def research_stream(
                     f"Synthesis failed: LLM error ({exc.response.status_code})", status_code=exc.response.status_code
                 )
                 state.status = "interrupted"
-                state.error = message  # what the stream shows, so a reload shows the same
+                state.error = _synthesis_error(message)  # the phase, then what the stream shows
                 state.notes = notes
                 await session.commit()
                 yield _sse({"type": "error", "message": message})
@@ -1976,7 +1983,7 @@ async def research_stream(
                     "LLM server is not running. Select and activate a model in Settings.", exc=exc
                 )
                 state.status = "interrupted"
-                state.error = message  # what the stream shows, so a reload shows the same
+                state.error = _synthesis_error(message)  # the phase, then what the stream shows
                 state.notes = notes
                 await session.commit()
                 yield _sse({"type": "error", "message": message})

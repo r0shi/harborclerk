@@ -188,22 +188,22 @@ class Settings(BaseSettings):
     def _lenient_context_tokens(cls, value: object) -> int:
         """LLM_CONTEXT_TOKENS is read by every service from `.env`, so a malformed value (`8k`, `16,384`, `-1`)
         must not stop Settings() from constructing, which would crash-loop the app, the watcher and every worker
-        (main ignored the variable). It is used only as a non-negative whole number; anything else is logged
-        once, naming the value, and treated as unset (under Compose, `_check_compose_context` then applies the
-        compose default)."""
+        (main ignored the variable). It is used only when `parse_context_tokens` accepts it. Unset or zero is 0
+        (not set). Anything else is logged once, naming the value, and is 0 too. Under Compose,
+        `_check_compose_context` then applies the compose default, as the entrypoint does."""
         global _context_tokens_rejected
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            return value
-        text = str(value).strip()
-        if text == "":
+        text = str(value)
+        tokens = parse_context_tokens(text)
+        if tokens is not None:
+            return tokens
+        if text.strip(ASCII_WHITESPACE).strip("0") == "":  # unset, or zero: no logging here (see the Compose check)
             return 0
-        if text.isascii() and text.isdigit():
-            return int(text)
         _context_tokens_rejected = True
         logger.error(
-            "LLM_CONTEXT_TOKENS=%r is not a whole number of tokens; ignoring it (under Docker Compose the compose "
-            "default, %d, applies)",
+            "LLM_CONTEXT_TOKENS=%r is not a whole number of tokens from 1 to %d; ignoring it (under Docker Compose "
+            "the compose default, %d, applies)",
             value,
+            CONTEXT_TOKENS_MAX,
             COMPOSE_DEFAULT_CONTEXT_TOKENS,
         )
         return 0
@@ -247,6 +247,24 @@ def get_settings() -> Settings:
 # Set by `Settings._lenient_context_tokens` when it rejected a malformed LLM_CONTEXT_TOKENS (and logged it), so
 # the Compose check does not log the same mistake twice. Reset by get_settings() before each construction.
 _context_tokens_rejected = False
+
+# The whitespace `str.strip()` would remove if it were ASCII-only (the entrypoint's `[:space:]` in the C locale).
+ASCII_WHITESPACE = " \t\n\r\f\v"
+# At most 7 digits: far below INT_MAX, which llama-server's std::stoi throws above.
+CONTEXT_TOKENS_MAX = 9_999_999
+
+
+def parse_context_tokens(text: str) -> int | None:
+    """The one rule for LLM_CONTEXT_TOKENS, which `docker/llama-server-entrypoint.sh` (`context_value`) applies
+    identically, so the context llama-server runs at and the one prompts are budgeted to cannot disagree: trim
+    ASCII whitespace, then 1 to 7 ASCII digits whose value is at least 1. Anything else is None (invalid).
+    tests/test_context_tokens_rule.py runs one table through both."""
+    trimmed = text.strip(ASCII_WHITESPACE)
+    if not 1 <= len(trimmed) <= 7 or not (trimmed.isascii() and trimmed.isdigit()):
+        return None
+    tokens = int(trimmed)
+    return tokens if tokens >= 1 else None
+
 
 # What docker-compose.yml passes as `-c` when LLM_CONTEXT_TOKENS is unset (`${LLM_CONTEXT_TOKENS:-8192}`);
 # tests/test_docker_compose_llama.py holds the two together.
@@ -307,13 +325,15 @@ def no_model_message(settings: Settings) -> str:
 
 
 def _normalised_model_file(value: str) -> str:
-    """LLM_MODEL_FILE as a file name in the models volume: `./name` is `name`, as llama-server reads
-    `/models/./name`. Anything with a directory left in it is kept as written: no curated file is in one. A value
-    ending in "/" names a directory, which the entrypoint will not start llama-server on: no file ("")."""
+    """LLM_MODEL_FILE as a file name in the models volume: a leading `./` is dropped, as llama-server reads
+    `/models/./name` as `/models/name`. Nothing else is normalised: any other path component (a `/` left after
+    that) keeps the value as written, which is no curated file name. A lexical normalisation would claim the
+    curated model for `nosuch/../name` or `name/.`, paths the kernel does not open as that file. A value ending in
+    "/" names a directory, which the entrypoint will not start llama-server on: no file ("")."""
     if not value or value.endswith("/"):
         return ""
-    normalised = os.path.normpath(value)
-    return normalised if os.path.basename(normalised) == normalised else value
+    bare = value.removeprefix("./")
+    return value if "/" in bare else bare
 
 
 def compose_model_file(settings: Settings) -> str:

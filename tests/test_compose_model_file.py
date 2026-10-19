@@ -85,6 +85,22 @@ def test_a_dot_slash_model_file_is_the_bare_file(compose_env: Path, monkeypatch)
     assert config.compose_model_file(config.get_settings()) == MODEL_FILE
 
 
+@pytest.mark.parametrize("written", [f"nosuch/../{MODEL_FILE}", f"{MODEL_FILE}/.", f"././{MODEL_FILE}"])
+def test_only_a_leading_dot_slash_is_normalised(compose_env: Path, monkeypatch, written: str) -> None:
+    # A lexical normalisation would claim the curated model for paths the kernel does not open as that file
+    # (`nosuch/` does not exist; `name/.` needs a directory). Any other path component is no curated file name.
+    (compose_env / MODEL_FILE).write_bytes(b"GGUF")
+    monkeypatch.setenv("LLM_MODEL_FILE", written)
+    config._settings = None
+    settings = config.get_settings()
+    assert settings.llm_model_id == ""
+    assert config.compose_model_file(settings) != MODEL_FILE
+    assert config.no_model_message(settings) == (
+        f"LLM_MODEL_FILE {written} is not one of the models listed in Settings → Models; "
+        "set it to one of their files in .env."
+    )
+
+
 def test_a_model_file_in_a_subdirectory_is_kept_as_written(compose_env: Path, monkeypatch) -> None:
     monkeypatch.setenv("LLM_MODEL_FILE", f"sub/{MODEL_FILE}")
     config._settings = None

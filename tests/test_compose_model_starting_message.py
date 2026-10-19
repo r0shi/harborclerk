@@ -258,4 +258,42 @@ async def test_research_stores_the_error_it_shows(
     assert errors and errors[-1]["message"] == expected
     async with research_module.async_session_factory() as session:
         state = await session.get(ResearchState, conv.conversation_id)
-    assert state.error == expected
+    assert state.error == f"Synthesis failed: {expected}"  # the phase the schema documents, then the text
+
+
+@pytest.mark.parametrize(
+    ("send", "shown", "stored"),
+    [
+        pytest.param(
+            AsyncMock(side_effect=httpx.ConnectError("refused")),
+            NOT_RUNNING,
+            f"Synthesis failed: {NOT_RUNNING}",
+            id="refused",
+        ),
+        pytest.param(
+            AsyncMock(side_effect=lambda *a, **k: httpx.Response(502, text="bad gateway", request=REQUEST)),
+            "Synthesis failed: LLM error (502)",
+            "Synthesis failed: LLM error (502)",
+            id="http-502",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_outside_compose_research_stores_the_phase_and_the_text(
+    db_session,
+    admin_user,
+    unscoped_research_state,  # noqa: F811
+    mock_research_session_factory,  # noqa: F811
+    send,
+    shown,
+    stored,
+):
+    # The stream keeps its live text; state.error carries the "Synthesis failed:" phase once, never twice.
+    from harbor_clerk.models.research_state import ResearchState
+
+    conv, _ = unscoped_research_state
+    errors = await _research(conv, admin_user, send)
+    assert errors and errors[-1]["message"] == shown
+    async with research_module.async_session_factory() as session:
+        state = await session.get(ResearchState, conv.conversation_id)
+    assert state.error == stored

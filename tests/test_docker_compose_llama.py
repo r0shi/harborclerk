@@ -349,7 +349,7 @@ def test_entrypoint_replaces_a_zero_context_with_the_compose_default(tmp_path: P
     assert result.returncode == 0, result.stderr
     assert out.read_text().splitlines() == ["-m", str(model), "-ngl", "0", *passed, "--port", "8080"]
     value = given[-1].split("=")[-1]
-    assert f"LLM_CONTEXT_TOKENS={value} is not supported under Compose".encode() in result.stderr
+    assert f"LLM_CONTEXT_TOKENS='{value}' is zero".encode() in result.stderr
 
 
 # What llama-server's std::stoi would misread (#654): `8k` as 8 (padded to 256 tokens), `16,384` as 16, `-1` wraps
@@ -375,7 +375,7 @@ def test_entrypoint_replaces_a_malformed_context_with_the_compose_default(
     result = subprocess.run(["dash", str(ENTRYPOINT), *args], env=_env(fake), capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert out.read_text().splitlines() == ["-m", str(model), *passed, "--port", "8080"]
-    assert f"LLM_CONTEXT_TOKENS={value} is not a whole number of tokens".encode() in result.stderr
+    assert f"LLM_CONTEXT_TOKENS='{value}' is not a whole number of tokens".encode() in result.stderr
 
 
 @needs_dash

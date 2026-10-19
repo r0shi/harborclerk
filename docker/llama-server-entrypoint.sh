@@ -25,16 +25,24 @@ COMPOSE_DEFAULT_CONTEXT=8192
 # LLM_CONTEXT_TOKENS reaches here as the value of `-c`, and Compose interpolation cannot refuse a bad one.
 # llama-server (v0.4.1) reads it with std::stoi, which takes the leading digits and ignores the rest: `8k` is 8,
 # padded to 256 tokens (every chat overflows, every summary falls back to extractive); `+0` and `0x0` are 0; `-1`
-# wraps and crashes; `abc` throws. And 0 is the model's full training context (262,144 tokens for Qwen3.5: a KV
-# cache a container likely cannot hold, then an OOM restart loop). So a value that is not a non-empty string of
-# ASCII digits, or that is zero (`0`, `00`, ...), is replaced with the compose default, which the app budgets to
-# as well, and the warning names the value.
-# Prints why a context value cannot reach llama-server, or nothing when it can.
+# wraps and crashes; `abc` and anything above INT_MAX throw. And 0 is the model's full training context (262,144
+# tokens for Qwen3.5: a KV cache a container likely cannot hold, then an OOM restart loop).
+#
+# So the value goes through ONE rule, which the app's config.parse_context_tokens applies identically, so the
+# context llama-server runs at and the one prompts are budgeted to cannot disagree: trim ASCII whitespace; then a
+# valid value is 1 to 7 ASCII digits whose value is at least 1 (at most 9,999,999, far below INT_MAX). Anything
+# else is replaced with the compose default, and the warning names the value. tests/test_context_tokens_rule.py
+# runs one table through both sides.
+#
+# Sets `context` to the trimmed value, and `problem` to why it is invalid, or "" when it is valid.
 context_problem() {
-    case "$1" in
-    '' | *[!0123456789]*) echo "is not a whole number of tokens (llama-server would misread it)" ;;
+    context=${1#"${1%%[![:space:]]*}"}
+    context=${context%"${context##*[![:space:]]}"}
+    problem=""
+    case "$context" in
+    '' | *[!0123456789]* | ????????*) problem="is not a whole number of tokens from 1 to 9999999" ;;
     *[!0]*) ;;
-    *) echo "is not supported under Compose (llama-server would allocate the model's full training context)" ;;
+    *) problem="is zero, which llama-server reads as the model's full training context" ;;
     esac
 }
 
@@ -46,29 +54,27 @@ for arg in "$@"; do
         rewrite=1
     fi
     orig="$arg"
-    is_context=""
+    flag=""
     case "$arg" in
     -c=* | --ctx-size=*)
-        is_context=1
-        context="${arg#*=}"
+        flag="${arg%%=*}="
+        given="${arg#*=}"
         ;;
     *)
         if [ "$prev" = "-c" ] || [ "$prev" = "--ctx-size" ]; then
-            is_context=1
-            context="$arg"
+            flag=" "
+            given="$arg"
         fi
         ;;
     esac
-    if [ -n "$is_context" ]; then
-        problem=$(context_problem "$context")
+    if [ -n "$flag" ]; then
+        context_problem "$given"
         if [ -n "$problem" ]; then
-            case "$arg" in
-            -c=* | --ctx-size=*) arg="${arg%%=*}=$COMPOSE_DEFAULT_CONTEXT" ;;
-            *) arg="$COMPOSE_DEFAULT_CONTEXT" ;;
-            esac
-            echo "llama-server-entrypoint: LLM_CONTEXT_TOKENS=$context $problem; using $COMPOSE_DEFAULT_CONTEXT." \
-                "Set LLM_CONTEXT_TOKENS in .env to a whole number of tokens to change it." >&2
+            echo "llama-server-entrypoint: LLM_CONTEXT_TOKENS='$given' $problem; using $COMPOSE_DEFAULT_CONTEXT." \
+                "Set LLM_CONTEXT_TOKENS in .env to a whole number of tokens from 1 to 9999999 to change it." >&2
+            context="$COMPOSE_DEFAULT_CONTEXT"
         fi
+        if [ "$flag" = " " ]; then arg="$context"; else arg="$flag$context"; fi
     fi
     set -- "$@" "$arg"
     prev="$orig"
