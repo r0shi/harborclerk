@@ -44,7 +44,9 @@ data recovery.
 Docker deployments are operator-managed. Back up:
 
 - The Postgres data volume or a proper `pg_dump`.
-- Any object-storage volume if your deployment still uses legacy uploads.
+- The `originals` volume: IMAP messages and attachments and legacy uploads are
+  stored there, not in the mailbox or a watched folder. Also `minio_data` if
+  your install still runs the opt-in `minio` profile.
 - The watched-folder host directories (`./data/watch` and anything else mounted
   under `/data/watch`). Harbor Clerk reads them in place and keeps no copy.
 - `.env`, especially `SECRET_KEY` and `HARBOR_CLERK_MASTER_KEY` if configured.

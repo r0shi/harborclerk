@@ -4,6 +4,54 @@ This document covers operator-facing procedures for breaking-change upgrades.
 For incremental version bumps, normal alembic migrations apply automatically
 when the app starts; this runbook only covers explicit cutover events.
 
+## Docker: MinIO to filesystem storage
+
+Up to #888 the Compose stack stored originals (uploads, IMAP messages and
+attachments) in a `minio` service running `minio/minio:latest`. That image is
+no longer published, so the default stack now uses the filesystem backend on the
+`originals` named volume (`STORAGE_BACKEND=filesystem`, `STORAGE_PATH=/data/originals`
+in `app`, `watcher`, `worker-io` and `worker-cpu`), and `minio` sits behind an
+opt-in profile whose image you must name in `MINIO_IMAGE`.
+
+Watched-folder documents are unaffected: they are read in place and were never
+in MinIO. A fresh install, or one that never used uploads or IMAP, needs nothing.
+An install with objects in MinIO that upgrades without copying them keeps
+searching (the text is in Postgres), but downloads of those originals and any
+re-extraction of them fail until they are copied.
+
+The filesystem backend keeps MinIO's bucket and key, at
+`STORAGE_PATH/<bucket>/<key>`, so the database needs no change. MinIO keeps its
+own on-disk format, so copy through its API rather than out of its volume:
+
+1. Find the MinIO image you already have: `docker image ls | grep -i minio`.
+2. Keep your `.env`'s `MINIO_*` values, pull the new code, and start MinIO
+   alone from the profile; it reuses the existing `minio_data` volume:
+
+   ```bash
+   MINIO_IMAGE=minio/minio:latest docker compose --profile minio up -d minio
+   ```
+
+3. Copy every object into the `originals` volume. MinIO is only read; objects
+   already copied with the same size are skipped, so the command can be rerun,
+   and it exits non-zero if anything failed:
+
+   ```bash
+   docker compose run --rm --no-deps app python -m harbor_clerk.maintenance.copy_minio_originals
+   ```
+
+   `--bucket NAME` copies a bucket other than `MINIO_BUCKET` (default `originals`).
+4. Start the stack (`docker compose up -d`; leave `STORAGE_BACKEND` unset) and
+   download one uploaded or mailed document to confirm.
+5. Stop MinIO: `MINIO_IMAGE=minio/minio:latest docker compose --profile minio rm -sf minio`.
+   Keep the `<project>_minio_data` volume until you are satisfied, then remove
+   it with `docker volume rm`. The `MINIO_*` lines in `.env` are then unused.
+
+To keep running MinIO instead, set `STORAGE_BACKEND=minio` and `MINIO_IMAGE` in
+`.env` and add `--profile minio` to every `docker compose` command (or set
+`COMPOSE_PROFILES=minio`). Nothing waits for MinIO to become healthy, so `app`
+may restart once while it starts. This path depends on an image that is no
+longer maintained; copying is the supported one.
+
 ## Embedding v2
 
 ### What this upgrade does

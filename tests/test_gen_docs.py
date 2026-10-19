@@ -201,6 +201,20 @@ def test_compose_block_lists_every_service() -> None:
     assert not missing, f"services absent from the generated block: {missing}"
 
 
+def test_compose_block_counts_only_the_default_stack() -> None:
+    """A profiled service (the opt-in `minio`, #888) is listed but neither counted nor shown as default."""
+    from scripts.gen_docs.generators.compose import generate, load_services
+
+    services = load_services()
+    default = [n for n, s in services.items() if not (s or {}).get("profiles")]
+    output = generate()
+    assert output.startswith(f"**{len(default)} services**"), output.splitlines()[0]
+    for name, service in services.items():
+        row = next(line for line in output.splitlines() if line.startswith(f"| `{name}` |"))
+        profiles = (service or {}).get("profiles")
+        assert row.endswith(" | default |") != bool(profiles), row
+
+
 def test_rest_blocks_cover_every_operation() -> None:
     from scripts.gen_docs.generators.rest import _operations, generate_full
 

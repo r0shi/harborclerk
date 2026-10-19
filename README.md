@@ -194,9 +194,10 @@ Harbor Clerk can run in two ways:
 | | macOS Native | Docker Compose |
 |---|---|---|
 | **Best for** | Small teams and independent operators with a Mac | DIY / Linux servers |
-| **Services** | Managed by menubar app as subprocesses | Twelve Docker containers ([list](docs/architecture.md#docker-compose-services)) |
+| **Services** | Managed by menubar app as subprocesses | Eleven Docker containers ([list](docs/architecture.md#docker-compose-services)) |
 | **Folder picker** | Native folder picker in the UI | Operator mounts host paths read-only into `watcher`, `app`, `worker-io` and `worker-cpu` ([guide](docs/watched-folders-docker.md)) |
 | **Originals** | Read in place from your filesystem | Read in place from bind-mounted volumes |
+| **Stored mail and uploads** | Under the app-support directory | On the `originals` named volume |
 | **HTTPS** | Direct localhost access | Caddy reverse proxy with self-signed cert |
 
 Both deployments use the same Python `watchdog`-based watcher under the hood (FSEvents on macOS, inotify on Linux, polling fallback for NFS/SMB/fuse mounts).
@@ -230,9 +231,7 @@ Open **https://localhost/** and accept the self-signed certificate. Create your 
 | `SECRET_KEY` | `change-me-in-production` | JWT signing key — **change this** |
 | `DATABASE_URL` | `postgresql+asyncpg://harbor_clerk:...` | PostgreSQL connection string |
 | `WATCH_ROOT` | `/data/watch` | Container path whose top-level subdirs become watched folders. Must be `/data/watch` (where `./data/watch` is mounted) or a directory under it; see the [guide](docs/watched-folders-docker.md) |
-| `MINIO_ENDPOINT` | `minio:9000` | MinIO endpoint (currently used by legacy upload API; watched-folder originals are read in place from `./data/watch`) |
-| `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
-| `MINIO_SECRET_KEY` | `minioadmin123` | MinIO secret key |
+| `STORAGE_BACKEND` | `filesystem` | Where IMAP messages, attachments and uploads are stored: the `originals` volume. `minio` only for an install still running the opt-in `minio` profile; see [moving off MinIO](docs/upgrade-runbook.md#docker-minio-to-filesystem-storage) |
 | `ALLOW_SOURCE_DOWNLOAD` | `false` | Set `true` to expose `/api/docs/{id}/download` (see [Source files](#source-files-reveal-vs-download) below) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
@@ -245,7 +244,7 @@ docker compose logs -f app        # tail app logs
 docker compose logs -f watcher    # see what the watcher is picking up
 ```
 
-**Services:** `gateway` (Caddy), `app` (FastAPI + React SPA), `watcher` (folder watching + ingest queueing), `worker-io`, `worker-cpu`, `worker-llm` (summarize), `embedder` (Granite-R2 multilingual, 768-dim), `reranker` (cross-encoder re-ranking), `llama-server` (local LLM inference), `postgres` (pgvector + pg_trgm), `minio`, `tika`.
+**Services:** `gateway` (Caddy), `app` (FastAPI + React SPA), `watcher` (folder watching + ingest queueing), `worker-io`, `worker-cpu`, `worker-llm` (summarize), `embedder` (Granite-R2 multilingual, 768-dim), `reranker` (cross-encoder re-ranking), `llama-server` (local LLM inference), `postgres` (pgvector + pg_trgm), `tika`. Stored mail and uploads live on the `originals` volume; an install upgrading from the MinIO-based stack copies them over once ([runbook](docs/upgrade-runbook.md#docker-minio-to-filesystem-storage)).
 
 ---
 

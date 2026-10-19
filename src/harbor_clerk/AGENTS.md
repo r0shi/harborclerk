@@ -39,6 +39,7 @@ the filesystem directly. `STORAGE_BACKEND` selects the implementation.
 Watched-folder documents are read in place from `source_path` and never written to; IMAP is the one case where content is fetched and stored (no file to reference).
 Under Compose every reader of `source_path` (`app`, and the workers whose `QUEUE_STAGES` claim extract or OCR) mounts the watch directory read-only at the fixed `/data/watch`,
 the watcher too; `WATCH_ROOT` must be that directory or below it (#869, #871). A new byte-reading stage goes in `BYTE_READING_STAGES` (`tests/test_docker_compose_watch_mount.py`).
+Compose stores originals on the filesystem backend (`originals` volume), mounted rw where code writes, ro where it reads; never MinIO by default (#888, `tests/test_docker_compose_storage.py`).
 
 ## Retrieval
 
@@ -194,7 +195,6 @@ whose extract stage failed on a path-quoting OSError.
 
 ## Legacy upload storage
 
-The legacy upload path stores originals in the `originals` bucket under
-`originals/<doc_id>/<original_filename>`. Watched-folder and IMAP documents do
-**not** use it — watched files are read in place from `source_path`, and mail
-content is stored via the normal document path.
+Uploads are stored in the `originals` bucket at `originals/docs/<doc_id>/<filename>`
+(staged under `tmp/uploads/`), IMAP mail at `originals/<doc_id>/<filename>`. Watched
+files have no stored copy: they are read in place from `source_path`.
