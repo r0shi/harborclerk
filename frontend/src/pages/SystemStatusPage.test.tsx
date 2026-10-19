@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { get, post } from '../api'
 import { listMailAccounts } from '../api/mail'
 import { useLLMStatusContext } from '../components/LLMStatusBanner'
@@ -126,11 +126,11 @@ const SUMMARY = {
   ],
 }
 
-function mockRequests(summary = SUMMARY) {
+function mockRequests(summary = SUMMARY, health: object = HEALTHY, stats: object = STATS) {
   getMock.mockImplementation((url) => {
-    if (url === '/api/system/health') return Promise.resolve(HEALTHY)
+    if (url === '/api/system/health') return Promise.resolve(health)
     if (url === '/api/system/status-summary') return Promise.resolve(summary)
-    if (url === '/api/system/stats') return Promise.resolve(STATS)
+    if (url === '/api/system/stats') return Promise.resolve(stats)
     return Promise.reject(new Error(`Unexpected URL: ${url}`))
   })
   postMock.mockResolvedValue({ reaped: 1 })
@@ -190,6 +190,181 @@ describe('SystemStatusPage', () => {
     expect(screen.getByText('2 queued, 1 running')).toBeInTheDocument()
     expect(screen.getByText('LLM worker')).toBeInTheDocument()
     expect(screen.getByText('3 queued, 1 running')).toBeInTheDocument()
+  })
+
+  it('shows the embedder note and embedding coverage next to the embedder row', async () => {
+    mockRequests(
+      { ...SUMMARY, needs_attention: [] },
+      {
+        ...HEALTHY,
+        notes: { embedder: 'busy: the embedder did not answer in time (it is serving other work)' },
+      },
+      {
+        ...STATS,
+        embeddings: { chunks_total: 40, chunks_embedded: 30, chunks_missing: 10 },
+      },
+    )
+
+    renderStatusPage()
+
+    expect(await screen.findByText(/busy: the embedder did not answer in time/)).toBeInTheDocument()
+    expect(screen.getByText('Chunks embedded')).toBeInTheDocument()
+    expect(screen.getByText('Chunks without vectors')).toBeInTheDocument()
+    expect(screen.queryByText('Search services need attention')).not.toBeInTheDocument()
+  })
+
+  describe('while the embedder is checking', () => {
+    const CHECKING = {
+      ...HEALTHY,
+      checks: { ...HEALTHY.checks, embedder: 'checking' },
+      notes: { embedder: 'checking: the first embedder probe is still running' },
+    }
+
+    function countHealthCalls(healthFor: (call: number) => object) {
+      mockRequests({ ...SUMMARY, needs_attention: [] })
+      const calls = { health: 0 }
+      getMock.mockImplementation((url) => {
+        if (url === '/api/system/health') {
+          calls.health += 1
+          return Promise.resolve(healthFor(calls.health))
+        }
+        if (url === '/api/system/status-summary') return Promise.resolve({ ...SUMMARY, needs_attention: [] })
+        if (url === '/api/system/stats') return Promise.resolve(STATS)
+        return Promise.reject(new Error(`Unexpected URL: ${url}`))
+      })
+      return calls
+    }
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    // One poll interval, with React allowed to re-render and schedule the next.
+    async function nextPoll() {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+    }
+
+    it('re-polls health until the embedder settles, then stops', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const calls = countHealthCalls((n) => (n < 3 ? CHECKING : HEALTHY))
+
+      renderStatusPage()
+
+      expect(await screen.findByText('Checking')).toBeInTheDocument()
+      await nextPoll()
+      await waitFor(() => expect(calls.health).toBe(2))
+      await nextPoll()
+      await waitFor(() => expect(calls.health).toBe(3))
+      await waitFor(() => expect(screen.queryByText('Checking')).not.toBeInTheDocument())
+
+      for (let i = 0; i < 6; i += 1) await nextPoll()
+      expect(calls.health).toBe(3)
+    })
+
+    it('stops re-polling after six tries', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const calls = countHealthCalls(() => CHECKING)
+
+      renderStatusPage()
+
+      expect(await screen.findByText('Checking')).toBeInTheDocument()
+      for (let poll = 1; poll <= 6; poll += 1) {
+        await nextPoll()
+        await waitFor(() => expect(calls.health).toBe(1 + poll))
+      }
+      for (let i = 0; i < 4; i += 1) await nextPoll()
+      expect(calls.health).toBe(1 + 6)
+    })
+
+    it('a manual refresh restarts the re-poll schedule after it ran out', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const calls = countHealthCalls(() => CHECKING)
+
+      renderStatusPage()
+
+      expect(await screen.findByText('Checking')).toBeInTheDocument()
+      for (let poll = 1; poll <= 6; poll += 1) {
+        await nextPoll()
+        await waitFor(() => expect(calls.health).toBe(1 + poll))
+      }
+
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+      await waitFor(() => expect(calls.health).toBe(8))
+      await nextPoll()
+      await waitFor(() => expect(calls.health).toBe(9), { timeout: 2000 })
+    })
+
+    it('after settling, a refresh that returns checking gets the full schedule again', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      // checking, checking, ok (polls reset), then checking again from a refresh, for good
+      const calls = countHealthCalls((n) => (n < 3 ? CHECKING : n === 3 ? HEALTHY : CHECKING))
+
+      renderStatusPage()
+
+      expect(await screen.findByText('Checking')).toBeInTheDocument()
+      await nextPoll()
+      await waitFor(() => expect(calls.health).toBe(2))
+      await nextPoll()
+      await waitFor(() => expect(calls.health).toBe(3))
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+      await waitFor(() => expect(calls.health).toBe(4))
+      for (let poll = 1; poll <= 6; poll += 1) {
+        await nextPoll()
+        await waitFor(() => expect(calls.health).toBe(4 + poll))
+      }
+    })
+  })
+
+  it('treats a still-checking embedder as not failed', async () => {
+    mockRequests(
+      { ...SUMMARY, needs_attention: [] },
+      {
+        ...HEALTHY,
+        checks: { ...HEALTHY.checks, embedder: 'checking' },
+        notes: { embedder: 'checking: the first embedder probe is still running' },
+      },
+    )
+
+    renderStatusPage()
+
+    expect(await screen.findByText(/checking: the first embedder probe/)).toBeInTheDocument()
+    expect(screen.getByText('Checking')).toBeInTheDocument()
+    expect(screen.queryByText('Search services need attention')).not.toBeInTheDocument()
+  })
+
+  it('raises a service issue when embeds fail', async () => {
+    mockRequests(
+      { ...SUMMARY, needs_attention: [] },
+      {
+        ...HEALTHY,
+        status: 'degraded',
+        checks: { ...HEALTHY.checks, embedder: 'error: /embed returned HTTP 500' },
+      },
+    )
+
+    renderStatusPage()
+
+    expect(await screen.findByText('Search services need attention')).toBeInTheDocument()
+    expect(screen.getAllByText(/\/embed returned HTTP 500/).length).toBeGreaterThan(0)
+  })
+
+  it('shows a long busy spell as a note on a healthy embedder', async () => {
+    mockRequests(
+      { ...SUMMARY, needs_attention: [] },
+      {
+        ...HEALTHY,
+        notes: {
+          embedder: 'busy: the embedder did not answer in time (it is serving other work); busy for 300s',
+        },
+      },
+    )
+
+    renderStatusPage()
+
+    expect(await screen.findByText(/busy for 300s/)).toBeInTheDocument()
+    expect(screen.queryByText('Search services need attention')).not.toBeInTheDocument()
   })
 
   it('runs the reaper action from a stuck-job issue', async () => {

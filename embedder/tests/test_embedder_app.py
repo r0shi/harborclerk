@@ -309,3 +309,175 @@ def test_release_runs_on_the_worker_thread_not_the_event_loop(stub_model):
         f"release ran on {release_thread[0]} but the encode ran on {loop_thread[0]} — "
         "it must share the worker thread, not run on the event loop"
     )
+
+
+# --------------------------------------------------------------------------
+# #619 — an encode failure is a logged 503, not an unlogged 500
+# --------------------------------------------------------------------------
+
+
+def test_encode_failure_is_a_logged_500(stub_model, caplog):
+    """A night of MPS out-of-memory failures left nothing in embedder.log.
+
+    The traceback went to uvicorn's own logger, which does not propagate to the
+    root logger where main() attaches the file handler. The failure must be
+    logged on a logger that reaches the root (caplog's handler sits there, so a
+    record it captures is one embedder.log would get), and it must be a 5xx,
+    which the worker defers and retries.
+    """
+    import logging
+    from unittest.mock import patch
+
+    stub_model.encode.side_effect = RuntimeError("MPS backend out of memory")
+
+    with (
+        caplog.at_level(logging.ERROR),
+        patch("embedder.app.SentenceTransformer", return_value=stub_model),
+        patch("embedder.app.release_gpu_cache"),
+    ):
+        from embedder.app import app
+
+        with TestClient(app, raise_server_exceptions=False) as c:
+            r = c.post("/embed", json={"texts": ["a", "b"]})
+
+    assert r.status_code == 500, f"expected 500, got {r.status_code}"
+    assert "RuntimeError" in r.json()["detail"]
+
+    records = [rec for rec in caplog.records if rec.name == "embedder.app" and rec.levelno >= logging.ERROR]
+    assert records, "the encode failure was not logged on the embedder's own logger"
+    assert records[0].exc_info is not None, "the log line must carry the traceback"
+    assert logging.getLogger("embedder.app").propagate, "the record must reach the root logger's file handler"
+
+
+class PanicException(BaseException):
+    """Stands in for pyo3's PanicException (a tokenizers Rust panic), which has no importable home."""
+
+
+class OutOfMemoryError(RuntimeError):
+    """Stands in for torch.OutOfMemoryError, a RuntimeError subclass."""
+
+
+def _post(stub_model, texts, *, encode_raises=None, encode_returns=None):
+    from unittest.mock import patch
+
+    if encode_raises is not None:
+        stub_model.encode.side_effect = encode_raises
+    if encode_returns is not None:
+        stub_model.encode.side_effect = lambda texts, normalize_embeddings=True: encode_returns
+    with (
+        patch("embedder.app.SentenceTransformer", return_value=stub_model),
+        patch("embedder.app.release_gpu_cache"),
+    ):
+        from embedder.app import app
+
+        with TestClient(app, raise_server_exceptions=False) as c:
+            return c.post("/embed", json={"texts": texts})
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ValueError("text input must be of type str"),
+        TypeError("TextEncodeInput must be Union"),
+        PanicException("x"),
+        RuntimeError("MPS backend out of memory"),
+        OutOfMemoryError("CUDA out of memory"),
+    ],
+    ids=["ValueError", "TypeError", "tokenizers-panic", "RuntimeError", "OutOfMemoryError"],
+)
+def test_any_exception_from_encode_is_a_500_never_a_422(stub_model, exc):
+    """Classifying by exception type made a library bug's TypeError (a #685-style
+    version skew) a 422, which the worker treats as final: every document would
+    fail for good. Only input the embedder itself rejects is a 422."""
+    r = _post(stub_model, ["a"], encode_raises=exc)
+
+    assert r.status_code == 500, f"{type(exc).__name__} -> {r.status_code}"
+
+
+@pytest.mark.parametrize("texts", [["fine", ""], ["   \n"]], ids=["empty", "whitespace"])
+def test_empty_and_whitespace_texts_are_embedded_not_refused(stub_model, texts):
+    """Content is never a 4xx: the worker would fail the document for good."""
+    r = _post(stub_model, texts)
+
+    assert r.status_code == 200, r.text
+    assert len(r.json()["embeddings"]) == len(texts)
+    assert stub_model.encode.call_args[0][0] == texts
+
+
+def test_an_over_long_text_is_truncated_and_embedded_not_refused(stub_model, caplog):
+    """A 422 for an over-long chunk turned an ingestible document (an unterminated
+    code fence, 350k characters in one chunk) into a permanent failure."""
+    import logging
+
+    from embedder.app import MAX_ENCODE_CHARS
+
+    long_text = "x" * (MAX_ENCODE_CHARS + 250_000)
+    with caplog.at_level(logging.WARNING, logger="embedder.app"):
+        r = _post(stub_model, ["short", long_text])
+
+    assert r.status_code == 200, r.text
+    encoded = stub_model.encode.call_args[0][0]
+    assert encoded[0] == "short"
+    assert len(encoded[1]) == MAX_ENCODE_CHARS, "the over-long text must reach the model truncated"
+    assert any("truncating 1 of 2 texts" in rec.getMessage() for rec in caplog.records)
+
+
+def test_wrong_types_in_the_request_are_a_422(stub_model):
+    r = _post(stub_model, [1, 2])
+
+    assert r.status_code == 422
+
+
+def test_a_non_finite_vector_is_a_500_with_a_clear_message(stub_model, caplog):
+    """Serialized inside the error handling: a NaN used to crash the JSON encoder
+    after the handler returned, a bare 500 with nothing logged saying why."""
+    import logging
+
+    bad = np.stack([np.full(768, 0.1, dtype=np.float32)])
+    bad[0, 3] = np.nan
+
+    with caplog.at_level(logging.ERROR):
+        r = _post(stub_model, ["a"], encode_returns=bad)
+
+    assert r.status_code == 500
+    assert "non-finite" in r.json()["detail"], r.json()
+    assert any(rec.name == "embedder.app" and rec.exc_info for rec in caplog.records)
+
+
+def test_cancellation_propagates_rather_than_becoming_a_500(stub_model):
+    """The handler catches BaseException to see a tokenizers panic, so it must hand
+    cancellation back untouched: a 500
+    there would answer a request whose task is being torn down, as "retry later"."""
+    import asyncio
+
+    import embedder.app as app_module
+    from embedder.app import EmbedRequest
+
+    stub_model.encode.side_effect = asyncio.CancelledError()
+
+    async def _call():
+        app_module._model = stub_model
+        app_module._encode_slots = asyncio.Semaphore(1)
+        try:
+            await app_module.embed(EmbedRequest(texts=["a"]))
+        finally:
+            app_module._model = None
+            app_module._encode_slots = None
+
+    with patch("embedder.app.release_gpu_cache"), pytest.raises(asyncio.CancelledError):
+        asyncio.run(asyncio.wait_for(_call(), timeout=10))
+
+
+def test_a_500_names_the_exception_type_never_its_message(stub_model, caplog):
+    """The 500 detail travels into documents.error (readable by API keys) and the
+    health verdict. An exception's message can quote the input: it stays in the
+    embedder's own log."""
+    import logging
+
+    secret = "Privileged: settlement figure 4.2M"
+    with caplog.at_level(logging.ERROR, logger="embedder.app"):
+        r = _post(stub_model, ["a"], encode_raises=RuntimeError(f"cannot encode {secret!r}"))
+
+    assert r.status_code == 500
+    assert r.json() == {"detail": "encode failed: RuntimeError"}, r.json()
+    assert any(secret in rec.getMessage() for rec in caplog.records), "the full message was not logged"

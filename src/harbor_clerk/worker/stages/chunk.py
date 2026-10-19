@@ -10,12 +10,26 @@ from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.models import Chunk, Document, DocumentHeading, DocumentPage
 from harbor_clerk.models.enums import JobStage
-from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running, stage_run_is_current
 
 logger = logging.getLogger(__name__)
 
 # Sentence boundary pattern
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+
+# No chunk is longer than this many times the target size, code fence or not
+# (4,000 characters at the default 1,000): a whole fenced function or table
+# still fits in one chunk, an unterminated fence running to EOF does not.
+CHUNK_HARD_MAX_FACTOR = 4
+
+
+class DocumentTooLargeError(RuntimeError):
+    """A document would produce more chunks than max_chunks_per_document allows.
+
+    Raised by the chunk stage so execute_job records it as the document's
+    error, the way any stage failure is: one CUAD JSON dump of 57,180 chunks
+    otherwise held the embedder for the whole 3600 s stage timeout (#619).
+    """
 
 
 def _find_code_fence_ranges(text: str) -> list[tuple[int, int]]:
@@ -162,6 +176,17 @@ def _split_text(
                     # that exceeds the target by up to one fence's length.
                     end = fend
 
+            # ...up to a point. An unterminated fence runs to the end of the
+            # document (an odd number of ``` or ~~~ lines in any file), and a
+            # huge fenced sample is no better: one chunk of 350k characters
+            # once reached the embedder. Past the hard maximum, split anyway,
+            # at the last line break after the target, else at the maximum.
+            hard_max = target * CHUNK_HARD_MAX_FACTOR
+            if end - start > hard_max:
+                limit = start + hard_max
+                line_break = text.rfind("\n", start + target, limit)
+                end = line_break + 1 if line_break != -1 else limit
+
         chunks.append((start, end))
 
         next_start = end - overlap
@@ -272,10 +297,38 @@ def run_chunk(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             code_fence_ranges=code_fence_ranges,
         )
 
-        # Race check before writing results
-        if not check_pipeline_seq(session, doc_id, worker_seq):
-            logger.info("chunk: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+        # Race check before deleting and rewriting the chunks: the seq, a cancel,
+        # and a newer claim of the row (cancel, Retry, re-claimed). A superseded
+        # run that checked only the seq replaced the new claim's embedded chunks
+        # with unembedded ones, and the document read ready with no vectors.
+        if not stage_run_is_current(session, doc_id, JobStage.chunk, worker_seq):
+            logger.info("chunk: run for %s cancelled, re-enqueued or superseded, aborting write", doc_id)
+            session.close()
+            mark_stage_done(doc_id, JobStage.chunk, worker_seq=worker_seq)  # declines likewise
             return
+
+        ceiling = settings.max_chunks_per_document
+        if ceiling > 0 and len(chunk_ranges) > ceiling:
+            # Every source: uploads (200 MB is ~235k chunks) and IMAP
+            # attachments were as unbounded as watched folders. Checked before
+            # anything is touched: an existing over-limit document reprocessed
+            # after an upgrade keeps its chunks and embeddings, so search keeps
+            # finding it while the error explains why it was not re-indexed.
+            has_previous_index = (
+                session.execute(select(Chunk.chunk_id).where(Chunk.doc_id == doc_id).limit(1)).first() is not None
+            )
+            raise DocumentTooLargeError(
+                f"Document too large to index: it splits into {len(chunk_ranges):,} chunks, over the "
+                f"per-document limit of {ceiling:,} (the max_chunks_per_document setting: MAX_CHUNKS_PER_DOCUMENT "
+                f"in the environment or .env, max_chunks_per_document in the Mac app's config.json). Raise the "
+                f"limit and reprocess to index it, or leave files like this (dataset or database dumps) out of the "
+                f"library."
+                + (
+                    " Its previous version's index is still searchable until the document fits."
+                    if has_previous_index
+                    else ""
+                )
+            )
 
         # Delete existing chunks (idempotency)
         existing = session.execute(select(Chunk).where(Chunk.doc_id == doc_id)).scalars().all()

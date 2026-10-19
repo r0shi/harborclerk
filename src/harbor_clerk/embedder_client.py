@@ -69,7 +69,28 @@ _BACKOFF_CAP_SECONDS = 8.0
 
 
 class EmbedderError(RuntimeError):
-    """Embedder call failed after exhausting retries, or failed unretryably."""
+    """Embedder call failed after exhausting retries, or failed unretryably.
+
+    ``status_code`` is the last HTTP status the embedder answered with, when
+    it answered at all: the one fact about the failure that carries no text.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class EmbedderUnavailableError(EmbedderError):
+    """The embedder could not serve a valid request: 5xx, 429, a dropped or
+    refused connection, or a timeout, still failing when the budget ran out.
+
+    Distinct from its parent because the cure differs. A 4xx or a malformed
+    response says the request (or the document) is wrong, and trying again
+    later changes nothing. This says the service is down, restarting or under
+    memory pressure, which in #619 lasted minutes, far past this module's
+    restart-sized window. The embed stage defers these and tries again later
+    (worker/entry.py) instead of failing the document for good.
+    """
 
 
 def _backoff_delay(attempt: int) -> float:
@@ -119,6 +140,49 @@ def _is_retryable_transport(exc: httpx.TransportError) -> bool:
     return isinstance(exc, _RETRYABLE_TRANSPORT)
 
 
+# How much of an error response's body an EmbedderError carries. It ends up in
+# ingestion_jobs.error and documents.error, so bounded.
+_DETAIL_MAX_CHARS = 300
+
+
+def _validation_summary(detail) -> str:
+    """``loc: msg`` for each item of a structured (FastAPI validation) detail, nothing else."""
+    items = detail if isinstance(detail, list) else [detail]
+    parts = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue  # an unknown shape may hold anything, request text included
+        loc = ".".join(str(part) for part in item.get("loc") or ())
+        msg = item.get("msg")
+        msg = msg if isinstance(msg, str) else ""
+        parts.append(f"{loc}: {msg}" if loc and msg else loc or msg)
+    return "; ".join(part for part in parts if part)
+
+
+def _status_detail(resp: httpx.Response) -> str:
+    """ "HTTP 422: <the response's detail>", truncated; "HTTP 422" when the body says nothing.
+
+    A bare "HTTP 422" on a failed document told the operator nothing: the
+    embedder's own explanation (FastAPI's ``detail``) is the reason.
+
+    A validation error's detail is a list of items that each carry ``input``,
+    the request's own values: chunk text. This string lands in
+    ``documents.error``, which API keys can read past the snippet cap, so only
+    each item's ``loc`` and ``msg`` are kept, never ``input`` or ``ctx``.
+    """
+    detail = ""
+    try:
+        body = resp.json()
+        raw = body.get("detail", "") if isinstance(body, dict) else ""
+        detail = raw if isinstance(raw, str) else _validation_summary(raw)
+    except ValueError:
+        detail = resp.text
+    detail = " ".join(detail.split())
+    if len(detail) > _DETAIL_MAX_CHARS:
+        detail = detail[:_DETAIL_MAX_CHARS].rstrip() + "…"
+    return f"HTTP {resp.status_code}: {detail}" if detail else f"HTTP {resp.status_code}"
+
+
 def _parse(resp: httpx.Response, expected: int) -> list[list[float]]:
     """Turn a non-retryable response into vectors, or raise EmbedderError.
 
@@ -138,7 +202,7 @@ def _parse(resp: httpx.Response, expected: int) -> list[list[float]]:
     try:
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise EmbedderError(f"embedder rejected request: HTTP {resp.status_code}") from exc
+        raise EmbedderError(f"embedder rejected request: {_status_detail(resp)}", status_code=resp.status_code) from exc
     try:
         data = resp.json()
     except ValueError as exc:
@@ -158,14 +222,35 @@ def _payload(texts: list[str], task: str) -> dict:
     return {"texts": texts, "task": task}
 
 
-def _give_up(attempts_made: int, max_attempts: int, detail: str) -> EmbedderError:
+def _give_up(
+    attempts_made: int, max_attempts: int, detail: str, status_code: int | None = None
+) -> EmbedderUnavailableError:
     """`attempts_made` is what actually ran, which is not always max_attempts.
 
     Exiting via the deadline stops early, and this string is the operator-facing
     diagnostic in `ingestion_jobs.error` — reporting "7/7 attempts" for 3 sends
     someone looking for a retry storm that never happened.
+
+    Only retryable failures reach here, so the service, not the request, is at
+    fault: EmbedderUnavailableError.
     """
-    return EmbedderError(f"embedder call failed after {attempts_made}/{max_attempts} attempts: {detail}")
+    return EmbedderUnavailableError(
+        f"embedder call failed after {attempts_made}/{max_attempts} attempts: {detail}", status_code=status_code
+    )
+
+
+def _transport_failure(exc: httpx.TransportError) -> EmbedderError:
+    """A transport failure not worth an immediate retry, classified for later.
+
+    A timeout means the embedder is too busy to answer in time (see
+    `_is_retryable_transport` for why it is not re-sent at once), which is a
+    service condition: unavailable, not wrong. Anything else here (an
+    unsupported protocol in EMBEDDER_URL) is a misconfiguration no amount of
+    waiting fixes.
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return EmbedderUnavailableError(f"embedder call failed: {describe_error(exc)}")
+    return EmbedderError(f"embedder call failed: {describe_error(exc)}")
 
 
 def embed_texts(
@@ -183,6 +268,7 @@ def embed_texts(
     settings = get_settings()
     url = f"{settings.embedder_url}/embed"
     last_detail = "no attempt made"
+    last_status: int | None = None
     started = time.monotonic()
 
     attempts_made = 0
@@ -192,8 +278,8 @@ def embed_texts(
             resp = httpx.post(url, json=_payload(texts, task), timeout=timeout)
         except httpx.TransportError as exc:
             if not _is_retryable_transport(exc):
-                raise EmbedderError(f"embedder call failed: {describe_error(exc)}") from exc
-            last_detail = describe_error(exc)
+                raise _transport_failure(exc) from exc
+            last_detail, last_status = describe_error(exc), None
         except httpx.RequestError as exc:
             # DecodingError / TooManyRedirects are RequestError but NOT
             # TransportError. Retrying will not help, but the caller is still
@@ -203,7 +289,7 @@ def embed_texts(
             if not _is_retryable_status(resp.status_code):
                 # Every 2xx and every non-429 4xx: succeed or fail, never retry.
                 return _parse(resp, len(texts))
-            last_detail = f"HTTP {resp.status_code}"
+            last_detail, last_status = _status_detail(resp), resp.status_code
 
         if attempt == max_attempts or time.monotonic() - started >= deadline_seconds:
             break
@@ -217,7 +303,7 @@ def embed_texts(
         )
         time.sleep(delay)
 
-    raise _give_up(attempts_made, max_attempts, last_detail)
+    raise _give_up(attempts_made, max_attempts, last_detail, last_status)
 
 
 async def embed_texts_async(
@@ -235,6 +321,7 @@ async def embed_texts_async(
     settings = get_settings()
     url = f"{settings.embedder_url}/embed"
     last_detail = "no attempt made"
+    last_status: int | None = None
     started = time.monotonic()
 
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -245,14 +332,14 @@ async def embed_texts_async(
                 resp = await client.post(url, json=_payload(texts, task))
             except httpx.TransportError as exc:
                 if not _is_retryable_transport(exc):
-                    raise EmbedderError(f"embedder call failed: {describe_error(exc)}") from exc
-                last_detail = describe_error(exc)
+                    raise _transport_failure(exc) from exc
+                last_detail, last_status = describe_error(exc), None
             except httpx.RequestError as exc:
                 raise EmbedderError(f"embedder request failed: {describe_error(exc)}") from exc
             else:
                 if not _is_retryable_status(resp.status_code):
                     return _parse(resp, len(texts))
-                last_detail = f"HTTP {resp.status_code}"
+                last_detail, last_status = _status_detail(resp), resp.status_code
 
             if attempt == max_attempts or time.monotonic() - started >= deadline_seconds:
                 break
@@ -266,4 +353,4 @@ async def embed_texts_async(
             )
             await asyncio.sleep(delay)
 
-    raise _give_up(attempts_made, max_attempts, last_detail)
+    raise _give_up(attempts_made, max_attempts, last_detail, last_status)

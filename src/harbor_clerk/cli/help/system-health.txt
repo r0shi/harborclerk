@@ -1,11 +1,20 @@
-harbor-clerk system-health — daemon + storage health snapshot
+harbor-clerk system-health — database, storage and embedder health snapshot
 
 DESCRIPTION
-  Returns a health check across the two core backend subsystems:
-  PostgreSQL (database connectivity) and storage (MinIO/filesystem
-  object store). Use this to verify the system is reachable and
-  operational before running a batch operation, or as a simple liveness
-  probe from a script or CI step.
+  Returns a health check across three backend subsystems: PostgreSQL
+  (database connectivity), storage (MinIO/filesystem object store), and
+  the embedder (the service that makes search meaning-based). Use this to
+  verify the system is reachable and operational before running a batch
+  operation, or as a simple liveness probe from a script or CI step.
+
+  The embedder check reports the last known verdict, from the server's
+  own search queries and a background probe (a real one-text embed). When
+  there is no evidence yet, it reports "checking" at once and starts the
+  first probe; ask again a few seconds later. When the evidence is older
+  than a minute, it starts a fresh probe and waits for it up to about 3 s.
+  If the probe is still running after that, an old failure is still
+  reported as an error (notes.embedder gives its age), and only an old
+  "ok" is reported as "checking".
 
   This command is admin-only. API keys with read-only access will
   receive a 403 error.
@@ -14,7 +23,8 @@ DESCRIPTION
   the same API key auth path as all other harbor-clerk commands and
   reflects what the API server can reach. It is distinct from the HTTP
   endpoint `GET /api/system/health`, which is unauthenticated and
-  intended for load-balancer / uptime probes.
+  intended for load-balancer / uptime probes (it reports the same
+  embedder verdict, plus Tika and the reranker).
 
 USAGE
   harbor-clerk system-health
@@ -27,24 +37,53 @@ RETURNS (JSON)
     "status": "healthy" | "degraded",
     "checks": {
       "postgres": "ok" | "error: <message>",
-      "storage":  "ok" | "error: <message>"
+      "storage":  "ok" | "error: <message>",
+      "embedder": "ok" | "checking" | "error: <message>"
+    },
+    "notes": {                        // present only when there is something to say
+      "embedder": "busy: …" | "checking: …" | "the last embedder evidence is Ns old; …"
     }
   }
 
-  `status` is `"healthy"` only when all individual checks return
-  `"ok"`. Any failing check yields `"degraded"`.
+  Embedder states:
+    "ok"        Embeds work. With notes.embedder "busy: …", the last probe
+                or query timed out because the embedder was serving other
+                work (an ingest), and the note says for how long. That is
+                not a failure, however long it lasts: the embedder encodes
+                one batch at a time, and a heavy ingest keeps it busy.
+    "checking"  No current verdict yet: just started, or the last
+                evidence was an "ok" over a minute old and the fresh probe
+                did not answer within about 3 s. notes.embedder says why
+                and, for old evidence, how old it is.
+    "error: …"  Embeds fail: the service is unreachable, or returned a 5xx
+                or an empty vector. Timeouts alone never produce this. An
+                old failure stays an error until a probe says otherwise;
+                notes.embedder then gives its age.
+
+  `status` is `"healthy"` when every check is `"ok"`, or `"checking"` for
+  the embedder. Any `"error: …"` yields `"degraded"`. This now includes
+  the embedder: a script that gates on `status == "healthy"` also stops
+  when the embedder is failing, which is when search is keyword-only.
 
 EXAMPLES
   # Simple liveness ping
   harbor-clerk system-health
 
-  # Exit non-zero if degraded (for use in scripts)
+  # Exit non-zero if degraded (for use in scripts); includes the embedder
   harbor-clerk system-health | jq -e '.status == "healthy"' > /dev/null \
     || { echo "System degraded"; exit 1; }
 
-  # Show only failing checks
+  # Show only failing checks ("checking" is not a failure)
   harbor-clerk system-health \
-    | jq '.checks | to_entries[] | select(.value != "ok")'
+    | jq '.checks | to_entries[] | select(.value != "ok" and .value != "checking")'
+
+  # Wait (up to ~30 s) for the embedder verdict to settle, then show it
+  for i in 1 2 3 4 5 6; do
+    state=$(harbor-clerk system-health | jq -r '.checks.embedder')
+    [ "$state" != "checking" ] && break
+    sleep 5
+  done
+  echo "embedder: $state"
 
   # Guard a batch operation on system readiness
   if harbor-clerk system-health | jq -e '.status == "healthy"' > /dev/null; then
@@ -56,13 +95,15 @@ EXAMPLES
 COMMON MISTAKES
   - Confusing this with `GET /api/system/health` — the HTTP endpoint
     is unauthenticated and used by load balancers; `system-health` runs
-    through the MCP auth path and tests the same subsystems the API
-    uses to serve requests.
-  - Expecting worker queue depths or embedder/Tika status — this
-    command checks Postgres connectivity and storage reachability only.
-    Worker state and queue depths are not surfaced here.
+    through the MCP auth path and tests the subsystems the API uses to
+    serve requests.
+  - Treating "checking" as a failure — it means a fresh verdict is on
+    its way; ask again shortly. `status` stays "healthy" while it lasts.
+  - Expecting worker queue depths or Tika status — this command checks
+    Postgres, storage and the embedder only. Worker state and queue
+    depths are not surfaced here.
   - Calling with a read-only API key — this tool is admin-only; you'll
     get a 403 error.
 
 SEE ALSO
-  ingest-status, reprocess
+  ingest-status, reprocess, search

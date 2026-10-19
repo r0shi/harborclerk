@@ -905,16 +905,42 @@ async def execute_tool(
             _mcp_principal.reset(token)
 
 
+_KEYWORD_ONLY_SUFFIX = " (keyword-only: semantic search unavailable)"
+_PARTIAL_SUFFIX = " (some documents not searchable by meaning)"
+
+
+def _semantic_statuses(data: dict) -> set[str]:
+    """The semantic_status values a search payload carries, its own and any batch query's."""
+    statuses = {data.get("semantic_status")}
+    results = data.get("results")
+    if isinstance(results, list):
+        statuses.update(r.get("semantic_status") for r in results if isinstance(r, dict))
+    return {s for s in statuses if isinstance(s, str)}
+
+
+def _semantic_suffix(data: dict) -> str:
+    """What the chip adds when the search was keyword-only (worst first) or what it covers is partly embedded."""
+    statuses = _semantic_statuses(data)
+    if "unavailable" in statuses:
+        return _KEYWORD_ONLY_SUFFIX
+    if "partial" in statuses:
+        return _PARTIAL_SUFFIX
+    return ""
+
+
 def summarize_tool_result(result_str: str) -> str:
     """Create a short human-readable summary of a tool result."""
     try:
         data = json.loads(result_str)
         if "error" in data:
             return f"Error: {data['error']}"
+        # The person watching the chip learns what the model is told in the
+        # payload: these results are keyword-only (#685).
+        degraded = _semantic_suffix(data)
         if "hits" in data:
-            return f"Found {len(data['hits'])} results"
+            return f"Found {len(data['hits'])} results{degraded}"
         if "results" in data:
-            return f"Found {data.get('count', len(data['results']))} results"
+            return f"Found {data.get('count', len(data['results']))} results{degraded}"
         if "passages" in data:
             return f"Read {len(data['passages'])} passages"
         if "chunks" in data:

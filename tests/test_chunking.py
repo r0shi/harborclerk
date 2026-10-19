@@ -308,3 +308,48 @@ def test_split_text_backward_compat_no_params():
     result_old = _split_text(text, target=500, overlap=50)
     result_new = _split_text(text, target=500, overlap=50, heading_positions=None, code_fence_ranges=None)
     assert result_old == result_new
+
+
+# --- the hard maximum, fence or not ---
+
+
+def _chunks_over(text: str, target: int = 1000, overlap: int = 150) -> tuple[list[tuple[int, int]], int]:
+    from harbor_clerk.worker.stages.chunk import CHUNK_HARD_MAX_FACTOR
+
+    ranges = _split_text(text, target=target, overlap=overlap, code_fence_ranges=_find_code_fence_ranges(text))
+    return ranges, target * CHUNK_HARD_MAX_FACTOR
+
+
+def test_an_unterminated_fence_does_not_make_one_giant_chunk():
+    """An odd number of ~~~ lines runs a fence to EOF: one 350k-character chunk once
+    reached the embedder, which refused it, and the document failed for good."""
+    text = "Intro paragraph.\n\n~~~\n" + "".join(f'{{"row": {i}, "value": "sample"}}\n' for i in range(10_000))
+    assert len(text) > 300_000
+
+    ranges, hard_max = _chunks_over(text)
+
+    assert max(end - start for start, end in ranges) <= hard_max
+    assert ranges[-1][1] == len(text), "the whole text must still be covered"
+    assert all(b[0] <= a[1] for a, b in zip(ranges, ranges[1:])), "no gaps between chunks"
+
+
+def test_a_huge_terminated_fence_is_split_at_line_boundaries():
+    body = "".join(f"line {i} of a large fenced sample\n" for i in range(5_000))
+    text = "Before.\n\n```\n" + body + "```\n\nAfter."
+
+    ranges, hard_max = _chunks_over(text)
+
+    assert max(end - start for start, end in ranges) <= hard_max
+    inside = [end for start, end in ranges[:-1] if end - start > 1000]
+    assert inside and all(text[end - 1] == "\n" for end in inside), "forced splits must land on line breaks"
+
+
+def test_a_small_fence_still_stays_whole():
+    pre = "p" * 800
+    fence = "```\n" + ("L\n" * 400) + "```\n"  # ~810 chars: target overrun, under the hard maximum
+    text = pre + fence + "x" * 200
+    fence_end = len(pre) + len(fence)
+
+    ranges = _split_text(text, target=900, overlap=50, code_fence_ranges=[(len(pre), fence_end)])
+
+    assert ranges[0][1] == fence_end, "a fence under the hard maximum is not split"

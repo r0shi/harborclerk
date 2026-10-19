@@ -39,6 +39,9 @@ OPTIONS
 RETURNS (JSON)
   A brief row carries "snippet"; a full row carries "top_chunk" instead.
   {
+    "semantic_status": "unavailable" | "partial",  // only when degraded, first (see search)
+    "semantic_coverage": 0.62,                     // with "partial" (see search)
+    "semantic_notice": "string",                   // with semantic_status (see search)
     "results": [
       {
         "doc_id": "uuid",

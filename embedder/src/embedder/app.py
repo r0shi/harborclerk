@@ -11,6 +11,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -40,8 +41,41 @@ TASK_PREFIXES = {"query": "query: ", "passage": "passage: "}
 # `self.to(device)`) on every call. Measure before trusting it.
 MAX_CONCURRENCY = _positive_int_env("EMBED_MAX_CONCURRENCY", 1)
 
+
+# Longest text handed to the tokenizer, in characters. Content is never
+# rejected: the worker treats a 4xx as "fail this document forever", so a 422
+# for an over-long chunk turned an ingestible document into a permanent
+# failure (an unterminated code fence once made a 350k-character chunk). The
+# model truncates to its token window anyway (8,192 tokens for Granite-R2,
+# roughly 30k characters); this bound only keeps tokenizing a pathological
+# text from costing memory and time first. Empty and whitespace-only texts are
+# encoded as they are: the tokenizer yields only its special tokens.
+MAX_ENCODE_CHARS = 100_000
+
+
+def _bound_texts(texts: list[str]) -> list[str]:
+    """``texts`` with any over MAX_ENCODE_CHARS cut to it (logged); never rejected."""
+    long_ones = [i for i, text in enumerate(texts) if len(text) > MAX_ENCODE_CHARS]
+    if not long_ones:
+        return texts
+    logger.warning(
+        "truncating %d of %d texts to %d characters before encoding (longest %d)",
+        len(long_ones),
+        len(texts),
+        MAX_ENCODE_CHARS,
+        max(len(texts[i]) for i in long_ones),
+    )
+    return [text[:MAX_ENCODE_CHARS] if len(text) > MAX_ENCODE_CHARS else text for text in texts]
+
+
 _model: SentenceTransformer | None = None
 _encode_slots: asyncio.Semaphore | None = None
+
+
+class _OwnWordsError(ValueError):
+    """A failure this module describes itself, in words that quote no input: its
+    message may go in the 500 detail. Every other exception's message stays in
+    the log."""
 
 
 class EmbedRequest(BaseModel):
@@ -118,14 +152,42 @@ async def embed(request: EmbedRequest):
         finally:
             release_gpu_cache()
 
-    async with slots:
-        embeddings = await asyncio.to_thread(_encode_and_release)
+    # A 422 comes only from the request model (wrong types, missing fields).
+    # Content is bounded, never refused.
+    texts = _bound_texts(texts)
 
-    return EmbedResponse(
-        embeddings=embeddings.tolist(),
-        model=MODEL_NAME,
-        dimensions=embeddings.shape[1],
-    )
+    async with slots:
+        try:
+            embeddings = await asyncio.to_thread(_encode_and_release)
+            # Serialization inside the handling too: a NaN or infinite vector
+            # used to crash the JSON encoder after the handler returned, a bare
+            # 500 with nothing in the log saying why.
+            if not np.isfinite(embeddings).all():
+                raise _OwnWordsError("encode produced a non-finite value (NaN or infinity) in a vector")
+            response = EmbedResponse(
+                embeddings=embeddings.tolist(),
+                model=MODEL_NAME,
+                dimensions=embeddings.shape[1],
+            )
+        except BaseException as exc:
+            if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise  # not a failure of the encode; not ours to translate
+            # BaseException, not Exception: a Rust panic in `tokenizers` arrives
+            # as pyo3's PanicException, a BaseException subclass.
+            # Every other failure is the service's: 500, logged on this module's
+            # logger, which reaches embedder.log (uvicorn's own "uvicorn.error"
+            # does not propagate to the root logger, so a night of MPS
+            # out-of-memory failures once left nothing there, #619). A 5xx is
+            # what the worker defers and retries; a 4xx it treats as final, so a
+            # library bug must never be answered with one.
+            # The detail names the type only. An exception's message can quote
+            # the input (chunk text), and the detail travels into
+            # documents.error, which API keys read, and into the health
+            # verdict. The full message and traceback stay in this log.
+            logger.exception("encode failed for %d texts: %s: %s", len(texts), type(exc).__name__, exc)
+            detail = str(exc) if isinstance(exc, _OwnWordsError) else f"encode failed: {type(exc).__name__}"
+            raise HTTPException(status_code=500, detail=detail) from exc
+    return response
 
 
 def main():

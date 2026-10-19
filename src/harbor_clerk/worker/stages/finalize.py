@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.models import Chunk, Document, DocumentLink, DocumentPage, Upload
 from harbor_clerk.models.enums import JobStage, PipelineStatus
-from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running, stage_run_is_current
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +61,13 @@ def run_finalize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             select(func.count()).select_from(Chunk).where(Chunk.doc_id == doc_id)
         ).scalar_one()
 
-        # Race check before writing results
-        if not check_pipeline_seq(session, doc_id, worker_seq):
-            logger.info("finalize: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+        # Race check before writing results. It writes pipeline_status itself,
+        # so it asks the whole question, not just the seq: a cancel, or a cancel
+        # then re-enqueue (a newer claim's row), must not read `ready` either.
+        if not stage_run_is_current(session, doc_id, JobStage.finalize, worker_seq):
+            logger.info("finalize: run for %s cancelled, re-enqueued or superseded, aborting write", doc_id)
+            session.close()
+            mark_stage_done(doc_id, JobStage.finalize, worker_seq=worker_seq)  # declines likewise
             return
 
         doc.pipeline_status = PipelineStatus.ready

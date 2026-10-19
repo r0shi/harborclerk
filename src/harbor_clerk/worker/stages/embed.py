@@ -10,7 +10,7 @@ from harbor_clerk.embedder_client import embed_texts
 from harbor_clerk.events import publish_job_event
 from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage
-from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running, stage_run_is_current
 
 logger = logging.getLogger(__name__)
 
@@ -58,20 +58,31 @@ def run_embed(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         job.progress_total = len(chunks)
         session.commit()
 
-        # Process in batches. Re-check pipeline_seq before each batch commit so a
-        # watcher reprocess that deletes our chunks doesn't make us write
-        # embeddings to FK-orphaned rows or burn embedder calls on stale content.
-        # The new pipeline run will compute fresh embeddings on its own chunks.
+        # Process in batches, asking before each embedder call and again before
+        # each write whether this run is still wanted (stage_run_is_current):
+        # - a watcher reprocess bumps pipeline_seq and deletes our chunks, so
+        #   writing would hit FK-orphaned rows and calling would burn the
+        #   embedder on stale content; the new run embeds its own chunks;
+        # - a cancel or queue clear sets the job row to error, and a 57k-chunk
+        #   document once kept the embedder at 20-30 GB for 25 minutes after
+        #   its cancel because only the seq was checked (#620).
+        # Either way the loop stops within one batch and falls through to
+        # mark_stage_done, which declines both (seq mismatch, errored row).
         processed = 0
+        stopped = False
         for batch_start in range(0, len(chunks), BATCH_SIZE):
+            if not stage_run_is_current(session, doc_id, JobStage.embed, worker_seq):
+                stopped = True
+                break
+
             batch = chunks[batch_start : batch_start + BATCH_SIZE]
             texts = [c.chunk_text for c in batch]
 
             embeddings = embed_texts(texts, task="passage", timeout=120)
 
-            if not check_pipeline_seq(session, doc_id, worker_seq):
-                logger.info("embed: pipeline_seq bumped during processing for %s, aborting", doc_id)
-                return
+            if not stage_run_is_current(session, doc_id, JobStage.embed, worker_seq):
+                stopped = True
+                break
 
             for chunk, emb in zip(batch, embeddings):
                 chunk.embedding = emb
@@ -87,7 +98,15 @@ def run_embed(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                 total=len(chunks),
             )
 
-        logger.info("Embedded %d chunks for doc %s", len(chunks), doc_id)
+        if stopped:
+            logger.info(
+                "embed: run for %s cancelled or superseded; stopped after %d of %d chunks",
+                doc_id,
+                processed,
+                len(chunks),
+            )
+        else:
+            logger.info("Embedded %d chunks for doc %s", len(chunks), doc_id)
     finally:
         session.close()
 

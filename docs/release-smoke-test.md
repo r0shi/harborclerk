@@ -75,7 +75,9 @@ macOS native:
 
 Docker:
 
-- Start with `docker compose up --build`.
+- Give the Docker VM at least 12 GB of memory (8 GB cannot run the default local
+  model; `llama-server` is OOM-killed on the first Ask) and start with
+  `docker compose up --build`.
 - Open `https://localhost` and accept the self-signed certificate.
 - Confirm admin account creation and watched-folder setup work.
 - Watched folder end to end: `mkdir -p ./data/watch/smoke` (on Linux, if Docker

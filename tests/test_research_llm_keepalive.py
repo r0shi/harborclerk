@@ -539,3 +539,67 @@ async def test_gap_round_note_extraction_is_skipped_when_the_budget_is_tight(
     assert events[-1]["type"] == "done", events[-1]
     # Its passages never reached notes or synthesis, so the gap round's document is not a source.
     assert "gap-doc" not in {c["doc_id"] for c in await _citations_of(conv.conversation_id)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        ("unavailable", "semantic search was unavailable for 1 of 1 searches"),
+        ("partial", "for 1 of 1 searches, some documents aren't searchable by meaning yet"),
+    ],
+)
+async def test_a_degraded_gap_search_puts_its_coverage_note_into_the_synthesis_notes(
+    db_session,
+    admin_user,
+    unscoped_research_state,  # noqa: F811
+    mock_research_session_factory,  # noqa: F811
+    status,
+    expected,
+):
+    """#685: the synthesis must be told when a search's coverage was incomplete, so it
+    does not read absence as evidence. The gap round's searches carry the same
+    warning as phase 3's, under "## Gap search coverage", into the notes the
+    synthesis reads."""
+    import json
+
+    conv, _state = unscoped_research_state
+    plain = _fake_execute_tool()
+
+    async def degraded_gap_search(name, args, user_id, *, mode=None, user_scope=None):
+        raw = await plain(name, args, user_id, mode=mode, user_scope=user_scope)
+        if name != "batch_search" or "governing law clause" not in args["queries"]:
+            return raw
+        payload = json.loads(raw)
+        for result in payload["results"]:
+            result["semantic_status"] = status
+        return json.dumps(payload)
+
+    synthesis_notes: list[str] = []
+    real_build = research_module._build_synthesis_messages
+
+    def _capture(question, notes):
+        synthesis_notes.append(notes)
+        return real_build(question, notes)
+
+    mock_client = _make_mock_httpx_client(
+        planning_resp=_make_planning_response(["termination notice period clause"]),
+        note_resp=_make_note_extraction_response(),
+        synthesis_lines=_make_synthesis_stream_response("Final answer."),
+    )
+    with (
+        patch.object(research_module, "execute_tool", side_effect=degraded_gap_search),
+        patch.object(research_module, "_read_evidence", new=AsyncMock(side_effect=_evidence_phase3_then_gap)),
+        patch.object(research_module, "_check_gaps", new=AsyncMock(side_effect=[["governing law clause"], []])),
+        patch.object(research_module, "_extract_notes", new=AsyncMock(return_value="Gap notes.")),
+        patch.object(research_module, "_build_synthesis_messages", side_effect=_capture),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
+        raw = [e async for e in research_module.research_stream(conv.conversation_id, user_id=admin_user.user_id)]
+
+    assert _events(raw)[-1]["type"] == "done"
+    assert len(synthesis_notes) == 1
+    notes = synthesis_notes[0]
+    assert "## Gap search coverage" in notes, notes
+    gap_section = notes.split("## Gap search coverage", 1)[1]
+    assert expected in gap_section, gap_section

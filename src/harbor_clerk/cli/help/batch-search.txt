@@ -43,6 +43,9 @@ RETURNS (JSON)
   {
     "results": [
       {
+        "semantic_status":   "unavailable" | "partial",  // per query, only when degraded (see search)
+        "semantic_coverage": 0.62,                       // with "partial" (see search)
+        "semantic_notice":   "string",                   // with semantic_status (see search)
         "query":             "termination clause",  // echoed input query
         "hits": [
           {

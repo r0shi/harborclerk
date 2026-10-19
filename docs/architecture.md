@@ -782,6 +782,6 @@ Queue subscriptions:
 | `harbor-clerk read-passages` | harbor-clerk read-passages — fetch full passage text by chunk ID |
 | `harbor-clerk reprocess` | harbor-clerk reprocess — re-run the full ingestion pipeline for a document |
 | `harbor-clerk search` | harbor-clerk search — hybrid FTS + vector search |
-| `harbor-clerk system-health` | harbor-clerk system-health — daemon + storage health snapshot |
+| `harbor-clerk system-health` | harbor-clerk system-health — database, storage and embedder health snapshot |
 | `harbor-clerk verify-identifier` | harbor-clerk verify-identifier — verify an identifier resolves to one document |
 <!-- END GENERATED: cli-commands -->

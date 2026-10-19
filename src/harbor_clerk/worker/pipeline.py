@@ -1,7 +1,9 @@
 """Pipeline orchestrator — enqueue stages, advance pipeline, handle failures."""
 
 import logging
+import threading
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from sqlalchemy import select, text, update
@@ -37,22 +39,81 @@ def _doc_filename(doc: Document, session=None) -> str:
 def check_pipeline_seq(session, doc_id: uuid.UUID, expected_seq: int) -> bool:
     """Return True if the doc's pipeline_seq still matches.
 
-    Workers call this at result-write time to detect a content-change race.
-    If the seq has been bumped (e.g., a watcher modify event arrived during
-    in-flight extract), the worker should abort writing its results — the
-    new ingestion is already queued and will run.
-
-    Usage pattern in stage modules:
-
-        worker_seq = session.query(Document.pipeline_seq).filter_by(doc_id=doc_id).scalar()
-        # ... do the work ...
-        if not check_pipeline_seq(session, doc_id, worker_seq):
-            logger.info("stage X: pipeline_seq bumped during processing for %s, aborting write", doc_id)
-            return  # or rollback / raise as appropriate
-        # ... write results ...
+    The seq alone answers only "has the content changed?". A stage's race
+    check before writing its results must not use it: a cancel, or a cancel
+    then Retry and a newer claim, leave the seq unchanged. Stages ask
+    ``stage_run_is_current`` instead, which checks the seq and those too.
     """
     current = session.execute(select(Document.pipeline_seq).where(Document.doc_id == doc_id)).scalar()
     return current == expected_seq
+
+
+def stage_run_is_current(session, doc_id: uuid.UUID, stage: JobStage, worker_seq: int) -> bool:
+    """Return True while this worker's run of ``stage`` is still wanted.
+
+    ``check_pipeline_seq`` answers only "has the content changed?". Cancelling
+    a document (``cancel_doc_jobs``) and the queue clear (``/system/clear-queue``)
+    change neither the content nor the seq: they set the job row to ``error``.
+    A loop that checked only the seq kept calling the embedder for a cancelled
+    document until the stage timed out, while every counter said idle (#620).
+    Polling the job row catches both, and any future stop that writes ``error``,
+    without giving cancellation a second meaning of "new generation".
+
+    The checks are ``mark_stage_running``'s, re-asked mid-run: the document
+    exists at ``worker_seq`` and its job row for ``stage`` exists at that
+    generation and has not been set to ``error``. Column reads, not ORM
+    objects, so the session's identity map cannot hand back a stale status.
+    Under execute_job it also checks the row is still this worker's claim
+    (``claimed_run``): a cancel followed by a same-generation re-enqueue puts
+    the row back to ``queued``, which no longer reads as cancelled, and the
+    old run would otherwise carry on and complete the new one.
+    """
+    row = session.execute(
+        select(Document.pipeline_seq, IngestionJob.pipeline_seq, IngestionJob.status, IngestionJob.started_at)
+        .select_from(Document)
+        .outerjoin(
+            IngestionJob,
+            (IngestionJob.doc_id == Document.doc_id) & (IngestionJob.stage == stage),
+        )
+        .where(Document.doc_id == doc_id)
+    ).first()
+    if row is None:
+        return False
+    doc_seq, job_seq, job_status, job_started_at = row
+    if (doc_seq or 0) != worker_seq:
+        return False
+    if job_status is None or job_seq != worker_seq:
+        return False
+    if job_status == JobStatus.error:
+        return False
+    return not claim_superseded(doc_id, stage, job_started_at)
+
+
+# The claim the main thread's running stage made (worker/entry.py execute_job):
+# (doc_id, stage, the job row's started_at as claimed). claim_next_job stamps
+# started_at on every claim and enqueue_stage clears it on every re-enqueue, so
+# the timestamp identifies one claim of a row. Thread-local: a stage runs on
+# the thread that claimed it; a stage run outside execute_job has no claim and
+# is not checked.
+_claims = threading.local()
+
+
+@contextmanager
+def claimed_run(doc_id: uuid.UUID, stage: JobStage, started_at):
+    """Mark the enclosed stage run as the claim whose row had ``started_at``."""
+    _claims.current = (doc_id, stage, started_at)
+    try:
+        yield
+    finally:
+        _claims.current = None
+
+
+def claim_superseded(doc_id: uuid.UUID, stage: JobStage, job_started_at) -> bool:
+    """Whether the job row now belongs to a different claim than the run in progress."""
+    claim = getattr(_claims, "current", None)
+    if claim is None or claim[0] != doc_id or claim[1] != stage:
+        return False
+    return job_started_at != claim[2]
 
 
 # stage → (queue_name, timeout_seconds, pipeline_status_while_running)
@@ -66,6 +127,80 @@ STAGE_CONFIG: dict[JobStage, tuple[str, int, PipelineStatus]] = {
     JobStage.summarize: ("llm", 900, PipelineStatus.summarizing),
     JobStage.finalize: ("io", 600, PipelineStatus.finalizing),
 }
+
+# Retry-later for the embed stage (#619). The embedder client's own retries
+# (embedder_client.py, ~12-24 s) are sized to outlast a restart; the memory
+# pressure that failed 32 documents in #619 lasted minutes. When those retries
+# run out on a service failure (EmbedderUnavailableError), the job goes back to
+# `queued` with a `retry_after` instead of `error`, and claim_next_job skips it
+# until then. The delays sum to ~63 minutes, past every outage measured there;
+# a document still failing after the last one is broken, or the embedder is,
+# and it ends `error` with the reason. Attempts count consecutive deferrals
+# without progress: an attempt that embedded a batch starts the count over,
+# since the chunks it stored are kept and a slow, progressing document is not
+# a broken one.
+EMBED_RETRY_REASON = "embedder_unavailable"
+EMBED_RETRY_DELAYS_SECONDS = (60, 120, 300, 600, 900, 1800)
+EMBED_RETRY_MAX_ATTEMPTS = len(EMBED_RETRY_DELAYS_SECONDS) + 1
+
+
+def without_embed_retry_schedule(metrics: dict | None, stage: JobStage) -> dict:
+    """``metrics`` minus a deferred embed's schedule, for a job requeued for another reason.
+
+    A job requeued by the shutdown deadline or the reaper kept ``reason`` and a
+    past ``retry_after``, and status-summary then reported "the embedding
+    service is failing … next retry <a past time>". ``retry_attempts`` stays:
+    an interruption is not progress, and the count still bounds a broken
+    document. Embed rows only: a summarize row's ``retry_after`` is its Apple
+    Intelligence backoff (worker/entry.py AFM_RETRY_*), which a requeue must keep.
+    """
+    cleaned = dict(metrics or {})
+    if stage != JobStage.embed:
+        return cleaned
+    if cleaned.get("reason") == EMBED_RETRY_REASON:
+        cleaned.pop("reason")
+    cleaned.pop("retry_after", None)
+    return cleaned
+
+
+EMBED_RETRY_STATE_KEYS = (
+    "reason",
+    "retry_attempts",
+    "retry_after",
+    "last_error",
+    "last_failed_at",
+    "retry_exhausted",
+)
+
+
+def without_embed_retry_state(metrics: dict | None) -> dict:
+    """``metrics`` minus everything retry-later recorded on an embed row (for a finished embed)."""
+    cleaned = dict(metrics or {})
+    if cleaned.get("reason") not in (None, EMBED_RETRY_REASON):
+        return cleaned  # someone else's reason; leave the row alone
+    return {k: v for k, v in cleaned.items() if k not in EMBED_RETRY_STATE_KEYS}
+
+
+# Whether the main thread is inside a section the worker's SIGALRM must not
+# interrupt (worker/entry.py: the stage timeout and the shutdown deadline).
+# Thread-local because signal handlers run on the main thread, and only the
+# main thread's sections matter to them.
+_alarm_sections = threading.local()
+
+
+@contextmanager
+def alarm_deferred():
+    """Hold the worker's alarm off for the enclosed block (it re-checks a second later)."""
+    _alarm_sections.depth = getattr(_alarm_sections, "depth", 0) + 1
+    try:
+        yield
+    finally:
+        _alarm_sections.depth -= 1
+
+
+def alarm_is_deferred() -> bool:
+    return getattr(_alarm_sections, "depth", 0) > 0
+
 
 # Ordered pipeline stages (documentation; actual execution uses fan-out after chunk)
 STAGE_ORDER = [
@@ -319,6 +454,11 @@ def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> N
             # period when it was actually `done`.
             existing.created_at = datetime.now(UTC)
             existing.priority = priority
+            if stage == JobStage.embed:
+                # The embed row's metrics hold only its retry-later state
+                # (worker/entry.py). A fresh cycle starts that budget afresh and
+                # must not inherit a retry_after that would hold the claim back.
+                existing.metrics = {}
         else:
             job = IngestionJob(
                 doc_id=doc_id,
@@ -399,6 +539,9 @@ async def requeue_orphan_job(session: AsyncSession, job: IngestionJob) -> bool:
             error=None,
             progress_current=0,
             progress_total=0,
+            # An orphan is not an embed deferred for an outage (#619):
+            # drop any stale retry schedule so status stays truthful.
+            metrics=without_embed_retry_schedule(job.metrics, job.stage),
         )
         .execution_options(synchronize_session=False)
     )
@@ -661,6 +804,24 @@ def mark_stage_done(
     worker_seq: int | None = None,
     **extra_event_fields,
 ) -> None:
+    """Mark a stage as done and advance the pipeline, atomically with respect to the worker's alarm.
+
+    Committing `done` and advancing are two steps. A shutdown deadline (or stage
+    timeout) firing between them left the job `done` with nothing enqueued after
+    it, and the deadline's requeue matches only `running` rows, so the document
+    stranded. The alarm is held off until both have run.
+    """
+    with alarm_deferred():
+        _mark_stage_done(doc_id, stage, worker_seq=worker_seq, **extra_event_fields)
+
+
+def _mark_stage_done(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    *,
+    worker_seq: int | None = None,
+    **extra_event_fields,
+) -> None:
     """Mark a stage as done and advance the pipeline.
 
     If ``worker_seq`` is provided, verifies the doc's ``pipeline_seq`` still
@@ -724,10 +885,35 @@ def mark_stage_done(
                 job.pipeline_seq,
             )
             return
+        if job.status == JobStatus.error:
+            # Cancelled (or queue-cleared) while running. A stage that stops on
+            # a cancel still calls this on its way out, per the every-exit-path
+            # rule; marking the row done here would overwrite "Cancelled by
+            # user" and advance the pipeline the user just stopped (#620).
+            logger.info(
+                "mark_stage_done: %s for doc %s was cancelled while running (%s), leaving it",
+                stage.value,
+                doc_id,
+                job.error,
+            )
+            return
+        if claim_superseded(doc_id, stage, job.started_at):
+            # Re-enqueued (or re-claimed) since this run claimed it: the row is
+            # a newer run's, which must not be completed by this one.
+            logger.info(
+                "mark_stage_done: %s for doc %s was re-enqueued while this run ran, leaving it to the new claim",
+                stage.value,
+                doc_id,
+            )
+            return
         job.status = JobStatus.done
         job.finished_at = datetime.now(UTC)
         if stage == JobStage.summarize and (job.metrics or {}).get("reason") == "apple_intelligence_unavailable":
             job.metrics = {}
+        if stage == JobStage.embed and job.metrics:
+            # A done row must not carry the failure state of the deferrals
+            # that preceded it (worker/entry.py _record_embed_unavailable_job).
+            job.metrics = without_embed_retry_state(job.metrics)
 
         # Background stages (summarize) never touch pipeline_status — that
         # field reflects the gating-stage progression only. A summarize-

@@ -90,6 +90,75 @@ describe('SearchPage', () => {
     expect(await screen.findByText('No results found.')).toBeInTheDocument()
   })
 
+  it('says so when results are keyword-only because semantic search is unavailable', async () => {
+    postMock.mockResolvedValueOnce({
+      hits: [],
+      total_candidates: 0,
+      has_more: false,
+      possible_conflict: false,
+      conflict_sources: [],
+      semantic_status: 'unavailable',
+      semantic_coverage: null,
+    })
+
+    renderSearchPage()
+
+    const input = screen.getByPlaceholderText('Search documents...')
+    fireEvent.change(input, { target: { value: 'termination notice' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+    expect(await screen.findByText(/Keyword matches only/)).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('semantic search is unavailable')
+  })
+
+  it('says so when semantic coverage of the matched documents is partial', async () => {
+    postMock.mockResolvedValueOnce({
+      results: [],
+      total_matches: 0,
+      returned: 0,
+      offset: 0,
+      truncated: false,
+      sort_by: 'relevance',
+      presentation: 'full',
+      semantic_status: 'partial',
+      semantic_coverage: 0.42,
+    })
+
+    renderSearchPage()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find All mode' }))
+    const input = screen.getByPlaceholderText('Find all matching documents...')
+    fireEvent.change(input, { target: { value: 'force majeure' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+    expect(
+      await screen.findByText(
+        /Some documents aren't searchable by meaning yet: 42% of the passages in the documents this search covers/,
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('shows no semantic notice for a healthy result', async () => {
+    postMock.mockResolvedValueOnce({
+      hits: [],
+      total_candidates: 0,
+      has_more: false,
+      possible_conflict: false,
+      conflict_sources: [],
+      semantic_status: 'ok',
+      semantic_coverage: 1,
+    })
+
+    renderSearchPage()
+
+    const input = screen.getByPlaceholderText('Search documents...')
+    fireEvent.change(input, { target: { value: 'arbitration' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+    expect(await screen.findByText('No results found.')).toBeInTheDocument()
+    expect(screen.queryByText(/keyword/i)).not.toBeInTheDocument()
+  })
+
   it('uses the find-all endpoint and renders document results', async () => {
     postMock.mockResolvedValueOnce({
       results: [

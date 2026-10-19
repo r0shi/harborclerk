@@ -9,20 +9,20 @@ in `docs/architecture.md#ingestion-pipeline-stages`.
 - **Every stage is idempotent** and guarded by a row-level lock on
   `(doc_id, stage)` via `SELECT ... FOR UPDATE SKIP LOCKED`.
 - **Always call `mark_stage_done` on every exit path, including early returns.**
-  An early `return` on a pipeline-seq race once skipped it, leaving the job row
-  `running` until the reaper fired 20 minutes later — and re-enqueue is
-  suppressed while a row is `running`, so the document simply stalled.
+  An early `return` on a seq race once left a row `running` for 20 minutes; re-enqueue
+  is suppressed while a row is `running`. It declines a cancelled (`error`) row. A cancel
+  does not bump `pipeline_seq`: long loops poll `stage_run_is_current` per unit. It holds
+  the worker's alarm off (`alarm_deferred`) until the pipeline advance has run.
+- **A claimed run's writes check `stage_run_is_current` or its claim (`started_at`), never the seq alone.**
 - **Sequential prefix:** `extract` → `ocr` → `chunk`. Then `entities` and
-  `embed` fan out and **gate `finalize`**.
-- **`summarize` is a background stage.** It runs on the `llm` queue and does
-  **not** gate `finalize`; a document is searchable before its summary exists.
-  See the rationale comment in `worker/pipeline.py`.
+  `embed` fan out and **gate `finalize`**. `summarize` is a **background** stage
+  on the `llm` queue and does not gate `finalize` (see `worker/pipeline.py`).
+- An embed the embedder cannot serve (`EmbedderUnavailableError`) is requeued
+  with a `retry_after` (`EMBED_RETRY_*`), not failed; a 4xx still fails (#619).
 - **Three queues: `io`, `cpu`, `llm`.** A new stage must be assigned to one, and
   every queue must have a subscriber — a queue nobody listens to silently
-  swallows work (this shipped once; `tests/test_docker_compose_queues.py` now
-  guards it).
-- **OCR is conditional** and runs in-process (pypdfium2 + Tesseract). It never
-  calls Tika.
+  swallows work (`tests/test_docker_compose_queues.py` guards it).
+- **OCR is conditional** and runs in-process (pypdfium2 + Tesseract), never Tika.
 
 ## Extraction
 

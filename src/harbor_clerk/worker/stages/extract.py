@@ -18,7 +18,7 @@ from harbor_clerk.models.enums import JobStage
 from harbor_clerk.watched_source import read_document_bytes
 from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
 from harbor_clerk.worker.markdown_extract import MarkdownExtractResult, extract_markdown
-from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running, stage_run_is_current
 from harbor_clerk.worker.text_pagination import paginate_text
 
 logger = logging.getLogger(__name__)
@@ -420,9 +420,12 @@ def run_extract(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         # Compute totals before the race check
         total_chars = sum(len(text) for _, text in pages)
 
-        # Race check before writing results
-        if not check_pipeline_seq(session, doc_id, worker_seq):
-            logger.info("extract: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+        # Race check before rewriting the pages: the seq, a cancel, and a newer
+        # claim of the row (cancel, Retry, re-claimed) all mean not ours to write.
+        if not stage_run_is_current(session, doc_id, JobStage.extract, worker_seq):
+            logger.info("extract: run for %s cancelled, re-enqueued or superseded, aborting write", doc_id)
+            session.close()
+            mark_stage_done(doc_id, JobStage.extract, worker_seq=worker_seq)  # declines likewise
             return
 
         # Delete existing pages for this doc (idempotency)

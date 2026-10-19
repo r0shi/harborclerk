@@ -364,3 +364,138 @@ async def test_async_errors_never_render_a_dangling_colon(httpx_mock: HTTPXMock,
         await embed_texts_async(["q"], task="query", max_attempts=2)
 
     _assert_named_without_dangling_colon(str(excinfo.value), exc)
+
+
+# --------------------------------------------------------------------------
+# #619 — "the service could not serve it" is told apart from "the request is wrong"
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        lambda m: m.add_response(url=EMBED_URL, status_code=503),
+        lambda m: m.add_response(url=EMBED_URL, status_code=500),
+        lambda m: m.add_exception(httpx.ConnectError("refused"), url=EMBED_URL),
+    ],
+    ids=["503", "500", "connect"],
+)
+def test_exhausted_service_failures_are_unavailable(httpx_mock: HTTPXMock, failure):
+    """The embed stage defers these (worker/entry.py) instead of failing the document."""
+    from harbor_clerk.embedder_client import EmbedderUnavailableError
+
+    for _ in range(2):
+        failure(httpx_mock)
+
+    with pytest.raises(EmbedderUnavailableError):
+        embed_texts(["hello"], task="passage", max_attempts=2)
+
+
+def test_a_timeout_is_unavailable_but_still_not_resent(httpx_mock: HTTPXMock):
+    from harbor_clerk.embedder_client import EmbedderUnavailableError
+
+    httpx_mock.add_exception(httpx.ReadTimeout("slow"), url=EMBED_URL)
+
+    with pytest.raises(EmbedderUnavailableError):
+        embed_texts(["hello"], task="passage")
+    assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        lambda m: m.add_response(url=EMBED_URL, status_code=422, json={"detail": "bad"}),
+        lambda m: m.add_response(url=EMBED_URL, json={"embeddings": []}),
+        lambda m: m.add_exception(httpx.UnsupportedProtocol("ftp"), url=EMBED_URL),
+    ],
+    ids=["4xx", "short-response", "bad-url"],
+)
+def test_request_and_config_failures_are_not_unavailable(httpx_mock: HTTPXMock, failure):
+    """Waiting fixes none of these, so they must stay plain EmbedderErrors and fail the document."""
+    from harbor_clerk.embedder_client import EmbedderUnavailableError
+
+    failure(httpx_mock)
+
+    with pytest.raises(EmbedderError) as excinfo:
+        embed_texts(["hello"], task="passage")
+    assert not isinstance(excinfo.value, EmbedderUnavailableError)
+
+
+def test_a_rejection_carries_the_embedders_reason(httpx_mock: HTTPXMock):
+    """A failed document read only "HTTP 422": the embedder's own detail is the why."""
+    detail = [{"type": "string_type", "loc": ["body", "texts", 0], "msg": "Input should be a valid string"}]
+    httpx_mock.add_response(url=EMBED_URL, status_code=422, json={"detail": detail})
+
+    with pytest.raises(EmbedderError) as excinfo:
+        embed_texts(["hello"], task="passage")
+
+    assert "HTTP 422: " in str(excinfo.value)
+    assert "Input should be a valid string" in str(excinfo.value)
+
+
+def _real_fastapi_422(body: dict) -> dict:
+    """The JSON a real FastAPI app returns for ``body`` against the embedder's request model."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from pydantic import BaseModel, Field
+
+    class EmbedRequest(BaseModel):  # embedder/src/embedder/app.py's
+        texts: list[str] = Field(..., min_length=1, max_length=256)
+        task: str | None = Field(default=None, pattern="^(query|passage)$")
+
+    app = FastAPI()
+
+    @app.post("/embed")
+    def _embed(req: EmbedRequest):  # pragma: no cover - validation refuses first
+        return {}
+
+    resp = TestClient(app).post("/embed", json=body)
+    assert resp.status_code == 422
+    return resp.json()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"text": ["Privileged: settlement figure 4.2M"]},  # a missing field: input is the whole body
+        {"texts": ["Privileged: settlement figure 4.2M"], "task": "summary"},  # pattern: input is the value
+        {"texts": ["Privileged: settlement figure 4.2M"] * 257},  # too long: input is the whole list
+    ],
+    ids=["missing-field", "bad-task", "too-many"],
+)
+def test_a_validation_rejection_never_carries_the_request_text(httpx_mock: HTTPXMock, body):
+    """FastAPI's 422 detail echoes ``input``, the request's own values: chunk text.
+    The message lands in documents.error, which API keys read past the snippet cap."""
+    real = _real_fastapi_422(body)
+    assert "Privileged" in str(real) or "summary" in str(real), "the fixture should echo the input"
+    httpx_mock.add_response(url=EMBED_URL, status_code=422, json=real)
+
+    with pytest.raises(EmbedderError) as excinfo:
+        embed_texts(["hello"], task="passage")
+
+    message = str(excinfo.value)
+    assert "Privileged" not in message and "settlement" not in message, message
+    assert "'summary'" not in message, message
+    assert message.startswith("embedder rejected request: HTTP 422: body."), message
+    assert real["detail"][0]["msg"] in message
+
+
+def test_an_exhausted_5xx_carries_the_last_reason_bounded(httpx_mock: HTTPXMock):
+    for _ in range(2):
+        httpx_mock.add_response(
+            url=EMBED_URL, status_code=500, json={"detail": "encode failed: RuntimeError: " + "x" * 2000}
+        )
+
+    with pytest.raises(EmbedderError) as excinfo:
+        embed_texts(["hello"], task="passage", max_attempts=2)
+
+    message = str(excinfo.value)
+    assert "HTTP 500: encode failed: RuntimeError" in message
+    assert len(message) < 500 and message.endswith("…"), f"unbounded detail: {len(message)} chars"
+
+
+def test_a_non_json_error_body_is_carried_as_text(httpx_mock: HTTPXMock):
+    httpx_mock.add_response(url=EMBED_URL, status_code=400, text="Bad Request: proxy refused")
+
+    with pytest.raises(EmbedderError, match="HTTP 400: Bad Request: proxy refused"):
+        embed_texts(["hello"], task="passage")

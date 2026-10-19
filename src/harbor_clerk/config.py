@@ -79,9 +79,27 @@ class Settings(BaseSettings):
     max_file_size_mb: int = Field(default=200)
     max_batch_size_mb: int = Field(default=2048)
 
+    # Seconds a worker lets its running job continue after SIGTERM before it
+    # abandons and requeues it (worker/entry.py SHUTDOWN_GRACE_SECONDS, #620).
+    # Under both supervisors' 10 s SIGKILL so the requeue lands first.
+    worker_shutdown_grace_seconds: int = Field(default=8)
+
     # Chunking
     chunk_target_size: int = Field(default=1000)
     chunk_overlap: int = Field(default=150)
+    # Most chunks one document may produce, whatever its source, before it is
+    # failed as too large instead of feeding the embedder for an hour (#619).
+    # A watched folder had no bound at all (the CUAD dataset's own 38 MB JSON
+    # dump made 57,180 chunks), and max_file_size_mb does not bound uploads in
+    # chunks (200 MB of text is ~235k) or IMAP attachments at all. At the
+    # embed rate measured on the M4 mini after #691 (6,408 chunks in nine
+    # minutes, ~12/s; ~18/s from the 3.5 s per 64-text batch), 20,000 chunks
+    # embed in 18 to 28 minutes, inside the embed stage's 3600 s timeout with
+    # room for a machine half as fast. A 1,000-character chunk with 150 of
+    # overlap covers ~850 new characters, so 20,000 is ~17 M characters: a
+    # 5,000-page book at a dense 3,000 characters a page still passes.
+    # 0 disables the ceiling.
+    max_chunks_per_document: int = Field(default=20_000)
 
     # Synthetic page size for non-paginated formats (TXT, RTF, DOCX)
     synthetic_page_chars: int = Field(default=3000)

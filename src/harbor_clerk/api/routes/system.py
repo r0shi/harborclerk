@@ -18,6 +18,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from harbor_clerk import query_embed_health as embedder_evidence
 from harbor_clerk.api.deps import Principal, require_admin
 from harbor_clerk.api.schemas.system import (
     DeleteAllRequest,
@@ -27,6 +28,7 @@ from harbor_clerk.api.schemas.system import (
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import get_settings, sync_native_config
 from harbor_clerk.db import get_session
+from harbor_clerk.embedding_coverage import embedding_coverage_counts
 from harbor_clerk.error_text import HEALTH_DETAIL_LIMIT, describe_error
 from harbor_clerk.models import (
     Chunk,
@@ -160,6 +162,124 @@ async def ping() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# How stale the embedder evidence may get before health starts a background
+# probe. /system/health is unauthenticated and polled (the Mac app every 2 s):
+# it reports the last known verdict (query_embed_health) and, past this age,
+# starts one single-flight probe. It waits on that probe, briefly, only once
+# the evidence is past the maximum age (see _embedder_check). Defined beside the evidence it governs, with the
+# maximum age a verdict may be reported at.
+EMBEDDER_PROBE_TTL_SECONDS = embedder_evidence.EMBEDDER_PROBE_TTL_SECONDS
+EMBEDDER_MAX_EVIDENCE_AGE_SECONDS = embedder_evidence.EMBEDDER_MAX_EVIDENCE_AGE_SECONDS
+# The probe's /embed deadline. The embedder runs one encode at a time, so
+# during a heavy ingest the probe queues behind 64-text batches (~3.5 s each on
+# an M4): a timeout here is busy evidence, not failure.
+EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS = 10.0
+EMBEDDER_CHECKING_NOTE = "checking: the first embedder probe is still running"
+# How long health waits for the fresh probe once the evidence is older than
+# EMBEDDER_MAX_EVIDENCE_AGE_SECONDS. A caller polling less than once a minute
+# always finds the evidence that old: without the wait, it was always told
+# "checking" (healthy), a dead embedder included. A refused connection or a 5xx
+# answers well inside this; a probe still running past it is an embedder busy
+# with an encode.
+EMBEDDER_STALE_PROBE_WAIT_SECONDS = 3.0
+
+# (loop, task) of the in-flight probe; a task belongs to the loop that made it.
+_embedder_probe: tuple[asyncio.AbstractEventLoop, asyncio.Task] | None = None
+
+
+def _embedder_probe_task() -> asyncio.Task | None:
+    """The in-flight (or last) background probe on the running loop, if any (tests await it)."""
+    probe = _embedder_probe
+    if probe is None or probe[0] is not asyncio.get_running_loop():
+        return None
+    return probe[1]
+
+
+def _start_embedder_probe(embedder_url: str) -> None:
+    """Start the background probe unless one is already running: single-flight, never awaited."""
+    global _embedder_probe
+    running = _embedder_probe_task()
+    if running is not None and not running.done():
+        return
+    loop = asyncio.get_running_loop()
+    _embedder_probe = (loop, loop.create_task(_probe_embedder(embedder_url)))
+
+
+async def _embedder_check(embedder_url: str) -> tuple[str, str | None]:
+    """The embedder's health as search sees it, (status, note).
+
+    /health alone said 200 for the whole of #685 while every /embed returned
+    500, so the app looked healthy while search ran keyword-only for hours. The
+    verdict comes from the latest evidence (query_embed_health): search's own
+    query embeds and the background probe (single-flight, shared by callers).
+
+    - No evidence yet: start the probe and answer "checking" at once.
+    - Evidence older than EMBEDDER_PROBE_TTL_SECONDS: start the probe and
+      serve the last verdict meanwhile.
+    - Evidence older than EMBEDDER_MAX_EVIDENCE_AGE_SECONDS: start the probe
+      and wait for it up to EMBEDDER_STALE_PROBE_WAIT_SECONDS. If it lands, its
+      verdict. If not, a failure is still an error, with its age in the note,
+      and only an "ok" becomes "checking": an hour-old "ok" says nothing about
+      a dead embedder, and an old failure must not read as healthy either.
+    """
+    evidence_age = embedder_evidence.age()
+    if evidence_age is None or evidence_age >= EMBEDDER_PROBE_TTL_SECONDS:
+        _start_embedder_probe(embedder_url)
+    if evidence_age is not None and evidence_age >= EMBEDDER_MAX_EVIDENCE_AGE_SECONDS:
+        probe = _embedder_probe_task()
+        if probe is not None and not probe.done():
+            # asyncio.wait never cancels the probe: past the bound it carries on.
+            await asyncio.wait({probe}, timeout=EMBEDDER_STALE_PROBE_WAIT_SECONDS)
+        evidence_age = embedder_evidence.age()
+    known = embedder_evidence.verdict()
+    if known is None:
+        return "checking", EMBEDDER_CHECKING_NOTE
+    if evidence_age is not None and evidence_age >= EMBEDDER_MAX_EVIDENCE_AGE_SECONDS:
+        status, _note = known
+        if status.startswith("error"):
+            return status, f"the last embedder evidence is {evidence_age:.0f}s old; a fresh probe is running"
+        return "checking", f"checking: the last embedder evidence is {evidence_age:.0f}s old; a fresh probe is running"
+    return known
+
+
+async def _probe_embedder(embedder_url: str) -> None:
+    """/health, then a one-text POST /embed, recorded as evidence."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{embedder_url}/health", timeout=5)
+            if r.status_code != 200:
+                failure = f"HTTP {r.status_code}"
+            else:
+                try:
+                    r = await asyncio.wait_for(
+                        client.post(
+                            f"{embedder_url}/embed",
+                            json={"texts": ["health check"], "task": "query"},
+                            timeout=EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS,
+                        ),
+                        timeout=EMBEDDER_PROBE_EMBED_TIMEOUT_SECONDS,
+                    )
+                # Busy only once the request has landed (as classify_embed_error
+                # has it); a connect or pool timeout falls to the failure path.
+                except (TimeoutError, httpx.ReadTimeout, httpx.WriteTimeout):
+                    logger.info("Embedder health probe: %s", embedder_evidence.BUSY_NOTE)
+                    embedder_evidence.record_busy()
+                    return
+                if r.status_code != 200:
+                    failure = f"/embed returned HTTP {r.status_code}"
+                else:
+                    embeddings = r.json().get("embeddings")
+                    ok = isinstance(embeddings, list) and len(embeddings) == 1 and bool(embeddings[0])
+                    failure = None if ok else "/embed returned no vector"
+    except Exception as e:
+        failure = describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)
+    if failure is None:
+        embedder_evidence.record_success()
+        return
+    logger.error("Embedder health check failed: %s", failure)
+    embedder_evidence.record_failure(failure)
+
+
 @router.get("/system/health")
 async def health_check(
     session: AsyncSession = Depends(get_session),
@@ -196,14 +316,11 @@ async def health_check(
         logger.error("Tika health check failed: %s", describe_error(e))
         checks["tika"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
 
-    # Embedder
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(f"{settings.embedder_url}/health", timeout=5)
-            checks["embedder"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
-    except Exception as e:
-        logger.error("Embedder health check failed: %s", describe_error(e))
-        checks["embedder"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
+    # Embedder: the last known verdict; old evidence waits briefly for a probe (_embedder_check)
+    notes: dict[str, str] = {}
+    checks["embedder"], embedder_note = await _embedder_check(settings.embedder_url)
+    if embedder_note:
+        notes["embedder"] = embedder_note
 
     # Reranker — only probed when enabled; disabled is not a degraded state
     if settings.reranker_enabled:
@@ -235,7 +352,9 @@ async def health_check(
 
     from harbor_clerk.api.app import BUILD_HASH, build_version
 
-    overall = all(v in ("ok", "disabled", "not_probed") for v in checks.values())
+    # "checking" (the embedder's first background probe has not landed) is not
+    # a degraded state: nothing has failed yet.
+    overall = all(v in ("ok", "disabled", "not_probed", "checking") for v in checks.values())
     return {
         "status": "healthy" if overall else "degraded",
         # Commit of the running build ("dev" outside a packaged app) and the
@@ -256,6 +375,9 @@ async def health_check(
         # (None → omitted by frontend) on Docker/Linux where the shim concept
         # doesn't apply.
         "cli_shim_install_status": _cli_shim_install_status(),
+        # Context for a check that is "ok" but not idle, e.g. an embedder too
+        # busy to answer the probe. Never a degraded state; empty when quiet.
+        "notes": notes,
     }
 
 
@@ -270,6 +392,26 @@ _COMPLETED_READY_STAGES: tuple[JobStage, ...] = (
     JobStage.finalize,
 )
 _BACKGROUND_JOB_STAGES: tuple[JobStage, ...] = (JobStage.summarize,)
+
+
+def _humanize_retry_at(retry_after_iso: str | None, now: datetime) -> str | None:
+    """ "in about 4 minutes (14:05 UTC)" for a stored ISO retry time; None if absent or unreadable."""
+    if not retry_after_iso:
+        return None
+    try:
+        retry_at = datetime.fromisoformat(retry_after_iso)
+    except ValueError:
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    seconds = (retry_at - now).total_seconds()
+    clock = retry_at.astimezone(UTC).strftime("%H:%M UTC")
+    if seconds <= 0:
+        return "due now"
+    if seconds < 60:
+        return f"in under a minute ({clock})"
+    minutes = round(seconds / 60)
+    return f"in about {minutes} minute{'s' if minutes != 1 else ''} ({clock})"
 
 
 @router.get("/system/status-summary")
@@ -441,6 +583,36 @@ async def status_summary(
     ).one()
     blocked_summarize_jobs = int(blocked_summarize_row[0] or 0)
     next_summarize_retry_at = blocked_summarize_row[1]
+    # Embeds deferred because the embedder could not serve them (worker/entry.py,
+    # #619): queued, so they would otherwise count only as "processing" while
+    # the embedder is down.
+    from harbor_clerk.worker.pipeline import EMBED_RETRY_REASON
+
+    blocked_embed_row = (
+        await session.execute(
+            select(
+                func.count(func.distinct(IngestionJob.doc_id)),
+                # The next retry among those still waiting: a running row's
+                # retry_after is the past one that let it be claimed.
+                func.min(IngestionJob.metrics["retry_after"].astext).filter(IngestionJob.status == JobStatus.queued),
+                func.count(func.distinct(IngestionJob.doc_id)).filter(IngestionJob.status == JobStatus.queued),
+            )
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.stage == JobStage.embed,
+                # Running too: a deferred embed being retried still carries its
+                # retry state, and counting only queued rows made the item
+                # vanish and reappear with every retry.
+                IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+                IngestionJob.metrics["reason"].astext == EMBED_RETRY_REASON,
+            )
+        )
+    ).one()
+    blocked_embed_jobs = int(blocked_embed_row[0] or 0)
+    next_embed_retry_at = blocked_embed_row[1]
+    waiting_embed_jobs = int(blocked_embed_row[2] or 0)
 
     now = datetime.now(UTC)
     running_jobs = (
@@ -646,6 +818,49 @@ async def status_summary(
                 "action_href": "/settings/models",
             }
         )
+    if blocked_embed_jobs:
+        embed_label = "document is" if blocked_embed_jobs == 1 else "documents are"
+        when = _humanize_retry_at(next_embed_retry_at, datetime.now(UTC))
+        retry_detail = f" The next retry is {when}." if when else ""
+        # "Failing" only when the embedder's current verdict says so: a deferred
+        # embed outlives the outage that deferred it, and once the embedder is
+        # back the retry is just waiting for its time.
+        embedder_verdict = embedder_evidence.verdict()
+        embedder_failing = embedder_verdict is not None and embedder_verdict[0].startswith("error")
+        if waiting_embed_jobs and embedder_failing:
+            title = "Embedding is paused: the embedding service is failing"
+            detail = (
+                f"{blocked_embed_jobs} {embed_label} waiting for the embedding service. Until they are embedded, "
+                "search finds them by keyword only. Harbor Clerk will retry automatically with backoff."
+                f"{retry_detail}"
+            )
+        elif waiting_embed_jobs:
+            documents = "document" if blocked_embed_jobs == 1 else "documents"
+            title = f"Embedding of {blocked_embed_jobs} {documents} is being retried"
+            detail = (
+                f"{blocked_embed_jobs} {embed_label} waiting to be embedded again after an earlier embedder failure. "
+                f"Until they are embedded, search finds them by keyword only.{retry_detail}"
+            )
+        else:
+            # Every deferred embed is being retried right now, and a retry of a
+            # large document can run for many minutes while it succeeds: say
+            # what is happening, without claiming the service is failing.
+            title = "Embedding is retrying after an embedder outage"
+            detail = (
+                f"{blocked_embed_jobs} {embed_label} being embedded again after an earlier embedder outage. "
+                "Until they finish, search finds them by keyword only."
+            )
+        needs_attention.append(
+            {
+                "kind": "embedding_blocked",
+                "severity": "warning",
+                "title": title,
+                "detail": detail,
+                "count": blocked_embed_jobs,
+                "action_label": "Open diagnostics",
+                "action_href": "/settings/diagnostics",
+            }
+        )
     if ner_skipped_documents:
         needs_attention.append(
             {
@@ -701,6 +916,7 @@ async def status_summary(
             "ner_skipped_documents": int(ner_skipped_documents),
             "failed_summarize_jobs": int(failed_summarize_jobs),
             "blocked_summarize_jobs": blocked_summarize_jobs,
+            "blocked_embed_jobs": blocked_embed_jobs,
             "stuck_jobs": len(stuck_jobs),
         },
         "needs_attention": needs_attention,
@@ -750,6 +966,16 @@ async def system_stats(
     except Exception as e:
         logger.error("Failed to collect Postgres stats: %s", describe_error(e))
         result["postgres"] = {"error": describe_error(e)}
+
+    # ── Embedding coverage (active documents) ──
+    # Chunks without a vector are invisible to semantic search. After #685 the
+    # only way to learn that 29% of a corpus had none was to query Postgres.
+    # The same aggregate search's corpus coverage reads (embedding_coverage.py).
+    try:
+        result["embeddings"] = await embedding_coverage_counts(session)
+    except Exception as e:
+        logger.error("Failed to collect embedding coverage: %s", describe_error(e))
+        result["embeddings"] = {"error": describe_error(e)}
 
     # ── Queue stats (from ingestion_jobs table) ──
     try:

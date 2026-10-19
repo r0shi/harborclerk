@@ -13,11 +13,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.embedder_client import embed_texts_async
+from harbor_clerk.embedding_coverage import search_scope_coverage
 from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.passage_cap import cap_text, refuse_filter_past_cap
+from harbor_clerk.query_embed_health import record_query_embed_outcome
 from harbor_clerk.search_rerank import rerank_hits
-from harbor_clerk.search_types import ConflictSource, FindAllHit, FindAllResult, SearchHit, SearchResult
+from harbor_clerk.search_types import (
+    SEMANTIC_OK,
+    SEMANTIC_PARTIAL,
+    SEMANTIC_PARTIAL_COVERAGE,
+    SEMANTIC_UNAVAILABLE,
+    ConflictSource,
+    FindAllHit,
+    FindAllResult,
+    SearchHit,
+    SearchResult,
+)
 from harbor_clerk.text_contains import fold_search_text, fold_search_text_spans, text_contains_clause
 
 # Re-export for backward compatibility — callers that do
@@ -83,6 +95,12 @@ _PROCESSING_PIPELINE_STATUSES: tuple[PipelineStatus, ...] = (
 )
 
 
+def _embed_failure_summary(exc: BaseException) -> str:
+    """``EmbedderUnavailableError (HTTP 503)``: the failure's type and status, no message text."""
+    status = getattr(exc, "status_code", None)
+    return f"{type(exc).__name__} (HTTP {status})" if status else type(exc).__name__
+
+
 async def _embed_query(query: str) -> list[float]:
     """Embed a query string via the embedder service.
 
@@ -102,7 +120,18 @@ async def _embed_query(query: str) -> list[float]:
     workers waking on one LISTEN notification, not to an interactive request
     with a free fallback.
     """
-    embeddings = await embed_texts_async([query], task="query", timeout=30, max_attempts=1)
+    try:
+        embeddings = await embed_texts_async([query], task="query", timeout=30, max_attempts=1)
+    except Exception as exc:
+        # Passive evidence for /system/health (query_embed_health), which
+        # otherwise has only its own probe to go on (#685). A timeout counts
+        # as busy and a 4xx as nothing; see classify_embed_error. Recorded as
+        # the type and status only: the verdict is published on the
+        # unauthenticated /system/health, and an error's text can carry the
+        # embedder's (or a proxy's) words, request text included.
+        record_query_embed_outcome(exc, _embed_failure_summary(exc))
+        raise
+    record_query_embed_outcome(None)
     return embeddings[0]
 
 
@@ -518,6 +547,7 @@ async def hybrid_search(
 
     # --- 2. Semantic candidates (vector) ---
     vector_scores: dict[uuid.UUID, float] = {}
+    semantic_status = SEMANTIC_OK
     try:
         query_embedding = await _embed_query(query)
         # pgvector post-filters an HNSW scan: the index yields hnsw.ef_search
@@ -546,7 +576,26 @@ async def hybrid_search(
         for row in result:
             vector_scores[row.chunk_id] = 1.0 - float(row.distance)
     except Exception:
+        # Lexical-only is the right answer for one request, and a silent one
+        # was wrong for hundreds (#685): every result now says so, so the
+        # caller (a person, an agent, research) can tell keyword-only from
+        # complete. The empty return below carries it too, since "nothing
+        # found" is exactly the result a missing vector leg falsifies.
         logger.warning("Embedder unavailable, falling back to lexical-only search")
+        semantic_status = SEMANTIC_UNAVAILABLE
+
+    # The vector leg ran, but it can only see embedded chunks: when much of
+    # what the search can reach has no vectors (#685: 29% after a failing
+    # night), some documents are findable by keyword only. Which figure
+    # depends on the search's reach (search_scope_coverage): the cached corpus
+    # figure without a document filter, an exact one over a small filter, and
+    # nothing over a large filter, so a scoped key never sees the corpus's.
+    semantic_coverage: float | None = None
+    if semantic_status == SEMANTIC_OK:
+        scope_doc_ids = [doc_id] if doc_id is not None else doc_ids
+        semantic_coverage = await search_scope_coverage(session, scope_doc_ids)
+        if semantic_coverage is not None and semantic_coverage < SEMANTIC_PARTIAL_COVERAGE:
+            semantic_status = SEMANTIC_PARTIAL
 
     # --- 3. Normalize & merge ---
     norm_fts = _normalize_scores(fts_scores)
@@ -554,7 +603,7 @@ async def hybrid_search(
 
     all_chunk_ids = set(norm_fts) | set(norm_vec)
     if not all_chunk_ids:
-        return SearchResult(hits=[])
+        return SearchResult(hits=[], semantic_status=semantic_status, semantic_coverage=semantic_coverage)
 
     combined: dict[uuid.UUID, float] = {}
     for cid in all_chunk_ids:
@@ -655,6 +704,8 @@ async def hybrid_search(
         possible_conflict=possible_conflict,
         conflict_sources=conflict_sources,
         reranker_status=reranker_status,
+        semantic_status=semantic_status,
+        semantic_coverage=semantic_coverage,
     )
 
 
@@ -932,4 +983,6 @@ async def find_all(
         truncated=total_matches > offset + len(hits),
         sort_by=sort_by,
         presentation=presentation,
+        semantic_status=inner.semantic_status,
+        semantic_coverage=inner.semantic_coverage,
     )

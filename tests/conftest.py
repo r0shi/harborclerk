@@ -155,6 +155,20 @@ def anyio_backend():
 
 
 @pytest.fixture(autouse=True)
+def _reset_process_wide_search_state():
+    """Search caches the corpus embedding coverage process-wide (embedding_coverage.py)
+    and records embedder evidence for health (query_embed_health.py). Each test's
+    database is truncated, so a figure cached by one test would be wrong in the next."""
+    from harbor_clerk import embedding_coverage, query_embed_health
+
+    embedding_coverage.reset()
+    query_embed_health.reset()
+    yield
+    embedding_coverage.reset()
+    query_embed_health.reset()
+
+
+@pytest.fixture(autouse=True)
 def _reset_global_settings_singleton():
     """Reset harbor_clerk.config._settings before AND after every test.
 

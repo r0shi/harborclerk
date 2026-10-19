@@ -20,9 +20,18 @@ from harbor_clerk.llm.summarize import (
 from harbor_clerk.models import ChatMessage, Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.models.research_state import ResearchState
-from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import (
+    mark_stage_done,
+    mark_stage_running,
+    stage_run_is_current,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class _SummarizeRunStopped(Exception):
+    """Raised from generate_summary's yield_check when the job was cancelled; caught in run_summarize."""
+
 
 # Yield-to-interactive: when a user-driven LLM workload is active, summarize
 # stops before claiming the LLM slot and waits up to YIELD_BUDGET_SEC for
@@ -80,18 +89,26 @@ def _summary_and_type(
     mime_type: str,
     *,
     progress_callback: Callable[[int, int], None] | None = None,
+    yield_check: Callable[[], None] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """The document's summary, the model that made it, and its type, computed before the race check.
 
     Both calls run under one wait budget (#654): under Docker Compose a load or a restart of llama-server is
-    waited out at most DOCUMENT_WAIT_SECONDS for the summary and the type together, not that much each."""
+    waited out at most DOCUMENT_WAIT_SECONDS for the summary and the type together, not that much each.
+
+    ``yield_check`` (default: wait for an idle LLM, looked up at call time) runs before every map-reduce LLM
+    sub-call. When it raises _SummarizeRunStopped (the run
+    was cancelled or superseded), nothing more is computed: (None, None, None), with no classification call."""
     with document_wait_budget():
         try:
             summary, model_used = generate_summary(
                 chunks,
-                yield_check=_wait_for_idle_llm,
+                yield_check=yield_check or _wait_for_idle_llm,
                 progress_callback=progress_callback,
             )
+        except _SummarizeRunStopped:
+            logger.info("summarize: run for %s cancelled or superseded; stopping", doc_id)
+            return None, None, None
         except AppleIntelligenceUnavailableError:
             logger.warning("Summary generation blocked for %s because Apple Intelligence is unavailable", doc_id)
             raise
@@ -170,13 +187,25 @@ def run_summarize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                 finally:
                     inner_session.close()
 
+            def _yield_or_stop() -> None:
+                # Called before every map-reduce LLM sub-call: the natural point
+                # to notice a cancel or queue clear (job row set to error), or a
+                # newer claim of the row, and stop spending the LLM on a document
+                # nobody wants summarized by this run.
+                if not stage_run_is_current(session, doc_id, JobStage.summarize, worker_seq):
+                    raise _SummarizeRunStopped()
+                _wait_for_idle_llm()
+
+            # Compute before the race check, under one per-document wait budget.
             summary, model_used, doc_type = _summary_and_type(
-                doc_id, list(chunks), doc.mime_type or "", progress_callback=_progress
+                doc_id, list(chunks), doc.mime_type or "", progress_callback=_progress, yield_check=_yield_or_stop
             )
 
-            # Race check before writing results
-            if not check_pipeline_seq(session, doc_id, worker_seq):
-                logger.info("summarize: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+            # Race check before writing results: the seq, a cancel, or a newer claim.
+            if not stage_run_is_current(session, doc_id, JobStage.summarize, worker_seq):
+                logger.info("summarize: run for %s cancelled, re-enqueued or superseded, aborting write", doc_id)
+                session.close()
+                mark_stage_done(doc_id, JobStage.summarize, worker_seq=worker_seq)  # declines likewise
                 return
 
             # Require visible content — not just truthiness — so a degraded

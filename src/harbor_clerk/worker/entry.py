@@ -18,18 +18,28 @@ from typing import NamedTuple
 
 import psycopg2
 import psycopg2.extensions
-from sqlalchemy import and_, case, or_, select, update
+from sqlalchemy import and_, case, or_, select, text, update
 
 from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.db_health import panic_on_sentinel_mismatch
 from harbor_clerk.db_sync import _make_sync_url, get_sync_session
+from harbor_clerk.embedder_client import EmbedderUnavailableError
 from harbor_clerk.error_text import describe_error
 from harbor_clerk.events import publish_job_event
 from harbor_clerk.llm.summarize import AppleIntelligenceUnavailableError
 from harbor_clerk.models import Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
-from harbor_clerk.worker.pipeline import _BACKGROUND_STAGES, STAGE_CONFIG
+from harbor_clerk.worker.pipeline import (
+    _BACKGROUND_STAGES,
+    EMBED_RETRY_DELAYS_SECONDS,
+    EMBED_RETRY_MAX_ATTEMPTS,
+    EMBED_RETRY_REASON,
+    STAGE_CONFIG,
+    alarm_is_deferred,
+    claimed_run,
+    without_embed_retry_schedule,
+)
 from harbor_clerk.worker.stages import STAGE_FUNCTIONS
 
 logger = logging.getLogger(__name__)
@@ -57,6 +67,20 @@ AFM_RETRY_MAX_ATTEMPTS = len(AFM_RETRY_DELAYS_SECONDS) + 1
 AFM_RETRY_REASON = "apple_intelligence_unavailable"
 
 _shutdown = False
+# Set by execute_job around the stage function, read by the signal handler.
+_job_running = False
+_shutdown_deadline_armed = False
+# True only while the stage function itself runs: the alarm handler is inert
+# outside it, so neither deadline can fire into execute_job's bookkeeping.
+_alarm_live = False
+
+# How long a running job may continue after SIGTERM before it is abandoned and
+# requeued. Both supervisors SIGKILL a worker 10 s after SIGTERM (the macOS
+# app's WorkerService.shutdownGracePeriod, Docker's default stop_grace_period),
+# so the default stays under that: the requeue has to land before the kill, or
+# the row sits `running` until the reaper notices. main() replaces it with
+# Settings.worker_shutdown_grace_seconds.
+SHUTDOWN_GRACE_SECONDS = 8
 
 
 class _AfmUnavailableJobResult(NamedTuple):
@@ -114,9 +138,43 @@ def _resolve_tmpdir_symlinks() -> None:
         logger.info("Resolved TMPDIR symlink: %s -> %s", current, resolved)
 
 
+class _ShutdownDeadline(BaseException):
+    """Raised in the main thread when a job outlives the shutdown grace.
+
+    A BaseException so a stage's own ``except Exception`` cannot swallow it
+    and carry on; execute_job catches it by name.
+    """
+
+
+def _arm_shutdown_deadline() -> None:
+    """Bound the running job to SHUTDOWN_GRACE_SECONDS from now.
+
+    Graceful shutdown used to wait for the current job, and the current job
+    could be a 57k-chunk embed with an hour left on its stage alarm: an
+    operator's SIGTERM was ignored until SIGKILL (#620). The stage alarm is the
+    one timer the main thread has, so the deadline re-arms it to whichever
+    comes first, and its handler raises _ShutdownDeadline instead of the stage
+    timeout once armed.
+    """
+    global _shutdown_deadline_armed
+    remaining = signal.alarm(0)
+    if remaining and remaining <= SHUTDOWN_GRACE_SECONDS:
+        signal.alarm(remaining)  # the stage timeout fires first anyway
+        return
+    _shutdown_deadline_armed = True
+    signal.alarm(SHUTDOWN_GRACE_SECONDS)
+
+
 def _handle_signal(signum, frame):
     global _shutdown
+    first = not _shutdown
     _shutdown = True
+    if first and _job_running and _alarm_live:
+        logger.warning(
+            "Shutdown requested; the running job is abandoned and requeued if it is not done in %ds",
+            SHUTDOWN_GRACE_SECONDS,
+        )
+        _arm_shutdown_deadline()
 
 
 def _get_listen_connection():
@@ -198,8 +256,30 @@ def _next_afm_retry_wait_seconds(stages: list[JobStage], *, default: int = 30) -
     return max(1, min(default, math.ceil(remaining)))
 
 
-def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, stop_event: threading.Event):
-    """Update heartbeat_at every HEARTBEAT_INTERVAL seconds until stop_event is set."""
+def _claim_clause(claimed_started_at):
+    """SQL condition: the job row is still the claim whose started_at was ``claimed_started_at``.
+
+    claim_next_job stamps started_at on every claim and enqueue_stage clears it
+    on every re-enqueue, so a row re-enqueued or re-claimed under a running
+    stage no longer matches.
+    """
+    if claimed_started_at is None:
+        return IngestionJob.started_at.is_(None)
+    return IngestionJob.started_at == claimed_started_at
+
+
+def _heartbeat_loop(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    pipeline_seq: int,
+    stop_event: threading.Event,
+    claimed_started_at=None,
+):
+    """Update heartbeat_at every HEARTBEAT_INTERVAL seconds until stop_event is set.
+
+    Only while the row is still this run's claim: a cancelled run that carries
+    on must not keep a re-enqueued row's heartbeat fresh for its new claim.
+    """
     while not stop_event.wait(timeout=HEARTBEAT_INTERVAL):
         session = get_sync_session()
         try:
@@ -209,6 +289,7 @@ def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, stop_
                     IngestionJob.doc_id == doc_id,
                     IngestionJob.stage == stage,
                     IngestionJob.pipeline_seq == pipeline_seq,
+                    _claim_clause(claimed_started_at),
                 )
                 .values(heartbeat_at=datetime.now(UTC))
             )
@@ -219,8 +300,13 @@ def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, stop_
             session.close()
 
 
-def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage, int] | None:
-    """Atomically claim the next queued job using SELECT ... FOR UPDATE SKIP LOCKED."""
+def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage, int, datetime] | None:
+    """Atomically claim the next queued job using SELECT ... FOR UPDATE SKIP LOCKED.
+
+    Returns (doc_id, stage, pipeline_seq, started_at). started_at is the claim's
+    identity, taken from this transaction: execute_job scopes every write it
+    makes on the run's behalf to it.
+    """
     stages_to_claim = list(stages)
     forced_afm_summaries, afm_cooldown = _summarize_afm_claim_state(stages_to_claim)
     if afm_cooldown is not None:
@@ -241,6 +327,16 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage, int] | 
         IngestionJob.pipeline_seq == Document.pipeline_seq,
         Document.status == "active",
     ]
+    if JobStage.embed in stages_to_claim:
+        # An embed deferred by _record_embed_unavailable_job waits out its
+        # retry_after; claiming it early would re-run it into the same outage.
+        filters.append(
+            or_(
+                IngestionJob.stage != JobStage.embed,
+                IngestionJob.metrics["retry_after"].astext.is_(None),
+                IngestionJob.metrics["retry_after"].astext <= now_iso,
+            )
+        )
 
     session = get_sync_session()
     try:
@@ -323,7 +419,7 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage, int] | 
         stage = row.stage
         pipeline_seq = row.pipeline_seq
         session.commit()
-        return (doc_id, stage, pipeline_seq)
+        return (doc_id, stage, pipeline_seq, now)
     except Exception:
         session.rollback()
         raise
@@ -349,6 +445,8 @@ def _record_afm_unavailable_job(
     stage: JobStage,
     pipeline_seq: int,
     error_msg: str,
+    *,
+    claimed_started_at,
 ) -> _AfmUnavailableJobResult | None:
     if stage != JobStage.summarize:
         return None
@@ -362,7 +460,16 @@ def _record_afm_unavailable_job(
                 IngestionJob.stage == stage,
             )
         ).scalar_one_or_none()
-        if job is None or job.pipeline_seq != pipeline_seq:
+        if (
+            job is None
+            or job.pipeline_seq != pipeline_seq
+            or job.status == JobStatus.error
+            or job.started_at != claimed_started_at
+        ):
+            # Gone, superseded, cancelled while it ran, or re-enqueued since
+            # (a newer claim's row): a cancel must not turn into a scheduled
+            # retry (or an AFM failure message), nor a retry the user asked
+            # for into this run's failure.
             return None
 
         metrics = dict(job.metrics or {})
@@ -413,8 +520,130 @@ def _record_afm_unavailable_job(
         session.close()
 
 
-def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = None) -> None:
-    """Run a stage function with timeout enforcement via signal.alarm() and heartbeat."""
+class _EmbedDeferral(NamedTuple):
+    disposition: str  # "retry" or "error"
+    attempts: int
+    delay_seconds: int | None
+    retry_after: datetime | None
+    error: str  # what to record and publish
+
+
+def _record_embed_unavailable_job(
+    doc_id: uuid.UUID,
+    pipeline_seq: int,
+    error_msg: str,
+    *,
+    claimed_started_at,
+) -> _EmbedDeferral | None:
+    """Defer an embed the embedder could not serve, or fail it once the budget is spent.
+
+    Returns None when the row is gone, a newer generation's, set to error
+    (cancelled meanwhile), or re-enqueued since this run claimed it (its
+    started_at is no longer ``claimed_started_at``): there is nothing of ours
+    left to schedule, and a cancel must stay a cancel. See EMBED_RETRY_DELAYS_SECONDS for the
+    schedule and why progress restarts the count.
+    """
+    now = datetime.now(UTC)
+    session = get_sync_session()
+    try:
+        job = session.execute(
+            select(IngestionJob)
+            .where(
+                IngestionJob.doc_id == doc_id,
+                IngestionJob.stage == JobStage.embed,
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        if (
+            job is None
+            or job.pipeline_seq != pipeline_seq
+            or job.status == JobStatus.error
+            or job.started_at != claimed_started_at
+        ):
+            return None
+
+        metrics = dict(job.metrics or {})
+        made_progress = (job.progress_current or 0) > 0
+        attempts = 1 if made_progress else int(metrics.get("retry_attempts") or 0) + 1
+        metrics.update(
+            {
+                "reason": EMBED_RETRY_REASON,
+                "retry_attempts": attempts,
+                "last_error": error_msg,
+                "last_failed_at": now.isoformat(),
+            }
+        )
+
+        if attempts >= EMBED_RETRY_MAX_ATTEMPTS:
+            final = (
+                f"Embedder unavailable: gave up after {attempts} attempts over about "
+                f"{sum(EMBED_RETRY_DELAYS_SECONDS) // 60} minutes with no progress. Last error: {error_msg}"
+            )
+            metrics["retry_exhausted"] = True
+            metrics.pop("retry_after", None)
+            job.status = JobStatus.error
+            job.error = final
+            job.metrics = metrics
+            job.finished_at = now
+            job.heartbeat_at = None
+            doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
+            if doc is not None and doc.pipeline_seq == pipeline_seq:
+                doc.pipeline_status = PipelineStatus.error
+                doc.error = final
+            session.commit()
+            return _EmbedDeferral("error", attempts, None, None, final)
+
+        delay_seconds = EMBED_RETRY_DELAYS_SECONDS[attempts - 1]
+        retry_after = now + timedelta(seconds=delay_seconds)
+        metrics["retry_after"] = retry_after.isoformat()
+        job.status = JobStatus.queued
+        job.error = None
+        job.metrics = metrics
+        job.started_at = None
+        job.finished_at = None
+        job.heartbeat_at = None
+        job.progress_current = 0
+        job.progress_total = 0
+        session.commit()
+        return _EmbedDeferral("retry", attempts, delay_seconds, retry_after, error_msg)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+_NOT_CLAIMED = object()
+
+
+def _claim_identity(doc_id: uuid.UUID, stage: JobStage):
+    """The job row's started_at, for a stage run that did not come from claim_next_job.
+
+    The worker loop passes claim_next_job's own started_at instead: a separate
+    read could adopt a newer claim made in between.
+    """
+    session = get_sync_session()
+    try:
+        return session.execute(
+            select(IngestionJob.started_at).where(IngestionJob.doc_id == doc_id, IngestionJob.stage == stage)
+        ).scalar()
+    finally:
+        session.close()
+
+
+def execute_job(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    pipeline_seq: int | None = None,
+    claimed_started_at=_NOT_CLAIMED,
+) -> None:
+    """Run a stage function with timeout enforcement via signal.alarm() and heartbeat.
+
+    ``claimed_started_at`` is the claim's identity from claim_next_job. Every
+    write made on the run's behalf (the heartbeat, done, a failure, a deferral,
+    the shutdown requeue) is skipped once the row's started_at differs: the row
+    was re-enqueued or re-claimed and belongs to a newer run.
+    """
     _, timeout, _ = STAGE_CONFIG[stage]
     func = STAGE_FUNCTIONS[stage]
     filename = _lookup_filename(doc_id)
@@ -425,6 +654,8 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
             pipeline_seq = pipeline_seq or 0
         finally:
             session.close()
+    if claimed_started_at is _NOT_CLAIMED:
+        claimed_started_at = _claim_identity(doc_id, stage)
 
     logger.info("Starting %s for doc %s (timeout=%ds)", stage.value, doc_id, timeout)
     publish_job_event(doc_id, stage.value, "running", filename=filename)
@@ -433,24 +664,65 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
     stop_heartbeat = threading.Event()
     hb_thread = threading.Thread(
         target=_heartbeat_loop,
-        args=(doc_id, stage, pipeline_seq, stop_heartbeat),
+        args=(doc_id, stage, pipeline_seq, stop_heartbeat, claimed_started_at),
         daemon=True,
     )
     hb_thread.start()
 
     def _timeout_handler(signum, frame):
+        if not _alarm_live:
+            # The stage already returned or raised: its outcome is being
+            # recorded, and an exception here would escape execute_job's
+            # handlers and kill the worker mid-bookkeeping.
+            return
+        if alarm_is_deferred():
+            # mark_stage_done is between committing `done` and advancing the
+            # pipeline; interrupting it strands the document (the requeue only
+            # matches `running` rows). Look again in a second.
+            signal.alarm(1)
+            return
+        if _shutdown_deadline_armed:
+            raise _ShutdownDeadline()
         raise TimeoutError(f"Stage {stage.value} timed out after {timeout}s")
 
+    global _job_running, _shutdown_deadline_armed, _alarm_live
     old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    _alarm_live = True
     signal.alarm(timeout)
+    _job_running = True
+    if _shutdown:
+        # SIGTERM landed between the claim and here, before a job was running
+        # for _handle_signal to bound. Bound it now.
+        _arm_shutdown_deadline()
     try:
-        func(doc_id, worker_seq=pipeline_seq)
+        try:
+            # Scoped to this claim: stage_run_is_current and mark_stage_done
+            # decline once the row is re-enqueued or re-claimed under us.
+            with claimed_run(doc_id, stage, claimed_started_at):
+                func(doc_id, worker_seq=pipeline_seq)
+        finally:
+            # Disarm before any bookkeeping below: the deadline bounds the stage,
+            # not the recording of its outcome.
+            _alarm_live = False
+            signal.alarm(0)
     except AppleIntelligenceUnavailableError as e:
         error_msg = describe_error(e)
-        disposition = _record_afm_unavailable_job(doc_id, stage, pipeline_seq, error_msg)
-        if disposition is None:
-            logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
-            publish_job_event(doc_id, stage.value, "error", error=error_msg, filename=filename)
+        disposition = _record_afm_unavailable_job(
+            doc_id, stage, pipeline_seq, error_msg, claimed_started_at=claimed_started_at
+        )
+        if disposition is None and stage != JobStage.summarize:
+            # Only summarize has the AFM retry schedule; anything else fails
+            # the ordinary way (which also keeps a cancel a cancel).
+            _record_job_failure(doc_id, stage, pipeline_seq, error_msg, filename, claimed_started_at=claimed_started_at)
+        elif disposition is None:
+            # The row is gone, superseded or cancelled: nothing of ours to
+            # record, and a cancel's own event already went out.
+            logger.info(
+                "Job %s/%s: Apple Intelligence unavailable after a cancel or supersede: %s",
+                doc_id,
+                stage.value,
+                error_msg,
+            )
         elif disposition.disposition == "error":
             logger.error(
                 "Job %s/%s failed after %d Apple Intelligence retry attempts: %s",
@@ -480,48 +752,207 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
                 error=error_msg,
                 retry_after=disposition.retry_after.isoformat(),
             )
+    except EmbedderUnavailableError as e:
+        # Only the embed stage calls the embedder; the guard keeps any future
+        # caller on the ordinary failure path until it opts in.
+        if stage != JobStage.embed:
+            _record_job_failure(
+                doc_id, stage, pipeline_seq, describe_error(e), filename, claimed_started_at=claimed_started_at
+            )
+        else:
+            _defer_unavailable_embed(
+                doc_id, pipeline_seq, describe_error(e), filename, claimed_started_at=claimed_started_at
+            )
+    except _ShutdownDeadline:
+        _requeue_after_shutdown(doc_id, stage, pipeline_seq, filename, claimed_started_at=claimed_started_at)
     except Exception as e:
-        error_msg = describe_error(e)
-        logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
-
-        session = get_sync_session()
-        try:
-            job = session.execute(
-                select(IngestionJob).where(
-                    IngestionJob.doc_id == doc_id,
-                    IngestionJob.stage == stage,
-                )
-            ).scalar_one_or_none()
-            if job and job.pipeline_seq == pipeline_seq:
-                job.status = JobStatus.error
-                job.error = error_msg
-                job.finished_at = datetime.now(UTC)
-                if stage == JobStage.summarize and (job.metrics or {}).get("reason") == AFM_RETRY_REASON:
-                    job.metrics = {}
-
-            # Background stages (summarize) must not touch pipeline_status —
-            # it reflects the gating-stage progression only. The doc may
-            # already be `ready` when summarize errors; flipping it to
-            # `error` would regress a successfully-ingested doc into a
-            # failed-looking state in the UI just because the optional
-            # summary couldn't be produced. enqueue_stage + mark_stage_done
-            # already enforce this for the success path; the error path
-            # missed the memo when PR #327 moved summarize to background.
-            doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
-            if doc and doc.pipeline_seq == pipeline_seq and stage not in _BACKGROUND_STAGES:
-                doc.pipeline_status = PipelineStatus.error
-                doc.error = error_msg
-
-            session.commit()
-        finally:
-            session.close()
-
-        publish_job_event(doc_id, stage.value, "error", error=error_msg, filename=filename)
+        _record_job_failure(
+            doc_id, stage, pipeline_seq, describe_error(e), filename, claimed_started_at=claimed_started_at
+        )
     finally:
+        _job_running = False
+        _shutdown_deadline_armed = False
+        _alarm_live = False
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old_handler)
         stop_heartbeat.set()
         hb_thread.join(timeout=5)
+
+
+def _record_job_failure(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    pipeline_seq: int,
+    error_msg: str,
+    filename: str | None,
+    *,
+    claimed_started_at,
+) -> None:
+    """Record a stage failure on its job row and, for gating stages, the document.
+
+    A row already in `error` at this generation was cancelled (or queue-cleared)
+    while the stage ran, and a cancelled row stays cancelled, as in
+    mark_stage_done and _record_embed_unavailable_job: neither the job nor the
+    document is rewritten. Cancelling an embed and then hitting a 422 used to
+    end as "EmbedderError … HTTP 422" instead of "Cancelled by user".
+
+    A row whose started_at is no longer ``claimed_started_at`` was re-enqueued
+    (a cancel then Retry, at the same generation) or re-claimed since this run
+    started: it is a newer run's, and this run's failure is recorded neither on
+    it nor on the document.
+    """
+    session = get_sync_session()
+    try:
+        job = session.execute(
+            select(IngestionJob).where(
+                IngestionJob.doc_id == doc_id,
+                IngestionJob.stage == stage,
+            )
+        ).scalar_one_or_none()
+        if job is not None and job.pipeline_seq == pipeline_seq and job.status == JobStatus.error:
+            logger.info(
+                "Job %s/%s failed after it was cancelled (%s); keeping the cancel. The failure: %s",
+                doc_id,
+                stage.value,
+                job.error,
+                error_msg,
+            )
+            return
+        if job is not None and job.pipeline_seq == pipeline_seq and job.started_at != claimed_started_at:
+            logger.info(
+                "Job %s/%s failed after it was re-enqueued; leaving the row to the new claim. The failure: %s",
+                doc_id,
+                stage.value,
+                error_msg,
+            )
+            return
+        logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
+        if job and job.pipeline_seq == pipeline_seq:
+            job.status = JobStatus.error
+            job.error = error_msg
+            job.finished_at = datetime.now(UTC)
+            if stage == JobStage.summarize and (job.metrics or {}).get("reason") == AFM_RETRY_REASON:
+                job.metrics = {}
+
+        # Background stages (summarize) must not touch pipeline_status —
+        # it reflects the gating-stage progression only. The doc may
+        # already be `ready` when summarize errors; flipping it to
+        # `error` would regress a successfully-ingested doc into a
+        # failed-looking state in the UI just because the optional
+        # summary couldn't be produced. enqueue_stage + mark_stage_done
+        # already enforce this for the success path; the error path
+        # missed the memo when PR #327 moved summarize to background.
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
+        if doc and doc.pipeline_seq == pipeline_seq and stage not in _BACKGROUND_STAGES:
+            doc.pipeline_status = PipelineStatus.error
+            doc.error = error_msg
+
+        session.commit()
+    finally:
+        session.close()
+
+    publish_job_event(doc_id, stage.value, "error", error=error_msg, filename=filename)
+
+
+def _defer_unavailable_embed(
+    doc_id: uuid.UUID, pipeline_seq: int, error_msg: str, filename: str | None, *, claimed_started_at
+) -> None:
+    """Retry-later for an embed the embedder could not serve (#619)."""
+    deferral = _record_embed_unavailable_job(doc_id, pipeline_seq, error_msg, claimed_started_at=claimed_started_at)
+    if deferral is None:
+        logger.info(
+            "Job %s/embed: embedder unavailable, but the job was cancelled, re-enqueued or superseded meanwhile",
+            doc_id,
+        )
+        return
+    if deferral.disposition == "error":
+        logger.error("Job %s/embed failed: %s", doc_id, deferral.error)
+        publish_job_event(doc_id, JobStage.embed.value, "error", error=deferral.error, filename=filename)
+        return
+    assert deferral.delay_seconds is not None and deferral.retry_after is not None
+    logger.warning(
+        "Job %s/embed: embedder unavailable (%s); retry attempt %d/%d in %ds at %s",
+        doc_id,
+        error_msg,
+        deferral.attempts,
+        EMBED_RETRY_MAX_ATTEMPTS,
+        deferral.delay_seconds,
+        deferral.retry_after.isoformat(),
+    )
+    publish_job_event(
+        doc_id,
+        JobStage.embed.value,
+        "queued",
+        filename=filename,
+        error=error_msg,
+        retry_after=deferral.retry_after.isoformat(),
+    )
+
+
+def _requeue_after_shutdown(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    pipeline_seq: int,
+    filename: str | None = None,
+    *,
+    claimed_started_at,
+) -> None:
+    """Hand a job abandoned at the shutdown deadline back to the queue.
+
+    Interrupted, not failed: the next worker runs it again. Every stage's
+    writes are safe to repeat: extract, chunk and entities replace what they
+    wrote; OCR writes a PDF's pages in one transaction and holds the alarm
+    from that commit through mark_stage_done, so a deadline lands either
+    before anything is written (the rerun appends to clean text) or not at
+    all, and a single image's page text is replaced whole; and embed keeps
+    the batches it stored. A row no longer
+    `running` at our generation as this run's claim (cancelled meanwhile,
+    superseded, or re-enqueued and claimed by another worker, whose live run
+    this must not hand back) is left as it is. Announced the way enqueue_stage announces a job: a pg_notify on
+    the stage's queue channel, so a waiting worker claims it now rather than at
+    its 30 s idle poll, and a "queued" job event, so the UI stops showing it
+    running.
+    """
+    session = get_sync_session()
+    try:
+        job = session.execute(
+            select(IngestionJob)
+            .where(
+                IngestionJob.doc_id == doc_id,
+                IngestionJob.stage == stage,
+                IngestionJob.pipeline_seq == pipeline_seq,
+                IngestionJob.status == JobStatus.running,
+                _claim_clause(claimed_started_at),
+            )
+            .with_for_update()
+        ).scalar_one_or_none()
+        requeued = job is not None
+        if job is not None:
+            job.status = JobStatus.queued
+            job.started_at = None
+            job.heartbeat_at = None
+            job.progress_current = 0
+            # Not deferred for an outage: no stale "waiting on the embedder".
+            job.metrics = without_embed_retry_schedule(job.metrics, stage)
+        session.commit()
+        if requeued:
+            queue_name = STAGE_CONFIG[stage][0]
+            session.execute(
+                text("SELECT pg_notify(:channel, :payload)"),
+                {"channel": f"job_enqueued_{queue_name}", "payload": str(doc_id)},
+            )
+            session.commit()
+    finally:
+        session.close()
+    if requeued:
+        publish_job_event(doc_id, stage.value, "queued", filename=filename)
+    logger.warning(
+        "Shutdown deadline: abandoned %s for doc %s after %ds%s",
+        stage.value,
+        doc_id,
+        SHUTDOWN_GRACE_SECONDS,
+        "; requeued it" if requeued else "",
+    )
 
 
 def _check_sentinel() -> None:
@@ -542,7 +973,9 @@ def _check_sentinel() -> None:
 
 
 def main():
+    global SHUTDOWN_GRACE_SECONDS
     settings = get_settings()
+    SHUTDOWN_GRACE_SECONDS = max(1, settings.worker_shutdown_grace_seconds)
 
     parser = argparse.ArgumentParser(description="Harbor Clerk worker")
     parser.add_argument(

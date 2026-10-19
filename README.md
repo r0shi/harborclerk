@@ -214,7 +214,7 @@ For a basic backup, quit Harbor Clerk Server and copy `~/Library/Application Sup
 
 ### Docker Compose
 
-**Requirements:** Docker Desktop or Docker Engine + Compose, 4 GB RAM minimum (8 GB recommended).
+**Requirements:** Docker Desktop or Docker Engine + Compose. Memory is what the Docker VM or host gives the containers (Docker Desktop: Settings → Resources; colima: `colima start --memory 12`): 8 GB runs search, ingest and MCP without a local model; 12 GB or more for local AI with the default model (at 8 GB, `llama-server` is killed for lack of memory on the first question; measured in [the 2026-10-18 smoke run](docs/reports/2026-10-18-docker-release-smoke.md)). Disk: the images take about 30 GB; build with `COMPOSE_PARALLEL_LIMIT=1 docker compose up --build` if the VM disk is small (#896).
 
 Edit `.env` and change `SECRET_KEY` to a random string before starting:
 
@@ -414,7 +414,7 @@ surface, including `kb_find_all` via `harbor-clerk find-all`.
 | `kb_read_passages` | Read specific passages by chunk_id. |
 | `kb_reprocess` | Re-run the ingestion pipeline for a specific document. |
 | `kb_search` | Search the knowledge base by topic, keyword, or question. |
-| `kb_system_health` | Check HC's system health (PostgreSQL, storage, Tika, reranker). |
+| `kb_system_health` | Check HC's system health (PostgreSQL, storage, embedder). |
 | `kb_verify_identifier` | Verify a document identifier resolves to exactly one document. |
 <!-- END GENERATED: mcp-tools -->
 

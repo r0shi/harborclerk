@@ -954,7 +954,7 @@ async def test_claim_next_job_prefers_due_afm_retry_probe(db_session, monkeypatc
 
     result = entry_mod.claim_next_job([JobStage.summarize])
     assert result is not None
-    claimed_doc_id, claimed_stage, _ = result
+    claimed_doc_id, claimed_stage, _, _ = result
     assert claimed_doc_id == retry_doc.doc_id
     assert claimed_stage == JobStage.summarize
 

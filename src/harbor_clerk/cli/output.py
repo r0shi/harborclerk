@@ -105,6 +105,21 @@ def _render_search(payload: Any, stream: TextIO) -> None:
         _render_hit_line(i, r, stream)
     if payload.get("possible_conflict"):
         stream.write("possible_conflict=true - top hits span multiple similarly scored documents\n")
+    _render_semantic_status(payload, stream)
+
+
+def _render_semantic_status(payload: dict, stream: TextIO) -> None:
+    """Say so when the server's vector leg failed: the results are keyword-only (#685)."""
+    status = payload.get("semantic_status")
+    if status == "unavailable":
+        stream.write("semantic_status=unavailable - keyword matches only; differently worded passages are missed\n")
+    elif status == "partial":
+        coverage = payload.get("semantic_coverage")
+        share = f"{round(coverage * 100)}% of" if isinstance(coverage, (int, float)) else "only some of"
+        stream.write(
+            f"semantic_status=partial - some documents aren't searchable by meaning yet ({share} the passages "
+            "in the documents this search covers are embedded); the rest can only be found by keyword\n"
+        )
 
 
 # --- Find all pretty-printer ---
@@ -124,6 +139,7 @@ def _render_find_all(payload: Any, stream: TextIO) -> None:
     offset = payload.get("offset", 0)
     truncated = " truncated" if payload.get("truncated") else ""
     stream.write(f"{returned} of {total} matches (offset {offset}){truncated}\n")
+    _render_semantic_status(payload, stream)
     if not results:
         return
     stream.write("\n")
@@ -155,6 +171,7 @@ def _render_batch_search(payload: Any, stream: TextIO) -> None:
     for result in payload.get("results", []):
         query = result.get("query") or ""
         stream.write(f"query: {query}\n")
+        _render_semantic_status(result, stream)
         hits = result.get("hits") or []
         if not hits:
             stream.write("  0 results\n\n")

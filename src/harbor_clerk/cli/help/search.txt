@@ -37,6 +37,15 @@ OPTIONS
 
 RETURNS (JSON)
   {
+    // The three semantic_* fields appear only when the search is degraded, and
+    // come first so a cut from the end keeps them:
+    "semantic_status": "unavailable" | "partial",  // unavailable: keyword matches only (the
+                                                   //   meaning-based leg failed); partial: under 90%
+                                                   //   of the documents this search covers is embedded
+    "semantic_coverage": 0.62,       // with "partial": the embedded share of the documents this search
+                                     //   covers (the whole library without a document filter)
+    "semantic_notice": "string",     // one sentence on what the flag means: a missing result is not
+                                     //   evidence the documents lack it
     "hits": [
       {
         "chunk_id":   "uuid",        // pass to read-passages or expand-context

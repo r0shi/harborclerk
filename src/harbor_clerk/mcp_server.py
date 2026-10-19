@@ -50,6 +50,12 @@ from harbor_clerk.search import (
     find_all,
     hybrid_search,
 )
+from harbor_clerk.search_types import (
+    SEMANTIC_OK,
+    SEMANTIC_PARTIAL,
+    SEMANTIC_PARTIAL_NOTICE,
+    SEMANTIC_UNAVAILABLE_NOTICE,
+)
 from harbor_clerk.source_ref import (
     SourceRef,
     SourceRefContext,
@@ -688,6 +694,24 @@ async def _resolve_headings(
     return result_map
 
 
+def _semantic_fields(semantic_status: str, semantic_coverage: float | None = None) -> dict:
+    """The degraded-search flag for an MCP payload: present only when the vector leg failed or saw little.
+
+    Absent on a healthy result, so a healthy payload is byte-for-byte what it
+    was; when present it carries a sentence for the model, because a bare flag
+    did not stop three models reading a keyword-only result as complete (#685).
+    """
+    if semantic_status == SEMANTIC_OK:
+        return {}
+    if semantic_status == SEMANTIC_PARTIAL:
+        return {
+            "semantic_status": semantic_status,
+            "semantic_coverage": semantic_coverage,
+            "semantic_notice": SEMANTIC_PARTIAL_NOTICE,
+        }
+    return {"semantic_status": semantic_status, "semantic_notice": SEMANTIC_UNAVAILABLE_NOTICE}
+
+
 def _format_search_response(
     result: SearchResult,
     detail: str,
@@ -740,6 +764,8 @@ def _format_search_response(
     has_more = offset + k < result.total_candidates
 
     resp: dict = {
+        # First, so a cut from the end (chat's plain truncation) keeps it.
+        **_semantic_fields(result.semantic_status, result.semantic_coverage),
         "hits": hits,
         "total_candidates": result.total_candidates,
         "has_more": has_more,
@@ -1144,6 +1170,7 @@ async def kb_search(
             )
         doc_groups.sort(key=lambda g: g["top_score"], reverse=True)
         resp: dict = {
+            **_semantic_fields(result.semantic_status, result.semantic_coverage),
             "documents": doc_groups,
             "total_candidates": result.total_candidates,
             "has_more": base_resp["has_more"],
@@ -1463,6 +1490,7 @@ async def kb_find_all(
         results.append(hit)
 
     resp: dict = {
+        **_semantic_fields(result.semantic_status, result.semantic_coverage),
         "results": results,
         "total_matches": result.total_matches,
         "returned": len(results),
@@ -3168,10 +3196,13 @@ async def kb_documents_by_date(
 
 @mcp.tool()
 async def kb_system_health() -> str:
-    """Check HC's system health (PostgreSQL, storage, Tika, reranker). DIAGNOSTIC.
+    """Check HC's system health (PostgreSQL, storage, embedder). DIAGNOSTIC.
 
     Use when investigating system issues — "why are searches slow", "is the
-    embedder up", "is storage reachable". Returns per-component status.
+    embedder up", "is storage reachable". Returns per-component status; the
+    embedder's is the last known verdict (with a note when it is busy, still
+    being checked, or old); evidence over a minute old waits up to about 3 s
+    for a fresh probe.
 
     Rarely useful during normal query flow — models should reach for this
     only when the user is troubleshooting infrastructure.
@@ -3198,14 +3229,21 @@ async def kb_system_health() -> str:
     except Exception as e:
         checks["storage"] = f"error: {describe_error(e)}"
 
-    overall = all(v == "ok" for v in checks.values())
-    return json.dumps(
-        {
-            "status": "healthy" if overall else "degraded",
-            "checks": checks,
-        },
-        indent=2,
-    )
+    # The same verdict /system/health reports: search's and the background
+    # probe's evidence. Stale evidence starts a probe; evidence past the
+    # maximum age waits for it briefly (_embedder_check).
+    from harbor_clerk.api.routes.system import _embedder_check
+
+    notes: dict[str, str] = {}
+    checks["embedder"], embedder_note = await _embedder_check(get_settings().embedder_url)
+    if embedder_note:
+        notes["embedder"] = embedder_note
+
+    overall = all(v in ("ok", "checking") for v in checks.values())
+    payload: dict = {"status": "healthy" if overall else "degraded", "checks": checks}
+    if notes:
+        payload["notes"] = notes
+    return json.dumps(payload, indent=2)
 
 
 def create_mcp_app():

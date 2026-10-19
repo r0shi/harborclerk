@@ -288,6 +288,8 @@ async def search(
             documents=doc_groups,
             total_candidates=result.total_candidates,
             has_more=has_more,
+            semantic_status=result.semantic_status,
+            semantic_coverage=result.semantic_coverage,
         )
 
     return SearchResponse(
@@ -303,6 +305,8 @@ async def search(
             for cs in result.conflict_sources
         ],
         reranker_status=result.reranker_status,
+        semantic_status=result.semantic_status,
+        semantic_coverage=result.semantic_coverage,
     )
 
 
@@ -432,6 +436,8 @@ async def search_find_all(
         truncated=result.truncated,
         sort_by=result.sort_by,
         presentation=result.presentation,
+        semantic_status=result.semantic_status,
+        semantic_coverage=result.semantic_coverage,
     )
 
 

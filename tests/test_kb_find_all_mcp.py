@@ -396,7 +396,9 @@ async def _find_all_via_chat(admin_user, max_results: int = 100) -> str:
 
 
 @pytest.mark.parametrize("context_tokens", [16_384, 32_768, 65_536, 131_072])
-async def test_chat_cut_drops_snippets_before_rows(db_session, admin_user, mock_session_factory, context_tokens):
+async def test_chat_cut_drops_snippets_before_rows(
+    db_session, admin_user, mock_session_factory, monkeypatch, context_tokens
+):
     """Chat's per-result cut takes snippets (and their brief chunk ids) before any row: with
     CUAD-length titles it keeps exactly as many rows as the same result without snippets. When
     rows go, every snippet has gone first; when every row stays, the snippets that remain are
@@ -404,6 +406,18 @@ async def test_chat_cut_drops_snippets_before_rows(db_session, admin_user, mock_
     from harbor_clerk.llm.chat import _truncate_for_llm
     from harbor_clerk.llm.tools import summarize_tool_result
 
+    async def _query_vector(_query):
+        return [0.01] * 768
+
+    # A healthy semantic leg: with no embedder in the suite the result would be flagged
+    # keyword-only (#685), which is not what this test measures.
+    monkeypatch.setattr("harbor_clerk.search._embed_query", _query_vector)
+
+    async def _fully_embedded(_session, _scope_doc_ids):
+        return 1.0
+
+    # The seeded chunks carry no vectors, which would (correctly) read "partial".
+    monkeypatch.setattr("harbor_clerk.search.search_scope_coverage", _fully_embedded)
     await _seed_long_docs(db_session, 100, title_len=80)
     raw = await _find_all_via_chat(admin_user)
     payload = json.loads(raw)

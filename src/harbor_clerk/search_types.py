@@ -7,6 +7,35 @@ search_rerank.py imported from search.py (which imports from search_rerank.py).
 from dataclasses import dataclass, field
 from datetime import datetime
 
+SEMANTIC_OK = "ok"
+SEMANTIC_UNAVAILABLE = "unavailable"
+# The query embedded, but a share of the documents this search covers has no
+# vectors (an embed still pending, deferred or failed), so some of them are
+# invisible to the semantic leg and findable by keyword only. "Covers" is the
+# whole corpus without a document filter, or the filtered documents with one
+# (embedding_coverage.search_scope_coverage).
+SEMANTIC_PARTIAL = "partial"
+# Below this share of the covered documents' chunks with a vector, a result is
+# "partial". A tenth unsearchable by meaning is enough to miss whole
+# documents; fully embedded reads 1.0.
+SEMANTIC_PARTIAL_COVERAGE = 0.9
+
+# Said alongside a degraded result on the surfaces a model reads (MCP, chat,
+# research). In #685 research reported "0 unique passages" for termination
+# notice periods across a corpus of contracts, and three models concluded the
+# corpus did not discuss it: a keyword-only result read as a complete one.
+SEMANTIC_UNAVAILABLE_NOTICE = (
+    # Neutral on the cause: "unavailable" is set when the query could not be
+    # embedded *or* the vector query itself errored, and only the first is the
+    # embedding service's fault.
+    "Semantic search is unavailable, so these results are keyword matches only. "
+    "Passages that use different wording are missed: absence here is not evidence the corpus lacks the topic."
+)
+SEMANTIC_PARTIAL_NOTICE = (
+    "Some documents aren't searchable by meaning yet: part of the documents this search covers is not embedded, "
+    "so those can only be found by keyword. Passages that use different wording may be missed."
+)
+
 
 @dataclass
 class ConflictSource:
@@ -36,6 +65,16 @@ class SearchResult:
     possible_conflict: bool = False
     conflict_sources: list[ConflictSource] = field(default_factory=list)
     reranker_status: str = "disabled"
+    # "ok"; "unavailable" when the vector leg failed (the query could not be
+    # embedded, or the vector query errored) and the hits are keyword-only;
+    # "partial" when it ran but under SEMANTIC_PARTIAL_COVERAGE of the
+    # documents this search covers is embedded.
+    semantic_status: str = SEMANTIC_OK
+    # Share of the covered documents' chunks with a vector: the corpus without
+    # a document filter, the filtered documents with one of at most 50
+    # (embedding_coverage.search_scope_coverage); None when the vector leg
+    # failed, the filter is larger, or there is nothing to measure.
+    semantic_coverage: float | None = None
 
 
 @dataclass
@@ -70,3 +109,5 @@ class FindAllResult:
     truncated: bool  # total_matches > offset + len(hits)
     sort_by: str  # echo of the input
     presentation: str  # echo of the input
+    semantic_status: str = SEMANTIC_OK  # the inner hybrid_search's, see SearchResult
+    semantic_coverage: float | None = None
