@@ -1351,8 +1351,10 @@ def test_an_emitter_that_dies_after_each_restart_is_retried_with_backoff(factory
     assert obs.restarts <= 5, obs.restarts
     assert requested == [folder_id, folder_id], "one pass for the attach, one when the streak starts"
     assert daemon._seen_stats[folder_id] == {"a.txt": (1, 2, 3, 4)}, "retries keep the stat cache"
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "stopped right after attaching" in warnings[0].getMessage(), "first: a warning"
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
-    assert len(errors) == 1 and "stopped right after attaching" in errors[0].getMessage()
+    assert len(errors) == 1 and "still not watching after a retry" in errors[0].getMessage(), "persisting: one error"
 
 
 def test_a_real_observer_whose_emitter_dies_is_backed_off(factory, tmp_path, monkeypatch):
@@ -1482,37 +1484,13 @@ def _seed_subtree(factory, tmp_path):
     return root, folder_id
 
 
-def test_a_mount_point_below_the_root_is_left_alone(factory, tmp_path, monkeypatch, caplog):
-    """#868: the reconcile never retires rows under a directory on another
-    device than the root; a delete there is for live events to report."""
+def test_an_emptied_subdirectory_is_left_alone_but_a_removed_one_is_not(factory, tmp_path, caplog):
+    """#868: an unmounted mount point below the root is an empty directory, so
+    its rows stay (logged once). A subdirectory that is gone altogether is
+    reconciled as before. The accepted cost: `rm sub/*` while the watcher is
+    down, keeping sub/, is held the same way."""
     import logging
 
-    root, folder_id = _seed_subtree(factory, tmp_path)
-    (root / "sub" / "a.txt").unlink()
-    real_device = watcher_main._dir_device
-    monkeypatch.setattr(
-        watcher_main,
-        "_dir_device",
-        lambda path: (real_device(path) or 0) + 1 if os.path.basename(path) == "sub" else real_device(path),
-    )
-    daemon = WatcherDaemon(factory)
-    with caplog.at_level(logging.WARNING, logger="harbor_clerk.watcher"):
-        daemon._reconcile_folder(folder_id, str(root))
-        daemon._reconcile_folder(folder_id, str(root))
-    assert _state(factory, folder_id)["sub/a.txt"][0:3:2] == (ACTIVE, "active")
-    held = [r for r in caplog.records if "left sub alone" in r.getMessage()]
-    assert len(held) == 1, "logged once, not every pass"
-
-    monkeypatch.setattr(watcher_main, "_dir_device", real_device)
-    daemon._reconcile_folder(folder_id, str(root))
-    assert _state(factory, folder_id)["sub/a.txt"][0:3:2] == (REMOVED, "removed"), (
-        "an ordinary subdirectory is not held"
-    )
-
-
-def test_an_emptied_subdirectory_is_left_alone_but_a_removed_one_is_not(factory, tmp_path):
-    """An unmounted mount point is an empty directory: its rows stay. A
-    subdirectory that is gone altogether is reconciled as before."""
     root, folder_id = _seed_subtree(factory, tmp_path)
     (root / "gone").mkdir()
     (root / "gone" / "c.txt").write_text("gamma")
@@ -1523,7 +1501,10 @@ def test_an_emptied_subdirectory_is_left_alone_but_a_removed_one_is_not(factory,
     (root / "gone" / "c.txt").unlink()
     (root / "gone").rmdir()
     daemon = WatcherDaemon(factory)
-    daemon._reconcile_folder(folder_id, str(root))
+    with caplog.at_level(logging.WARNING, logger="harbor_clerk.watcher"):
+        daemon._reconcile_folder(folder_id, str(root))
+        daemon._reconcile_folder(folder_id, str(root))
+    assert len([r for r in caplog.records if "left sub alone" in r.getMessage()]) == 1, "logged once"
     st = _state(factory, folder_id)
     assert st["sub/a.txt"][0:3:2] == (ACTIVE, "active")
     assert st["sub/deep/b.txt"][0:3:2] == (ACTIVE, "active")
@@ -1699,3 +1680,228 @@ def test_an_invalidated_connection_counts_as_the_database_unreachable():
     assert watcher_main._is_db_unreachable(invalidated)
     assert not watcher_main._is_db_unreachable(other)
     assert not watcher_main._is_db_unreachable(ValueError("not a database error"))
+
+
+# ---------------------------------------------------------------------------
+# Ninth review of #860
+# ---------------------------------------------------------------------------
+
+
+def test_a_file_the_database_refuses_does_not_stop_the_pass(factory, tmp_path, caplog):
+    """A 6,000-character Message-ID makes its index row too large (SQLSTATE 54000,
+    an OperationalError). That is the file's failure, not an outage: the pass
+    logs it, goes on, applies its deletes and is stamped."""
+    import logging
+
+    root = _root(tmp_path)
+    (root / "gone.txt").write_text("going")
+    (root / "keep.txt").write_text("keep")
+    folder_id = _reconcile_once(factory, root)
+    (root / "gone.txt").unlink()
+    import secrets
+
+    # Incompressible, so TOAST cannot shrink the index row under btree's 2,704-byte limit.
+    message_id = "<" + secrets.token_hex(4000) + "@example.com>"
+    (root / "huge.eml").write_bytes(
+        (
+            f"From: a@example.com\r\nTo: b@example.com\r\nSubject: s\r\nMessage-ID: {message_id}\r\n"
+            "Date: Wed, 28 May 2026 12:00:00 +0000\r\n\r\nbody\r\n"
+        ).encode()
+    )
+    daemon = WatcherDaemon(factory)
+    with caplog.at_level(logging.WARNING, logger="harbor_clerk.watcher"):
+        daemon._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert st["gone.txt"][0:3:2] == (REMOVED, "removed"), "the pass went on and applied its delete"
+    assert "huge.eml" not in st
+    assert _last_scan_at(factory, folder_id) is not None
+    assert folder_id not in daemon._retry_at
+    assert (folder_id, "huge.eml") in daemon._event_failures, "a per-file failure"
+    failed = [r for r in caplog.records if "huge.eml" in r.getMessage()]
+    assert len(failed) == 1 and failed[0].exc_info
+
+
+_CODED_ERRORS: dict = {}
+
+
+def _driver_error(pgcode):
+    """A psycopg2 OperationalError carrying ``pgcode`` (one class per SQLSTATE, as psycopg2 has)."""
+    import psycopg2
+
+    if pgcode not in _CODED_ERRORS:
+        _CODED_ERRORS[pgcode] = type(f"Coded{pgcode}", (psycopg2.OperationalError,), {"pgcode": pgcode})
+    return _CODED_ERRORS[pgcode]("driver error")
+
+
+@pytest.mark.parametrize(
+    ("pgcode", "outage"),
+    [
+        (None, True),
+        ("08006", True),
+        ("08001", True),
+        ("54000", False),
+        ("53100", False),
+        ("57014", False),
+        ("40001", False),
+    ],
+)
+def test_only_a_connection_failure_counts_as_an_outage(pgcode, outage):
+    from sqlalchemy.exc import OperationalError
+
+    raw = _driver_error(pgcode)
+    assert watcher_main._is_db_unreachable(raw) is outage
+    assert watcher_main._is_db_unreachable(OperationalError("INSERT ...", {}, raw)) is outage
+
+
+def test_a_connection_class_error_mid_pass_still_aborts_it(factory, tmp_path, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    root = _root(tmp_path)
+    for i in range(5):
+        (root / f"f{i}.txt").write_text(f"file {i}")
+    folder_id = _add_folder(factory, root)
+    calls = []
+
+    def connection_lost(session, event):
+        calls.append(event.relative_path)
+        raise OperationalError("INSERT ...", {}, _driver_error("08006"))
+
+    monkeypatch.setattr(watcher_main, "handle_event", connection_lost)
+    daemon = WatcherDaemon(factory)
+    daemon._reconcile_folder(folder_id, str(root))
+    assert len(calls) == 1
+    assert folder_id in daemon._retry_at
+
+
+def test_failure_streak_keys_a_database_error_by_type_and_sqlstate():
+    """SQLAlchemy's message embeds the statement and parameters: two failures
+    of one kind that differ only in a uuid are the same failure."""
+    import uuid as uuid_mod
+
+    from sqlalchemy.exc import OperationalError
+
+    streak = watcher_main.FailureStreak()
+
+    def failing(parameter):
+        return OperationalError("INSERT INTO documents VALUES (%(id)s)", {"id": parameter}, _driver_error("54000"))
+
+    assert streak.record(failing(str(uuid_mod.uuid4()))) == "first"
+    assert streak.record(failing(str(uuid_mod.uuid4()))) is None, "only the parameters differ"
+    other = OperationalError("INSERT ...", {}, _driver_error("57014"))
+    assert streak.record(other) == "changed", "another SQLSTATE is another failure"
+
+
+def test_a_move_out_of_a_directory_it_leaves_empty_pairs(factory, tmp_path):
+    """`mv sub/a.txt a.txt` while down leaves sub/ empty: the pairing runs
+    before the #868 hold, so it is a move, not a new document plus a phantom."""
+    root = _root(tmp_path)
+    (root / "sub").mkdir()
+    (root / "sub" / "a.txt").write_text("alpha")
+    (root / "keep.txt").write_text("keep")
+    folder_id = _reconcile_once(factory, root)
+    doc_id = _state(factory, folder_id)["sub/a.txt"][1]
+    (root / "sub" / "a.txt").rename(root / "a.txt")
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert "sub/a.txt" not in st, "no phantom"
+    assert st["a.txt"] == (ACTIVE, doc_id, "active", _sha("alpha"), 0)
+
+
+def test_several_moves_out_of_a_directory_they_leave_empty_pair(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "sub").mkdir()
+    for i in range(3):
+        (root / "sub" / f"f{i}.txt").write_text(f"file {i}")
+    folder_id = _reconcile_once(factory, root)
+    before = {k: v[1] for k, v in _state(factory, folder_id).items()}
+    (root / "other").mkdir()
+    for i in range(3):
+        (root / "sub" / f"f{i}.txt").rename(root / "other" / f"f{i}.txt")
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert {k: (v[0], v[1]) for k, v in st.items()} == {
+        f"other/f{i}.txt": (ACTIVE, before[f"sub/f{i}.txt"]) for i in range(3)
+    }
+
+
+def _count_hashes(monkeypatch):
+    import harbor_clerk.watcher.events as ev
+
+    hashed = []
+    for module in (ev, watcher_main):
+        real = module.sha256_of
+        monkeypatch.setattr(module, "sha256_of", lambda path, _real=real: hashed.append(path) or _real(path))
+    return hashed
+
+
+def test_a_new_file_is_hashed_once_in_a_pass_that_pairs(factory, tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    (root / "keep.txt").write_text("keep")
+    folder_id = _reconcile_once(factory, root)
+    (root / "a.txt").rename(root / "moved.txt")
+    (root / "new.txt").write_text("a new file")
+    hashed = _count_hashes(monkeypatch)
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    assert sorted(os.path.basename(p) for p in hashed) == ["keep.txt", "moved.txt", "new.txt"]
+
+
+def test_a_paired_destination_is_not_hashed_again_on_the_next_pass(factory, tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    (root / "keep.txt").write_text("keep")
+    folder_id = _reconcile_once(factory, root)
+    (root / "a.txt").rename(root / "moved.txt")
+    daemon = WatcherDaemon(factory)
+    daemon._reconcile_folder(folder_id, str(root))
+    hashed = _count_hashes(monkeypatch)
+
+    daemon._reconcile_folder(folder_id, str(root))
+    assert hashed == [], "every file's stat was recorded by the pass that paired it"
+
+
+def test_a_paired_move_that_fails_falls_back_to_retire_plus_create(factory, tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    (root / "keep.txt").write_text("keep")
+    folder_id = _reconcile_once(factory, root)
+    doc_id = _state(factory, folder_id)["a.txt"][1]
+    (root / "a.txt").rename(root / "moved.txt")
+    real_handle_event = watcher_main.handle_event
+
+    def moves_fail(session, event):
+        if event.kind == watcher_main.EventKind.moved:
+            raise ValueError("the move could not be applied")
+        return real_handle_event(session, event)
+
+    monkeypatch.setattr(watcher_main, "handle_event", moves_fail)
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert st["a.txt"][0:3:2] == (REMOVED, "removed")
+    assert st["moved.txt"][0] == ACTIVE and st["moved.txt"][1] != doc_id
+
+
+def test_removing_a_folder_drops_its_held_subtrees_and_its_lock(factory, tmp_path):
+    root = _root(tmp_path)
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+
+    class Stub:
+        def stop(self):
+            pass
+
+    daemon._observers[folder_id] = Stub()
+    daemon._left_alone[folder_id] = {"sub"}
+    daemon._folder_lock(folder_id)
+    sess = factory()
+    try:
+        sess.query(WatchedFolder).filter_by(folder_id=folder_id).one().enabled = False
+        sess.commit()
+    finally:
+        sess.close()
+    daemon._sync_observers()
+    assert folder_id not in daemon._left_alone
+    assert folder_id not in daemon._folder_locks

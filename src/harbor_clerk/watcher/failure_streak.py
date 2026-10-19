@@ -8,6 +8,13 @@ folder changes or new mail labels silently stop taking effect.
 
 So a failure is loud when it starts a streak, when its error differs from the
 previous one, and on every `heartbeat_every`-th failure. Everything else is quiet.
+
+"Differs" compares a stable key, not the message: SQLAlchemy's message embeds the
+statement and its parameters (uuids), so every failure of the same kind would
+read as a new one, each with a traceback. A database error is keyed by its
+driver error's type and SQLSTATE, or by the driver's own message when it has no
+SQLSTATE (a connection refused, an authentication failure); any other error by
+its type and message.
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ class FailureStreak:
     def record(self, exc: BaseException) -> Loudness:
         """Count a failure; return why it should be logged at WARNING, or None."""
         self.failures += 1
-        signature = (type(exc), str(exc))
+        signature = _signature(exc)
         changed = self._last is not None and signature != self._last
         self._last = signature
         if self.failures == 1:
@@ -45,3 +52,11 @@ class FailureStreak:
         """End the streak; return how many failures it had."""
         failures, self.failures, self._last = self.failures, 0, None
         return failures
+
+
+def _signature(exc: BaseException) -> tuple[type, str]:
+    driver = getattr(exc, "orig", None) or exc
+    pgcode = getattr(driver, "pgcode", None)
+    if pgcode:
+        return (type(driver), str(pgcode))
+    return (type(driver), str(driver))

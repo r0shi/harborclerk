@@ -97,6 +97,9 @@ class FileEvent:
     # A directory event. Only ``deleted`` is dispatched for one: every file
     # the index holds under it that is no longer on disk is removed.
     is_directory: bool = False
+    # The file's sha-256 when the caller has just computed it (a reconcile pass that
+    # hashed a new path to pair it); spares hashing it again. For a move, the destination's.
+    known_sha: bytes | None = None
 
 
 def classify_skip(
@@ -433,7 +436,7 @@ def handle_event(session: Session, event: FileEvent) -> None:
         return
 
     # Create / modified events: compute sha then dispatch
-    sha = sha256_of(event.absolute_path)
+    sha = event.known_sha if event.known_sha is not None else sha256_of(event.absolute_path)
 
     # Defensive: even if the size check above somehow lets one through
     # (race between getsize and read; truncate-to-zero between syscalls),
@@ -560,8 +563,10 @@ def _handle_moved(session: Session, event: FileEvent) -> None:
     """
     dest_rel, dest_abs = event.dest_relative_path, event.dest_absolute_path
     assert dest_rel is not None and dest_abs is not None, "a moved event names its destination"
-    src_deleted = replace(event, kind=EventKind.deleted, dest_relative_path=None, dest_absolute_path=None)
-    dest_modified = FileEvent(EventKind.modified, event.folder_id, dest_rel, dest_abs)
+    src_deleted = replace(
+        event, kind=EventKind.deleted, dest_relative_path=None, dest_absolute_path=None, known_sha=None
+    )
+    dest_modified = FileEvent(EventKind.modified, event.folder_id, dest_rel, dest_abs, known_sha=event.known_sha)
 
     if _should_ignore(dest_rel):
         handle_event(session, src_deleted)
