@@ -1874,3 +1874,64 @@ def test_a_delete_then_a_create_of_the_same_content_elsewhere_is_a_move(sync_ses
         0,
     )
     assert sync_session.query(WatchedFile).count() == 1
+
+
+# ---------------------------------------------------------------------------
+# Tenth review of #860: a sidecar that moves along with its document
+# ---------------------------------------------------------------------------
+
+
+def _annotated_pair(sync_session, folder, tmp_path, sub="proj"):
+    (tmp_path / sub).mkdir()
+    pdf = tmp_path / sub / "INV-1.pdf"
+    pdf.write_bytes(b"%PDF-1.4 invoice one")
+    sidecar = tmp_path / sub / "INV-1.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    _wf, doc = _index(sync_session, folder, pdf, f"{sub}/INV-1.pdf")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, f"{sub}/INV-1.json", str(sidecar)))
+    sync_session.commit()
+    _mark_extracted(sync_session, doc.doc_id)
+    doc.doc_metadata = {"sidecar": {"vendor": "Acme"}, "_source_provenance": {"sidecar": "2026-10-18T00:00:00+00:00"}}
+    sync_session.commit()
+    return doc
+
+
+@pytest.mark.parametrize("order", ["document-first", "sidecar-first"])
+def test_a_directory_rename_with_unchanged_sidecars_does_not_re_extract(sync_session, folder, tmp_path, order):
+    """`mv proj proj2023`: each document's sidecar moves with it, unchanged, so
+    nothing leaves search to be re-extracted (4,000 pairs would be 4,000)."""
+    doc = _annotated_pair(sync_session, folder, tmp_path)
+    (tmp_path / "proj").rename(tmp_path / "proj2023")
+    moves = [
+        _moved(folder, tmp_path, "proj/INV-1.pdf", "proj2023/INV-1.pdf"),
+        _moved(folder, tmp_path, "proj/INV-1.json", "proj2023/INV-1.json"),
+    ]
+    for event in moves if order == "document-first" else reversed(moves):
+        handle_event(sync_session, event)
+        sync_session.commit()
+
+    wf = sync_session.query(WatchedFile).filter_by(doc_id=doc.doc_id).one()
+    assert (wf.relative_path, wf.status) == ("proj2023/INV-1.pdf", WatchedFileStatus.active)
+    assert doc.pipeline_seq == 0
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 0
+
+
+def test_a_moved_sidecar_whose_content_changed_is_re_extracted(sync_session, folder, tmp_path):
+    doc = _annotated_pair(sync_session, folder, tmp_path)
+    (tmp_path / "proj").rename(tmp_path / "proj2023")
+    (tmp_path / "proj2023" / "INV-1.json").write_text('{"vendor": "Acme Corporation"}')
+
+    handle_event(sync_session, _moved(folder, tmp_path, "proj/INV-1.pdf", "proj2023/INV-1.pdf"))
+    sync_session.commit()
+    assert doc.pipeline_seq == 1
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 1
+
+
+def test_an_edited_sidecar_whose_content_is_unchanged_does_not_re_extract(sync_session, folder, tmp_path):
+    """A touched or re-saved sidecar with the same content: nothing to re-read."""
+    doc = _annotated_pair(sync_session, folder, tmp_path)
+    sidecar = tmp_path / "proj" / "INV-1.json"
+    sidecar.write_text('{"vendor":  "Acme"}')
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "proj/INV-1.json", str(sidecar)))
+    sync_session.commit()
+    assert doc.pipeline_seq == 0

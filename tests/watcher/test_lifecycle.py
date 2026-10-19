@@ -1905,3 +1905,84 @@ def test_removing_a_folder_drops_its_held_subtrees_and_its_lock(factory, tmp_pat
     daemon._sync_observers()
     assert folder_id not in daemon._left_alone
     assert folder_id not in daemon._folder_locks
+
+
+# ---------------------------------------------------------------------------
+# Tenth review of #860
+# ---------------------------------------------------------------------------
+
+
+def _mark_read_sidecar(factory, folder_id, rel, sidecar):
+    """As the extract stage leaves a document whose sidecar it read."""
+    sess = factory()
+    try:
+        wf = sess.query(WatchedFile).filter_by(folder_id=folder_id, relative_path=rel).one()
+        doc = sess.get(Document, wf.doc_id)
+        doc.doc_metadata = {"sidecar": sidecar}
+        for job in sess.query(IngestionJob).filter_by(doc_id=doc.doc_id).all():
+            sess.delete(job)
+        sess.commit()
+    finally:
+        sess.close()
+
+
+def test_a_directory_renamed_while_down_with_its_sidecars_is_not_re_extracted(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "proj").mkdir()
+    for i in range(3):
+        (root / "proj" / f"INV-{i}.pdf").write_bytes(b"%PDF-1.4 " + str(i).encode())
+        (root / "proj" / f"INV-{i}.json").write_text(f'{{"vendor": "Acme {i}"}}')
+    (root / "keep.txt").write_text("keep")
+    folder_id = _reconcile_once(factory, root)
+    for i in range(3):
+        _mark_read_sidecar(factory, folder_id, f"proj/INV-{i}.pdf", {"vendor": f"Acme {i}"})
+    before = {k: v[1] for k, v in _state(factory, folder_id).items()}
+    (root / "proj").rename(root / "proj2023")
+
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    for i in range(3):
+        assert st[f"proj2023/INV-{i}.pdf"] == (
+            ACTIVE,
+            before[f"proj/INV-{i}.pdf"],
+            "active",
+            st[f"proj2023/INV-{i}.pdf"][3],
+            0,
+        )
+
+
+def test_a_pairing_is_dropped_when_the_old_path_is_back(factory, tmp_path, monkeypatch):
+    """The old file reappears between the walk and the pairing: the new path is
+    a copy then, not the old file moved."""
+    root = _root(tmp_path)
+    (root / "a.txt").write_text("alpha")
+    (root / "keep.txt").write_text("keep")
+    folder_id = _reconcile_once(factory, root)
+    doc_id = _state(factory, folder_id)["a.txt"][1]
+    (root / "a.txt").rename(root / "moved.txt")
+    real_sha = watcher_main.sha256_of
+
+    def recreating_the_old_file(path):
+        if path.endswith("moved.txt") and not (root / "a.txt").exists():
+            (root / "a.txt").write_text("alpha")
+        return real_sha(path)
+
+    monkeypatch.setattr(watcher_main, "sha256_of", recreating_the_old_file)
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    st = _state(factory, folder_id)
+    assert st["a.txt"][:3] == (ACTIVE, doc_id, "active"), "the old file keeps its document"
+    assert st["moved.txt"][0] == ACTIVE and st["moved.txt"][1] != doc_id
+
+
+def test_a_vanished_sidecars_cache_entry_is_pruned(factory, tmp_path):
+    root = _root(tmp_path)
+    (root / "INV-1.pdf").write_bytes(b"%PDF-1.4 one")
+    (root / "INV-1.json").write_text('{"vendor": "Acme"}')
+    folder_id = _add_folder(factory, root)
+    daemon = WatcherDaemon(factory)
+    daemon._reconcile_folder(folder_id, str(root))
+    assert "INV-1.json" in daemon._sidecar_cache[folder_id]
+
+    (root / "INV-1.json").unlink()
+    daemon._reconcile_folder(folder_id, str(root))
+    assert "INV-1.json" not in daemon._sidecar_cache[folder_id]

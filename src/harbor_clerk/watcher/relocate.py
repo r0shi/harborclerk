@@ -51,12 +51,15 @@ def type_changed(old_relative_path: str, new_relative_path: str) -> bool:
 def sidecar_changes_with_move(
     old_relative_path: str, new_relative_path: str, doc: Document | None, new_absolute_path: str
 ) -> bool:
-    """True when the move changes which metadata sidecar the document reads.
+    """True when the move changes what the document's metadata sidecar holds.
 
     The extract stage reads ``<stem>.json`` beside the file, so a move that
-    changes the stem or the directory changes the sidecar: one read under the
-    old name (``metadata.sidecar`` is set) is stale, and one waiting under the
-    new name has not been read.
+    changes the stem or the directory may change the sidecar: one read under
+    the old name (``metadata.sidecar`` is set) may be stale, and one waiting
+    under the new name has not been read. Only a change of content counts:
+    ``mv proj proj2023`` moves every sidecar along with its document, and
+    re-extracting each one would take them all out of search until reprocessed.
+    So the sidecar at the new path is loaded and compared with what was read.
     """
     old_sidecar, new_sidecar = sidecar_relative_path(old_relative_path), sidecar_relative_path(new_relative_path)
     if old_sidecar == new_sidecar:
@@ -69,10 +72,9 @@ def sidecar_changes_with_move(
                 return False
         except OSError:
             pass
-    if doc is not None and "sidecar" in (doc.doc_metadata or {}):
-        return True
+    read = (doc.doc_metadata or {}).get("sidecar") if doc is not None else None
     sidecar = Path(new_absolute_path).with_suffix(SIDECAR_SUFFIX)
-    return load_sidecar(sidecar, owner=new_absolute_path, quiet=True) is not None
+    return load_sidecar(sidecar, owner=new_absolute_path, quiet=True) != read
 
 
 def move_needs_reextract(

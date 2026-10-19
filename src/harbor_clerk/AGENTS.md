@@ -43,9 +43,9 @@ keep the doc_id via `watcher/relocate.py` (with `/watch/rename`). APFS ignores c
 a delete is believed once `file_exists_exact` agrees on every path component, and
 a sidecar is the file `with_suffix(".json")` opens on disk (`samefile`), not a name.
 A reconcile removes nothing for a missing, unlistable or empty root (noise doesn't
-count), nor under an unlistable or emptied dir (#868), noted in `unavailable_reason`
-(`root_*`: shown, never blocking; only discovery's `unmounted` makes a folder
-unusable, `folder_is_unavailable`). A lost or replaced root's events are dropped (dev/ino).
+count; `unavailable_reason` says so: `root_*`, shown, never blocking; only discovery's
+`unmounted` makes a folder unusable, `folder_is_unavailable`), nor under an unlistable
+or emptied dir (#868; logged only). A lost or replaced root's events are dropped (dev/ino).
 
 ## Retrieval
 

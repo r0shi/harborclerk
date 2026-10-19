@@ -48,6 +48,7 @@ from harbor_clerk.watcher.events import (
     SiblingIndex,
     SkipReason,
     classify_skip,
+    file_exists_exact,
     handle_event,
     sha256_of,
 )
@@ -904,6 +905,10 @@ class WatcherDaemon:
             if len(olds) != 1 or len(news) != 1:
                 continue
             old, (new_rel, new_abs, stat) = olds[0], news[0]
+            if file_exists_exact(root, old):
+                # Back since the walk: a copy now, not a move. Left to the
+                # ordinary path (its delete is checked on disk again).
+                continue
             event = FileEvent(
                 EventKind.moved,
                 folder_id,

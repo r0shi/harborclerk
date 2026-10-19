@@ -786,11 +786,17 @@ def _reextract_sidecar_owners(session: Session, event: FileEvent, owner_names: I
     re-queued with a bumped generation; that is also what keeps a document
     and its sidecar landing together from being extracted twice (one already
     running is replaced, and may run twice: a stale snapshot of the sidecar
-    is worse). Returns how many documents were re-queued.
+    is worse). An owner whose `metadata.sidecar` already holds exactly what
+    the file now says (the sidecar moved along with it, or was touched) is
+    left alone: re-extracting takes it out of search until reprocessed.
+    Returns how many documents were re-queued.
     """
     parent = Path(event.absolute_path).parent
+    content = load_sidecar(Path(event.absolute_path), owner=event.absolute_path, quiet=True)
     requeued = 0
-    for rel, wf, _doc in _active_owner_docs(session, event, owner_names):
+    for rel, wf, doc in _active_owner_docs(session, event, owner_names):
+        if content is not None and (doc.doc_metadata or {}).get("sidecar") == content:
+            continue
         pending = (
             session.query(IngestionJob)
             .filter_by(doc_id=wf.doc_id, stage=JobStage.extract, status=JobStatus.queued)
