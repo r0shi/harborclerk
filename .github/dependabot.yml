@@ -5,6 +5,13 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      # mcp 2.x is a major SDK line under the MCP server; moving to it is its
+      # own reviewed change (#902), not a Dependabot bump (#877 widened the
+      # range without relocking). Minor and patch releases of 1.x still come.
+      # Remove this when #902 lands.
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: pip
     directory: "/embedder"
     schedule:
