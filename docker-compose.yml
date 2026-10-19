@@ -250,8 +250,8 @@ services:
   # have in MINIO_IMAGE. There is deliberately no default, so nothing tries to pull
   # the dead image: without it, `--profile minio` refuses to start. Not `:?`,
   # which Compose evaluates for inactive profiles too and would break the default
-  # stack. Start it with `docker compose --profile minio up -d minio`, then copy
-  # the originals out (docs/upgrade-runbook.md#docker-minio-to-filesystem-storage)
+  # stack. Start it with `docker compose --profile minio up -d --wait minio`, then
+  # copy the originals out (docs/upgrade-runbook.md#docker-minio-to-filesystem-storage)
   # or set STORAGE_BACKEND=minio to keep using it.
   minio:
     profiles: ["minio"]

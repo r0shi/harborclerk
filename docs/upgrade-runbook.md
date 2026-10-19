@@ -17,8 +17,9 @@ Watched-folder documents are unaffected: they are read in place and were never
 in MinIO. A fresh install, or one that never used uploads or IMAP, needs nothing.
 
 An install with objects in MinIO that starts the new stack without copying them
-keeps searching (the text is in Postgres), and `app` logs an ERROR at startup
-naming this section. Until the copy:
+keeps searching (the text is in Postgres). At startup `app` checks whether the
+oldest documents' stored originals are on the volume and, if any are missing,
+logs an ERROR naming this section. Until the copy:
 
 - downloading one of those documents (with `ALLOW_SOURCE_DOWNLOAD=true`) fails
   with a server error (500); it works again as soon as its object is copied;
@@ -58,11 +59,11 @@ nothing new reaches MinIO, and once the new stack runs nothing ever does.
    docker compose build app watcher worker-io worker-cpu worker-llm
    ```
 
-4. Start MinIO alone from the profile; it reuses the existing `minio_data`
-   volume:
+4. Start MinIO alone from the profile and wait until it is healthy; it reuses
+   the existing `minio_data` volume:
 
    ```bash
-   MINIO_IMAGE=minio/minio:latest docker compose --profile minio up -d minio
+   MINIO_IMAGE=minio/minio:latest docker compose --profile minio up -d --wait minio
    ```
 
 5. Copy every object into the `originals` volume:
@@ -71,11 +72,15 @@ nothing new reaches MinIO, and once the new stack runs nothing ever does.
    docker compose run --rm --no-deps app python -m harbor_clerk.maintenance.copy_minio_originals
    ```
 
-   MinIO is only read, and a file already in the volume is never replaced. Each
-   object is written to a temporary file and moved into place, so if the run is
-   interrupted, run it again: what was copied counts as already present. It ends
-   with `copied N, already present N, differs N, folder markers skipped N,
-   failed N`, and exits non-zero if anything failed:
+   Run it once, and never two at the same time: concurrent runs report each
+   other's copies as `differs`. MinIO is only read, and a file already in the
+   volume is never replaced. Each object is written to a `.partial-*` temporary
+   file and moved into place. If the run is interrupted, run it again: it first
+   removes the `.partial-*` files the interrupted run left, and what was copied
+   counts as already present. If MinIO cannot be listed (not running, not
+   healthy yet, wrong `MINIO_*` values), it says so and exits 1. It ends with
+   `copied N, already present N, differs N, folder markers skipped N, failed N`,
+   and exits non-zero if anything failed:
 
    - **already present**: the volume has a file of the same size at that key.
    - **differs**: the volume has a file of a different size at that key, which
@@ -83,8 +88,10 @@ nothing new reaches MinIO, and once the new stack runs nothing ever does.
      this is 0. Otherwise the volume's file was written by the new stack (a new
      version of an upload keeps its key) and is the one to keep.
    - **folder markers**: zero-byte keys ending in `/`, which are not originals.
-   - **failed**: an object that could not be read, or a key that would land
-     outside the bucket directory; the log names each one.
+   - **failed**: an object that could not be read, a key that would land
+     outside the bucket directory, or a key that clashes with the volume's
+     directory layout (`a` where `a/b` exists, or the reverse); the log names
+     each one.
 
    `--bucket NAME` copies a bucket other than `MINIO_BUCKET` (default `originals`).
 6. Start the new stack, leaving `STORAGE_BACKEND` unset. It uses the images

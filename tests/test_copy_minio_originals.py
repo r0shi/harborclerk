@@ -195,3 +195,55 @@ def test_an_object_larger_than_the_write_chunk_arrives_whole(dest):
     payload = bytes(range(256)) * 1000  # FilesystemBackend writes 64 KiB at a time
     copy_originals(FakeMinIO({"big.bin": payload}), dest, BUCKET)
     assert dest.get_object(BUCKET, "big.bin").read() == payload
+
+
+def test_partial_files_from_an_interrupted_run_are_swept_first(dest, tmp_path, caplog):
+    """A kill mid-copy leaves `.partial-*` files; the next run removes them and still copies everything."""
+    (tmp_path / BUCKET / "originals/docs/1").mkdir(parents=True)
+    (tmp_path / BUCKET / "originals/docs/1/.partial-x1").write_bytes(b"half")
+    (tmp_path / BUCKET / ".partial-x2").write_bytes(b"half")
+    with caplog.at_level("INFO", logger="harbor_clerk.maintenance.copy_minio_originals"):
+        report = copy_originals(FakeMinIO({"originals/docs/1/a.pdf": b"a"}), dest, BUCKET)
+    assert (report.partials_removed, report.copied, report.failed) == (2, 1, [])
+    assert any("removed 2 unfinished" in r.getMessage() for r in caplog.records)
+    assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file()) == ["a.pdf"]
+
+
+@pytest.mark.parametrize("existing", ["file", "directory"])
+def test_a_file_directory_collision_fails_rather_than_differs(dest, tmp_path, existing, caplog):
+    """`a/b` against an existing file `a`, and `a` against an existing `a/b`: a layout clash, not a newer file."""
+    if existing == "file":
+        (tmp_path / BUCKET).mkdir()
+        (tmp_path / BUCKET / "a").write_bytes(b"file a")
+        key = "a/b"
+    else:
+        (tmp_path / BUCKET / "a").mkdir(parents=True)
+        (tmp_path / BUCKET / "a" / "b").write_bytes(b"file a/b")
+        key = "a"
+    with caplog.at_level("ERROR", logger="harbor_clerk.maintenance.copy_minio_originals"):
+        report = copy_originals(FakeMinIO({key: b"from minio"}), dest, BUCKET)
+    assert (report.copied, report.differs, report.failed) == (0, [], [key])
+    assert any("collides with the destination's directory layout" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("order", [("a", "a/b"), ("a/b", "a")])
+def test_a_collision_within_minio_fails_the_second_key(dest, order):
+    report = copy_originals(FakeMinIO({k: k.encode() for k in order}), dest, BUCKET)
+    assert (report.copied, report.differs, report.failed) == (1, [], [order[1]])
+
+
+def test_an_unreachable_minio_is_a_clear_error_not_a_traceback(dest, caplog):
+    class Down(FakeMinIO):
+        def list_objects(self, bucket, prefix="", recursive=False):
+            raise ConnectionRefusedError("[Errno 111] Connection refused")
+
+    with (
+        patch("harbor_clerk.storage.MinIOBackend", return_value=Down({})),
+        patch("harbor_clerk.storage.FilesystemBackend", return_value=dest),
+        caplog.at_level("ERROR", logger="harbor_clerk.maintenance.copy_minio_originals"),
+    ):
+        assert mod.main([]) == 1
+    [record] = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert "could not list bucket 'originals' in MinIO" in record.getMessage()
+    assert "Connection refused" in record.getMessage()
+    assert record.exc_info is None, "a one-line error, not a traceback"

@@ -49,6 +49,8 @@ class CopyReport:
     folder_markers: int = 0
     differs: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    partials_removed: int = 0
+    listing_error: str | None = None
 
 
 def _safe_key(key: str) -> bool:
@@ -64,9 +66,22 @@ def _safe_key(key: str) -> bool:
 def copy_originals(source: StorageBackend, destination: FilesystemBackend, bucket: str) -> CopyReport:
     """Copy every object in ``bucket`` from ``source`` to ``destination`` under the same key, never replacing a file."""
     report = CopyReport()
+    report.partials_removed = destination.remove_partials(bucket)
+    if report.partials_removed:
+        logger.info("removed %d unfinished .partial-* file(s) left by an interrupted run", report.partials_removed)
     present = {obj["key"]: obj["size"] for obj in destination.list_objects(bucket, recursive=True)}
     destination.ensure_bucket(bucket)
-    for obj in source.list_objects(bucket, recursive=True):
+    try:
+        objects = source.list_objects(bucket, recursive=True)
+    except Exception as exc:
+        report.listing_error = f"{type(exc).__name__}: {exc}"
+        logger.error(
+            "could not list bucket %r in MinIO (is it running and healthy, and are MINIO_* right?): %s",
+            bucket,
+            report.listing_error,
+        )
+        return report
+    for obj in objects:
         key, size = obj["key"], obj["size"]
         if key.endswith("/") and size == 0:
             logger.info("skipping folder marker %r", key)
@@ -91,8 +106,12 @@ def copy_originals(source: StorageBackend, destination: FilesystemBackend, bucke
                 raise ValueError(f"read {len(data)} bytes, listed size {size}")
             destination.put_new_object(bucket, key, io.BytesIO(data))
         except FileExistsError:
-            logger.warning("left alone, appeared at the destination during the copy: %s", key)
+            logger.warning("left alone, a file appeared at the destination after it was listed: %s", key)
             report.differs.append(key)
+            continue
+        except (IsADirectoryError, NotADirectoryError) as exc:
+            logger.error("key collides with the destination's directory layout: %s (%s)", key, exc)
+            report.failed.append(key)
             continue
         except Exception:
             logger.exception("failed to copy %s/%s", bucket, key)
@@ -122,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         report.folder_markers,
         len(report.failed),
     )
-    return 1 if report.failed else 0
+    return 1 if report.failed or report.listing_error else 0
 
 
 if __name__ == "__main__":

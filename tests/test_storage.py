@@ -1,5 +1,6 @@
 """Tests for storage backends: FilesystemBackend and MinIOBackend."""
 
+import contextlib
 import io
 from unittest.mock import MagicMock, patch
 
@@ -325,12 +326,56 @@ def test_put_new_object_without_hard_links(fs_backend, tmp_path):
     assert _leftovers(tmp_path) == ["k"]
 
 
-def test_bucket_is_empty(fs_backend, tmp_path):
-    assert fs_backend.bucket_is_empty("b"), "missing counts as empty"
-    fs_backend.ensure_bucket("b")
-    assert fs_backend.bucket_is_empty("b")
-    fs_backend.put_object("b", "originals/docs/1/a", io.BytesIO(b"a"), 1)
-    assert not fs_backend.bucket_is_empty("b")
+def test_put_new_object_gives_put_objects_mode(fs_backend, tmp_path):
+    """mkstemp creates 0600 and the hard link keeps it; a copied original must be readable like any other."""
+    fs_backend.put_new_object("b", "k", io.BytesIO(b"x"))
+    assert (tmp_path / "b" / "k").stat().st_mode & 0o777 == 0o644
+
+
+def test_put_new_object_refuses_a_key_whose_parent_is_a_file(fs_backend, tmp_path):
+    fs_backend.put_object("b", "a", io.BytesIO(b"file"), 4)
+    with pytest.raises(NotADirectoryError, match="a parent of 'a/b' is a file"):
+        fs_backend.put_new_object("b", "a/b", io.BytesIO(b"x"))
+    with pytest.raises(NotADirectoryError):
+        fs_backend.put_new_object("b", "a/b/c", io.BytesIO(b"x"))
+    assert fs_backend.get_object("b", "a").read() == b"file"
+    assert _leftovers(tmp_path) == ["a"]
+
+
+@pytest.mark.parametrize("hard_links", [True, False])
+def test_put_new_object_refuses_a_key_that_is_a_directory(fs_backend, tmp_path, hard_links):
+    fs_backend.put_object("b", "a/b", io.BytesIO(b"inner"), 5)
+    link = (
+        patch("harbor_clerk.storage.os.link", side_effect=PermissionError("no hard links")) if not hard_links else None
+    )
+    with link or contextlib.nullcontext(), pytest.raises(IsADirectoryError, match="'a' is a directory"):
+        fs_backend.put_new_object("b", "a", io.BytesIO(b"x"))
+    assert _leftovers(tmp_path) == ["b"], "only a/b, no temporary file"
+
+
+def test_list_objects_skips_partial_files(fs_backend, tmp_path):
+    fs_backend.put_object("b", "d/real", io.BytesIO(b"r"), 1)
+    (tmp_path / "b" / "d" / ".partial-abc123").write_bytes(b"half")
+    (tmp_path / "b" / ".partial-top").write_bytes(b"half")
+    assert [o["key"] for o in fs_backend.list_objects("b", recursive=True)] == ["d/real"]
+    assert fs_backend.list_objects("b") == []
+    assert [o["key"] for o in fs_backend.list_objects("b", prefix="d")] == ["d/real"]
+
+
+def test_remove_partials(fs_backend, tmp_path):
+    assert fs_backend.remove_partials("missing") == 0
+    fs_backend.put_object("b", "d/real", io.BytesIO(b"r"), 1)
+    (tmp_path / "b" / "d" / ".partial-1").write_bytes(b"half")
+    (tmp_path / "b" / ".partial-2").write_bytes(b"half")
+    assert fs_backend.remove_partials("b") == 2
+    assert _leftovers(tmp_path) == ["real"]
+
+
+def test_object_exists(fs_backend):
+    assert not fs_backend.object_exists("b", "d/k")
+    fs_backend.put_object("b", "d/k", io.BytesIO(b"k"), 1)
+    assert fs_backend.object_exists("b", "d/k")
+    assert not fs_backend.object_exists("b", "d"), "a directory is not an object"
 
 
 # --- STORAGE_BACKEND parsing (#888) ---
@@ -357,8 +402,22 @@ def test_unknown_storage_backend_fails_at_startup(monkeypatch):
         Settings(_env_file=None)
 
 
+def test_config_json_overlays_are_validated_too(monkeypatch):
+    """config.py's _apply_to assigns through validate_assignment, so the validator covers overlays."""
+    from pydantic import ValidationError
+
+    from harbor_clerk.config import Settings
+
+    settings = Settings(_env_file=None)
+    validator = type(settings).__pydantic_validator__
+    validator.validate_assignment(settings, "storage_backend", " MinIO ")
+    assert settings.storage_backend == "minio"
+    with pytest.raises(ValidationError, match="STORAGE_BACKEND must be one of"):
+        validator.validate_assignment(settings, "storage_backend", "s3")
+
+
 def test_get_storage_refuses_an_unvalidated_unknown_backend(fresh_storage, monkeypatch):
-    """config.json overlays assign without validation; get_storage must not fall back to MinIO."""
+    """Defensive: only reachable if something bypasses validation; it must not fall back to MinIO."""
     import harbor_clerk.storage as storage_mod
     from harbor_clerk.config import Settings
 
