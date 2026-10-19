@@ -26,18 +26,20 @@ from tests.conftest import auth_header
 _STALE = timedelta(minutes=10)
 
 
-async def _doc_with_job(db_session, sha: bytes, *, stage: JobStage, **job_fields) -> uuid.UUID:
+async def _doc_with_job(
+    db_session, sha: bytes, *, stage: JobStage, doc_status: str = "active", job_seq: int = 3, **job_fields
+) -> uuid.UUID:
     """A document at pipeline_seq 3 with one ``running`` job row; returns the job's id."""
     doc = Document(
         title=f"doc-{sha[:1].decode()}",
-        status="active",
+        status=doc_status,
         sha256=sha * 32,
         pipeline_status=PipelineStatus.embedding,
         pipeline_seq=3,
     )
     db_session.add(doc)
     await db_session.flush()
-    job = IngestionJob(doc_id=doc.doc_id, stage=stage, status=JobStatus.running, pipeline_seq=3, **job_fields)
+    job = IngestionJob(doc_id=doc.doc_id, stage=stage, status=JobStatus.running, pipeline_seq=job_seq, **job_fields)
     db_session.add(job)
     await db_session.flush()
     return job.job_id
@@ -163,9 +165,106 @@ async def test_reaper_run_leaves_a_job_claimed_after_it_was_read(
     assert entry.claim_next_job([JobStage.embed]) is None
 
 
-async def test_reaper_run_announces_each_requeued_job(client, admin_user, admin_token, db_session):
-    """A pg_notify on the stage's queue and a "queued" job event, as enqueue_stage sends."""
-    from harbor_clerk.worker.entry import _get_listen_connection
+def _write_meanwhile(monkeypatch, job_id: uuid.UUID, **values) -> None:
+    """Between a reaper's read of the orphan and its write, another session commits ``values`` to the row."""
+    from harbor_clerk.worker import pipeline
+
+    real = pipeline.requeue_orphan_job
+
+    async def _changed_meanwhile(session, job):
+        other = get_sync_session()
+        try:
+            other.execute(update(IngestionJob).where(IngestionJob.job_id == job_id).values(**values))
+            other.commit()
+        finally:
+            other.close()
+        return await real(session, job)
+
+    monkeypatch.setattr(pipeline, "requeue_orphan_job", _changed_meanwhile)
+
+
+def _record_announcements(monkeypatch) -> list[list[tuple[uuid.UUID, JobStage]]]:
+    from harbor_clerk.worker import pipeline
+
+    calls: list[list[tuple[uuid.UUID, JobStage]]] = []
+    real = pipeline.announce_requeued_jobs
+
+    def _announce(requeued):
+        calls.append(list(requeued))
+        real(requeued)
+
+    monkeypatch.setattr(pipeline, "announce_requeued_jobs", _announce)
+    return calls
+
+
+async def test_reaper_run_leaves_a_job_whose_worker_heartbeated_after_it_was_read(
+    client, admin_user, admin_token, db_session, monkeypatch
+):
+    """Same claim (started_at), but the worker heartbeated late, between the read and the write:
+    it is alive, so the row is not requeued or counted."""
+    now = datetime.now(UTC)
+    started = now - timedelta(hours=1)
+    job_id = await _doc_with_job(db_session, b"h", stage=JobStage.embed, started_at=started, heartbeat_at=now - _STALE)
+    await db_session.commit()
+    fresh = datetime.now(UTC)
+    _write_meanwhile(monkeypatch, job_id, heartbeat_at=fresh)
+
+    assert await _reap(client, admin_token) == 0
+
+    row = await _reload(db_session, job_id)
+    assert row.status == JobStatus.running
+    assert row.started_at == started
+    assert row.heartbeat_at == fresh
+
+
+async def test_a_legacy_orphan_requeued_by_another_reaper_is_not_counted_again(
+    client, admin_user, admin_token, db_session, monkeypatch
+):
+    """No heartbeat and no started_at, so only the status tells the second write that the
+    first reaper already requeued it: it must not count or announce it again."""
+    now = datetime.now(UTC)
+    job_id = await _doc_with_job(
+        db_session,
+        b"g",
+        stage=JobStage.extract,
+        created_at=now - timedelta(hours=3),
+        started_at=None,
+        heartbeat_at=None,
+    )
+    await db_session.commit()
+    _write_meanwhile(monkeypatch, job_id, status=JobStatus.queued, progress_current=0, progress_total=0)
+    announcements = _record_announcements(monkeypatch)
+
+    assert await _reap(client, admin_token) == 0
+
+    assert all(not requeued for requeued in announcements)
+    assert (await _reload(db_session, job_id)).status == JobStatus.queued
+
+
+async def test_orphans_of_inactive_documents_or_old_generations_are_neither_stuck_nor_reaped(
+    client, admin_user, admin_token, db_session, monkeypatch, _engine
+):
+    now = datetime.now(UTC)
+    stale = dict(started_at=now - timedelta(hours=1), heartbeat_at=now - _STALE)
+    on_deleted_doc = await _doc_with_job(db_session, b"d", stage=JobStage.embed, doc_status="deleted", **stale)
+    old_generation = await _doc_with_job(db_session, b"o", stage=JobStage.embed, job_seq=2, **stale)
+    await db_session.commit()
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.json()["counts"]["stuck_jobs"] == 0
+    assert await _reap(client, admin_token) == 0
+    assert await _run_background_reaper_once(monkeypatch, _engine) == []
+
+    for job_id in (on_deleted_doc, old_generation):
+        assert (await _reload(db_session, job_id)).status == JobStatus.running
+
+
+async def test_reaper_run_announces_each_requeued_job_after_committing_it(
+    client, admin_user, admin_token, db_session, monkeypatch
+):
+    """A pg_notify on the stage's queue and a "queued" job event, as enqueue_stage sends, and
+    only once the requeue is committed: a worker woken by the notify claims the job."""
+    from harbor_clerk.worker import entry, pipeline
 
     now = datetime.now(UTC)
     job_id = await _doc_with_job(
@@ -174,22 +273,37 @@ async def test_reaper_run_announces_each_requeued_job(client, admin_user, admin_
     doc_id = (await _reload(db_session, job_id)).doc_id
     await db_session.commit()
 
-    conn = _get_listen_connection()
+    conn = entry._get_listen_connection()
+    got: list[tuple[str, str]] = []
+    claims = []
+
+    def _drain(until, seconds: float = 5) -> None:
+        deadline = datetime.now(UTC) + timedelta(seconds=seconds)
+        while not until() and datetime.now(UTC) < deadline:
+            select_module.select([conn], [], [], 0.2)
+            conn.poll()
+            got.extend((n.channel, n.payload) for n in conn.notifies)
+            conn.notifies.clear()
+
+    real_announce = pipeline.announce_requeued_jobs
+
+    def _announce_then_wake_a_worker(requeued):
+        real_announce(requeued)
+        # Still inside the route: the worker the notify wakes claims the job now.
+        _drain(lambda: any(channel == "job_enqueued_cpu" for channel, _ in got))
+        claims.append(entry.claim_next_job([JobStage.embed]))
+
+    monkeypatch.setattr(pipeline, "announce_requeued_jobs", _announce_then_wake_a_worker)
     try:
         with conn.cursor() as cur:
             cur.execute("LISTEN job_enqueued_cpu")
             cur.execute("LISTEN job_progress")
         assert await _reap(client, admin_token) == 1
-        got: list[tuple[str, str]] = []
-        deadline = asyncio.get_running_loop().time() + 5
-        while len(got) < 2 and asyncio.get_running_loop().time() < deadline:
-            select_module.select([conn], [], [], 0.2)
-            conn.poll()
-            got.extend((n.channel, n.payload) for n in conn.notifies)
-            conn.notifies.clear()
+        _drain(lambda: any(channel == "job_progress" for channel, _ in got))
     finally:
         conn.close()
 
+    assert claims == [(doc_id, JobStage.embed, 3)]
     assert ("job_enqueued_cpu", str(doc_id)) in got
     events = [json.loads(payload) for channel, payload in got if channel == "job_progress"]
     assert len(events) == 1
@@ -198,10 +312,13 @@ async def test_reaper_run_announces_each_requeued_job(client, admin_user, admin_
     assert events[0]["status"] == "queued"
 
 
-async def _run_background_reaper_once(monkeypatch, engine) -> list[tuple[uuid.UUID, JobStage]]:
+async def _run_background_reaper_once(
+    monkeypatch, engine, *, announce_error: Exception | None = None
+) -> list[tuple[uuid.UUID, JobStage]]:
     """One pass of api/app.py's ``_session_reaper_loop``, against the test database.
 
-    Returns what it announced (``announce_requeued_jobs``, which still runs)."""
+    Returns what it announced (``announce_requeued_jobs`` still runs, or raises
+    ``announce_error``). Asserts the pass ran to its end, the topic refresh."""
     from harbor_clerk.api import app as app_module
     from harbor_clerk.worker import pipeline
 
@@ -210,10 +327,13 @@ async def _run_background_reaper_once(monkeypatch, engine) -> list[tuple[uuid.UU
 
     def _announce(requeued):
         announced.extend(requeued)
+        if announce_error is not None:
+            raise announce_error
         real_announce(requeued)
 
     monkeypatch.setattr(pipeline, "announce_requeued_jobs", _announce)
     sleeps = 0
+    topic_refreshes = 0
 
     async def _sleep(_seconds):
         nonlocal sleeps
@@ -222,7 +342,8 @@ async def _run_background_reaper_once(monkeypatch, engine) -> list[tuple[uuid.UU
             raise asyncio.CancelledError
 
     async def _no_topics(_db):
-        return None
+        nonlocal topic_refreshes
+        topic_refreshes += 1
 
     monkeypatch.setattr(app_module, "asyncio", types.SimpleNamespace(sleep=_sleep, to_thread=asyncio.to_thread))
     monkeypatch.setattr(
@@ -233,6 +354,7 @@ async def _run_background_reaper_once(monkeypatch, engine) -> list[tuple[uuid.UU
     with pytest.raises(asyncio.CancelledError):
         await app_module._session_reaper_loop()
     assert sleeps == 2
+    assert topic_refreshes == 1
     return announced
 
 
@@ -321,3 +443,37 @@ async def test_a_job_shown_as_stuck_is_recovered_by_both_reapers(
 
     resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
     assert resp.json()["counts"]["stuck_jobs"] == 0
+
+
+async def test_a_failed_announcement_does_not_fail_the_route(client, admin_user, admin_token, db_session, monkeypatch):
+    """The requeue is committed before the announcement: if announcing fails, the route logs
+    it and still returns the count, and the job stays queued for a worker's idle poll."""
+    from harbor_clerk.worker import pipeline
+
+    def _broken(_requeued):
+        raise RuntimeError("notify failed")
+
+    monkeypatch.setattr(pipeline, "announce_requeued_jobs", _broken)
+    now = datetime.now(UTC)
+    job_id = await _doc_with_job(
+        db_session, b"x", stage=JobStage.embed, started_at=now - timedelta(hours=1), heartbeat_at=now - _STALE
+    )
+
+    assert await _reap(client, admin_token) == 1
+    assert (await _reload(db_session, job_id)).status == JobStatus.queued
+
+
+async def test_a_failed_announcement_does_not_cut_the_background_pass_short(db_session, monkeypatch, _engine):
+    """The background reaper logs a failed announcement and goes on to the purges and the
+    topic refresh (asserted by the helper); the requeue stays committed."""
+    now = datetime.now(UTC)
+    job_id = await _doc_with_job(
+        db_session, b"y", stage=JobStage.embed, started_at=now - timedelta(hours=1), heartbeat_at=now - _STALE
+    )
+    await db_session.commit()
+
+    announced = await _run_background_reaper_once(monkeypatch, _engine, announce_error=RuntimeError("notify failed"))
+
+    row = await _reload(db_session, job_id)
+    assert announced == [(row.doc_id, JobStage.embed)]
+    assert row.status == JobStatus.queued

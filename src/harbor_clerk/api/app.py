@@ -163,7 +163,12 @@ async def _session_reaper_loop() -> None:
                 orphan_jobs = await requeue_orphaned_jobs(db, now)
 
                 await db.commit()
-                await asyncio.to_thread(announce_requeued_jobs, orphan_jobs)
+                try:
+                    await asyncio.to_thread(announce_requeued_jobs, orphan_jobs)
+                except Exception:
+                    # Committed: the jobs are queued and a worker claims them at its idle
+                    # poll. The rest of the pass (purges, topic refresh) still runs.
+                    logger.exception("Reaper: announcing %d re-queued orphan jobs failed", len(orphan_jobs))
                 total = len(stale_sessions) + len(done_sessions)
                 if total > 0 or stale_research or orphan_jobs:
                     logger.info(

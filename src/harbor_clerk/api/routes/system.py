@@ -880,7 +880,11 @@ async def reaper_run(
         detail={"reaped_count": reaped},
     )
     await session.commit()
-    await asyncio.to_thread(announce_requeued_jobs, requeued)
+    try:
+        await asyncio.to_thread(announce_requeued_jobs, requeued)
+    except Exception:
+        # Committed: the jobs are queued and a worker claims them at its idle poll. Not a 500.
+        logger.exception("Reaper: announcing %d requeued jobs failed", reaped)
 
     logger.info("Reaped %d orphan jobs", reaped)
     return {"reaped": reaped}
