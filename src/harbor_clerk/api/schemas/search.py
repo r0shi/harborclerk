@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from harbor_clerk.api.schemas.scope import ScopeSpec
 from harbor_clerk.api.schemas.source_ref import SourceRefOut
@@ -50,6 +50,30 @@ class SearchRequest(BaseModel):
     ) = None
     faceted: bool = False
     scope: ScopeSpec | None = None
+
+    # Kept as str and checked with uuid.UUID, the parser the route uses, rather than typed
+    # UUID: pydantic's parser refuses a few forms uuid.UUID accepts ("uuid:" prefix, other
+    # hyphen placement), and an empty doc_id means no filter. A malformed id is a 422 here
+    # instead of a ValueError (500) in the route (#873).
+    @field_validator("doc_id")
+    @classmethod
+    def check_doc_id_is_uuid(cls, v: str | None) -> str | None:
+        if v:
+            try:
+                UUID(v)
+            except ValueError:
+                raise ValueError("doc_id must be a UUID") from None
+        return v
+
+    @field_validator("doc_ids")
+    @classmethod
+    def check_doc_ids_are_uuids(cls, v: list[str] | None) -> list[str] | None:
+        for i, d in enumerate(v or []):
+            try:
+                UUID(d)
+            except ValueError:
+                raise ValueError(f"doc_ids[{i}] must be a UUID") from None
+        return v
 
     @model_validator(mode="after")
     def check_doc_id_mutual_exclusion(self):
