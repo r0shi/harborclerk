@@ -36,9 +36,10 @@ class McpHttpClient:
             base_url=config.url,
             timeout=httpx.Timeout(30.0, connect=10.0),
             verify=verify,
-            # Follow redirects: FastAPI's `redirect_slashes=True` default sends
-            # POST /mcp -> 307 POST /mcp/. httpx defaults to follow_redirects=False
-            # which would surface as a confusing 307 to the user.
+            # Follow redirects: the CLI posts to /mcp/, which current servers
+            # answer directly, but a reverse proxy in front of one may still
+            # redirect, and httpx's default (no follow) would surface that as a
+            # confusing 3xx to the user.
             follow_redirects=True,
             headers={
                 "Authorization": f"Bearer {config.api_key}",
@@ -60,10 +61,10 @@ class McpHttpClient:
             "params": {"name": tool_name, "arguments": arguments},
         }
         try:
-            # POST to /mcp/ (trailing slash): the server mounts the bare MCP
-            # ASGI handler at /mcp, but FastAPI's mount semantics on the exact
-            # path `/mcp` collide with the SPA catch-all route — sending to
-            # `/mcp/` lands cleanly inside the mount.
+            # POST to /mcp/ (trailing slash), the path inside the MCP mount.
+            # Current servers also route the bare /mcp to the same handler, but
+            # releases before that answered a POST to /mcp with a 405 when the
+            # web app was served, so /mcp/ keeps the CLI working against them.
             resp = self._http.post("/mcp/", json=body)
         except (httpx.TransportError, ConnectionError) as e:
             # A reset or a cut response is a connection failure to the user as much as a refusal is; narrower

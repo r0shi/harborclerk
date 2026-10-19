@@ -7,6 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_admin, require_read_access
@@ -848,23 +849,47 @@ async def download_document(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    import os
+    import asyncio
     from pathlib import Path
 
-    # Read from storage if available; fall back to source_path for watched folder files
-    if doc.original_object_key:
+    from harbor_clerk.file_types import guess_mime_type
+    from harbor_clerk.watched_source import log_read_error, watched_state_async
+
+    # Read as the extract stage does (watched_source): a watched document from its
+    # file (even with a stored original, #859), else the stored original. A failed
+    # lookup is a 503, and a watched document whose file cannot be read in place a
+    # 404, never the stored original: that would serve the wrong bytes. An
+    # unverified source_path is never read.
+    try:
+        state = await watched_state_async(session, doc)
+    except SQLAlchemyError:
+        logger.warning("watched-file lookup failed for doc %s", doc_id, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Source file temporarily unavailable; try again.",
+        )
+    content_type = doc.mime_type or "application/octet-stream"
+    if state.watched:
+        if state.path is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file is missing")
+        try:
+            file_bytes = await asyncio.to_thread(Path(state.path).read_bytes)
+        except OSError as exc:
+            # Missing, a path component no longer a directory, no permission...: the
+            # file cannot be read in place. Logged with the path; the detail names none.
+            log_read_error(exc, doc_id, state.path)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file is missing")
+        filename = posixpath.basename(state.path)
+        # doc.mime_type is what the extract stage set from this file and its magic
+        # bytes; the extension is the fallback when it is unset.
+        content_type = doc.mime_type or guess_mime_type(state.path)
+    elif doc.original_object_key:
         storage = get_storage()
         obj = storage.get_object(doc.original_bucket, doc.original_object_key)
         file_bytes = obj.read()
         filename = posixpath.basename(doc.original_object_key)
-    elif doc.source_path and os.path.exists(doc.source_path):
-        # Watched folder file — no stored object, read from original location
-        file_bytes = Path(doc.source_path).read_bytes()
-        filename = posixpath.basename(doc.source_path)
     else:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file unavailable")
-
-    content_type = doc.mime_type or "application/octet-stream"
 
     from urllib.parse import quote
 

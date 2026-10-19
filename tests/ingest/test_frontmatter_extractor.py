@@ -118,6 +118,38 @@ def test_frontmatter_extractor_strips_utf8_bom():
     assert out == {"foo": "bar"}
 
 
+@dataclass
+class _FakeStoredDoc:
+    doc_id: uuid.UUID
+    title: str
+    canonical_filename: str | None
+    original_object_key: str | None
+
+
+_FRONTMATTER = b"---\nvendor: Acme\n---\n\nBody.\n"
+
+
+def test_a_watched_file_renamed_to_markdown_is_typed_by_its_in_place_path():
+    """canonical_filename still says a.txt, but the file read in place is a.md."""
+    out = FrontmatterExtractor().extract(
+        doc=_FakeDoc(doc_id=uuid.uuid4(), title="a", canonical_filename="a.txt"),
+        raw_bytes=_FRONTMATTER,
+        source_path="/srv/watched/a.md",
+    )
+    assert out == {"vendor": "Acme"}
+
+
+def test_an_upload_without_a_canonical_filename_is_typed_by_its_stored_original():
+    out = FrontmatterExtractor().extract(
+        doc=_FakeStoredDoc(
+            doc_id=uuid.uuid4(), title="n", canonical_filename=None, original_object_key="originals/docs/x/notes.md"
+        ),
+        raw_bytes=_FRONTMATTER,
+        source_path=None,
+    )
+    assert out == {"vendor": "Acme"}
+
+
 def test_jsonify_converts_yaml_binary_to_string():
     """!!binary YAML tag produces bytes; _jsonify decodes to a JSON-serializable string."""
     assert _jsonify({"data": b"hello"}) == {"data": "hello"}

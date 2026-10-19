@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useLLMStatus, type LLMStatus } from '../hooks/useLLMStatus'
 import { LLMStatusBanner, LLMStatusProvider } from './LLMStatusBanner'
 
@@ -79,5 +79,54 @@ describe('LLMStatusBanner when the active model does not fit this Mac (#709)', (
       does_not_fit_here: { system_ram_gb: 16, min_ram_gb: 48 },
     })
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+})
+
+describe('LLMStatusBanner under Docker Compose when loading never ends (#654)', () => {
+  const COMPOSE_STUCK_LOADING_MS = 120_000 // about two minutes, pinned here so a change to it is deliberate
+  const HINT = 'If this persists, check docker compose logs llama-server'
+  const loading: LLMStatus = {
+    state: 'loading',
+    model_id: 'qwen35-4b',
+    model_name: 'Qwen3.5 4B',
+    setup_hint: null,
+    compose_model_file: 'Qwen3.5-4B-Q4_K_M.gguf',
+  }
+
+  beforeEach(() => {
+    useLLMStatusMock.mockReset()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('says where to look once loading has lasted about two minutes, not before', () => {
+    renderWith(loading)
+    act(() => vi.advanceTimersByTime(COMPOSE_STUCK_LOADING_MS - 1000))
+    expect(screen.getByRole('status').textContent).toContain('Loading model')
+    expect(screen.getByRole('status').textContent).not.toContain(HINT)
+    act(() => vi.advanceTimersByTime(2000))
+    expect(screen.getByRole('status').textContent).toContain(HINT)
+  })
+
+  it('starts the clock again for a new loading spell', () => {
+    const { rerender } = renderWith(loading)
+    act(() => vi.advanceTimersByTime(COMPOSE_STUCK_LOADING_MS + 1000))
+    expect(screen.getByRole('status').textContent).toContain(HINT)
+
+    useLLMStatusMock.mockReturnValue({ status: { ...loading, state: 'ready' }, markTransitioning: vi.fn() })
+    rerender(tree())
+    act(() => vi.advanceTimersByTime(3000)) // past the ready flash
+    useLLMStatusMock.mockReturnValue({ status: loading, markTransitioning: vi.fn() })
+    rerender(tree())
+    expect(screen.getByRole('status').textContent).not.toContain(HINT)
+  })
+
+  it('outside Compose a long load keeps the plain spinner', () => {
+    renderWith({ ...loading, compose_model_file: null })
+    act(() => vi.advanceTimersByTime(COMPOSE_STUCK_LOADING_MS * 2))
+    expect(screen.getByRole('status').textContent).toContain('Loading model')
+    expect(screen.getByRole('status').textContent).not.toContain('docker compose logs')
   })
 })

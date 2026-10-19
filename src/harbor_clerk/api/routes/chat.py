@@ -23,7 +23,14 @@ from harbor_clerk.api.schemas.chat import (
     SendMessageRequest,
 )
 from harbor_clerk.api.scope_validation import validate_scope_folders
-from harbor_clerk.config import get_settings, refresh_llm_settings, sync_native_config
+from harbor_clerk.config import (
+    compose_model_file,
+    get_settings,
+    is_compose,
+    no_model_message,
+    refresh_llm_settings,
+    sync_native_config,
+)
 from harbor_clerk.db import get_session
 from harbor_clerk.llm.chat import chat_stream
 from harbor_clerk.llm.download import (
@@ -38,6 +45,7 @@ from harbor_clerk.llm.download import (
 )
 from harbor_clerk.llm.models import (
     GIB,
+    effective_context,
     get_model,
     list_models,
     max_context,
@@ -287,7 +295,7 @@ async def send_message(
     if not settings.llm_model_id:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No LLM model configured. Select and activate a model in Settings.",
+            detail=no_model_message(settings),
         )
 
     # Update conversation timestamp
@@ -321,14 +329,30 @@ async def list_available_models(
     downloaded = set(list_downloaded())
     ram = system_ram_bytes()
     yarn = settings.llm_yarn_enabled
-    # At the context the launcher will ask for: the YaRN-extended window when YaRN is on.
+    compose = is_compose(settings)
+
+    def here(m) -> tuple[int, bool]:
+        # The context the model runs at here, and whether it fits. On a Mac, the launcher's arithmetic, at the
+        # context it asks for (the YaRN-extended window when YaRN is on). Under Docker Compose nothing clamps:
+        # the server runs at LLM_CONTEXT_TOKENS (#654), and whether that fits is the same arithmetic against the
+        # memory this container sees, which is what llama-server can use (the page words it for Docker).
+        if compose:
+            context = effective_context(m, yarn)
+            return context, ram <= 0 or max_context(m, ram, context) >= context
+        wanted = requested_context(m, yarn)
+        if ram <= 0:
+            return wanted, True
+        fits = max_context(m, ram, wanted)
+        return fits, fits >= wanted
+
     return [
         ModelOut(
-            memory_bytes=memory_bytes(m, requested_context(m, yarn)),
-            min_ram_gb=min_ram_gb(m, requested_context(m, yarn)),
-            max_context_here=max_context(m, ram, requested_context(m, yarn)) if ram > 0 else requested_context(m, yarn),
-            fits_here=ram <= 0 or max_context(m, ram, requested_context(m, yarn)) >= requested_context(m, yarn),
+            memory_bytes=memory_bytes(m, here(m)[0] if compose else requested_context(m, yarn)),
+            min_ram_gb=min_ram_gb(m, here(m)[0] if compose else requested_context(m, yarn)),
+            max_context_here=here(m)[0],
+            fits_here=here(m)[1],
             system_ram_gb=round(ram / GIB, 1),
+            compose_model_file=settings.llm_model_file if compose else None,
             id=m.id,
             name=m.name,
             size_bytes=m.size_bytes,
@@ -375,6 +399,60 @@ async def start_model_download(
     return {"status": "downloading"}
 
 
+def _refuse_model_switch_under_compose(model_id: str | None) -> bool:
+    """Under Docker Compose, refuse a switch to any model but the one llama-server serves (#654).
+
+    Compose starts llama-server once, with `-m /models/$LLM_MODEL_FILE`, and nothing in the app can restart
+    it with another file (the macOS launcher is what does that on a Mac). The active model there is derived
+    from LLM_MODEL_FILE on every refresh (`config._apply_model_file`), so an activation would show one model
+    while another answered, until the next refresh put it back. Activating the served model is allowed and
+    changes nothing. `model_id` None is a deactivation, allowed when no model is active (an empty
+    LLM_MODEL_FILE, or its file not downloaded yet), which changes nothing either. Returns True for those
+    no-ops, which the route answers without touching anything; False, having done nothing, under the
+    macOS app or any run that is not Compose."""
+    settings = get_settings()
+    if not is_compose(settings):
+        return False
+    refresh_llm_settings()  # the active model follows the file, which may have arrived since
+    model_file = compose_model_file(settings)
+    model = get_model(model_id) if model_id else None
+    if model is not None and model_file and model.filename == model_file:
+        return True
+    if model_id is None and not settings.llm_model_id:
+        return True
+    if model is not None:
+        change = f"To use {model.name}, set LLM_MODEL_FILE={model.filename}"
+    else:
+        change = "To run no local model, set LLM_MODEL_FILE= (empty)"
+    served = (
+        f"the model is the one llama-server is started with, LLM_MODEL_FILE={model_file}"
+        if model_file
+        else "no local model is configured (LLM_MODEL_FILE is empty)"
+    )
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"Under Docker Compose {served}. {change} in .env and run `docker compose up -d`.",
+    )
+
+
+def _refuse_deleting_the_served_file(filename: str) -> None:
+    """Under Docker Compose, refuse to delete the file llama-server is serving (#654).
+
+    llama-server has it mapped: unlinking frees neither the disk nor the memory while it runs, and the app
+    would report no model while that model went on answering. Other models' files can be removed. Under
+    the macOS app this does nothing: deleting the active model there clears it, and the launcher stops it."""
+    model_file = compose_model_file(get_settings())
+    if model_file and filename == model_file:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Under Docker Compose llama-server is serving {model_file} (LLM_MODEL_FILE). To remove it, set "
+                "LLM_MODEL_FILE to another model's file, or empty for none, in .env, run `docker compose up -d`, "
+                "then delete it."
+            ),
+        )
+
+
 @router.put("/chat/models/{model_id}/activate", status_code=200)
 async def activate_model(
     model_id: str,
@@ -382,6 +460,9 @@ async def activate_model(
 ):
     if get_model_path(model_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not downloaded")
+    if _refuse_model_switch_under_compose(model_id):
+        # Already the served model: the server runs it, so the memory check (about a Mac) does not apply.
+        return {"status": "activated"}
     # A model whose weights alone do not fit this Mac is refused: unified
     # memory would let llama-server allocate it, and the machine, not the
     # server, is what fails. There is no override, because the macOS launcher
@@ -416,6 +497,8 @@ async def activate_model(
 async def deactivate_model(
     principal: Principal = Depends(require_admin),
 ):
+    if _refuse_model_switch_under_compose(None):
+        return {"status": "deactivated"}
     settings = get_settings()
     previous = settings.llm_model_id or ""
     settings.llm_model_id = ""
@@ -517,7 +600,7 @@ async def llm_status(
     # (`max_context_here` is 0), so a "loading" that never ends can say why. A memory-budget change can leave
     # an installed app with an active model that no longer fits; the launcher refuses it, and this is how the
     # web app learns that. Only under the native app (`native_config_file` is set, as system.py reads it):
-    # on Compose nothing refuses a model, llama-server runs at the fixed `-c` in docker-compose.yml, and a
+    # on Compose nothing refuses a model, llama-server runs at LLM_CONTEXT_TOKENS (docker-compose.yml), and a
     # host whose memory makes the arithmetic say 0 may still be loading. None there, and when nothing is
     # configured, the registry does not know the id, or memory cannot be read (nothing is refused then).
     does_not_fit_here = None
@@ -533,6 +616,11 @@ async def llm_status(
         "model_name": model_name,
         "summarize": summarize,
         "does_not_fit_here": does_not_fit_here,
+        # Under Compose, what to do when no model is active: download LLM_MODEL_FILE, not activate (#654).
+        "setup_hint": no_model_message(settings) if not model_id and is_compose(settings) else None,
+        # Under Compose, the LLM_MODEL_FILE value (possibly empty); null elsewhere. The Models page reads it to
+        # hide Activate and YaRN, which do not apply there, and to say what chooses the model.
+        "compose_model_file": settings.llm_model_file if is_compose(settings) else None,
     }
 
 
@@ -588,6 +676,9 @@ async def remove_model(
     model_id: str,
     principal: Principal = Depends(require_admin),
 ):
+    model = get_model(model_id)
+    if model is not None:
+        _refuse_deleting_the_served_file(model.filename)
     if not delete_model(model_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -614,6 +705,7 @@ async def remove_orphaned_model(
     filename: str,
     principal: Principal = Depends(require_admin),
 ):
+    _refuse_deleting_the_served_file(filename)
     if not delete_orphaned(filename):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

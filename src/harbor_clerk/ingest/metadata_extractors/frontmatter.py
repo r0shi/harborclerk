@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
+import posixpath
 from typing import Any
 
 import frontmatter
@@ -31,8 +32,14 @@ class FrontmatterExtractor:
     name = "frontmatter"
 
     def extract(self, *, doc, raw_bytes: bytes, source_path: str | None) -> dict | None:
-        # Identify markdown via canonical_filename first, fall back to source_path
-        filename = getattr(doc, "canonical_filename", None) or source_path or ""
+        # Identify markdown by the file actually read: the in-place path when the
+        # document is read in place (a watched file renamed a.txt -> a.md is
+        # markdown now), else its canonical filename, else its stored original's name.
+        filename = (
+            source_path
+            or getattr(doc, "canonical_filename", None)
+            or posixpath.basename(getattr(doc, "original_object_key", None) or "")
+        )
         if not any(filename.lower().endswith(ext) for ext in _MARKDOWN_EXTENSIONS):
             return None
 

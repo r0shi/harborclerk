@@ -287,17 +287,21 @@ def _code_names(path: Path) -> set[str]:
     return {tok.string for tok in tokens if tok.type == tokenize.NAME}
 
 
+# Identifiers that mean "this module reads a document's bytes from the watched file".
+READ_TOKENS = {"source_path", "read_document_bytes", "watched_state", "watched_state_async"}
+
+
 def test_stages_that_touch_source_path_are_byte_readers() -> None:
     """A stage that reads `source_path` reads the watched file, so it needs the mount.
 
-    Keyed on the identifier in the stage's own module (comments and strings
-    stripped). A read through a helper in another module is not seen: when such
-    a helper exists, add its name to the token set below.
+    Keyed on identifiers in the stage's own module (comments and strings
+    stripped): `source_path` itself, or the shared readers in `watched_source`
+    that open it. A new helper that reads document bytes goes in READ_TOKENS.
     """
     offenders = []
     for stage, function in STAGE_FUNCTIONS.items():
         module_file = Path(sys.modules[function.__module__].__file__ or "")
-        if _code_names(module_file) & {"source_path"} and stage not in BYTE_READING_STAGES:
+        if _code_names(module_file) & READ_TOKENS and stage not in BYTE_READING_STAGES:
             offenders.append(f"{stage.value} ({module_file.name})")
     assert not offenders, (
         f"stage(s) {offenders} read source_path but are not in BYTE_READING_STAGES, so nothing "

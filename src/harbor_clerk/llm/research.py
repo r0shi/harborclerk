@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.api.scope import UserScope, apply_folder_scope, build_user_scope
 from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
-from harbor_clerk.llm.health import report_llm_error, report_llm_success
+from harbor_clerk.llm.health import report_llm_error, report_llm_success, server_unready_message
 from harbor_clerk.llm.models import context_budget, get_model
 from harbor_clerk.llm.research_prompts import (
     REVISION_SYSTEM,
@@ -1395,6 +1395,13 @@ async def _first_user_question(session: AsyncSession, conversation_id: uuid.UUID
     return result.scalar_one_or_none()
 
 
+def _synthesis_error(message: str) -> str:
+    """`state.error` for a synthesis that could not reach the model: the phase prefix the schema documents
+    (`ResearchStateResponse.error`), then the text the stream showed, so a reload says the same thing."""
+    prefix = "Synthesis failed: "
+    return message if message.startswith(prefix) else prefix + message
+
+
 async def research_stream(
     conversation_id: uuid.UUID,
     user_id: uuid.UUID | None = None,
@@ -1959,23 +1966,27 @@ async def research_stream(
                 logger.error("LLM HTTP error during synthesis: %s", exc)
                 if exc.response.status_code >= 500:
                     report_llm_error(exc.response.status_code)
+                message = server_unready_message(
+                    f"Synthesis failed: LLM error ({exc.response.status_code})", status_code=exc.response.status_code
+                )
                 state.status = "interrupted"
-                state.error = f"Synthesis failed: LLM error ({exc.response.status_code})"
+                state.error = _synthesis_error(message)  # the phase, then what the stream shows
                 state.notes = notes
                 await session.commit()
-                yield _sse({"type": "error", "message": f"Synthesis failed: LLM error ({exc.response.status_code})"})
+                yield _sse({"type": "error", "message": message})
                 return
             except httpx.TransportError as exc:
                 # A reset mid-stream (server swapped or crashed while writing) must land here too: escaping to the
                 # outer handler called it an unexpected internal error and marked the task failed (#690).
                 logger.error("LLM transport error during synthesis: %s: %r", type(exc).__name__, exc)
+                message = server_unready_message(
+                    "LLM server is not running. Select and activate a model in Settings.", exc=exc
+                )
                 state.status = "interrupted"
-                state.error = "Synthesis failed: LLM server not reachable"
+                state.error = _synthesis_error(message)  # the phase, then what the stream shows
                 state.notes = notes
                 await session.commit()
-                yield _sse(
-                    {"type": "error", "message": "LLM server is not running. Select and activate a model in Settings."}
-                )
+                yield _sse({"type": "error", "message": message})
                 return
 
             # Verifier loop.

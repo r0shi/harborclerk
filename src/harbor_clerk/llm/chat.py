@@ -18,7 +18,7 @@ from harbor_clerk.api.scope import build_user_scope
 from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.citations import dedupe_citations, extract_citations_from_tool_result
-from harbor_clerk.llm.health import report_llm_error, report_llm_success
+from harbor_clerk.llm.health import report_llm_error, report_llm_success, server_unready_message
 from harbor_clerk.llm.models import context_budget, get_model
 from harbor_clerk.llm.tools import execute_tool, get_chat_tools, summarize_tool_result
 from harbor_clerk.models.chat_message import ChatMessage
@@ -1046,7 +1046,9 @@ async def chat_stream(
                         if is_context_overflow:
                             error_summary = "Context window full — please start a new conversation"
                         else:
-                            error_summary = f"LLM error ({response.status_code})"
+                            error_summary = server_unready_message(
+                                f"LLM error ({response.status_code})", status_code=response.status_code
+                            )
                         error_content = f"Error: {error_summary}"
                         if detail:
                             error_content += f"\n\n{detail}"
@@ -1210,11 +1212,13 @@ async def chat_stream(
                     await response_obj.aclose()
                     await client_obj.aclose()
 
-            except httpx.TransportError:
+            except httpx.TransportError as exc:
                 # Connect, timeout, or a reset mid-stream when the server is swapped or crashes while writing: to
                 # the caller these are one event, the server is gone. Anything narrower let a ReadError out of
                 # the generator, so the stream dropped with no error event and no stored message (#690).
-                error_summary = "LLM server is not running. Select and activate a model in Settings."
+                error_summary = server_unready_message(
+                    "LLM server is not running. Select and activate a model in Settings.", exc=exc
+                )
                 session.add(
                     ChatMessage(
                         conversation_id=conversation_id,

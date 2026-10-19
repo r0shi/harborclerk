@@ -25,6 +25,11 @@ export interface LLMStatus {
   model_name: string | null
   summarize?: SummarizeBackend
   does_not_fit_here?: DoesNotFitHere | null
+  // Docker Compose only: what to do when no model is active (download LLM_MODEL_FILE in Settings → Models).
+  setup_hint?: string | null
+  // Docker Compose only: the LLM_MODEL_FILE value (possibly empty). null or absent outside Compose, where models
+  // are activated from the Models page.
+  compose_model_file?: string | null
 }
 
 const IDLE_INTERVAL_MS = 8000 // poll every 8s when nothing seems to be transitioning
@@ -101,4 +106,28 @@ export function useLLMStatus() {
   }, [token])
 
   return { status, markTransitioning }
+}
+
+/**
+ * Under Docker Compose the model is LLM_MODEL_FILE, active once its file is downloaded (#654): the setup step is
+ * the server's own advice (`setup_hint`, which names the file or says why it cannot run), not "activate one".
+ * With no hint, a model id or a loading state means the file is there and llama-server is loading it, or
+ * crash-looping on it: "download it" would be wrong, so the step points at the server's log instead.
+ * null outside Compose, or before the status says which.
+ */
+export const COMPOSE_LOADING_STEP =
+  "The local model is loading; if this persists, check 'docker compose logs llama-server'."
+
+export function composeSetupStep(status: LLMStatus | null, platform?: 'macos' | 'docker'): string | null {
+  if (status && status.compose_model_file != null) {
+    if (status.setup_hint != null) return status.setup_hint
+    if (status.model_id != null || status.state === 'loading') return COMPOSE_LOADING_STEP
+    return `The model is chosen by LLM_MODEL_FILE in .env${status.compose_model_file ? ` (${status.compose_model_file})` : ''}; download it in Settings → Models.`
+  }
+  // Platform 'docker' only means WATCH_ROOT is set, which a source run or a plain `docker run` also does, and
+  // Activate works there. So the Compose wording stands in only until the status says which it is.
+  const statusKnown = status != null && status.state !== 'unknown'
+  if (!statusKnown && platform === 'docker')
+    return 'Download the model LLM_MODEL_FILE in .env names, in Settings → Models.'
+  return null
 }

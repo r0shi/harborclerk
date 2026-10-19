@@ -82,8 +82,13 @@ EXTRACTORS: list[MetadataExtractor] = [
 ]
 
 
-def run_all(*, doc, raw_bytes: bytes, source_path: str | None) -> dict[str, Any]:
+def run_all(*, doc, raw_bytes: bytes, in_place_path: str | None) -> dict[str, Any]:
     """Entry point used by the extract stage. Runs EXTRACTORS in order,
     merges results, returns a namespaced dict suitable for assigning to
-    Document.doc_metadata."""
-    return _run_extractors(EXTRACTORS, doc=doc, raw_bytes=raw_bytes, source_path=source_path)
+    Document.doc_metadata.
+
+    ``in_place_path`` is what ``harbor_clerk.watched_source`` verified for the document, the
+    only path the extractors receive (as ``source_path``): None for an upload or
+    a mail message, so nothing beside a client's label (a sidecar) is read.
+    """
+    return _run_extractors(EXTRACTORS, doc=doc, raw_bytes=raw_bytes, source_path=in_place_path)

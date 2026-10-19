@@ -631,6 +631,225 @@ def test_listener_logs_a_changed_error_and_a_heartbeat(monkeypatch, caplog):
     assert "failure 20, same error" in warned[3]
 
 
+def _aliased_watched_doc(factory, tmp_path, *, stored_source: str) -> tuple[uuid.UUID, uuid.UUID, Path]:
+    """A watched folder at its realpath with one file, doc.txt, already ingested: its
+    WatchedFile is active with the file's sha, and the document's source_path is
+    ``stored_source`` (what an older client sent). No stored original.
+    Returns (folder_id, doc_id, real folder path)."""
+    import hashlib
+
+    from harbor_clerk.models.document import Document
+    from harbor_clerk.models.enums import PipelineStatus
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "doc.txt").write_text("on disk body")
+    (real / "other.txt").write_text("another file")
+    sha = hashlib.sha256(b"on disk body").digest()
+    sess = factory()
+    try:
+        folder = WatchedFolder(path=str(real), display_name="real", bookmark_data=None)
+        doc = Document(
+            title="doc",
+            canonical_filename="doc.txt",
+            status="active",
+            sha256=sha,
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+            source_path=stored_source,
+        )
+        sess.add_all([folder, doc])
+        sess.flush()
+        sess.add(
+            WatchedFile(
+                folder_id=folder.folder_id,
+                relative_path="doc.txt",
+                bookmark_data=b"",
+                sha256=sha,
+                doc_id=doc.doc_id,
+                status=WatchedFileStatus.active,
+            )
+        )
+        sess.commit()
+        return folder.folder_id, doc.doc_id, real
+    finally:
+        sess.close()
+
+
+def _read(factory, doc_id: uuid.UUID) -> tuple[str | None, bytes | None]:
+    """(source_path, bytes read_document_bytes returns, or None if it could not read any)."""
+    from harbor_clerk.models.document import Document
+    from harbor_clerk.watched_source import SourceUnavailable, read_document_bytes
+
+    sess = factory()
+    try:
+        doc = sess.get(Document, doc_id)
+        try:
+            data, _ = read_document_bytes(sess, doc)
+        except SourceUnavailable:
+            data = None
+        return doc.source_path, data
+    finally:
+        sess.close()
+
+
+def test_startup_scan_canonicalizes_an_aliased_source_path(factory, tmp_path, monkeypatch):
+    """A watched document whose source_path is an alias of its file's path (a symlinked
+    directory) and that has no stored original is unreadable until one scan repairs it."""
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+    tmp_path = tmp_path.resolve()
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "real", target_is_directory=True)
+    folder_id, doc_id, real = _aliased_watched_doc(factory, tmp_path, stored_source=str(link / "doc.txt"))
+    try:
+        assert _read(factory, doc_id) == (str(link / "doc.txt"), None)
+
+        WatcherDaemon(factory)._scan_folder(folder_id, str(real))
+
+        assert _read(factory, doc_id) == (str(real / "doc.txt"), b"on disk body")
+    finally:
+        _truncate_watched(factory)
+
+
+@pytest.mark.parametrize("label", ["none", "relative", "other-file"])
+def test_startup_scan_heals_a_source_path_that_is_a_label(factory, tmp_path, monkeypatch, label):
+    """The watched file is authoritative: a source_path that is None, a relative name,
+    or another existing file (a client's label from a #859-shaped new version) is
+    replaced by the watched file's path on one scan visit, and the document reads."""
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+    tmp_path = tmp_path.resolve()
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "doc.txt").write_text("a different file")
+    stored = {"none": None, "relative": "doc.txt", "other-file": str(downloads / "doc.txt")}[label]
+    folder_id, doc_id, real = _aliased_watched_doc(factory, tmp_path, stored_source=stored)
+    try:
+        assert _read(factory, doc_id) == (stored, None)
+
+        WatcherDaemon(factory)._scan_folder(folder_id, str(real))
+
+        assert _read(factory, doc_id) == (str(real / "doc.txt"), b"on disk body")
+    finally:
+        _truncate_watched(factory)
+
+
+def test_a_document_in_a_folder_stored_with_a_dot_dot_path_is_readable(factory, tmp_path, monkeypatch):
+    """A folder whose stored path is not normalized (as auto-discovery may store it):
+    the scan ingests its file, and the document reads in place."""
+    from harbor_clerk.models.document import Document
+
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+    (tmp_path / "other").mkdir()
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "doc.txt").write_text("dot dot body")
+    folder_path = f"{tmp_path}/other/../real"
+    folder_id = _commit_folder(factory, folder_path)
+    try:
+        WatcherDaemon(factory)._scan_folder(folder_id, folder_path)
+
+        sess = factory()
+        try:
+            doc_id = sess.query(Document).one().doc_id
+        finally:
+            sess.close()
+        assert _read(factory, doc_id)[1] == b"dot dot body"
+    finally:
+        _truncate_watched(factory)
+
+
+def _queued_extracts(factory, doc_id) -> int:
+    from harbor_clerk.models.enums import JobStage, JobStatus
+    from harbor_clerk.models.ingestion_job import IngestionJob
+
+    sess = factory()
+    try:
+        return (
+            sess.query(IngestionJob).filter_by(doc_id=doc_id, stage=JobStage.extract, status=JobStatus.queued).count()
+        )
+    finally:
+        sess.close()
+
+
+def test_startup_scan_re_extracts_a_doc_indexed_from_an_older_upload(factory, tmp_path, monkeypatch):
+    """A #859-shaped document (its sha256, pages and stored original from an upload,
+    its watched file holding other bytes) is reprocessed from the file on one scan
+    visit, so search and download agree."""
+    import hashlib
+
+    from harbor_clerk.models.document import Document
+    from harbor_clerk.models.document_page import DocumentPage
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+    tmp_path = tmp_path.resolve()
+    folder_id, doc_id, real = _aliased_watched_doc(factory, tmp_path, stored_source="doc.txt")
+    sess = factory()
+    try:
+        doc = sess.get(Document, doc_id)
+        doc.sha256 = hashlib.sha256(b"older upload").digest()
+        doc.original_bucket = "originals"
+        doc.original_object_key = "originals/docs/x/doc.txt"
+        sess.add(DocumentPage(doc_id=doc_id, page_num=1, page_text="older upload"))
+        sess.commit()
+        seq = doc.pipeline_seq
+    finally:
+        sess.close()
+    try:
+        WatcherDaemon(factory)._scan_folder(folder_id, str(real))
+
+        sess = factory()
+        try:
+            doc = sess.get(Document, doc_id)
+            assert doc.sha256 == hashlib.sha256(b"on disk body").digest()
+            assert doc.pipeline_seq == seq + 1
+            assert doc.source_path == str(real / "doc.txt")
+        finally:
+            sess.close()
+        assert _queued_extracts(factory, doc_id) == 1
+
+        run_extract(doc_id)
+        sess = factory()
+        try:
+            pages = sess.query(DocumentPage).filter_by(doc_id=doc_id).all()
+            assert [p.page_text for p in pages] == ["on disk body"]
+        finally:
+            sess.close()
+    finally:
+        _truncate_watched(factory)
+
+
+def test_startup_scan_does_not_reprocess_a_current_doc(factory, tmp_path, monkeypatch):
+    """A document whose sha256 already matches its watched file is not reprocessed."""
+    from harbor_clerk.models.document import Document
+
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+    tmp_path = tmp_path.resolve()
+    folder_id, doc_id, real = _aliased_watched_doc(factory, tmp_path, stored_source="doc.txt")
+    sess = factory()
+    try:
+        seq = sess.get(Document, doc_id).pipeline_seq
+    finally:
+        sess.close()
+    try:
+        WatcherDaemon(factory)._scan_folder(folder_id, str(real))
+
+        sess = factory()
+        try:
+            doc = sess.get(Document, doc_id)
+            assert doc.source_path == str(real / "doc.txt")
+            assert doc.pipeline_seq == seq
+        finally:
+            sess.close()
+        assert _queued_extracts(factory, doc_id) == 0
+    finally:
+        _truncate_watched(factory)
+
+
 def test_discovery_logs_an_unusable_watch_root_at_startup(monkeypatch, caplog):
     """A missing WATCH_ROOT was skipped at debug level on every pass; it is an ERROR once at startup (#871)."""
     import logging

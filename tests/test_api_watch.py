@@ -2,6 +2,7 @@
 
 import uuid
 
+import pytest
 from sqlalchemy import func, select
 
 from harbor_clerk.models.document import Document
@@ -605,3 +606,514 @@ async def test_patch_folder_omitted_display_name_leaves_field_unchanged(client, 
     )
     folder_row = next(f for f in list_r.json() if f["folder_id"] == str(folder_a.folder_id))
     assert folder_row["display_name"] == "Sentinel"
+
+
+# ---------------------------------------------------------------------------
+# /api/watch/ingest and /rename store the canonical source_path
+# ---------------------------------------------------------------------------
+
+
+async def _aliased_folder(db_session, tmp_path):
+    """A watched folder stored by its realpath, and a symlink alias to it."""
+    real = (tmp_path / "real").resolve()
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    folder = WatchedFolder(path=str(real), display_name="real", bookmark_data=None)
+    db_session.add(folder)
+    await db_session.commit()
+    return str(folder.folder_id), real, link
+
+
+async def _ingest(client, token, folder_id: str, relative_path: str, source_path: str):
+    return await client.post(
+        "/api/watch/ingest",
+        headers=auth_header(token),
+        json={
+            "folder_id": folder_id,
+            "relative_path": relative_path,
+            "sha256": uuid.uuid4().hex * 2,
+            "bookmark_data": "",
+            "source_path": source_path,
+            "mime_type": "text/plain",
+        },
+    )
+
+
+async def _source_path_of(db_session, doc_id: str) -> str:
+    from sqlalchemy import select
+
+    db_session.expire_all()
+    stmt = select(Document.source_path).where(Document.doc_id == uuid.UUID(doc_id))
+    return (await db_session.execute(stmt)).scalar_one()
+
+
+async def test_ingest_stores_the_canonical_path_for_an_aliased_source_path(client, admin_token, db_session, tmp_path):
+    """A source_path through a symlinked alias, or with a ./ segment, is stored as folder path + relative path."""
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    (real / "b.txt").write_text("b")
+
+    via_link = await _ingest(client, admin_token, folder_id, "a.txt", str(link / "a.txt"))
+    assert via_link.status_code == 200, via_link.text
+    assert await _source_path_of(db_session, via_link.json()["doc_id"]) == str(real / "a.txt")
+
+    dotted = await _ingest(client, admin_token, folder_id, "b.txt", f"{real}/./b.txt")
+    assert dotted.status_code == 200, dotted.text
+    assert await _source_path_of(db_session, dotted.json()["doc_id"]) == str(real / "b.txt")
+
+
+async def test_ingest_refuses_a_source_path_naming_another_file(client, admin_token, db_session, tmp_path):
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    (real / "b.txt").write_text("b")
+
+    resp = await _ingest(client, admin_token, folder_id, "a.txt", str(real / "b.txt"))
+    assert resp.status_code == 400
+    assert "different files" in resp.json()["detail"]
+
+
+async def test_rename_stores_the_canonical_path_for_an_aliased_source_path(client, admin_token, db_session, tmp_path):
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    created = await _ingest(client, admin_token, folder_id, "a.txt", str(real / "a.txt"))
+    assert created.status_code == 200, created.text
+    (real / "a.txt").rename(real / "c.txt")
+
+    resp = await client.post(
+        "/api/watch/rename",
+        headers=auth_header(admin_token),
+        json={
+            "folder_id": folder_id,
+            "old_relative_path": "a.txt",
+            "new_relative_path": "c.txt",
+            "bookmark_data": "",
+            "source_path": str(link / "c.txt"),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert await _source_path_of(db_session, created.json()["doc_id"]) == str(real / "c.txt")
+
+
+async def test_ingest_of_an_unchanged_file_canonicalizes_an_aliased_source_path(
+    client, admin_token, db_session, tmp_path
+):
+    """The skip branch (same sha) repairs a source_path an older client stored as an alias."""
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc = Document(
+        title="a",
+        status="active",
+        sha256=bytes.fromhex(sha),
+        pipeline_status=PipelineStatus.ready,
+        source_path=str(link / "a.txt"),
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=uuid.UUID(folder_id),
+            relative_path="a.txt",
+            bookmark_data=b"",
+            sha256=bytes.fromhex(sha),
+            doc_id=doc.doc_id,
+            status=WatchedFileStatus.active,
+        )
+    )
+    await db_session.commit()
+    doc_id = str(doc.doc_id)
+
+    resp = await client.post(
+        "/api/watch/ingest",
+        headers=auth_header(admin_token),
+        json={
+            "folder_id": folder_id,
+            "relative_path": "a.txt",
+            "sha256": sha,
+            "bookmark_data": "",
+            "source_path": str(link / "a.txt"),
+            "mime_type": "text/plain",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"] == "skipped"
+    assert await _source_path_of(db_session, doc_id) == str(real / "a.txt")
+
+
+async def test_ingest_refuses_a_relative_path_that_is_not_plain(client, admin_token, db_session, tmp_path):
+    """A ./ segment or an absolute relative_path is a 400, even when source_path names the file."""
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+
+    dotted = await _ingest(client, admin_token, folder_id, "./a.txt", str(real / "a.txt"))
+    assert dotted.status_code == 400, dotted.text
+    assert "plain path" in dotted.json()["detail"]
+
+    absolute = await _ingest(client, admin_token, folder_id, str(real / "a.txt"), str(real / "a.txt"))
+    assert absolute.status_code == 400, absolute.text
+    assert "plain path" in absolute.json()["detail"]
+
+
+async def test_ingest_refuses_a_symlink_in_the_folder_pointing_outside(client, admin_token, db_session, tmp_path):
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+    (real / "out.txt").symlink_to(outside)
+
+    via_source = await _ingest(client, admin_token, folder_id, "out.txt", str(real / "out.txt"))
+    assert via_source.status_code == 400, via_source.text
+
+    via_relative = await _ingest(client, admin_token, folder_id, "out.txt", str(real / "a.txt"))
+    assert via_relative.status_code == 400, via_relative.text
+
+
+async def _mapped_doc(
+    db_session,
+    folder_id: str,
+    relative_path: str,
+    *,
+    sha: str,
+    source_path: str,
+    status: WatchedFileStatus = WatchedFileStatus.active,
+    pipeline_status: PipelineStatus = PipelineStatus.ready,
+    error: str | None = None,
+) -> str:
+    """A document mapped to a watched file, as an earlier ingest left it. Returns its doc_id."""
+    doc = Document(
+        title=relative_path,
+        status="active",
+        sha256=bytes.fromhex(sha),
+        pipeline_status=pipeline_status,
+        source_path=source_path,
+        error=error,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=uuid.UUID(folder_id),
+            relative_path=relative_path,
+            bookmark_data=b"",
+            sha256=bytes.fromhex(sha),
+            doc_id=doc.doc_id,
+            status=status,
+        )
+    )
+    await db_session.commit()
+    return str(doc.doc_id)
+
+
+async def _ingest_sha(client, token, folder_id: str, relative_path: str, source_path: str, sha: str):
+    return await client.post(
+        "/api/watch/ingest",
+        headers=auth_header(token),
+        json={
+            "folder_id": folder_id,
+            "relative_path": relative_path,
+            "sha256": sha,
+            "bookmark_data": "",
+            "source_path": source_path,
+            "mime_type": "text/plain",
+        },
+    )
+
+
+async def _doc_row(db_session, doc_id: str):
+    from sqlalchemy import select
+
+    db_session.expire_all()
+    return (await db_session.execute(select(Document).where(Document.doc_id == uuid.UUID(doc_id)))).scalar_one()
+
+
+async def _queued_extracts(db_session, doc_id: str) -> int:
+    from sqlalchemy import func, select
+
+    stmt = select(func.count()).where(
+        IngestionJob.doc_id == uuid.UUID(doc_id),
+        IngestionJob.stage == JobStage.extract,
+        IngestionJob.status == JobStatus.queued,
+    )
+    return (await db_session.execute(stmt)).scalar_one()
+
+
+@pytest.mark.parametrize("status", [WatchedFileStatus.active, WatchedFileStatus.removed], ids=["case1", "case2"])
+async def test_ingest_of_unchanged_bytes_queues_an_errored_doc_again(client, admin_token, db_session, tmp_path, status):
+    """Case 1 (active) and Case 2 (removed, resurrected) with the same bytes: a document
+    whose last run failed because its file was missing is queued again."""
+    from harbor_clerk.error_text import describe_error
+    from harbor_clerk.watched_source import WatchedFileMissing
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(
+        db_session,
+        folder_id,
+        "a.txt",
+        sha=sha,
+        source_path=str(real / "a.txt"),
+        status=status,
+        pipeline_status=PipelineStatus.error,
+        error=describe_error(WatchedFileMissing("the watched file is missing")),
+    )
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    # reset_and_queue_extract_for_doc's own status for a queued extract
+    assert (await _doc_row(db_session, doc_id)).pipeline_status == PipelineStatus.extracting
+    assert await _queued_extracts(db_session, doc_id) == 1
+
+
+@pytest.mark.parametrize("same_bytes", [True, False], ids=["same-sha", "changed-sha"])
+async def test_ingest_resurrect_stores_the_canonical_path(client, admin_token, db_session, tmp_path, same_bytes):
+    """Case 2 (removed file resurrected), through an alias: the canonical path is stored."""
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(
+        db_session, folder_id, "a.txt", sha=sha, source_path=str(link / "a.txt"), status=WatchedFileStatus.removed
+    )
+
+    sent_sha = sha if same_bytes else uuid.uuid4().hex * 2
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(link / "a.txt"), sent_sha)
+
+    assert resp.status_code == 200, resp.text
+    assert (await _doc_row(db_session, doc_id)).source_path == str(real / "a.txt")
+
+
+async def test_ingest_of_changed_bytes_stores_the_canonical_path(client, admin_token, db_session, tmp_path):
+    """Case 3 (active, changed bytes), through an alias: the canonical path is stored."""
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path=str(link / "a.txt"))
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(link / "a.txt"), uuid.uuid4().hex * 2)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"] == "updated"
+    assert (await _doc_row(db_session, doc_id)).source_path == str(real / "a.txt")
+
+
+async def test_ingest_of_a_new_file_records_the_canonical_path_on_its_upload_row(
+    client, admin_token, db_session, tmp_path
+):
+    """Case 4: the Upload row, like the document, carries the canonical path."""
+    from sqlalchemy import select
+
+    from harbor_clerk.models.upload import Upload
+
+    folder_id, real, link = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+
+    resp = await _ingest(client, admin_token, folder_id, "a.txt", str(link / "a.txt"))
+
+    assert resp.status_code == 200, resp.text
+    db_session.expire_all()
+    upload = (
+        await db_session.execute(select(Upload).where(Upload.doc_id == uuid.UUID(resp.json()["doc_id"])))
+    ).scalar_one()
+    assert upload.source_path == str(real / "a.txt")
+
+
+async def test_ingest_refuses_a_relative_path_resolving_outside_the_folder(client, admin_token, db_session, tmp_path):
+    """Only the containment check refuses this one: source_path is a hard link inside
+    the folder to a file outside it, and relative_path a symlink to that same file, so
+    the two do name the same file."""
+    import os
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+    os.link(outside, real / "hard.txt")
+    (real / "sym.txt").symlink_to(outside)
+
+    resp = await _ingest(client, admin_token, folder_id, "sym.txt", str(real / "hard.txt"))
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == "relative_path is outside the watched folder"
+
+
+@pytest.mark.parametrize("status", [WatchedFileStatus.active, WatchedFileStatus.removed], ids=["case1", "case2"])
+async def test_ingest_of_unchanged_bytes_leaves_a_doc_errored_for_another_reason(
+    client, admin_token, db_session, tmp_path, status
+):
+    """A document that failed for any other reason (here, extraction) is not queued again."""
+    from harbor_clerk.error_text import describe_error
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(
+        db_session,
+        folder_id,
+        "a.txt",
+        sha=sha,
+        source_path=str(real / "a.txt"),
+        status=status,
+        pipeline_status=PipelineStatus.error,
+        error=describe_error(RuntimeError("Tika could not parse the file")),
+    )
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    assert (await _doc_row(db_session, doc_id)).pipeline_status == PipelineStatus.error
+    assert await _queued_extracts(db_session, doc_id) == 0
+
+
+async def test_remove_of_a_file_still_present_does_not_remove_it(client, admin_token, db_session, tmp_path):
+    """/api/watch/remove for a file still present under that exact name (an atomic
+    save's trailing delete) leaves the watched file active and the document readable."""
+    from sqlalchemy import select
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path=str(real / "a.txt"))
+
+    resp = await client.post(
+        "/api/watch/remove",
+        headers=auth_header(admin_token),
+        json={"folder_id": folder_id, "relative_path": "a.txt"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"] == "skipped"
+    db_session.expire_all()
+    wf = (await db_session.execute(select(WatchedFile).where(WatchedFile.relative_path == "a.txt"))).scalar_one()
+    assert wf.status == WatchedFileStatus.active
+    assert (await _doc_row(db_session, doc_id)).status == "active"
+
+
+async def test_remove_of_a_file_that_is_gone_removes_it(client, admin_token, db_session, tmp_path):
+    from sqlalchemy import select
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "gone.txt", sha=sha, source_path=str(real / "gone.txt"))
+
+    resp = await client.post(
+        "/api/watch/remove",
+        headers=auth_header(admin_token),
+        json={"folder_id": folder_id, "relative_path": "gone.txt"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"] == "removed"
+    db_session.expire_all()
+    wf = (await db_session.execute(select(WatchedFile).where(WatchedFile.relative_path == "gone.txt"))).scalar_one()
+    assert wf.status == WatchedFileStatus.removed
+    assert (await _doc_row(db_session, doc_id)).status == "removed"
+
+
+async def test_remove_of_a_path_now_a_dangling_symlink_removes_it(client, admin_token, db_session, tmp_path):
+    """Only a regular file present under that name keeps a /remove from removing."""
+    from sqlalchemy import select
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").symlink_to(tmp_path / "nowhere.txt")
+    sha = uuid.uuid4().hex * 2
+    await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path=str(real / "a.txt"))
+
+    resp = await client.post(
+        "/api/watch/remove",
+        headers=auth_header(admin_token),
+        json={"folder_id": folder_id, "relative_path": "a.txt"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"] == "removed"
+    db_session.expire_all()
+    wf = (await db_session.execute(select(WatchedFile).where(WatchedFile.relative_path == "a.txt"))).scalar_one()
+    assert wf.status == WatchedFileStatus.removed
+
+
+async def test_ingest_of_unchanged_bytes_does_not_requeue_a_doc_that_does_not_verify(
+    client, admin_token, db_session, tmp_path
+):
+    """Case 1: a document with a missing-source error whose repair is declined (its
+    watched path is a directory, not a file) is not queued again."""
+    from harbor_clerk.error_text import describe_error
+    from harbor_clerk.watched_source import WatchedFileMissing
+
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").mkdir()
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(
+        db_session,
+        folder_id,
+        "a.txt",
+        sha=sha,
+        source_path="a.txt",
+        pipeline_status=PipelineStatus.error,
+        error=describe_error(WatchedFileMissing("the watched file is missing")),
+    )
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    row = await _doc_row(db_session, doc_id)
+    assert row.source_path == "a.txt"
+    assert row.pipeline_status == PipelineStatus.error
+    assert await _queued_extracts(db_session, doc_id) == 0
+
+
+@pytest.mark.parametrize("label", ["none", "relative", "other-file"])
+async def test_ingest_of_an_unchanged_file_heals_a_source_path_that_is_a_label(
+    client, admin_token, db_session, tmp_path, label
+):
+    """Case 1 replaces a label source_path (None, a relative name, another file) with
+    the watched file's path when that file is present."""
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "a.txt").write_text("another file")
+    stored = {"none": None, "relative": "a.txt", "other-file": str(downloads / "a.txt")}[label]
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path=stored)
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    assert (await _doc_row(db_session, doc_id)).source_path == str(real / "a.txt")
+
+
+@pytest.mark.parametrize("status", [WatchedFileStatus.active, WatchedFileStatus.removed], ids=["case1", "case2"])
+async def test_ingest_of_unchanged_bytes_re_extracts_a_doc_indexed_from_an_older_upload(
+    client, admin_token, db_session, tmp_path, status
+):
+    """Case 1 and Case 2: a document whose sha256 is not its watched file's (a #859-
+    shaped new version) takes the file's sha256 and is queued again from the file."""
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path="a.txt", status=status)
+    doc = await _doc_row(db_session, doc_id)
+    doc.sha256 = bytes.fromhex(uuid.uuid4().hex * 2)  # the older upload's
+    await db_session.commit()
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    row = await _doc_row(db_session, doc_id)
+    assert row.sha256 == bytes.fromhex(sha)
+    assert row.source_path == str(real / "a.txt")
+    assert await _queued_extracts(db_session, doc_id) == 1
+
+
+async def test_ingest_of_unchanged_bytes_does_not_reprocess_a_current_doc(client, admin_token, db_session, tmp_path):
+    folder_id, real, _ = await _aliased_folder(db_session, tmp_path)
+    (real / "a.txt").write_text("a")
+    sha = uuid.uuid4().hex * 2
+    doc_id = await _mapped_doc(db_session, folder_id, "a.txt", sha=sha, source_path=str(real / "a.txt"))
+
+    resp = await _ingest_sha(client, admin_token, folder_id, "a.txt", str(real / "a.txt"), sha)
+
+    assert resp.status_code == 200, resp.text
+    assert (await _doc_row(db_session, doc_id)).pipeline_status == PipelineStatus.ready
+    assert await _queued_extracts(db_session, doc_id) == 0

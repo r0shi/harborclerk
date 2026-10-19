@@ -37,6 +37,13 @@ STORAGE_PATH = "/data/originals"
 STORAGE_NAMES = {"get_storage", "FilesystemBackend", "MinIOBackend"}
 WRITE_OPS = {"put_object", "put_new_object", "copy_object", "copy_and_delete", "remove_object", "ensure_bucket"}
 
+# Shared helpers that reach storage on their callers' behalf (#851): a module that calls
+# one of the listed functions reaches storage itself, read-only, and is mapped like any
+# other; the helper module is not mapped to a service of its own.
+STORAGE_HELPERS = {
+    "watched_source.py": {"read_document_bytes"},  # extract and OCR read stored originals through it
+}
+
 # Every non-stage module that reaches storage, and the compose service that runs it.
 MODULE_SERVICES = {
     "api/app.py": "app",  # startup ensure_bucket, stale-upload reaper
@@ -52,13 +59,14 @@ MODULE_SERVICES = {
 
 def _storage_modules() -> dict[str, set[str]]:
     """Each module under src/harbor_clerk that names the storage backend, with the names it uses."""
+    helper_names = set().union(*STORAGE_HELPERS.values())
     found = {}
     for path in sorted(SRC.rglob("*.py")):
         rel = path.relative_to(SRC).as_posix()
-        if rel == "storage.py":
+        if rel == "storage.py" or rel in STORAGE_HELPERS:
             continue
         names = _code_names(path)
-        if names & STORAGE_NAMES:
+        if names & (STORAGE_NAMES | helper_names):
             found[rel] = names
     return found
 

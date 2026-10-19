@@ -332,18 +332,14 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage, int] | 
 
 
 def _lookup_filename(doc_id: uuid.UUID) -> str | None:
-    """Look up the original filename for a document."""
-    import posixpath
+    """Look up the filename for a document (``watched_source.display_filename``)."""
+    from harbor_clerk.watched_source import display_filename
 
     session = get_sync_session()
     try:
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
         if doc:
-            if doc.original_object_key:
-                return posixpath.basename(doc.original_object_key)
-            if doc.source_path:
-                return posixpath.basename(doc.source_path)
-            return "unknown"
+            return display_filename(session, doc) or "unknown"
     finally:
         session.close()
 

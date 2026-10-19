@@ -267,4 +267,47 @@ describe('DocumentsPage', () => {
       expect(latestCall).not.toEqual(expect.objectContaining({ mime_type: 'application/pdf' }))
     })
   })
+
+  it('under Docker Compose, the no-model banner says which model to download, not to activate one', async () => {
+    const hint = 'No local model is loaded yet. Download Qwen3.5-4B-Q4_K_M.gguf in Settings → Models.'
+    useLLMStatusContextMock.mockReturnValue({
+      status: { state: 'deactivated', model_id: null, model_name: null, setup_hint: hint },
+      markTransitioning: vi.fn(),
+    })
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/filters') {
+        return Promise.resolve({ mime_types: [], doc_types: [], languages: [], entity_types: [] })
+      }
+      if (url === '/api/stats/topics') return Promise.resolve({ clusters: [] })
+      if (url === '/api/watch/folders') return Promise.resolve([])
+      if (url === '/api/docs') return Promise.resolve({ items: [], total: 0, limit: 10, offset: 0 })
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+
+    renderDocumentsPage()
+
+    const banner = await screen.findByText(/Download Qwen3\.5-4B-Q4_K_M\.gguf in Settings → Models\./)
+    expect(banner.textContent).toContain('Until then, document summaries fall back to an extractive heuristic.')
+    expect(screen.queryByText(/activate a model/)).not.toBeInTheDocument()
+  })
+
+  it('outside Compose, the no-model banner still says to activate a model', async () => {
+    useLLMStatusContextMock.mockReturnValue({
+      status: { state: 'deactivated', model_id: null, model_name: null },
+      markTransitioning: vi.fn(),
+    })
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/filters') {
+        return Promise.resolve({ mime_types: [], doc_types: [], languages: [], entity_types: [] })
+      }
+      if (url === '/api/stats/topics') return Promise.resolve({ clusters: [] })
+      if (url === '/api/watch/folders') return Promise.resolve([])
+      if (url === '/api/docs') return Promise.resolve({ items: [], total: 0, limit: 10, offset: 0 })
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+
+    renderDocumentsPage()
+
+    expect(await screen.findByText(/activate a model\./)).toBeInTheDocument()
+  })
 })

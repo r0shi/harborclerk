@@ -1172,3 +1172,284 @@ def test_declined_json_beside_document_is_indexed_and_does_not_requeue(sync_sess
     sync_session.refresh(md_doc)
     assert md_doc.pipeline_seq == 0
     assert _queued_extract_jobs(sync_session, md_doc.doc_id) == 0
+
+
+# ---------------------------------------------------------------------------
+# A document whose read failed is queued again when the watcher sees its file
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def real_folder(sync_session, tmp_path):
+    """A watched folder at tmp_path, so source paths verify as read in place."""
+    f = WatchedFolder(path=str(tmp_path), display_name="real", bookmark_data=None)
+    sync_session.add(f)
+    sync_session.commit()
+    return f
+
+
+def _fail_like_the_worker(sync_session, doc_id, exc: BaseException) -> None:
+    """What the worker's error handler (worker/entry.py) records when a stage raises ``exc``."""
+    from harbor_clerk.error_text import describe_error
+
+    doc = sync_session.get(Document, doc_id)
+    doc.pipeline_status = PipelineStatus.error
+    doc.error = describe_error(exc)
+    for job in sync_session.query(IngestionJob).filter_by(doc_id=doc_id).all():
+        job.status = JobStatus.error
+        job.error = describe_error(exc)
+    sync_session.commit()
+
+
+def test_a_file_deleted_and_restored_with_the_same_bytes_is_extracted_again(sync_session, real_folder, tmp_path):
+    """Deleted: the read fails as missing and the document errors. Restored with the
+    same bytes (Branch 3): the document is queued again and extracted from the file."""
+    from harbor_clerk.watched_source import WatchedFileMissing
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    f = tmp_path / "doc.txt"
+    f.write_text("restored body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    doc_id = sync_session.query(Document).one().doc_id
+
+    f.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    with pytest.raises(WatchedFileMissing) as raised:
+        run_extract(doc_id)
+    _fail_like_the_worker(sync_session, doc_id, raised.value)
+
+    f.write_text("restored body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    assert sync_session.get(Document, doc_id).pipeline_status == PipelineStatus.queued
+    assert _queued_extract_jobs(sync_session, doc_id) == 1
+
+    run_extract(doc_id)
+    sync_session.expire_all()
+    pages = sync_session.query(DocumentPage).filter_by(doc_id=doc_id).all()
+    assert [p.page_text for p in pages] == ["restored body"]
+
+
+def test_an_errored_doc_is_queued_again_on_an_unchanged_file_event(sync_session, real_folder, tmp_path):
+    """Branch 1 (active, same bytes): a document whose last run failed because its
+    file was missing (mid save) is queued again."""
+    from harbor_clerk.watched_source import WatchedFileMissing
+
+    f = tmp_path / "doc.txt"
+    f.write_text("body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    doc_id, seq = doc.doc_id, doc.pipeline_seq
+    _fail_like_the_worker(sync_session, doc_id, WatchedFileMissing("the watched file is missing"))
+
+    handle_event(sync_session, FileEvent(EventKind.modified, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    doc = sync_session.get(Document, doc_id)
+    assert doc.pipeline_status == PipelineStatus.queued
+    assert doc.pipeline_seq == seq + 1
+    assert _queued_extract_jobs(sync_session, doc_id) == 1
+
+
+@pytest.mark.parametrize("kind", [EventKind.modified, EventKind.created], ids=["unchanged", "resurrect"])
+def test_a_doc_errored_for_another_reason_is_not_queued_again(sync_session, real_folder, tmp_path, kind):
+    """A document that failed for any other reason (here, extraction) stays in error
+    on an unchanged-file event (Branch 1) or a resurrect with the same bytes (Branch 3)."""
+    f = tmp_path / "doc.txt"
+    f.write_text("body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    doc_id, seq = doc.doc_id, doc.pipeline_seq
+    _fail_like_the_worker(sync_session, doc_id, RuntimeError("Tika could not parse the file"))
+    if kind is EventKind.created:
+        sync_session.query(WatchedFile).one().status = WatchedFileStatus.removed
+        sync_session.commit()
+
+    handle_event(sync_session, FileEvent(kind, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    doc = sync_session.get(Document, doc_id)
+    assert doc.pipeline_status == PipelineStatus.error
+    assert doc.pipeline_seq == seq
+    assert _queued_extract_jobs(sync_session, doc_id) == 0
+
+
+def test_resurrect_canonicalizes_an_aliased_source_path(sync_session, tmp_path):
+    """Branch 3 repairs a source_path stored as an alias of the watched file's path."""
+    real = (tmp_path / "real").resolve()
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    folder = WatchedFolder(path=str(real), display_name="real", bookmark_data=None)
+    sync_session.add(folder)
+    sync_session.commit()
+
+    f = real / "doc.txt"
+    f.write_text("body")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    doc_id = doc.doc_id
+    doc.source_path = str(link / "doc.txt")  # as an older client stored it
+    sync_session.query(WatchedFile).one().status = WatchedFileStatus.removed
+    sync_session.commit()
+
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    assert sync_session.get(Document, doc_id).source_path == str(real / "doc.txt")
+    assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.active
+
+
+def test_an_atomic_save_keeps_the_document_readable(sync_session, real_folder, tmp_path):
+    """The sequence a live observer records on macOS for an atomic save, replayed
+    through the watcher's handler: moved(tmp -> target), modified(target), then
+    deleted(target) while the target is present. The document stays read in place
+    and extracts the new content."""
+    import os
+
+    from watchdog.events import FileDeletedEvent, FileModifiedEvent, FileMovedEvent
+
+    from harbor_clerk.watched_source import read_document_bytes
+    from harbor_clerk.watcher.observer import _Handler
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    target = tmp_path / "note.txt"
+    target.write_text("first version")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "note.txt", str(target)))
+    sync_session.commit()
+    doc_id = sync_session.query(Document).one().doc_id
+    run_extract(doc_id)
+
+    def sink(event):
+        handle_event(sync_session, event)
+        sync_session.commit()
+
+    handler = _Handler(real_folder.folder_id, str(tmp_path), sink)
+    tmp = tmp_path / ".note.txt.tmp"
+    tmp.write_text("second version")
+    os.replace(tmp, target)
+    handler.dispatch(FileMovedEvent(str(tmp), str(target)))
+    handler.dispatch(FileModifiedEvent(str(target)))
+    handler.dispatch(FileDeletedEvent(str(target)))
+
+    sync_session.expire_all()
+    assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.active
+    data, in_place = read_document_bytes(sync_session, sync_session.get(Document, doc_id))
+    assert (data, in_place) == (b"second version", str(target))
+
+    run_extract(doc_id)
+    sync_session.expire_all()
+    pages = sync_session.query(DocumentPage).filter_by(doc_id=doc_id).all()
+    assert [p.page_text for p in pages] == ["second version"]
+
+
+def test_a_delete_event_for_a_file_present_only_under_another_case_still_removes(sync_session, real_folder, tmp_path):
+    """The presence check is exact-case: a delete for Note.txt removes it even when
+    note.txt exists (on a case-insensitive filesystem lexists alone would say yes)."""
+    import os
+
+    f = tmp_path / "Note.txt"
+    f.write_text("body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "Note.txt", str(f)))
+    sync_session.commit()
+    os.rename(f, tmp_path / "note.txt")
+
+    handle_event(sync_session, FileEvent(EventKind.deleted, real_folder.folder_id, "Note.txt", str(f)))
+    sync_session.commit()
+
+    assert sync_session.query(WatchedFile).filter_by(relative_path="Note.txt").one().status == WatchedFileStatus.removed
+
+
+def test_an_errored_doc_whose_path_does_not_verify_is_not_queued_again(sync_session, tmp_path):
+    """A document whose repair the watcher declines (its watched file is a symlink
+    resolving outside the folder) is not queued again on every scan, even with a
+    missing-source error."""
+    from harbor_clerk.watched_source import WatchedFileMissing
+
+    folder_dir = tmp_path / "w"
+    folder_dir.mkdir()
+    folder = WatchedFolder(path=str(folder_dir), display_name="w", bookmark_data=None)
+    sync_session.add(folder)
+    sync_session.commit()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("body")
+    f = folder_dir / "doc.txt"
+    f.symlink_to(outside)
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    doc_id, seq = doc.doc_id, doc.pipeline_seq
+    doc.source_path = "doc.txt"
+    sync_session.commit()
+    _fail_like_the_worker(sync_session, doc_id, WatchedFileMissing("the watched file is missing"))
+
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    doc = sync_session.get(Document, doc_id)
+    assert doc.source_path == "doc.txt"
+    assert doc.pipeline_status == PipelineStatus.error
+    assert doc.pipeline_seq == seq
+    assert _queued_extract_jobs(sync_session, doc_id) == 0
+
+
+@pytest.mark.parametrize("replacement", ["dangling-symlink", "directory"])
+def test_a_delete_event_for_a_path_no_longer_a_regular_file_removes_it(
+    sync_session, real_folder, tmp_path, replacement
+):
+    """A delete whose path now holds a dangling symlink or a directory is a delete."""
+    f = tmp_path / "doc.txt"
+    f.write_text("body")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+    f.unlink()
+    if replacement == "dangling-symlink":
+        f.symlink_to(tmp_path / "nowhere.txt")
+    else:
+        f.mkdir()
+
+    handle_event(sync_session, FileEvent(EventKind.deleted, real_folder.folder_id, "doc.txt", str(f)))
+    sync_session.commit()
+
+    assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.removed
+
+
+def test_a_later_atomic_save_sending_only_a_delete_reprocesses_the_new_content(sync_session, real_folder, tmp_path):
+    """After the first atomic save, live FSEvents sends only `deleted target` for later
+    saves (the file present, its content changed): that is reprocessed as a modify."""
+    import os
+
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    target = tmp_path / "note.txt"
+    target.write_text("first version")
+    handle_event(sync_session, FileEvent(EventKind.created, real_folder.folder_id, "note.txt", str(target)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    doc_id, seq = doc.doc_id, doc.pipeline_seq
+    run_extract(doc_id)
+
+    tmp = tmp_path / ".note.txt.tmp"
+    tmp.write_text("third version")
+    os.replace(tmp, target)
+    handle_event(sync_session, FileEvent(EventKind.deleted, real_folder.folder_id, "note.txt", str(target)))
+    sync_session.commit()
+
+    sync_session.expire_all()
+    assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.active
+    assert sync_session.get(Document, doc_id).pipeline_seq == seq + 1
+    run_extract(doc_id)
+    sync_session.expire_all()
+    pages = sync_session.query(DocumentPage).filter_by(doc_id=doc_id).all()
+    assert [p.page_text for p in pages] == ["third version"]

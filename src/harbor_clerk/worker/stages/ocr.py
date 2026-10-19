@@ -2,9 +2,7 @@
 
 import io as _io
 import logging
-import os
 import uuid
-from pathlib import Path
 
 import pypdfium2 as pdfium
 import pytesseract
@@ -15,7 +13,7 @@ from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.events import publish_job_event
 from harbor_clerk.models import Document, DocumentPage, IngestionJob
 from harbor_clerk.models.enums import JobStage
-from harbor_clerk.storage import get_storage
+from harbor_clerk.watched_source import read_document_bytes
 from harbor_clerk.worker.ocr_languages import get_ocr_languages_for_doc
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 
@@ -74,17 +72,14 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             mark_stage_done(doc_id, JobStage.ocr, worker_seq=worker_seq)
             return
 
-        # Read from storage if available; fall back to source_path for watched folder docs
-        if doc.original_object_key:
-            storage = get_storage()
-            response = storage.get_object(doc.original_bucket, doc.original_object_key)
-            data = response.read()
-        elif doc.source_path and os.path.exists(doc.source_path):
-            data = Path(doc.source_path).read_bytes()
-        else:
-            raise RuntimeError(f"No source for doc {doc_id}")
+        # Read as the extract stage does (watched_source.read_document_bytes).
+        data, in_place = read_document_bytes(session, doc)
 
+        # The type of what was read: for a file read in place, the extract stage has
+        # already set doc.mime_type from the file (and its magic bytes), and the name
+        # is the file's, never a stored original's that may describe an older upload.
         mime = (doc.mime_type or "").lower()
+        name = (in_place or doc.original_object_key or doc.source_path or "").lower()
 
         # Resolve which Tesseract languages to use for this doc.
         # Honors the operator's enabled_languages preference, filtered to
@@ -131,7 +126,7 @@ def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             session.commit()
             publish_job_event(doc_id, "ocr", "running", progress=1, total=1)
 
-        elif mime == "application/pdf" or (doc.original_object_key or doc.source_path or "").endswith(".pdf"):
+        elif mime == "application/pdf" or name.endswith(".pdf"):
             # PDF → page images → OCR (using pypdfium2)
             images = _pdf_to_images(data)
             job.progress_total = len(images)

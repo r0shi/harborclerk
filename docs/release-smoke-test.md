@@ -91,12 +91,20 @@ Docker:
   with "No source for doc", or a download answering "Source file unavailable",
   means that service cannot see the watch mount.
 - Confirm Docker setup docs explain mounted watched folders and self-signed TLS.
+- Before any model is downloaded, confirm `docker compose ps` shows `llama-server`
+  unhealthy, its log names the model file it is waiting for, and Ask says no
+  model is configured rather than failing a request.
+- Download the `LLM_MODEL_FILE` model from Settings → Models. Confirm
+  `llama-server` turns healthy without a restart, the model shows as active, and
+  section 5 (Ask and Research) passes on Docker too.
 
 Release blockers:
 
 - App cannot launch without manual service surgery.
 - The Harbor Clerk window crashes, or never leaves the waiting view while the
   server is up.
+- Docker: Ask or Research fails with a model downloaded, or `llama-server`
+  reports healthy with no model loaded.
 - Empty-state onboarding strands the user away from folder setup.
 - Skipping local AI breaks non-AI surfaces.
 
