@@ -69,11 +69,12 @@ def _pdf_to_images(data: bytes) -> list[Image.Image]:
 def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
     """Run OCR on pages that need it.
 
-    The page writes are one transaction, committed once: a run stopped part way
-    (a cancel, a shutdown deadline, a crash) leaves every page as extract wrote
-    it, so a rerun appends its OCR to clean text and never twice. From that
-    commit to mark_stage_done the worker's alarm is held off, so a deadline
-    cannot land between them and rerun OCR over pages already written.
+    A PDF's page writes are one transaction, committed once: a run stopped part
+    way (a cancel, a shutdown deadline, a crash) leaves every page as extract
+    wrote it, so a rerun appends its OCR to clean text and never twice. From
+    that commit to mark_stage_done the worker's alarm is held off, so a deadline
+    cannot land between them and rerun OCR over pages already written. A single
+    image replaces its page's text, so a rerun is harmless and needs no hold.
     """
     with ExitStack() as hold_alarm:
         _run_ocr(doc_id, worker_seq, hold_alarm)
@@ -151,7 +152,8 @@ def _run_ocr(doc_id: uuid.UUID, worker_seq: int | None, hold_alarm: ExitStack) -
             doc.ocr_languages_used = ocr_iso
 
             job.progress_current = 1
-            hold_alarm.enter_context(alarm_deferred())
+            # No alarm hold here, unlike the PDF path: this write replaces the
+            # page text whole, so a rerun after the commit writes the same page.
             session.commit()
             publish_job_event(doc_id, "ocr", "running", progress=1, total=1)
 

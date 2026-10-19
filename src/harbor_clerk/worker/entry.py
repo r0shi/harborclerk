@@ -905,10 +905,11 @@ def _requeue_after_shutdown(
 
     Interrupted, not failed: the next worker runs it again. Every stage's
     writes are safe to repeat: extract, chunk and entities replace what they
-    wrote; OCR writes its pages in one transaction and holds the alarm from
-    that commit through mark_stage_done, so a deadline lands either before
-    anything is written (the rerun appends to clean text) or not at all; and
-    embed keeps the batches it stored. A row no longer
+    wrote; OCR writes a PDF's pages in one transaction and holds the alarm
+    from that commit through mark_stage_done, so a deadline lands either
+    before anything is written (the rerun appends to clean text) or not at
+    all, and a single image's page text is replaced whole; and embed keeps
+    the batches it stored. A row no longer
     `running` at our generation as this run's claim (cancelled meanwhile,
     superseded, or re-enqueued and claimed by another worker, whose live run
     this must not hand back) is left as it is. Announced the way enqueue_stage announces a job: a pg_notify on
