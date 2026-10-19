@@ -251,7 +251,18 @@ def get_storage() -> StorageBackend:
         settings = get_settings()
         if settings.storage_backend == "filesystem":
             _storage = FilesystemBackend()
+            location = str(Path(settings.storage_path).expanduser().resolve())
         else:
             _storage = MinIOBackend()
-        logger.info("Storage backend: %s", settings.storage_backend)
+            location = settings.minio_endpoint
+        if "storage_backend" in settings.model_fields_set:
+            logger.info("Storage backend: %s (%s)", settings.storage_backend, location)
+        else:
+            # The default was "minio" before #888. A deployment that relied on it
+            # now stores originals here instead; say so where an operator looks.
+            logger.warning(
+                "STORAGE_BACKEND is not set: storing originals on the filesystem at %s. "
+                "An install whose originals are in MinIO must set STORAGE_BACKEND=minio.",
+                location,
+            )
     return _storage

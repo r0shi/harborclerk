@@ -13,8 +13,12 @@ bucket and key, so nothing in the database changes. MinIO is only read.
 
 An object already present at the destination with the same size is skipped, so
 an interrupted run is resumed by running it again (a partly written file has a
-different size and is copied again). A key that would resolve outside the
-bucket directory is refused. Exits non-zero if any object was not copied.
+different size and is copied again). A zero-byte key ending in `/` is a folder
+marker, not an original, and is skipped. A key that could resolve outside the
+bucket directory (leading `/`, an empty, `.` or `..` segment) is refused; a
+backslash is an ordinary character (an upload named `notes\\draft.txt` on Linux
+keeps it), but `..` between backslashes is still refused. Exits non-zero if any
+object was not copied.
 """
 
 from __future__ import annotations
@@ -34,14 +38,21 @@ logger = logging.getLogger(__name__)
 class CopyReport:
     copied: int = 0
     skipped: int = 0
+    folder_markers: int = 0
     failed: list[str] = field(default_factory=list)
 
 
 def _safe_key(key: str) -> bool:
-    """A key the filesystem backend maps inside the bucket directory: relative, no `..`, no empty segment."""
-    if not key or key.startswith("/") or "\\" in key:
+    """A key the filesystem backend maps inside the bucket directory.
+
+    No empty segment, which also refuses the empty key and a leading, doubled or
+    trailing `/`; and no `.` or `..` segment whether split on `/` or on a
+    backslash. A backslash inside a name is otherwise allowed.
+    """
+    parts = key.split("/")
+    if "" in parts:
         return False
-    return all(part not in ("", ".", "..") for part in key.split("/"))
+    return not any(seg in (".", "..") for part in parts for seg in part.split("\\"))
 
 
 def copy_originals(source: StorageBackend, destination: StorageBackend, bucket: str) -> CopyReport:
@@ -51,6 +62,10 @@ def copy_originals(source: StorageBackend, destination: StorageBackend, bucket: 
     destination.ensure_bucket(bucket)
     for obj in source.list_objects(bucket, recursive=True):
         key, size = obj["key"], obj["size"]
+        if key.endswith("/") and size == 0:
+            logger.info("skipping folder marker %r", key)
+            report.folder_markers += 1
+            continue
         if not _safe_key(key):
             logger.error("refusing key outside the bucket directory: %r", key)
             report.failed.append(key)
@@ -83,7 +98,13 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO)
     logger.info("copying bucket %r from MinIO at %s to %s", args.bucket, settings.minio_endpoint, settings.storage_path)
     report = copy_originals(MinIOBackend(), FilesystemBackend(), args.bucket)
-    logger.info("copied %d, already present %d, failed %d", report.copied, report.skipped, len(report.failed))
+    logger.info(
+        "copied %d, already present %d, folder markers skipped %d, failed %d",
+        report.copied,
+        report.skipped,
+        report.folder_markers,
+        len(report.failed),
+    )
     return 1 if report.failed else 0
 
 

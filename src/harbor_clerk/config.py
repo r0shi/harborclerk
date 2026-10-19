@@ -22,8 +22,11 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://lka:lka_dev_password@postgres:5432/lka",
     )
 
-    # Storage backend: "minio" or "filesystem"
-    storage_backend: str = Field(default="minio")
+    # Storage backend: "filesystem" or "minio". Filesystem is what the macOS app and
+    # Compose run (#888); the MinIO default pointed at minio:9000, which resolves only
+    # inside a Compose network that no longer has a minio service. Left unset, the
+    # path is relative to the working directory, so get_storage() warns.
+    storage_backend: str = Field(default="filesystem")
     storage_path: str = Field(default="./data/originals")
 
     # Watched folder root (Docker mode only; empty in native macOS app)

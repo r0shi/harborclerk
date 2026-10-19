@@ -34,7 +34,7 @@ Tika. Don't invent a fourth.
 ## Storage
 
 All storage access goes through the `StorageBackend` ABC — never touch MinIO or
-the filesystem directly. `STORAGE_BACKEND` selects the implementation.
+the filesystem directly. `STORAGE_BACKEND` selects the implementation (default `filesystem`).
 
 Watched-folder documents are read in place from `source_path` and never written to; IMAP is the one case where content is fetched and stored (no file to reference).
 Under Compose every reader of `source_path` (`app`, and the workers whose `QUEUE_STAGES` claim extract or OCR) mounts the watch directory read-only at the fixed `/data/watch`,

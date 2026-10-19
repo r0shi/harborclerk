@@ -15,23 +15,49 @@ opt-in profile whose image you must name in `MINIO_IMAGE`.
 
 Watched-folder documents are unaffected: they are read in place and were never
 in MinIO. A fresh install, or one that never used uploads or IMAP, needs nothing.
-An install with objects in MinIO that upgrades without copying them keeps
-searching (the text is in Postgres), but downloads of those originals and any
-re-extraction of them fail until they are copied.
+
+An install with objects in MinIO that starts the new stack without copying them
+keeps searching (the text is in Postgres), but:
+
+- downloading one of those documents (with `ALLOW_SOURCE_DOWNLOAD=true`) fails
+  with a server error (500) until its object is copied, and works again as soon
+  as it is;
+- an extract that runs on one of them in between (only a reprocess re-extracts
+  an existing document) fails, and the document stays failed after the copy
+  until it is reprocessed: on the Documents page filter by status **Failed**,
+  select, and **Reprocess**, or as an admin `POST /api/docs/reprocess-failed`.
 
 The filesystem backend keeps MinIO's bucket and key, at
 `STORAGE_PATH/<bucket>/<key>`, so the database needs no change. MinIO keeps its
-own on-disk format, so copy through its API rather than out of its volume:
+own on-disk format, so copy through its API rather than out of its volume. The
+old `app` and `watcher` write to MinIO until they are replaced, so stop them
+first, or mail and uploads that arrive during the copy stay only in MinIO:
 
 1. Find the MinIO image you already have: `docker image ls | grep -i minio`.
-2. Keep your `.env`'s `MINIO_*` values, pull the new code, and start MinIO
-   alone from the profile; it reuses the existing `minio_data` volume:
+   The commands below use `minio/minio:latest`; substitute yours.
+2. Keep your `.env`'s `MINIO_*` values and pull the new code. Stop the two
+   services that write originals (the web UI and mail sync are down until
+   step 6; the old MinIO container keeps running):
+
+   ```bash
+   docker compose stop app watcher
+   ```
+
+3. Build the new images. `docker compose run` builds only when no image exists,
+   so without this it runs the old image, which has no copy command:
+
+   ```bash
+   docker compose build
+   ```
+
+4. Start MinIO alone from the profile; it reuses the existing `minio_data`
+   volume:
 
    ```bash
    MINIO_IMAGE=minio/minio:latest docker compose --profile minio up -d minio
    ```
 
-3. Copy every object into the `originals` volume. MinIO is only read; objects
+5. Copy every object into the `originals` volume. MinIO is only read; objects
    already copied with the same size are skipped, so the command can be rerun,
    and it exits non-zero if anything failed:
 
@@ -39,10 +65,20 @@ own on-disk format, so copy through its API rather than out of its volume:
    docker compose run --rm --no-deps app python -m harbor_clerk.maintenance.copy_minio_originals
    ```
 
+   It ends with `copied N, already present N, folder markers skipped N, failed N`.
    `--bucket NAME` copies a bucket other than `MINIO_BUCKET` (default `originals`).
-4. Start the stack (`docker compose up -d`; leave `STORAGE_BACKEND` unset) and
-   download one uploaded or mailed document to confirm.
-5. Stop MinIO: `MINIO_IMAGE=minio/minio:latest docker compose --profile minio rm -sf minio`.
+6. Start the new stack, leaving `STORAGE_BACKEND` unset. With
+   `ALLOW_SOURCE_DOWNLOAD=true`, download one uploaded or mailed document to
+   confirm:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+7. Run the copy from step 5 once more as a catch-up. It must report `copied 0`
+   and `failed 0`: anything it copies reached MinIO after step 2. Repeat until
+   it does. Do not retire MinIO before a run reports `copied 0`.
+8. Retire MinIO: `MINIO_IMAGE=minio/minio:latest docker compose --profile minio rm -sf minio`.
    Keep the `<project>_minio_data` volume until you are satisfied, then remove
    it with `docker volume rm`. The `MINIO_*` lines in `.env` are then unused.
 

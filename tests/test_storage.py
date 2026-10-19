@@ -224,3 +224,51 @@ def test_minio_ensure_bucket_exists(minio_backend, minio_client):
     minio_client.bucket_exists.return_value = True
     minio_backend.ensure_bucket("originals")
     minio_client.make_bucket.assert_not_called()
+
+
+# --- get_storage: default backend (#888) ---
+
+
+@pytest.fixture
+def fresh_storage(monkeypatch, tmp_path):
+    """A clean singleton and a Settings built from the environment only (no .env file)."""
+    import harbor_clerk.storage as storage_mod
+    from harbor_clerk.config import Settings
+
+    monkeypatch.setattr(storage_mod, "_storage", None)
+    monkeypatch.setenv("STORAGE_PATH", str(tmp_path))
+
+    def build(**env):
+        monkeypatch.delenv("STORAGE_BACKEND", raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        settings = Settings(_env_file=None)
+        monkeypatch.setattr(storage_mod, "get_settings", lambda: settings)
+        monkeypatch.setattr(storage_mod, "_storage", None)
+        return storage_mod.get_storage()
+
+    return build
+
+
+def test_unset_backend_is_filesystem_and_warns(fresh_storage, tmp_path, caplog):
+    """Unset used to mean MinIO at minio:9000, which resolves only inside Compose."""
+    with caplog.at_level("INFO", logger="harbor_clerk.storage"):
+        backend = fresh_storage()
+    assert isinstance(backend, FilesystemBackend)
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1 and "STORAGE_BACKEND is not set" in warnings[0].getMessage()
+    assert str(tmp_path.resolve()) in warnings[0].getMessage()
+
+
+def test_explicit_filesystem_does_not_warn(fresh_storage, caplog):
+    with caplog.at_level("INFO", logger="harbor_clerk.storage"):
+        backend = fresh_storage(STORAGE_BACKEND="filesystem")
+    assert isinstance(backend, FilesystemBackend)
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_explicit_minio_still_selects_minio(fresh_storage, caplog):
+    with patch("minio.Minio"), caplog.at_level("INFO", logger="harbor_clerk.storage"):
+        backend = fresh_storage(STORAGE_BACKEND="minio")
+    assert isinstance(backend, MinIOBackend)
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]

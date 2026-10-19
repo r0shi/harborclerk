@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from harbor_clerk.maintenance import copy_minio_originals as mod
-from harbor_clerk.maintenance.copy_minio_originals import copy_originals
+from harbor_clerk.maintenance.copy_minio_originals import _safe_key, copy_originals
 from harbor_clerk.storage import FilesystemBackend, StorageBackend, StorageResponse
 
 BUCKET = "originals"
@@ -71,12 +71,56 @@ def test_rerun_skips_what_is_present_and_recopies_a_partial_file(dest, tmp_path)
     assert dest.get_object(BUCKET, "b").read() == b"also complete"
 
 
-@pytest.mark.parametrize("key", ["../escape", "a/../../escape", "/abs", "a//b", "./a", "a\\..\\b", ""])
-def test_a_key_outside_the_bucket_is_refused(dest, tmp_path, key):
-    report = copy_originals(FakeMinIO({key: b"x", "ok": b"y"}), dest, BUCKET)
+class SpyDest(FilesystemBackend):
+    """Records every key it is asked to write, so a refusal is proven before any write is attempted."""
+
+    def __init__(self):
+        super().__init__()
+        self.written: list[str] = []
+
+    def put_object(self, bucket, key, data, length, content_type=""):
+        self.written.append(key)
+        super().put_object(bucket, key, data, length, content_type)
+
+
+@pytest.fixture
+def spy(tmp_path):
+    with patch("harbor_clerk.storage.get_settings") as settings:
+        settings.return_value.storage_path = str(tmp_path)
+        return SpyDest()
+
+
+REFUSED = ["../escape", "a/../../escape", "/abs", "a//b", "./a", "a/.", "a\\..\\b", "x\\.\\y", ""]
+
+
+@pytest.mark.parametrize("key", REFUSED)
+def test_a_key_outside_the_bucket_is_refused_before_any_write(spy, tmp_path, key):
+    assert _safe_key(key) is False
+    report = copy_originals(FakeMinIO({key: b"x", "ok": b"y"}), spy, BUCKET)
     assert report.failed == [key]
-    assert report.copied == 1
+    assert spy.written == ["ok"], "a refused key must never reach the destination"
     assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file()) == ["ok"]
+
+
+def test_a_backslash_in_a_name_copies_and_reads_back(dest, tmp_path):
+    """Upload keys keep a backslash on Linux (`os.path.basename("notes\\draft.txt")`)."""
+    key = "originals/docs/1/notes\\draft.txt"
+    assert _safe_key(key) is True
+    report = copy_originals(FakeMinIO({key: b"draft"}), dest, BUCKET)
+    assert (report.copied, report.failed) == (1, [])
+    assert dest.get_object(BUCKET, key).read() == b"draft"
+    assert (tmp_path / BUCKET / "originals/docs/1" / "notes\\draft.txt").read_bytes() == b"draft"
+
+
+def test_a_folder_marker_is_skipped_not_failed(spy):
+    report = copy_originals(FakeMinIO({"originals/docs/": b"", "originals/docs/1/a": b"a"}), spy, BUCKET)
+    assert (report.copied, report.folder_markers, report.failed) == (1, 1, [])
+    assert spy.written == ["originals/docs/1/a"]
+
+
+def test_a_non_empty_key_ending_in_slash_is_refused(spy):
+    report = copy_originals(FakeMinIO({"odd/": b"data"}), spy, BUCKET)
+    assert (report.folder_markers, report.failed, spy.written) == (0, ["odd/"], [])
 
 
 def test_a_short_read_is_not_written(dest, tmp_path):
