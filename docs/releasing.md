@@ -56,7 +56,13 @@ Signing is a human step, so the sequence is split around it.
    line; it must read `X.Y.Z (CFBundleShortVersionString X.Y.Z, CFBundleVersion 0, …)`.
 4. **Sign by hand.** `make sign`. `notarize.sh` prints both the checkout's
    commit and what the bundle says about itself; if they differ, the bundle is
-   stale (#687) — rebuild.
+   stale (#687) — rebuild. Its launch probe runs each signed app for two
+   seconds under the start-nothing switch (`XCTestConfigurationFilePath`), so
+   it catches a kill at exec (a restricted entitlement) and nothing more: the
+   server boots no services, and the client shows only its inert placeholder
+   view, never `ContentView`. A crash in the client's real window, its server
+   detection or its sign-in is caught by the launch step of
+   `docs/release-smoke-test.md` (section 1), run on the signed build.
 5. **Smoke-run, then check the seal.** Install a copy of the signed apps (never
    launch `build/output` in place; see `macos/AGENTS.md`), start the server,
    let every service come up, and wait for the API's `Topic process pool

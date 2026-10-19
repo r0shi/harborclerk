@@ -36,16 +36,16 @@ Tika. Don't invent a fourth.
 All storage access goes through the `StorageBackend` ABC — never touch MinIO or
 the filesystem directly. `STORAGE_BACKEND` selects the implementation.
 
-Watched-folder documents are read in place from `source_path`, never written to;
-IMAP content alone is fetched and stored (legacy uploads: `originals/<doc_id>/<name>`).
-Watcher: gone files hide via `watcher/visibility.py` (with `/watch/remove`), moves
-keep the doc_id via `watcher/relocate.py` (with `/watch/rename`). APFS ignores case:
-a delete is believed once `file_exists_exact` agrees on every path component, and
-a sidecar is the file `with_suffix(".json")` opens on disk (`samefile`), not a name.
-A reconcile removes nothing for a missing, unlistable or empty root (noise doesn't
-count; `unavailable_reason` says so: `root_*`, shown, never blocking; only discovery's
-`unmounted` makes a folder unusable, `folder_is_unavailable`), nor under an unlistable
-or emptied dir (#868; logged only). A lost or replaced root's events are dropped (dev/ino).
+Watched-folder documents are read in place from `source_path` and never written to; IMAP is the one case where content is fetched and stored (no file to reference; legacy uploads alone use `originals/<doc_id>/<name>`).
+Under Compose every reader of `source_path` (`app`, and the workers whose `QUEUE_STAGES` claim extract or OCR) mounts the watch directory read-only at the fixed `/data/watch`,
+the watcher too; `WATCH_ROOT` must be that directory or below it (#869, #871). A new byte-reading stage goes in `BYTE_READING_STAGES` (`tests/test_docker_compose_watch_mount.py`).
+Watcher: gone files hide via `watcher/visibility.py` (with `/watch/remove`), moves keep the doc_id via
+`watcher/relocate.py` (with `/watch/rename`). APFS ignores case: a delete is believed once `file_exists_exact`
+agrees on every path component, and a sidecar is the file `with_suffix(".json")` opens on disk (`samefile`), not a name.
+A reconcile removes nothing for a missing, unlistable or empty root (noise doesn't count; `unavailable_reason`
+says so: `root_*`, shown, never blocking; only discovery's `unmounted` makes a folder unusable,
+`folder_is_unavailable`), nor under an unlistable or emptied dir (#868; logged only). A lost or replaced
+root's events are dropped (dev/ino).
 
 ## Retrieval
 

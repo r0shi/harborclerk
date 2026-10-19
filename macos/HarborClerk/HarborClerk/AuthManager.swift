@@ -11,6 +11,45 @@ enum AuthState: Equatable {
     case needsSetup
 }
 
+/// Where AuthManager keeps the remembered login. Production is the Keychain;
+/// a test passes a fake, so it never reads or deletes the developer's real
+/// saved login (#612).
+protocol CredentialStore {
+    func load() -> KeychainCredentials?
+    func save(email: String, password: String)
+    func delete()
+}
+
+struct KeychainCredentialStore: CredentialStore {
+    func load() -> KeychainCredentials? { KeychainManager.load() }
+    func save(email: String, password: String) { KeychainManager.save(email: email, password: password) }
+    func delete() { KeychainManager.delete() }
+}
+
+/// The two requests AuthManager makes, and where it puts the session cookie,
+/// so a test can answer them without a server and let a login succeed
+/// without writing into the WebKit store the installed app shares.
+struct AuthTransport {
+    var setupStatus: (URL) async throws -> (Data, URLResponse)
+    var login: (URLRequest) async throws -> (Data, URLResponse)
+    var setCookie: @MainActor (HTTPCookie) async -> Void = { cookie in
+        await WKWebsiteDataStore.default().httpCookieStore.setCookie(cookie)
+    }
+
+    static let live = AuthTransport(
+        setupStatus: { url in try await URLSession.shared.data(from: url) },
+        login: { request in
+            // Use a session that does NOT handle cookies itself, so the raw
+            // Set-Cookie header is preserved in the response for us to parse.
+            let ephemeral = URLSessionConfiguration.ephemeral
+            ephemeral.httpCookieAcceptPolicy = .never
+            ephemeral.httpShouldSetCookies = false
+            let session = URLSession(configuration: ephemeral)
+            return try await session.data(for: request)
+        }
+    )
+}
+
 /// Owns the authentication state machine: Keychain auto-login, API calls, cookie injection.
 @MainActor
 final class AuthManager: ObservableObject {
@@ -20,13 +59,53 @@ final class AuthManager: ObservableObject {
 
     private static let loggedOutKey = "didLogOut"
 
-    init(baseURL: URL) {
+    private let environment: [String: String]
+    private let credentials: CredentialStore
+    private let defaults: UserDefaults
+    private let transport: AuthTransport
+
+    /// Bumped by every sign-in attempt and every outside state change. An
+    /// attempt captures it and may change the state only while it is still
+    /// current: `ContentView` starts a new auto-login each time the server
+    /// comes back, and an earlier one failing late used to overwrite a later
+    /// one's `.authenticated` with `.loginRequired`.
+    private var generation = 0
+
+    /// Thrown inside an attempt that a newer one has superseded; its caller
+    /// returns without touching the state or the saved login.
+    private struct Superseded: Error {}
+
+    private func begin() -> Int {
+        generation += 1
+        return generation
+    }
+
+    private func ensureCurrent(_ attempt: Int) throws {
+        guard attempt == generation else { throw Superseded() }
+    }
+
+    /// Everything but `baseURL` defaults to the real thing. A test injects the
+    /// environment (to keep or drop the start-nothing switch), a fake
+    /// credential store, a defaults suite of its own and a canned transport.
+    init(
+        baseURL: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        credentials: CredentialStore = KeychainCredentialStore(),
+        defaults: UserDefaults = .standard,
+        transport: AuthTransport = .live
+    ) {
         self.baseURL = baseURL
+        self.environment = environment
+        self.credentials = credentials
+        self.defaults = defaults
+        self.transport = transport
     }
 
     // MARK: - Server became available
 
     func onServerBecameAvailable() async {
+        // The second guard: HarborClerkApp already shows an inert root under
+        // this switch, so this is reached only if that one is broken.
         // Same start-nothing switch the server's AppDelegate honours. The
         // signing launch probe in notarize.sh execs this app for two seconds and
         // kills it; without this, that ran the real path below, and the catch-all
@@ -37,28 +116,46 @@ final class AuthManager: ObservableObject {
         // binary has a different designated requirement from the build that stored
         // it — so that read raises the ACL prompt in the middle of `make sign`.
         // WaitingView touches nothing.
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        if environment["XCTestConfigurationFilePath"] != nil {
             state = .waitingForServer
             return
         }
 
+        let attempt = begin()
         state = .checkingAuth
 
         // 1. Check if first-time setup is needed
-        if await needsSetup() {
+        let setup = await needsSetup()
+        guard attempt == generation else { return }
+        if setup {
             state = .needsSetup
             return
         }
 
         // 2. Try auto-login from Keychain (skip if user explicitly logged out)
-        let wasLoggedOut = UserDefaults.standard.bool(forKey: Self.loggedOutKey)
-        if !wasLoggedOut, let creds = KeychainManager.load() {
+        let wasLoggedOut = defaults.bool(forKey: Self.loggedOutKey)
+        if !wasLoggedOut, let creds = credentials.load() {
             do {
-                try await performLogin(email: creds.email, password: creds.password)
+                try await performLogin(email: creds.email, password: creds.password, attempt: attempt)
                 return // state is now .authenticated
+            } catch is Superseded {
+                return
+            } catch where attempt != generation {
+                // A newer attempt owns the state, and its outcome is newer
+                // news about these credentials than this one's.
+                return
+            } catch let error as LoginError where error.credentialsRejected {
+                // The server said these credentials are wrong (the password
+                // was changed, the user removed): they are stale, so forget them.
+                credentials.delete()
             } catch {
-                // Saved credentials are stale — clear and show login
-                KeychainManager.delete()
+                // Anything else says nothing about the credentials: the API
+                // restarting mid-login, a 5xx, a body we could not read, a
+                // disabled account. Deleting here wiped the remembered password
+                // whenever the server blinked (#612). Keep it, say why the
+                // sign-in did not happen, and let the user retry.
+                state = .loginRequired(errorMessage: Self.message(for: error))
+                return
             }
         }
 
@@ -68,19 +165,41 @@ final class AuthManager: ObservableObject {
     // MARK: - Manual login
 
     func login(email: String, password: String, rememberMe: Bool) async {
+        let attempt = begin()
         state = .loggingIn
         do {
-            try await performLogin(email: email, password: password)
+            try await performLogin(email: email, password: password, attempt: attempt)
             if rememberMe {
-                KeychainManager.save(email: email, password: password)
+                credentials.save(email: email, password: password)
             }
             // Clear logged-out flag on successful login
-            UserDefaults.standard.removeObject(forKey: Self.loggedOutKey)
-        } catch let error as LoginError {
-            state = .loginRequired(errorMessage: error.message)
+            defaults.removeObject(forKey: Self.loggedOutKey)
+        } catch is Superseded {
+            return
         } catch {
-            state = .loginRequired(errorMessage: "Connection failed. Is the server running?")
+            guard attempt == generation else { return }
+            state = .loginRequired(errorMessage: Self.message(for: error))
         }
+    }
+
+    /// The remembered login, for the login form to fill in. Through the same
+    /// store as everything else here, so a test's fake answers it too.
+    func savedLogin() -> KeychainCredentials? {
+        credentials.load()
+    }
+
+    // MARK: - Server went away
+
+    /// Back to waiting, and any sign-in still in flight no longer decides
+    /// the state when it finishes.
+    func serverBecameUnavailable() {
+        generation += 1
+        state = .waitingForServer
+    }
+
+    /// What the login screen says about a failed sign-in.
+    private static func message(for error: Error) -> String {
+        (error as? LoginError)?.message ?? "Connection failed. Is the server running?"
     }
 
     // MARK: - Logout (called when web UI navigates to /login)
@@ -94,13 +213,15 @@ final class AuthManager: ObservableObject {
             }
         }
         // Remember that user explicitly logged out so we don't auto-login on next launch
-        UserDefaults.standard.set(true, forKey: Self.loggedOutKey)
+        defaults.set(true, forKey: Self.loggedOutKey)
+        generation += 1
         state = .loginRequired(errorMessage: nil)
     }
 
     // MARK: - After setup completes (web navigated to /login)
 
     func handleSetupComplete() {
+        generation += 1
         state = .loginRequired(errorMessage: nil)
     }
 
@@ -108,7 +229,7 @@ final class AuthManager: ObservableObject {
 
     private func needsSetup() async -> Bool {
         let url = baseURL.appendingPathComponent("api/system/setup-status")
-        guard let (data, response) = try? await URLSession.shared.data(from: url),
+        guard let (data, response) = try? await transport.setupStatus(url),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let needs = json["needs_setup"] as? Bool
@@ -118,7 +239,7 @@ final class AuthManager: ObservableObject {
         return needs
     }
 
-    private func performLogin(email: String, password: String) async throws {
+    private func performLogin(email: String, password: String, attempt: Int) async throws {
         let url = baseURL.appendingPathComponent("api/auth/login")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -127,20 +248,18 @@ final class AuthManager: ObservableObject {
         let body = ["email": email, "password": password]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        // Use a session that does NOT handle cookies itself, so the raw
-        // Set-Cookie header is preserved in the response for us to parse.
-        let ephemeral = URLSessionConfiguration.ephemeral
-        ephemeral.httpCookieAcceptPolicy = .never
-        ephemeral.httpShouldSetCookies = false
-        let session = URLSession(configuration: ephemeral)
-
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await transport.login(request)
+        try ensureCurrent(attempt)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LoginError(message: "Unexpected response")
         }
 
+        // 401 is the API's answer to a wrong email or password
+        // (`POST /api/auth/login`), and the only answer that condemns the
+        // credentials. Its 403 means the account is disabled, which a correct
+        // password still gets.
         if httpResponse.statusCode == 401 {
-            throw LoginError(message: "Invalid email or password")
+            throw LoginError(message: "Invalid email or password", credentialsRejected: true)
         }
         if httpResponse.statusCode == 403 {
             throw LoginError(message: "Account disabled")
@@ -158,6 +277,7 @@ final class AuthManager: ObservableObject {
 
         // Extract Set-Cookie from response headers and inject into WKWebView.
         await injectCookiesFromResponse(httpResponse, url: url)
+        try ensureCurrent(attempt)
         state = .authenticated
     }
 
@@ -208,11 +328,13 @@ final class AuthManager: ObservableObject {
 
         guard let cookie = HTTPCookie(properties: props) else { return }
 
-        let webCookieStore = WKWebsiteDataStore.default().httpCookieStore
-        await webCookieStore.setCookie(cookie)
+        await transport.setCookie(cookie)
     }
 }
 
 private struct LoginError: Error {
     let message: String
+    /// The server rejected the email or password themselves, as opposed to
+    /// failing to answer, answering with an error, or answering oddly.
+    var credentialsRejected = false
 }

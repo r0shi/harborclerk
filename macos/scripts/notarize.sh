@@ -159,9 +159,9 @@ codesign_app "$CLIENT_APP" "$RESOLVED_DIR/client.entitlements"
 # as an Accepted, stapled DMG whose app died on launch (exit 137, no stderr).
 #
 # XCTestConfigurationFilePath is the "start nothing" switch both apps honour
-# (server: AppDelegate; client: AuthManager). The server touches nothing. The
-# client shows its waiting view for a moment and its BackendDetector still polls
-# /api/system/health on localhost; it does not read or write the Keychain.
+# (server: AppDelegate, checked twice; client: HarborClerkApp's inert root, then
+# AuthManager). Neither touches anything: the client's window holds an inert
+# view, with no polling, Keychain, network or WebKit.
 launch_probe() {
     local app exe pid rc probe_dir probe_app
     # Absolutise first. The Makefile hands this script BUILD_DIR=build, so every

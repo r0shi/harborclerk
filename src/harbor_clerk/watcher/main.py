@@ -41,7 +41,7 @@ from harbor_clerk.models.watched import (
     WatchedFolder,
 )
 from harbor_clerk.watcher.db_listener import listen_for_folder_changes
-from harbor_clerk.watcher.discovery import scan_watch_root
+from harbor_clerk.watcher.discovery import log_watch_root_problem, scan_watch_root
 from harbor_clerk.watcher.events import (
     EventKind,
     FileEvent,
@@ -1076,6 +1076,9 @@ class WatcherDaemon:
         watch_root = get_settings().watch_root
         if not watch_root:
             return
+        # Once, at startup: the scan below skips a missing root at debug level on
+        # every pass, which left a misconfigured WATCH_ROOT invisible (#871).
+        log_watch_root_problem(watch_root, "watcher")
         while not self._stop.is_set():
             sess = self._session_factory()
             try:

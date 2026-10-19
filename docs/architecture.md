@@ -202,6 +202,7 @@ graph TB
     gw --> app
     app --> pg & emb & rerank & llama
     app -. "legacy uploads" .-> minio
+    app -- "downloads" --> host_fs
     watcher --> pg
     watcher -- "WATCH_ROOT" --> host_fs
     wio --> pg & tika & host_fs

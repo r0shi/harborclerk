@@ -15,6 +15,7 @@ from pathlib import Path
 import yaml
 
 from harbor_clerk.worker.entry import QUEUE_STAGES
+from harbor_clerk.worker.pipeline import STAGE_CONFIG
 
 COMPOSE_PATH = Path(__file__).resolve().parents[1] / "docker-compose.yml"
 WORKER_ENTRYPOINT = "harbor-clerk-worker"
@@ -89,3 +90,23 @@ def test_llm_queue_worker_can_reach_llama_server() -> None:
         "They would fall back to the localhost:8102 default and silently produce "
         "extractive summaries instead of LLM summaries."
     )
+
+
+def test_stage_config_queue_agrees_with_queue_stages() -> None:
+    """STAGE_CONFIG's queue picks the NOTIFY channel; QUEUE_STAGES decides which worker claims.
+
+    `enqueue_stage` wakes `job_enqueued_<STAGE_CONFIG queue>`, while a worker claims
+    the stages QUEUE_STAGES lists for its queues (`claim_next_job`). If they disagree
+    the job still runs, but on another queue's workers and only when their poll
+    times out, and every compose check derived from one of them describes the
+    wrong services.
+    """
+    claimed_by = {stage: {q for q, stages in QUEUE_STAGES.items() if stage in stages} for stage in STAGE_CONFIG}
+    disagreements = {
+        stage.value: (STAGE_CONFIG[stage][0], sorted(queues))
+        for stage, queues in claimed_by.items()
+        if queues != {STAGE_CONFIG[stage][0]}
+    }
+    unrouted = {s.value for q in QUEUE_STAGES.values() for s in q} - {s.value for s in STAGE_CONFIG}
+    assert not disagreements, f"stage: (STAGE_CONFIG queue, QUEUE_STAGES queues) disagree: {disagreements}"
+    assert not unrouted, f"stage(s) in QUEUE_STAGES with no STAGE_CONFIG entry: {sorted(unrouted)}"

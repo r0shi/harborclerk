@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { get, patch, post, ApiError } from '../api'
 import { Card } from './Card'
+import { watchedFoldersDockerGuideUrl } from '../data/docsLinks'
+import { useSystemConfig } from '../hooks/useSystemConfig'
 
 interface SystemInfo {
   platform: 'macos' | 'docker'
@@ -40,8 +42,8 @@ interface Props {
  *   - macOS: "Pick a folder to watch" → window.harborclerk.pickFolder() →
  *     POST /api/watch/folders → advance to page 2 on success. Cancelling
  *     NSOpenPanel keeps the user on page 1.
- *   - Docker: "Read folder setup docs" → opens /docs/watched-folders-docker
- *     in a new tab. Page 2 reachable via Next regardless.
+ *   - Docker: "Read folder setup docs" → opens the watched-folders guide on
+ *     GitHub in a new tab. Page 2 reachable via Next regardless.
  *
  * Page 2: optional non-English language picker. English is bundled and
  * always on. Other languages download per-tool model files (~15-20 MB
@@ -53,22 +55,39 @@ interface Props {
  */
 export default function OnboardingWizard({ onComplete }: Props) {
   const navigate = useNavigate()
+  const { version } = useSystemConfig()
   const [page, setPage] = useState(1)
   const [system, setSystem] = useState<SystemInfo | null>(null)
+  // Neither is true until /api/watch/system answers (or if it fails): render
+  // platform-neutral copy rather than guessing.
+  const isDocker = system?.platform === 'docker'
+  const isMac = system?.platform === 'macos'
   const [error, setError] = useState('')
   const [picking, setPicking] = useState(false)
   const [languages, setLanguages] = useState<LanguageRow[]>([])
   const [selectedLangs, setSelectedLangs] = useState<Set<string>>(new Set())
   const [installingLangs, setInstallingLangs] = useState(false)
+  // Set when /api/watch/system fails: page 1 offers a Retry instead of a
+  // button stuck on "Loading…".
+  const [systemError, setSystemError] = useState('')
+
+  const loadSystem = useCallback(() => {
+    get<SystemInfo>('/api/watch/system')
+      .then((info) => {
+        setSystem(info)
+        setSystemError('')
+      })
+      .catch((e) => {
+        setSystemError(e instanceof ApiError || e instanceof Error ? e.message : 'request failed')
+      })
+  }, [])
 
   useEffect(() => {
-    get<SystemInfo>('/api/watch/system')
-      .then(setSystem)
-      .catch(() => {})
+    loadSystem()
     get<LanguagesListResponse>('/api/languages')
       .then((data) => setLanguages(data.languages))
       .catch(() => {})
-  }, [])
+  }, [loadSystem])
 
   const installAndContinue = useCallback(async () => {
     setError('')
@@ -158,10 +177,6 @@ export default function OnboardingWizard({ onComplete }: Props) {
     }
   }
 
-  function handleDockerDocs() {
-    window.open('/docs/watched-folders-docker', '_blank', 'noopener,noreferrer')
-  }
-
   return (
     <div
       role="dialog"
@@ -187,8 +202,22 @@ export default function OnboardingWizard({ onComplete }: Props) {
               Welcome to Harbor Clerk
             </h2>
             <p className="mb-4 text-sm text-(--color-text-secondary)">
-              Drop documents into a folder on this Mac, Harbor Clerk indexes them locally, and you can query them from
-              chat or search. Your files never leave this machine. To get started, pick a folder to watch.
+              {isDocker ? (
+                <>
+                  Mount a folder of documents under <code>{system?.watch_root}</code>, Harbor Clerk indexes it on this
+                  server, and you can query it from chat or search. To get started, follow the folder setup guide.
+                </>
+              ) : isMac ? (
+                <>
+                  Drop documents into a folder on this Mac, Harbor Clerk indexes them locally, and you can query them
+                  from chat or search. Your files never leave this machine. To get started, pick a folder to watch.
+                </>
+              ) : (
+                <>
+                  Harbor Clerk indexes the documents in the folders it watches, and you can query them from chat or
+                  search.
+                </>
+              )}
             </p>
             {error && (
               <div className="mb-3 rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-400">
@@ -205,12 +234,27 @@ export default function OnboardingWizard({ onComplete }: Props) {
                   {picking ? 'Picking…' : 'Pick a folder to watch'}
                 </button>
               ) : system?.picker === 'none' ? (
-                <button
-                  onClick={handleDockerDocs}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
+                <a
+                  href={watchedFoldersDockerGuideUrl(version)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-block rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
                 >
                   Read folder setup docs
-                </button>
+                </a>
+              ) : systemError ? (
+                <div role="alert" className="flex items-center gap-3 text-xs text-red-700 dark:text-red-400">
+                  <span>Couldn&apos;t load folder setup ({systemError}).</span>
+                  <button
+                    onClick={() => {
+                      setSystemError('')
+                      loadSystem()
+                    }}
+                    className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-(--color-text-primary) hover:bg-black/5 dark:hover:bg-white/5"
+                  >
+                    Retry
+                  </button>
+                </div>
               ) : (
                 // System info still loading
                 <button disabled className="rounded-lg bg-gray-300 dark:bg-gray-700 px-4 py-2 text-sm text-white">
@@ -334,7 +378,7 @@ export default function OnboardingWizard({ onComplete }: Props) {
             <div className="mb-5 border-l-2 border-blue-500/70 pl-3 text-sm text-(--color-text-secondary)">
               <div className="font-medium text-(--color-text-primary)">Setup path</div>
               <ol className="mt-2 list-decimal space-y-1 pl-4">
-                <li>Download a model that fits this Mac.</li>
+                <li>Download a model that fits this {isMac ? 'Mac' : isDocker ? 'server' : 'machine'}.</li>
                 <li>Activate it after the download completes.</li>
                 <li>Return to Ask or Research when the local AI status is ready.</li>
               </ol>
@@ -375,13 +419,15 @@ export default function OnboardingWizard({ onComplete }: Props) {
             </h2>
             <p className="mb-3 text-sm text-(--color-text-secondary)">
               Documents go through a 7-stage pipeline (extract → OCR → chunk → entities → embed → summarize → finalize).
-              Two places to watch:
+              {isMac ? ' Two places to watch:' : ' Where to watch:'}
             </p>
             <ul className="mb-6 space-y-2 text-sm text-(--color-text-secondary)">
-              <li>
-                <strong className="text-(--color-text-primary)">Server menubar</strong> — click the Harbor Clerk icon in
-                your menu bar to see backend services running locally (Postgres, workers, the LLM if active).
-              </li>
+              {isMac && (
+                <li>
+                  <strong className="text-(--color-text-primary)">Server menubar</strong> — click the Harbor Clerk icon
+                  in your menu bar to see backend services running locally (Postgres, workers, the LLM if active).
+                </li>
+              )}
               <li>
                 <strong className="text-(--color-text-primary)">Observatory tab</strong> — visit <code>/stats</code> for
                 the live pipeline diagram and per-stage timing charts.

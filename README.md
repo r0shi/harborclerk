@@ -194,8 +194,8 @@ Harbor Clerk can run in two ways:
 | | macOS Native | Docker Compose |
 |---|---|---|
 | **Best for** | Small teams and independent operators with a Mac | DIY / Linux servers |
-| **Services** | Managed by menubar app as subprocesses | Eleven Docker containers |
-| **Folder picker** | Native folder picker in the UI | Operator mounts host paths into the watcher container |
+| **Services** | Managed by menubar app as subprocesses | Twelve Docker containers ([list](docs/architecture.md#docker-compose-services)) |
+| **Folder picker** | Native folder picker in the UI | Operator mounts host paths read-only into `watcher`, `app`, `worker-io` and `worker-cpu` ([guide](docs/watched-folders-docker.md)) |
 | **Originals** | Read in place from your filesystem | Read in place from bind-mounted volumes |
 | **HTTPS** | Direct localhost access | Caddy reverse proxy with self-signed cert |
 
@@ -223,13 +223,13 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 
 Open **https://localhost/** and accept the self-signed certificate. Create your admin account on the setup page.
 
-**Watched folders on Docker** are operator-controlled: the `watcher` service auto-discovers any top-level subdirectory of `WATCH_ROOT` (`/data/watch` inside the container, bind-mounted from `./data/watch` on the host) and ingests files dropped into it. There is no "Add Folder" button on Docker — you create directories, or mount external paths into `/data/watch/<name>`. See [docs/watched-folders-docker.md](docs/watched-folders-docker.md) for the full operator guide.
+**Watched folders on Docker** are operator-controlled: the `watcher` service auto-discovers any top-level subdirectory of `WATCH_ROOT` (`/data/watch` inside the container, bind-mounted from `./data/watch` on the host) and ingests files dropped into it. There is no "Add Folder" button on Docker — you create directories, or mount external paths at `/data/watch/<name>`. Files are read in place, so an external path must be mounted read-only, at the same container path, into `watcher`, `app`, `worker-io` and `worker-cpu`: mounted into the watcher alone, its documents are discovered but fail extraction and cannot be downloaded. See [docs/watched-folders-docker.md](docs/watched-folders-docker.md) for the full operator guide.
 
 | Variable | Default | Description |
 |---|---|---|
 | `SECRET_KEY` | `change-me-in-production` | JWT signing key — **change this** |
 | `DATABASE_URL` | `postgresql+asyncpg://harbor_clerk:...` | PostgreSQL connection string |
-| `WATCH_ROOT` | `/data/watch` | Container path whose top-level subdirs become watched folders |
+| `WATCH_ROOT` | `/data/watch` | Container path whose top-level subdirs become watched folders. Must be `/data/watch` (where `./data/watch` is mounted) or a directory under it; see the [guide](docs/watched-folders-docker.md) |
 | `MINIO_ENDPOINT` | `minio:9000` | MinIO endpoint (currently used by legacy upload API; watched-folder originals are read in place from `./data/watch`) |
 | `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
 | `MINIO_SECRET_KEY` | `minioadmin123` | MinIO secret key |

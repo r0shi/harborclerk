@@ -73,7 +73,7 @@ struct LoginView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             // Pre-fill email from Keychain if available
-            if let creds = KeychainManager.load() {
+            if let creds = authManager.savedLogin() {
                 email = creds.email
                 password = creds.password
             }
