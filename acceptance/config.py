@@ -81,12 +81,13 @@ def load_config() -> AcceptanceConfig:
 
     root_in_instance = os.environ.get("HC_ACCEPTANCE_FOLDER_ROOT_IN_INSTANCE", "").strip() or None
     if root_in_instance:
-        # The Compose watcher auto-discovers every top-level subdirectory of
-        # WATCH_ROOT and, with no unique constraint on the path, registers a
-        # second row beside a manually created one: two observers, two
-        # documents per file, and a twin that refuses deletion while mounted.
+        # On Compose the watcher discovers every top-level subdirectory of
+        # WATCH_ROOT, and POST /api/watch/folders answers 409 there (#870), so
+        # the suite cannot create its own folder. Discovery-based setup is not
+        # written yet.
         pytest.skip(
-            "Compose targets are not supported yet (watcher auto-discovery creates a twin folder); see the spec"
+            "Compose targets are not supported yet (POST /api/watch/folders returns 409 on Docker; "
+            "folders under WATCH_ROOT are discovered automatically); see the spec"
         )
 
     wipe = _flag("HC_ACCEPTANCE_WIPE")

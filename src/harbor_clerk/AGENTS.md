@@ -38,14 +38,11 @@ the filesystem directly. `STORAGE_BACKEND` selects the implementation. Legacy
 uploads store originals at `originals/<doc_id>/<original_filename>` in the
 `originals` bucket; watched-folder and IMAP documents do **not** use it.
 
-Watched-folder documents are read in place from `source_path` and are never
-written to. IMAP messages and attachments are the one case where content is
-fetched and stored (via the normal document path), as there is no file on disk.
-Read a document's bytes only through `watched_source` (`read_document_bytes`,
-`watched_state*`): a document with any `WatchedFile` is watched, read in place only
-from an active one whose computed path its `source_path` is exactly. Never read an
-unverified `source_path` or a watched document's stored original; refuse
-`new_version` of a watched document (409).
+Watched-folder documents are read in place from `source_path` and never written to; IMAP is the one case where content is fetched and stored (no file on disk).
+Read a document's bytes only through `watched_source` (`read_document_bytes`, `watched_state*`): a document with any `WatchedFile` is watched, read in place only from an active one
+whose computed path its `source_path` is exactly. Never read an unverified `source_path` or a watched document's stored original; refuse `new_version` of a watched document (409).
+Under Compose every reader of `source_path` (`app`, and the workers whose `QUEUE_STAGES` claim extract or OCR) mounts the watch directory read-only at the fixed `/data/watch`,
+the watcher too; `WATCH_ROOT` must be that directory or below it (#869, #871). A new byte-reading stage goes in `BYTE_READING_STAGES` (`tests/test_docker_compose_watch_mount.py`).
 
 ## Retrieval
 

@@ -131,6 +131,7 @@ describe('DocumentDetailPage', () => {
       enableCliAccess: false,
       cliShimInstallStatus: null,
       localMcpUrl: null,
+      version: null,
       loaded: true,
     })
     useJobEventsMock.mockReturnValue(undefined)

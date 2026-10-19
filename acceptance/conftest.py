@@ -78,7 +78,8 @@ def admin(cfg: AcceptanceConfig) -> Iterator[HarborClerk]:
         pytest.fail(f"{cfg.username} is not an admin; the suite creates folders and keys")
     if client.watch_system().get("platform") == "docker":
         pytest.skip(
-            "Compose targets are not supported yet (watcher auto-discovery creates a twin folder); see the spec"
+            "Compose targets are not supported yet (POST /api/watch/folders returns 409 on Docker; "
+            "folders under WATCH_ROOT are discovered automatically); see the spec"
         )
     yield client
     client.close()

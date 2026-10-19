@@ -15,6 +15,7 @@
 		A200000007 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B200000007; };
 		A200000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B200000004; };
 		AT20000001 /* BackendDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT20000001; };
+		AT20000002 /* AuthManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT20000002; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -40,6 +41,7 @@
 		D200000002 /* HarborClerk.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HarborClerk.entitlements; sourceTree = "<group>"; };
 		CT20000001 /* HarborClerkTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HarborClerkTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BT20000001 /* BackendDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendDetectorTests.swift; sourceTree = "<group>"; };
+		BT20000002 /* AuthManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthManagerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -98,6 +100,7 @@
 			isa = PBXGroup;
 			children = (
 				BT20000001 /* BackendDetectorTests.swift */,
+				BT20000002 /* AuthManagerTests.swift */,
 			);
 			path = HarborClerkTests;
 			sourceTree = "<group>";
@@ -206,6 +209,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AT20000001 /* BackendDetectorTests.swift in Sources */,
+				AT20000002 /* AuthManagerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -490,9 +490,14 @@ def test_discovery_survives_a_failed_observer_sync(monkeypatch):
     monkeypatch.setattr(watcher_main, "DISCOVERY_INTERVAL_SECS", 0.01)
 
     class _Session:
-        def commit(self): ...
-        def rollback(self): ...
-        def close(self): ...
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
 
     calls = []
     second_pass = threading.Event()
@@ -843,3 +848,32 @@ def test_startup_scan_does_not_reprocess_a_current_doc(factory, tmp_path, monkey
         assert _queued_extracts(factory, doc_id) == 0
     finally:
         _truncate_watched(factory)
+
+
+def test_discovery_logs_an_unusable_watch_root_at_startup(monkeypatch, caplog):
+    """A missing WATCH_ROOT was skipped at debug level on every pass; it is an ERROR once at startup (#871)."""
+    import logging
+    from types import SimpleNamespace
+
+    from harbor_clerk.watcher import main as watcher_main
+
+    monkeypatch.setattr(watcher_main, "get_settings", lambda: SimpleNamespace(watch_root="/nonexistent-root"))
+    monkeypatch.setattr(watcher_main, "scan_watch_root", lambda sess, root: None)
+
+    class _Session:
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    daemon = WatcherDaemon(_Session)
+    monkeypatch.setattr(daemon, "_sync_observers", lambda: None)
+    daemon._stop.set()
+    with caplog.at_level(logging.ERROR, logger="harbor_clerk.watcher.discovery"):
+        daemon._discovery_loop()
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and "watcher: WATCH_ROOT=/nonexistent-root does not exist" in errors[0]

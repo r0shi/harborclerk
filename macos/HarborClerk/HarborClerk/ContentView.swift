@@ -39,13 +39,16 @@ struct ContentView: View {
                     .ignoresSafeArea()
             }
         }
-        .onAppear { detector.startPolling() }
+        .onAppear {
+            RootViewLog.liveAppeared = true
+            detector.startPolling()
+        }
         .onDisappear { detector.stopPolling() }
         .onChange(of: detector.isAvailable) { _, available in
             if available {
                 Task { await authManager.onServerBecameAvailable() }
             } else {
-                authManager.state = .waitingForServer
+                authManager.serverBecameUnavailable()
             }
         }
     }

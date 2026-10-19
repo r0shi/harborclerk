@@ -186,6 +186,11 @@ needs discovery-aware registration (wait for the auto-discovered row and adopt
 it), which is a follow-up. Until then the suite skips with that reason when
 `HC_ACCEPTANCE_FOLDER_ROOT_IN_INSTANCE` is set.
 
+Update (#870): the twin can no longer be created. `POST /api/watch/folders`
+answers 409 on Docker, and discovery skips any path that already has a row. A
+Compose run still needs discovery-aware registration, now because it cannot
+create a folder at all; the skip reason says so.
+
 ## Runtime and safety
 
 Environment: `HC_API_BASE` (required, else skip), `HC_USERNAME`, `HC_PASSWORD`

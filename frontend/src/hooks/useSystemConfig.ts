@@ -30,6 +30,11 @@ export interface SystemConfig {
    */
   localMcpUrl: string | null
   /**
+   * The running build's version from /api/system/health: a bare `X.Y.Z` only
+   * for a stamped release build. Null until loaded.
+   */
+  version: string | null
+  /**
    * True once the system config has been fetched at least once. While false
    * the UI should treat capability flags conservatively (e.g. hide buttons
    * rather than show them only to have them flicker off when the response
@@ -44,6 +49,7 @@ const FALLBACK: SystemConfig = {
   enableCliAccess: false,
   cliShimInstallStatus: null,
   localMcpUrl: null,
+  version: null,
   loaded: false,
 }
 
@@ -72,6 +78,7 @@ export function useSystemConfig(): SystemConfig {
           enableCliAccess: Boolean(data.enable_cli_access),
           cliShimInstallStatus: data.cli_shim_install_status ?? null,
           localMcpUrl: data.local_mcp_url ?? null,
+          version: typeof data.version === 'string' ? data.version : null,
           loaded: true,
         })
       })
