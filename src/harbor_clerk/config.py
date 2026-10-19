@@ -9,6 +9,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 logger = logging.getLogger(__name__)
 
 
+STORAGE_BACKENDS = ("filesystem", "minio")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -22,8 +25,11 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://lka:lka_dev_password@postgres:5432/lka",
     )
 
-    # Storage backend: "minio" or "filesystem"
-    storage_backend: str = Field(default="minio")
+    # Storage backend: "filesystem" or "minio". Filesystem is what the macOS app and
+    # Compose run (#888); the MinIO default pointed at minio:9000, which resolves only
+    # inside a Compose network that no longer has a minio service. Left unset, the
+    # path is relative to the working directory, so get_storage() warns.
+    storage_backend: str = Field(default="filesystem")
     storage_path: str = Field(default="./data/originals")
 
     # Watched folder root (Docker mode only; empty in native macOS app)
@@ -216,6 +222,18 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
         return v.rstrip("/")
+
+    @field_validator("storage_backend", mode="before")
+    @classmethod
+    def _normalise_storage_backend(cls, v: object) -> str:
+        """Case and whitespace don't matter and empty is the default; anything else is refused at startup.
+
+        Before #888 every value other than exactly "filesystem" silently meant MinIO.
+        """
+        value = str(v or "").strip().lower() or "filesystem"
+        if value not in STORAGE_BACKENDS:
+            raise ValueError(f"STORAGE_BACKEND must be one of {', '.join(STORAGE_BACKENDS)}; got {v!r}")
+        return value
 
 
 _settings: Settings | None = None

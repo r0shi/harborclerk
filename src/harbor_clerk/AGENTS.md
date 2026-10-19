@@ -34,9 +34,9 @@ Tika. Don't invent a fourth.
 ## Storage
 
 All storage access goes through the `StorageBackend` ABC — never touch MinIO or
-the filesystem directly. `STORAGE_BACKEND` selects the implementation. Legacy
-uploads store originals at `originals/<doc_id>/<original_filename>` in the
-`originals` bucket; watched-folder and IMAP documents do **not** use it.
+the filesystem directly. `STORAGE_BACKEND` selects the implementation (default `filesystem`). Uploads store
+originals at `originals/docs/<doc_id>/<filename>` (staged under `tmp/uploads/`) and IMAP mail at `originals/<doc_id>/<filename>`,
+both in the `originals` bucket; watched files have no stored copy.
 
 Watched-folder documents are read in place from `source_path` and never written to; IMAP is the one case where content is fetched and stored (no file on disk). Read a document's bytes only through `watched_source` (`read_document_bytes`, `watched_state*`):
 a document with any `WatchedFile` is watched, read in place only from an active one whose computed path its `source_path` is exactly. Never read an unverified `source_path` or a watched document's stored original; refuse `new_version` of a watched document (409).
@@ -45,6 +45,7 @@ A new byte-reading stage goes in `BYTE_READING_STAGES` (`tests/test_docker_compo
 APFS ignores case: a file is present only when `watched_source.is_file_exact_case` (the one presence check; a dangling symlink or a directory is absent) agrees on every component (spelling read directly, `F_GETPATH` on macOS; a listing only as fallback, never cached: a FAT/exFAT root's stat never changes), and a sidecar is the file `with_suffix(".json")` opens on disk (`samefile`), not a name.
 A reconcile removes nothing for a missing, unlistable or empty root (noise doesn't count; `unavailable_reason` says so: `root_*`, shown, never blocking; only discovery's `unmounted` makes a folder unusable, `folder_is_unavailable`),
 nor under an unlistable dir or one with no entries at all (#868; logged only; a `.DS_Store` is an entry). A lost or replaced root's events are dropped (dev/ino).
+Compose stores originals on the filesystem backend (`originals` volume), mounted rw where code writes, ro where it reads; never MinIO by default (#888, `tests/test_docker_compose_storage.py`).
 
 ## Retrieval
 

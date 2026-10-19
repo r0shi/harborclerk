@@ -4,6 +4,130 @@ This document covers operator-facing procedures for breaking-change upgrades.
 For incremental version bumps, normal alembic migrations apply automatically
 when the app starts; this runbook only covers explicit cutover events.
 
+## Docker: MinIO to filesystem storage
+
+Up to #888 the Compose stack stored originals (uploads, IMAP messages and
+attachments) in a `minio` service running `minio/minio:latest`. That image is
+no longer published, so the default stack now uses the filesystem backend on the
+`originals` named volume (`STORAGE_BACKEND=filesystem`, `STORAGE_PATH=/data/originals`
+in `app`, `watcher`, `worker-io` and `worker-cpu`), and `minio` sits behind an
+opt-in profile whose image you must name in `MINIO_IMAGE`.
+
+Watched-folder documents are unaffected: they are read in place and were never
+in MinIO. A fresh install, or one that never used uploads or IMAP, needs nothing.
+
+An install with objects in MinIO that starts the new stack without copying them
+keeps searching (the text is in Postgres). At startup `app` checks whether the
+oldest documents' stored originals are on the volume and, if any are missing,
+logs an ERROR naming this section. Until the copy:
+
+- downloading one of those documents (with `ALLOW_SOURCE_DOWNLOAD=true`) fails
+  with a server error (500); it works again as soon as its object is copied;
+- an extract that runs on one of them (only a reprocess re-extracts an existing
+  document) fails, and the document stays failed after the copy until it is
+  reprocessed: on the Documents page filter by status **Failed**, select, and
+  **Reprocess**, or as an admin `POST /api/docs/reprocess-failed`.
+
+If that already happened, follow the steps below from step 2 anyway. The copy
+never replaces a file the new stack wrote. It can bring back objects that the
+new stack deleted in the meantime, such as staging files of uploads that
+finished or were cancelled. Nothing references those, so they only take space.
+
+The filesystem backend keeps MinIO's bucket and key, at
+`STORAGE_PATH/<bucket>/<key>`, so the database needs no change. MinIO keeps its
+own on-disk format, so copy through its API rather than out of its volume. The
+copy runs once, with `app` and `watcher` stopped, before the new stack starts:
+they are the only services that write originals, so once they are stopped
+nothing new reaches MinIO, and once the new stack runs nothing ever does.
+
+1. Find the MinIO image you already have: `docker image ls | grep -i minio`.
+   The commands below use `minio/minio:latest`; substitute yours.
+2. Keep your `.env`'s `MINIO_*` values and pull the new code. Stop the two
+   services that write originals (the web UI and mail sync are down until
+   step 6; the old MinIO container keeps running):
+
+   ```bash
+   docker compose stop app watcher
+   ```
+
+3. Build the images that run Harbor Clerk's code. `docker compose run` builds
+   only when no image exists, so without this it runs the old image, which has
+   no copy command. The embedder and reranker images are large and unchanged by
+   this upgrade, so leave them out:
+
+   ```bash
+   docker compose build app watcher worker-io worker-cpu worker-llm
+   ```
+
+4. Start MinIO alone from the profile and wait until it is healthy; it reuses
+   the existing `minio_data` volume:
+
+   ```bash
+   MINIO_IMAGE=minio/minio:latest docker compose --profile minio up -d --wait minio
+   ```
+
+5. Copy every object into the `originals` volume:
+
+   ```bash
+   docker compose run --rm --no-deps app python -m harbor_clerk.maintenance.copy_minio_originals
+   ```
+
+   Run it once, and never two at the same time: concurrent runs report each
+   other's copies as `differs`. MinIO is only read, and a file already in the
+   volume is never replaced. Each object is written to a `.partial-*` temporary
+   file and moved into place. If the run is interrupted, run it again: it first
+   removes the `.partial-*` files the interrupted run left, and what was copied
+   counts as already present. If MinIO cannot be listed (not running, not
+   healthy yet, wrong `MINIO_*` values), it says so and exits 1. It ends with
+   `copied N, already present N, differs N, folder markers skipped N, failed N`,
+   and exits non-zero if anything failed:
+
+   - **already present**: the volume has a file of the same size at that key.
+   - **differs**: the volume has a file of a different size at that key, which
+     was left alone and its key logged. On a first copy into an empty volume
+     this is 0. Otherwise the volume's file was written by the new stack (a new
+     version of an upload keeps its key) and is the one to keep.
+   - **folder markers**: zero-byte keys ending in `/`, which are not originals.
+   - **failed**: an object that could not be read, a key that would land
+     outside the bucket directory, or a key that clashes with the volume's
+     directory layout (`a` where `a/b` exists, or the reverse); the log names
+     each one.
+
+   `--bucket NAME` copies a bucket other than `MINIO_BUCKET` (default `originals`).
+6. Start the new stack, leaving `STORAGE_BACKEND` unset. It uses the images
+   built in step 3. With `ALLOW_SOURCE_DOWNLOAD=true`, download one uploaded or
+   mailed document to confirm:
+
+   ```bash
+   docker compose up -d
+   ```
+
+7. Retire MinIO: `MINIO_IMAGE=minio/minio:latest docker compose --profile minio rm -sf minio`.
+   Do not run the copy again from here on. It would not replace anything, but it
+   would bring back objects the new stack has since deleted: finished uploads'
+   staging files, purged documents, deleted mail. Keep the
+   `<project>_minio_data` volume until you are satisfied, then remove it with
+   `docker volume rm`. The `MINIO_*` lines in `.env` are then unused.
+
+To keep running MinIO instead, set `STORAGE_BACKEND=minio` and `MINIO_IMAGE` in
+`.env` and add `--profile minio` to every `docker compose` command (or set
+`COMPOSE_PROFILES=minio`). Nothing waits for MinIO to become healthy, so `app`
+may restart once while it starts. This path depends on an image that is no
+longer maintained; copying is the supported one.
+
+## Docker: Postgres won't start after re-pulling `pgvector/pgvector:pg18`
+
+The pg18 image now defaults `PGDATA` to `/var/lib/postgresql/18/docker` and
+refuses to start when a volume is mounted at `/var/lib/postgresql/data` with
+`PGDATA` unset; its log says there "appears to be PostgreSQL data in
+/var/lib/postgresql/data (unused mount/volume)" (#894). Any install that pulls
+the current image hits it, fresh or existing. `docker-compose.yml` now sets
+`PGDATA: /var/lib/postgresql/data` on `postgres`, the directory the `pg_data`
+volume has always been mounted at, so pulling the new compose file is the whole
+fix: the existing cluster is used as it is. Do not move the volume to
+`/var/lib/postgresql` instead. Postgres would then initialize a new, empty
+cluster under `18/docker` and the existing data would look lost.
+
 ## Embedding v2
 
 ### What this upgrade does

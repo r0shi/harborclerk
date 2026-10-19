@@ -113,6 +113,14 @@ Two user-facing ingest paths, not one:
 The legacy `POST /api/uploads/*` endpoints remain callable for non-interactive
 sources but have no UI affordance.
 
+Stored content (IMAP messages and attachments, legacy uploads) goes through the
+`StorageBackend` (`storage.py`). Both deployments use the filesystem backend,
+which keeps each object at `STORAGE_PATH/<bucket>/<key>`: under the app-support
+directory on macOS, and on the `originals` named volume under Docker Compose,
+mounted read-write by `app` and `watcher` and read-only by the extract and OCR
+workers. The MinIO backend remains for an install that still runs MinIO from the
+opt-in `minio` Compose profile ([moving off it](upgrade-runbook.md#docker-minio-to-filesystem-storage)).
+
 ## Ingestion Pipeline
 
 Seven idempotent stages, each guarded by a row-level lock on `(doc_id, stage)`
@@ -192,21 +200,23 @@ graph TB
         emb["embedder"]
         rerank["reranker"]
         pg[("postgres<br/>pgvector/pgvector:pg18")]
-        minio["minio<br/>(legacy upload API)"]
         tika["tika"]
         llama["llama-server"]
+        originals[("originals volume<br/>STORAGE_PATH=/data/originals")]
     end
 
     host_fs["Host bind mount<br/>./data/watch"]
 
     gw --> app
     app --> pg & emb & rerank & llama
-    app -. "legacy uploads" .-> minio
+    app -- "uploads (rw)" --> originals
     app -- "downloads" --> host_fs
     watcher --> pg
     watcher -- "WATCH_ROOT" --> host_fs
+    watcher -- "IMAP mail (rw)" --> originals
     wio --> pg & tika & host_fs
     wcpu --> pg & emb & host_fs
+    wio & wcpu -. "stored originals (ro)" .-> originals
     wllm --> pg & llama
 ```
 
@@ -405,22 +415,22 @@ Queue subscriptions:
 <!-- BEGIN GENERATED: compose-services -->
 <!-- Do not edit by hand. Regenerate: uv run python -m scripts.gen_docs -->
 
-**12 services.** Generated from `docker-compose.yml`.
+**11 services** in the default stack, plus 1 behind an opt-in profile (`docker compose --profile <name>`). Generated from `docker-compose.yml`.
 
-| Service | Image | Role |
-|---|---|---|
-| `app` | built from `docker/app.Dockerfile` | — |
-| `embedder` | built from `docker/embedder.Dockerfile` | — |
-| `gateway` | `caddy:2-alpine` | — |
-| `llama-server` | `ghcr.io/ggml-org/llama.cpp:server-v0.4.1` | — |
-| `minio` | `minio/minio:latest` | `server` |
-| `postgres` | `pgvector/pgvector:pg18` | — |
-| `reranker` | built from `docker/reranker.Dockerfile` | — |
-| `tika` | `apache/tika:latest` | — |
-| `watcher` | built from `docker/app.Dockerfile` | `harbor-clerk-watcher` |
-| `worker-cpu` | built from `docker/app.Dockerfile` | worker — queues: `cpu` |
-| `worker-io` | built from `docker/app.Dockerfile` | worker — queues: `io` |
-| `worker-llm` | built from `docker/app.Dockerfile` | worker — queues: `llm` |
+| Service | Image | Role | Profile |
+|---|---|---|---|
+| `app` | built from `docker/app.Dockerfile` | — | default |
+| `embedder` | built from `docker/embedder.Dockerfile` | — | default |
+| `gateway` | `caddy:2-alpine` | — | default |
+| `llama-server` | `ghcr.io/ggml-org/llama.cpp:server-v0.4.1` | — | default |
+| `minio` | `${MINIO_IMAGE:-}` | `server` | `minio` |
+| `postgres` | `pgvector/pgvector:pg18` | — | default |
+| `reranker` | built from `docker/reranker.Dockerfile` | — | default |
+| `tika` | `apache/tika:latest` | — | default |
+| `watcher` | built from `docker/app.Dockerfile` | `harbor-clerk-watcher` | default |
+| `worker-cpu` | built from `docker/app.Dockerfile` | worker — queues: `cpu` | default |
+| `worker-io` | built from `docker/app.Dockerfile` | worker — queues: `io` | default |
+| `worker-llm` | built from `docker/app.Dockerfile` | worker — queues: `llm` | default |
 <!-- END GENERATED: compose-services -->
 
 ### Database tables

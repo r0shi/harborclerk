@@ -61,15 +61,26 @@ def _role(service: dict) -> str:
     return f"`{first}`"
 
 
+def _profiles(service: dict) -> list[str]:
+    return [str(p) for p in service.get("profiles") or []]
+
+
 def generate() -> str:
+    """One row per service. A service behind `profiles:` is not in the default stack, so it is not counted there."""
     services = load_services()
+    default = [name for name in services if not _profiles(services[name] or {})]
+    opt_in = len(services) - len(default)
+    count = f"**{len(default)} services**"
+    if opt_in:
+        count += f" in the default stack, plus {opt_in} behind an opt-in profile (`docker compose --profile <name>`)"
     lines = [
-        f"**{len(services)} services.** Generated from `docker-compose.yml`.",
+        f"{count}. Generated from `docker-compose.yml`.",
         "",
-        "| Service | Image | Role |",
-        "|---|---|---|",
+        "| Service | Image | Role | Profile |",
+        "|---|---|---|---|",
     ]
     for name in sorted(services):
         service = services[name] or {}
-        lines.append(f"| `{name}` | {_image(service)} | {_role(service)} |")
+        profiles = ", ".join(f"`{p}`" for p in _profiles(service)) or "default"
+        lines.append(f"| `{name}` | {_image(service)} | {_role(service)} | {profiles} |")
     return "\n".join(lines)

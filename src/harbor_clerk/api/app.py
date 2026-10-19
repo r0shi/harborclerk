@@ -320,6 +320,15 @@ async def lifespan(app: FastAPI):
     # Ensure storage bucket exists
     get_storage().ensure_bucket(settings.minio_bucket)
 
+    # An upgrade that started on an empty originals volume without copying out of MinIO (#888).
+    try:
+        from harbor_clerk.storage import log_missing_originals
+
+        async with async_session_factory() as db:
+            await log_missing_originals(db)
+    except Exception:
+        logger.exception("Failed to check for missing stored originals")
+
     # One-shot post-migration rename pass for 0017 flatten — idempotent
     try:
         from harbor_clerk.maintenance.rename_originals import rename_all

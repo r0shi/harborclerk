@@ -194,9 +194,10 @@ Harbor Clerk can run in two ways:
 | | macOS Native | Docker Compose |
 |---|---|---|
 | **Best for** | Small teams and independent operators with a Mac | DIY / Linux servers |
-| **Services** | Managed by menubar app as subprocesses | Twelve Docker containers ([list](docs/architecture.md#docker-compose-services)) |
+| **Services** | Managed by menubar app as subprocesses | Eleven Docker containers ([list](docs/architecture.md#docker-compose-services)) |
 | **Folder picker** | Native folder picker in the UI | Operator mounts host paths read-only into `watcher`, `app`, `worker-io` and `worker-cpu` ([guide](docs/watched-folders-docker.md)) |
 | **Originals** | Read in place from your filesystem | Read in place from bind-mounted volumes |
+| **Stored mail and uploads** | Under the app-support directory | On the `originals` named volume |
 | **HTTPS** | Direct localhost access | Caddy reverse proxy with self-signed cert |
 
 Both deployments use the same Python `watchdog`-based watcher under the hood (FSEvents on macOS, inotify on Linux, polling fallback for NFS/SMB/fuse mounts).
@@ -230,9 +231,7 @@ Open **https://localhost/** and accept the self-signed certificate. Create your 
 | `SECRET_KEY` | `change-me-in-production` | JWT signing key — **change this** |
 | `DATABASE_URL` | `postgresql+asyncpg://harbor_clerk:...` | PostgreSQL connection string |
 | `WATCH_ROOT` | `/data/watch` | Container path whose top-level subdirs become watched folders. Must be `/data/watch` (where `./data/watch` is mounted) or a directory under it; see the [guide](docs/watched-folders-docker.md) |
-| `MINIO_ENDPOINT` | `minio:9000` | MinIO endpoint (currently used by legacy upload API; watched-folder originals are read in place from `./data/watch`) |
-| `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
-| `MINIO_SECRET_KEY` | `minioadmin123` | MinIO secret key |
+| `STORAGE_BACKEND` | `filesystem` | Where IMAP messages, attachments and uploads are stored: the `originals` volume. `minio` only for an install still running the opt-in `minio` profile; see [moving off MinIO](docs/upgrade-runbook.md#docker-minio-to-filesystem-storage) |
 | `LLM_MODEL_FILE` | `Qwen3.5-4B-Q4_K_M.gguf` | The GGUF `llama-server` serves, from the `llama_models` volume (see [Local AI on Docker](#local-ai-on-docker)); empty runs no local model |
 | `LLM_CONTEXT_TOKENS` | `8192` | `llama-server`'s context (`-c`), which the app also budgets prompts to |
 | `ALLOW_SOURCE_DOWNLOAD` | `false` | Set `true` to expose `/api/docs/{id}/download` (see [Source files](#source-files-reveal-vs-download) below) |
@@ -253,7 +252,7 @@ docker compose logs -f watcher    # see what the watcher is picking up
 
 To use another curated model, set `LLM_MODEL_FILE` to its file name and run `docker compose up -d`; under Compose the Models page shows no **Activate** button and names the file it serves. Set it empty to run no local model. The context is fixed at `LLM_CONTEXT_TOKENS` because a container cannot size it to the host the way the macOS app does; memory grows with it, so raise `--cache-ram` in `docker-compose.yml` with it. The Compose server runs without RoPE scaling, so the Models page shows no YaRN toggle. The `llama.cpp` server image is CPU-only.
 
-**Services:** `gateway` (Caddy), `app` (FastAPI + React SPA), `watcher` (folder watching + ingest queueing), `worker-io`, `worker-cpu`, `worker-llm` (summarize), `embedder` (Granite-R2 multilingual, 768-dim), `reranker` (cross-encoder re-ranking), `llama-server` (local LLM inference), `postgres` (pgvector + pg_trgm), `minio`, `tika`.
+**Services:** `gateway` (Caddy), `app` (FastAPI + React SPA), `watcher` (folder watching + ingest queueing), `worker-io`, `worker-cpu`, `worker-llm` (summarize), `embedder` (Granite-R2 multilingual, 768-dim), `reranker` (cross-encoder re-ranking), `llama-server` (local LLM inference), `postgres` (pgvector + pg_trgm), `tika`. Stored mail and uploads live on the `originals` volume; an install upgrading from the MinIO-based stack copies them over once ([runbook](docs/upgrade-runbook.md#docker-minio-to-filesystem-storage)).
 
 ---
 
