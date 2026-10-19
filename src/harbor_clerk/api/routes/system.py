@@ -878,8 +878,8 @@ async def reaper_run(
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Find ingestion jobs stuck as running with stale heartbeat, re-enqueue them."""
-    from harbor_clerk.worker.pipeline import STAGE_CONFIG, enqueue_stage
+    """Find ingestion jobs stuck as running with stale heartbeat, requeue them."""
+    from harbor_clerk.worker.pipeline import STAGE_CONFIG, requeue_orphan_job
 
     # Get all currently running jobs from DB
     result = await session.execute(
@@ -897,7 +897,7 @@ async def reaper_run(
         return {"reaped": 0}
 
     now = datetime.now(UTC)
-    orphans: list[tuple[uuid.UUID, JobStage]] = []
+    reaped_per_queue: dict[str, int] = {}
     for job in running_jobs:
         if job.heartbeat_at is not None:
             # Worker has heartbeat — if stale > 90s, it's dead
@@ -919,23 +919,26 @@ async def reaper_run(
             job.stage.value,
             job.heartbeat_at,
         )
-        orphans.append((job.doc_id, job.stage))
+        # In place, as the background reaper does: enqueue_stage skips a row
+        # still running at the current seq, so it requeued nothing (#864).
+        requeue_orphan_job(job)
+        queue_name = STAGE_CONFIG[job.stage][0]
+        reaped_per_queue[queue_name] = reaped_per_queue.get(queue_name, 0) + 1
 
-    # Commit any pending state and log audit before re-enqueuing
+    reaped = sum(reaped_per_queue.values())
+    # Delivered at commit: a waiting worker claims the job now, not at its idle poll.
+    for queue_name, count in reaped_per_queue.items():
+        await _notify_bulk_queue(session, queue_name, count)
     await log_audit(
         session,
         user_id=admin.id,
         action="reaper_run",
-        detail={"reaped_count": len(orphans)},
+        detail={"reaped_count": reaped},
     )
     await session.commit()
 
-    # Re-enqueue orphans (each creates its own sync session)
-    for doc_id, stage in orphans:
-        enqueue_stage(doc_id, stage)
-
-    logger.info("Reaped %d orphan jobs", len(orphans))
-    return {"reaped": len(orphans)}
+    logger.info("Reaped %d orphan jobs", reaped)
+    return {"reaped": reaped}
 
 
 @router.post("/system/repair-completed-statuses")

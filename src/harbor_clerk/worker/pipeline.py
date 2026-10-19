@@ -354,6 +354,22 @@ def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> N
     logger.info("Enqueued %s for doc %s on queue %s", stage.value, doc_id, queue_name)
 
 
+def requeue_orphan_job(job: IngestionJob) -> None:
+    """Hand an orphaned ``running`` row (its worker died) back to the queue, in place.
+
+    Shared by the background reaper (api/app.py ``_session_reaper_loop``) and
+    the admin "Recover stuck jobs" route (``/system/reaper-run``), so the two
+    cannot drift. Not ``enqueue_stage``: it skips a row already ``running`` at
+    the current pipeline_seq, which an orphan always is, so the route used to
+    report jobs reaped while every one stayed ``running`` (#864). The row keeps
+    its generation; the caller commits.
+    """
+    job.status = JobStatus.queued
+    job.started_at = None
+    job.heartbeat_at = None
+    job.error = None
+
+
 def reset_jobs(doc_id: uuid.UUID) -> None:
     """Delete all ingestion jobs for a doc so the pipeline starts fresh."""
     session = get_sync_session()
