@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.db_sync import get_sync_session
@@ -354,20 +354,116 @@ def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> N
     logger.info("Enqueued %s for doc %s on queue %s", stage.value, doc_id, queue_name)
 
 
-def requeue_orphan_job(job: IngestionJob) -> None:
-    """Hand an orphaned ``running`` row (its worker died) back to the queue, in place.
+# Orphaned running jobs (the worker died). One definition for the status
+# summary's stuck count, the admin "Recover stuck jobs" route
+# (/system/reaper-run) and the background reaper (api/app.py
+# _session_reaper_loop), so what is shown as stuck is what gets recovered.
+# Workers heartbeat every 30 s (worker/entry.py HEARTBEAT_INTERVAL).
+ORPHAN_HEARTBEAT_SECONDS = 90
 
-    Shared by the background reaper (api/app.py ``_session_reaper_loop``) and
-    the admin "Recover stuck jobs" route (``/system/reaper-run``), so the two
-    cannot drift. Not ``enqueue_stage``: it skips a row already ``running`` at
-    the current pipeline_seq, which an orphan always is, so the route used to
-    report jobs reaped while every one stayed ``running`` (#864). The row keeps
-    its generation; the caller commits.
+
+def is_orphaned_running_job(now: datetime, job: IngestionJob) -> bool:
+    """Whether a ``running`` row's worker is gone: its heartbeat is at least
+    ``ORPHAN_HEARTBEAT_SECONDS`` old or, with no heartbeat, the row has been
+    running (since ``started_at``, else ``created_at``) for twice the stage timeout."""
+    if job.heartbeat_at is not None:
+        return (now - job.heartbeat_at).total_seconds() >= ORPHAN_HEARTBEAT_SECONDS
+    _, timeout, _ = STAGE_CONFIG.get(job.stage, ("io", 600, PipelineStatus.error))
+    since = job.started_at or job.created_at
+    return since is not None and (now - since).total_seconds() >= timeout * 2
+
+
+async def requeue_orphan_job(session: AsyncSession, job: IngestionJob) -> bool:
+    """Put one orphan back in the queue, in place, if it is still the row that was read.
+
+    Not ``enqueue_stage``: it skips a row already ``running`` at the current
+    pipeline_seq, which an orphan always is, so the route used to report jobs
+    reaped while every one stayed ``running`` (#864). The UPDATE is conditional
+    on the status and claim (``started_at``, ``heartbeat_at``) as read: if
+    another reaper requeued the row and a worker claimed it since, or its
+    worker heartbeated, it is a live run and is left alone. Returns whether the
+    row was requeued. Keeps the generation; the caller commits.
     """
-    job.status = JobStatus.queued
-    job.started_at = None
-    job.heartbeat_at = None
-    job.error = None
+    result = await session.execute(
+        update(IngestionJob)
+        .where(
+            IngestionJob.job_id == job.job_id,
+            IngestionJob.status == JobStatus.running,
+            IngestionJob.started_at.is_not_distinct_from(job.started_at),
+            IngestionJob.heartbeat_at.is_not_distinct_from(job.heartbeat_at),
+        )
+        .values(
+            status=JobStatus.queued,
+            started_at=None,
+            heartbeat_at=None,
+            error=None,
+            progress_current=0,
+            progress_total=0,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount == 1
+
+
+async def requeue_orphaned_jobs(session: AsyncSession, now: datetime) -> list[tuple[uuid.UUID, JobStage]]:
+    """Requeue every orphaned ``running`` job of an active document at its current generation.
+
+    Both reapers call this. Returns the (doc_id, stage) of the rows actually
+    requeued; the caller commits, then passes them to ``announce_requeued_jobs``.
+    """
+    running = (
+        (
+            await session.execute(
+                select(IngestionJob)
+                .join(Document, Document.doc_id == IngestionJob.doc_id)
+                .where(
+                    Document.status == "active",
+                    IngestionJob.status == JobStatus.running,
+                    IngestionJob.pipeline_seq == Document.pipeline_seq,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    requeued: list[tuple[uuid.UUID, JobStage]] = []
+    for job in running:
+        if not is_orphaned_running_job(now, job):
+            continue
+        doc_id, stage, heartbeat_at = job.doc_id, job.stage, job.heartbeat_at
+        if not await requeue_orphan_job(session, job):
+            logger.info("Reaper: orphan doc=%s stage=%s changed since it was read; left as it is", doc_id, stage.value)
+            continue
+        logger.warning("Reaper: re-queued orphan job doc=%s stage=%s (heartbeat=%s)", doc_id, stage.value, heartbeat_at)
+        requeued.append((doc_id, stage))
+    return requeued
+
+
+def announce_requeued_jobs(requeued: list[tuple[uuid.UUID, JobStage]]) -> None:
+    """After the requeue commits, announce each job the way ``enqueue_stage`` does.
+
+    A pg_notify on the stage's queue channel, so a waiting worker claims it now
+    rather than at its idle poll, and a "queued" job event, so the live view
+    stops showing it running. Sync (its own session): call it from async code
+    through ``asyncio.to_thread``.
+    """
+    if not requeued:
+        return
+    session = get_sync_session()
+    try:
+        filenames: dict[uuid.UUID, str] = {}
+        for doc_id, stage in requeued:
+            doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
+            filenames[doc_id] = _doc_filename(doc, session) if doc is not None else ""
+            session.execute(
+                text("SELECT pg_notify(:channel, :payload)"),
+                {"channel": f"job_enqueued_{STAGE_CONFIG[stage][0]}", "payload": str(doc_id)},
+            )
+        session.commit()
+    finally:
+        session.close()
+    for doc_id, stage in requeued:
+        publish_job_event(doc_id, stage.value, "queued", filename=filenames[doc_id])
 
 
 def reset_jobs(doc_id: uuid.UUID) -> None:

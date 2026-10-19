@@ -157,33 +157,13 @@ async def _session_reaper_loop() -> None:
                     rs.status = "interrupted"
                     rs.error = "Research task stalled — no progress for 5+ minutes"
 
-                # Re-queue orphaned ingestion jobs (running with stale heartbeat >90s)
-                from harbor_clerk.models import Document, IngestionJob
-                from harbor_clerk.models.enums import JobStatus
-                from harbor_clerk.worker.pipeline import requeue_orphan_job
+                # Re-queue orphaned ingestion jobs (the worker died), as /system/reaper-run does
+                from harbor_clerk.worker.pipeline import announce_requeued_jobs, requeue_orphaned_jobs
 
-                heartbeat_cutoff = now - timedelta(seconds=90)
-                orphan_result = await db.execute(
-                    select(IngestionJob)
-                    .join(Document, Document.doc_id == IngestionJob.doc_id)
-                    .where(
-                        Document.status == "active",
-                        IngestionJob.status == JobStatus.running,
-                        IngestionJob.pipeline_seq == Document.pipeline_seq,
-                        IngestionJob.heartbeat_at < heartbeat_cutoff,
-                    )
-                )
-                orphan_jobs = orphan_result.scalars().all()
-                for job in orphan_jobs:
-                    logger.warning(
-                        "Reaper: re-queuing orphan job doc=%s stage=%s (heartbeat=%s)",
-                        job.doc_id,
-                        job.stage.value,
-                        job.heartbeat_at,
-                    )
-                    requeue_orphan_job(job)
+                orphan_jobs = await requeue_orphaned_jobs(db, now)
 
                 await db.commit()
+                await asyncio.to_thread(announce_requeued_jobs, orphan_jobs)
                 total = len(stale_sessions) + len(done_sessions)
                 if total > 0 or stale_research or orphan_jobs:
                     logger.info(

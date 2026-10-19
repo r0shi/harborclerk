@@ -2,18 +2,23 @@
 
 ``POST /api/system/reaper-run`` used to call ``enqueue_stage`` on each orphan,
 which skips a row already ``running`` at the current pipeline_seq, so it
-reported ``reaped: N`` while every orphan stayed ``running``.
+reported ``reaped: N`` while every orphan stayed ``running``. Both reapers now
+share ``worker/pipeline.py``'s selection (the status summary's stuck count),
+its conditional write and its announcement.
 """
 
 import asyncio
+import json
+import select as select_module
 import types
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.models import Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from tests.conftest import auth_header
@@ -43,16 +48,13 @@ async def _reload(db_session, job_id: uuid.UUID) -> IngestionJob:
     return (await db_session.execute(select(IngestionJob).where(IngestionJob.job_id == job_id))).scalar_one()
 
 
-async def test_reaper_run_requeues_stale_orphans_and_leaves_live_runs(
-    client, admin_user, admin_token, db_session, monkeypatch
-):
-    notified: list[tuple[str, int]] = []
+async def _reap(client, admin_token) -> int:
+    resp = await client.post("/api/system/reaper-run", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    return resp.json()["reaped"]
 
-    async def _record_notify(_session, queue_name, count):
-        notified.append((queue_name, count))
 
-    monkeypatch.setattr("harbor_clerk.api.routes.system._notify_bulk_queue", _record_notify)
-
+async def test_reaper_run_requeues_stale_orphans_and_leaves_live_runs(client, admin_user, admin_token, db_session):
     now = datetime.now(UTC)
     stale = await _doc_with_job(
         db_session,
@@ -61,8 +63,10 @@ async def test_reaper_run_requeues_stale_orphans_and_leaves_live_runs(
         started_at=now - timedelta(hours=1),
         heartbeat_at=now - _STALE,
         error="stale text",
+        progress_current=4,
+        progress_total=9,
     )
-    # No heartbeat, started more than twice the stage timeout ago: the route's legacy orphan rule.
+    # No heartbeat, started more than twice the stage timeout ago.
     legacy = await _doc_with_job(
         db_session,
         b"l",
@@ -85,9 +89,7 @@ async def test_reaper_run_requeues_stale_orphans_and_leaves_live_runs(
         heartbeat_at=None,
     )
 
-    resp = await client.post("/api/system/reaper-run", headers=auth_header(admin_token))
-    assert resp.status_code == 200
-    assert resp.json() == {"reaped": 2}
+    assert await _reap(client, admin_token) == 2
 
     for orphan in (stale, legacy):
         row = await _reload(db_session, orphan)
@@ -96,6 +98,7 @@ async def test_reaper_run_requeues_stale_orphans_and_leaves_live_runs(
         assert row.started_at is None
         assert row.heartbeat_at is None
         assert row.error is None
+        assert (row.progress_current, row.progress_total) == (0, 0)
 
     row = await _reload(db_session, live)
     assert row.status == JobStatus.running
@@ -106,8 +109,6 @@ async def test_reaper_run_requeues_stale_orphans_and_leaves_live_runs(
     assert row.status == JobStatus.running
     assert row.started_at is not None
 
-    assert sorted(notified) == [("cpu", 1), ("io", 1)]
-
 
 async def test_reaper_run_with_nothing_stale_reports_zero(client, admin_user, admin_token, db_session):
     now = datetime.now(UTC)
@@ -115,10 +116,86 @@ async def test_reaper_run_with_nothing_stale_reports_zero(client, admin_user, ad
         db_session, b"f", stage=JobStage.embed, started_at=now - timedelta(minutes=2), heartbeat_at=now
     )
 
-    resp = await client.post("/api/system/reaper-run", headers=auth_header(admin_token))
-    assert resp.status_code == 200
-    assert resp.json() == {"reaped": 0}
+    assert await _reap(client, admin_token) == 0
     assert (await _reload(db_session, live)).status == JobStatus.running
+
+
+async def test_reaper_run_leaves_a_job_claimed_after_it_was_read(
+    client, admin_user, admin_token, db_session, monkeypatch
+):
+    """Another reaper requeues the orphan and a worker claims it between the route's read
+    and its write: the route must leave the live claim alone and not count it."""
+    from harbor_clerk.worker import entry, pipeline
+
+    now = datetime.now(UTC)
+    job_id = await _doc_with_job(
+        db_session, b"s", stage=JobStage.embed, started_at=now - timedelta(hours=1), heartbeat_at=now - _STALE
+    )
+    await db_session.commit()
+
+    real = pipeline.requeue_orphan_job
+    claims = []
+
+    async def _requeued_and_claimed_meanwhile(session, job):
+        other = get_sync_session()
+        try:
+            other.execute(
+                update(IngestionJob)
+                .where(IngestionJob.job_id == job_id)
+                .values(status=JobStatus.queued, started_at=None, heartbeat_at=None)
+            )
+            other.commit()
+        finally:
+            other.close()
+        claims.append(entry.claim_next_job([JobStage.embed]))
+        return await real(session, job)
+
+    monkeypatch.setattr(pipeline, "requeue_orphan_job", _requeued_and_claimed_meanwhile)
+
+    assert await _reap(client, admin_token) == 0
+    assert claims[0] is not None
+
+    row = await _reload(db_session, job_id)
+    assert row.status == JobStatus.running
+    assert row.started_at is not None and row.started_at > now
+    assert row.heartbeat_at is not None
+    # No second worker can claim the (doc, stage, seq) the first is running.
+    assert entry.claim_next_job([JobStage.embed]) is None
+
+
+async def test_reaper_run_announces_each_requeued_job(client, admin_user, admin_token, db_session):
+    """A pg_notify on the stage's queue and a "queued" job event, as enqueue_stage sends."""
+    from harbor_clerk.worker.entry import _get_listen_connection
+
+    now = datetime.now(UTC)
+    job_id = await _doc_with_job(
+        db_session, b"n", stage=JobStage.embed, started_at=now - timedelta(hours=1), heartbeat_at=now - _STALE
+    )
+    doc_id = (await _reload(db_session, job_id)).doc_id
+    await db_session.commit()
+
+    conn = _get_listen_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("LISTEN job_enqueued_cpu")
+            cur.execute("LISTEN job_progress")
+        assert await _reap(client, admin_token) == 1
+        got: list[tuple[str, str]] = []
+        deadline = asyncio.get_running_loop().time() + 5
+        while len(got) < 2 and asyncio.get_running_loop().time() < deadline:
+            select_module.select([conn], [], [], 0.2)
+            conn.poll()
+            got.extend((n.channel, n.payload) for n in conn.notifies)
+            conn.notifies.clear()
+    finally:
+        conn.close()
+
+    assert ("job_enqueued_cpu", str(doc_id)) in got
+    events = [json.loads(payload) for channel, payload in got if channel == "job_progress"]
+    assert len(events) == 1
+    assert events[0]["doc_id"] == str(doc_id)
+    assert events[0]["stage"] == "embed"
+    assert events[0]["status"] == "queued"
 
 
 async def _run_background_reaper_once(monkeypatch, engine) -> None:
@@ -136,7 +213,7 @@ async def _run_background_reaper_once(monkeypatch, engine) -> None:
     async def _no_topics(_db):
         return None
 
-    monkeypatch.setattr(app_module, "asyncio", types.SimpleNamespace(sleep=_sleep))
+    monkeypatch.setattr(app_module, "asyncio", types.SimpleNamespace(sleep=_sleep, to_thread=asyncio.to_thread))
     monkeypatch.setattr(
         "harbor_clerk.db.async_session_factory",
         async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False),
@@ -185,8 +262,7 @@ async def test_route_and_background_reaper_requeue_an_orphan_identically(
     )
 
     by_route = await _doc_with_job(db_session, b"a", stage=JobStage.embed, **fields)
-    resp = await client.post("/api/system/reaper-run", headers=auth_header(admin_token))
-    assert resp.json() == {"reaped": 1}
+    assert await _reap(client, admin_token) == 1
     by_route = await _reload(db_session, by_route)
     route_state = {name: getattr(by_route, name) for name in _COMPARED}
 
@@ -196,4 +272,39 @@ async def test_route_and_background_reaper_requeue_an_orphan_identically(
     by_background = await _reload(db_session, by_background)
 
     assert route_state["status"] == JobStatus.queued
+    assert (route_state["progress_current"], route_state["progress_total"]) == (0, 0)
     assert route_state == {name: getattr(by_background, name) for name in _COMPARED}
+
+
+async def test_a_job_shown_as_stuck_is_recovered_by_both_reapers(
+    client, admin_user, admin_token, db_session, monkeypatch, _engine
+):
+    """The status summary's stuck count and both reapers share one definition, including
+    the rows it reaches only through its fallbacks: no heartbeat, no started_at, an old created_at."""
+    now = datetime.now(UTC)
+    fields = dict(created_at=now - timedelta(hours=3), started_at=None, heartbeat_at=None)
+    for_route = await _doc_with_job(db_session, b"a", stage=JobStage.extract, **fields)
+    for_background = await _doc_with_job(db_session, b"b", stage=JobStage.extract, **fields)
+    await db_session.commit()
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["counts"]["stuck_jobs"] == 2
+
+    # The route reaps every orphan; set one aside so the background reaper has its own.
+    await db_session.execute(
+        update(IngestionJob).where(IngestionJob.job_id == for_background).values(status=JobStatus.done)
+    )
+    await db_session.commit()
+    assert await _reap(client, admin_token) == 1
+    assert (await _reload(db_session, for_route)).status == JobStatus.queued
+
+    await db_session.execute(
+        update(IngestionJob).where(IngestionJob.job_id == for_background).values(status=JobStatus.running)
+    )
+    await db_session.commit()
+    await _run_background_reaper_once(monkeypatch, _engine)
+    assert (await _reload(db_session, for_background)).status == JobStatus.queued
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.json()["counts"]["stuck_jobs"] == 0
