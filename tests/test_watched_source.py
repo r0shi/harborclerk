@@ -233,6 +233,79 @@ def test_is_file_exact_case_counts_a_file_under_an_unlistable_directory_present(
     assert is_file_exact_case(str(tmp_path / "locked" / "doc.txt"), str(tmp_path))
 
 
+def _counting_listdir(monkeypatch) -> list[str]:
+    import os
+
+    calls: list[str] = []
+    real_listdir = os.listdir
+    monkeypatch.setattr(os, "listdir", lambda path=".": calls.append(str(path)) or real_listdir(path))
+    return calls
+
+
+def _settle(monkeypatch, secs: float) -> None:
+    import harbor_clerk.watched_source as watched_source
+
+    monkeypatch.setattr(watched_source, "LISTING_SETTLED_FINE_SECS", secs)
+    monkeypatch.setattr(watched_source, "LISTING_SETTLED_SECS", secs)
+
+
+def test_a_settled_directory_is_listed_once_for_many_checks(tmp_path, monkeypatch):
+    from harbor_clerk.watched_source import is_file_exact_case
+
+    for i in range(20):
+        (tmp_path / f"{i:02d}.txt").write_text("x")
+    _settle(monkeypatch, 0.0)
+    calls = _counting_listdir(monkeypatch)
+    assert all(is_file_exact_case(str(tmp_path / f"{i:02d}.txt"), str(tmp_path)) for i in range(20))
+    assert calls == [str(tmp_path)]
+
+
+def test_a_listing_taken_before_the_directory_settled_is_not_reused(tmp_path, monkeypatch):
+    """Timestamps are coarse: a change in the same tick as the listing would leave
+    the directory's stat as it was, so only a settled directory's listing is kept."""
+    from harbor_clerk.watched_source import is_file_exact_case
+
+    (tmp_path / "a.txt").write_text("x")
+    _settle(monkeypatch, 3600.0)
+    calls = _counting_listdir(monkeypatch)
+    assert is_file_exact_case(str(tmp_path / "a.txt"))
+    assert is_file_exact_case(str(tmp_path / "a.txt"))
+    assert calls == [str(tmp_path)] * 2
+
+
+def test_a_cached_listing_is_dropped_when_the_directory_changes(tmp_path, monkeypatch):
+    """After `mv Invoices invoices` the cached root listing (which held Invoices)
+    must not answer for the old spelling: the root's stat changed."""
+    import os
+
+    from harbor_clerk.watched_source import is_file_exact_case
+
+    (tmp_path / "Invoices").mkdir()
+    (tmp_path / "Invoices" / "x.txt").write_text("x")
+    _settle(monkeypatch, 0.0)
+    assert is_file_exact_case(str(tmp_path / "Invoices" / "x.txt"), str(tmp_path))
+    before = os.stat(tmp_path)
+    (tmp_path / "Invoices").rename(tmp_path / "invoices")
+    # A distinct stamp, whatever the clock's tick: the key is what is tested here.
+    os.utime(tmp_path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    _case_insensitive_isfile(monkeypatch, tmp_path / "invoices" / "x.txt")
+    assert not is_file_exact_case(str(tmp_path / "Invoices" / "x.txt"), str(tmp_path))
+
+
+def test_a_name_missing_from_a_cached_listing_is_confirmed_in_a_fresh_one(tmp_path, monkeypatch):
+    """ "Absent" retires a document, so it is never answered from the cache alone:
+    here the directory's stat is made to look unchanged after a file arrives."""
+    import harbor_clerk.watched_source as watched_source
+    from harbor_clerk.watched_source import is_file_exact_case
+
+    (tmp_path / "a.txt").write_text("x")
+    _settle(monkeypatch, 0.0)
+    monkeypatch.setattr(watched_source, "_dir_key", lambda st: "same tick")
+    assert is_file_exact_case(str(tmp_path / "a.txt"))
+    (tmp_path / "b.txt").write_text("x")
+    assert is_file_exact_case(str(tmp_path / "b.txt"))
+
+
 def test_repaired_source_path_requires_every_component_spelled_as_on_disk(tmp_path, monkeypatch):
     """A watched file whose directory was renamed in case only is not present under
     its recorded path: the label is not repaired to a path that is not the file's."""

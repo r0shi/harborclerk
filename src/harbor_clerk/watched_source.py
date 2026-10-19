@@ -33,7 +33,10 @@ import asyncio
 import errno
 import logging
 import os
+import threading
+import time
 import unicodedata
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -184,12 +187,98 @@ _MISSING_SOURCE_ERRORS = frozenset(cls.__name__ for cls in (WatchedFileMissing, 
 _LEGACY_MISSING_SOURCE_PREFIX = "RuntimeError: No source for doc "
 
 
-def _listed_name(names: list[str], name: str) -> str | None:
-    """The entry of ``names`` that is ``name`` exactly, compared NFC-normalised; None when there is none."""
-    if name in names:
-        return name
-    wanted = unicodedata.normalize("NFC", name)
-    return next((n for n in names if unicodedata.normalize("NFC", n) == wanted), None)
+class _Listing:
+    """One directory's entry names, with an NFC index built on first need, and its
+    regular files (``DirEntry.is_file``, symlinks followed) when listed with them."""
+
+    __slots__ = ("names", "files", "_nfc")
+
+    def __init__(self, names: list[str], files: tuple[str, ...] | None = None):
+        self.names = frozenset(names)
+        self.files = files
+        self._nfc: dict[str, str] | None = None
+
+    def find(self, name: str) -> str | None:
+        """The entry that is ``name`` exactly, else the one equal to it NFC-normalised; None when there is none."""
+        if name in self.names:
+            return name
+        if self._nfc is None:
+            self._nfc = {unicodedata.normalize("NFC", n): n for n in self.names}
+        return self._nfc.get(unicodedata.normalize("NFC", name))
+
+
+# Listings reused across checks, so a burst of moves into one large directory
+# lists it once rather than once per file (`mv proj proj2023` with 8,000 files
+# spent 17 s listing, a 20,000-file case-only rename 110 s, serially under the
+# folder lock). An entry is used only while its directory's stat is unchanged,
+# and stored only when the directory had not changed for a settle time before
+# it was listed: timestamps are coarse (a kernel tick on Linux, 1 s on HFS+, 2 s
+# on FAT), so a change in the same tick as the last one leaves the stat as it
+# was. A volume stamping whole seconds waits LISTING_SETTLED_SECS, any other
+# LISTING_SETTLED_FINE_SECS. A name the cache lacks is looked up in a fresh
+# listing before the answer is "absent", since that answer retires a document.
+LISTING_SETTLED_SECS = 2.0
+LISTING_SETTLED_FINE_SECS = 0.05
+LISTING_CACHE_DIRS = 64
+_listings: OrderedDict[str, tuple[tuple, _Listing]] = OrderedDict()
+_listings_lock = threading.Lock()
+
+
+def _dir_key(st: os.stat_result) -> tuple:
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_nlink)
+
+
+def _settle_secs(st: os.stat_result) -> float:
+    whole_seconds = st.st_mtime_ns % 1_000_000_000 == 0 or st.st_ctime_ns % 1_000_000_000 == 0
+    return LISTING_SETTLED_SECS if whole_seconds else LISTING_SETTLED_FINE_SECS
+
+
+def _listing(directory: str, *, fresh: bool = False, files: bool = False) -> _Listing:
+    """``directory``'s entries, from the cache when its stat is unchanged (unless ``fresh``);
+    with ``files``, its regular files too (one ``scandir``). Raises OSError."""
+    st = os.stat(directory)  # before the listing: a change after it gives a new key
+    key = _dir_key(st)
+    if not fresh:
+        with _listings_lock:
+            hit = _listings.get(directory)
+            if hit is not None and hit[0] == key and (not files or hit[1].files is not None):
+                _listings.move_to_end(directory)
+                return hit[1]
+    if files:
+        with os.scandir(directory) as it:
+            entries = list(it)
+        listing = _Listing([e.name for e in entries], tuple(e.name for e in entries if e.is_file()))
+    else:
+        listing = _Listing(os.listdir(directory))
+    if time.time() - max(st.st_mtime_ns, st.st_ctime_ns) / 1e9 >= _settle_secs(st):
+        with _listings_lock:
+            _listings[directory] = (key, listing)
+            _listings.move_to_end(directory)
+            while len(_listings) > LISTING_CACHE_DIRS:
+                _listings.popitem(last=False)
+    return listing
+
+
+def entry_named(directory: str, name: str) -> str | None:
+    """The entry of ``directory`` spelled ``name`` (exactly, else NFC-equal), or None when there is none.
+
+    Answered from the shared listing cache; an absent name is confirmed in a
+    fresh listing. Raises OSError when the directory cannot be listed.
+    """
+    found = _listing(directory).find(name)
+    return found if found is not None else _listing(directory, fresh=True).find(name)
+
+
+def entry_names(directory: str, *, fresh: bool = False) -> frozenset[str]:
+    """Every entry name in ``directory``, from the shared listing cache unless ``fresh``. Raises OSError."""
+    return _listing(directory, fresh=fresh).names
+
+
+def file_names(directory: str) -> tuple[str, ...]:
+    """The regular files in ``directory`` (symlinks followed), from the shared listing cache. Raises OSError."""
+    files = _listing(directory, files=True).files
+    assert files is not None
+    return files
 
 
 def is_file_exact_case(path: str, root: str | None = None) -> bool:
@@ -210,7 +299,9 @@ def is_file_exact_case(path: str, root: str | None = None) -> bool:
 
     ``isfile`` goes first: a path that does not resolve to a file is answered
     without listing anything, since listing a 20,000-entry directory per deleted
-    file made ``rm *.pdf`` cost minutes of serial work under the folder lock.
+    file made ``rm *.pdf`` cost minutes of serial work under the folder lock. A
+    path that does resolve reuses its directories' listings while they are
+    unchanged (``_listing``), so checks in one directory list it once.
 
     A file under a directory that cannot be listed (search permission without
     read, mode 0311) cannot be settled; it counts as present, since guessing a
@@ -225,10 +316,9 @@ def is_file_exact_case(path: str, root: str | None = None) -> bool:
         current, parts = os.path.dirname(path) or ".", [os.path.basename(path)]
     for part in parts:
         try:
-            names = os.listdir(current)
+            name = entry_named(current, part)
         except OSError:
             return True
-        name = _listed_name(names, part)
         if name is None:
             return False
         current = os.path.join(current, name)

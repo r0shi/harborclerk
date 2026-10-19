@@ -2216,3 +2216,46 @@ def test_a_later_atomic_save_sending_only_a_delete_reprocesses_the_new_content(s
     sync_session.expire_all()
     pages = sync_session.query(DocumentPage).filter_by(doc_id=doc_id).all()
     assert [p.page_text for p in pages] == ["third version"]
+
+
+# ---------------------------------------------------------------------------
+# A burst of moves lists each directory once, not once per file
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("n", [4, 40])
+def test_moves_into_one_directory_list_it_a_bounded_number_of_times(sync_session, folder, tmp_path, monkeypatch, n):
+    """`mv proj proj2023`: every move checks its destination exactly (every
+    component) and judges its sidecar, which listed proj2023 once per file:
+    8,000 files cost 17 s under the folder lock. The listings are shared while
+    the directory is unchanged, so the count does not grow with the moves."""
+    from collections import Counter
+
+    import harbor_clerk.watched_source as watched_source
+
+    monkeypatch.setattr(watched_source, "LISTING_SETTLED_FINE_SECS", 0.0)
+    monkeypatch.setattr(watched_source, "LISTING_SETTLED_SECS", 0.0)
+    (tmp_path / "proj").mkdir()
+    docs = {}
+    for i in range(n):
+        pdf = tmp_path / "proj" / f"INV-{i:03d}.pdf"
+        pdf.write_bytes(f"%PDF-1.4 invoice {i}".encode())
+        (tmp_path / "proj" / f"INV-{i:03d}.json").write_text(json.dumps({"vendor": f"V{i}"}))
+        _wf, doc = _index(sync_session, folder, pdf, f"proj/INV-{i:03d}.pdf")
+        docs[f"proj2023/INV-{i:03d}.pdf"] = doc.doc_id
+    (tmp_path / "proj").rename(tmp_path / "proj2023")
+
+    listed: Counter[str] = Counter()
+    real_listdir, real_scandir = os.listdir, os.scandir
+    monkeypatch.setattr(os, "listdir", lambda path=".": listed.update([str(path)]) or real_listdir(path))
+    monkeypatch.setattr(os, "scandir", lambda path=".": listed.update([str(path)]) or real_scandir(path))
+    for i in range(n):
+        for ext in (".pdf", ".json"):
+            name = f"INV-{i:03d}{ext}"
+            handle_event(sync_session, _moved(folder, tmp_path, f"proj/{name}", f"proj2023/{name}"))
+    sync_session.commit()
+
+    rows = sync_session.query(WatchedFile).filter(WatchedFile.status == WatchedFileStatus.active).all()
+    assert {r.relative_path: r.doc_id for r in rows} == docs
+    assert listed[str(tmp_path / "proj2023")] <= 2, listed
+    assert listed[str(tmp_path)] <= 1, listed

@@ -42,9 +42,9 @@ Watched-folder documents are read in place from `source_path` and never written 
 a document with any `WatchedFile` is watched, read in place only from an active one whose computed path its `source_path` is exactly. Never read an unverified `source_path` or a watched document's stored original; refuse `new_version` of a watched document (409).
 Under Compose every reader of `source_path` (`app`, and the workers whose `QUEUE_STAGES` claim extract or OCR) mounts the watch directory read-only at the fixed `/data/watch`, the watcher too; `WATCH_ROOT` must be that directory or below it (#869, #871).
 A new byte-reading stage goes in `BYTE_READING_STAGES` (`tests/test_docker_compose_watch_mount.py`). Watcher: gone files hide via `watcher/visibility.py` (with `/watch/remove`), moves keep the doc_id via `watcher/relocate.py` (with `/watch/rename`).
-APFS ignores case: a file is present only when `watched_source.is_file_exact_case` (the one presence check; a dangling symlink or a directory is absent) agrees on every component, and a sidecar is the file `with_suffix(".json")` opens on disk (`samefile`), not a name.
+APFS ignores case: a file is present only when `watched_source.is_file_exact_case` (the one presence check; a dangling symlink or a directory is absent) agrees on every component (directory listings come from its stat-keyed cache: never list per file), and a sidecar is the file `with_suffix(".json")` opens on disk (`samefile`), not a name.
 A reconcile removes nothing for a missing, unlistable or empty root (noise doesn't count; `unavailable_reason` says so: `root_*`, shown, never blocking; only discovery's `unmounted` makes a folder unusable, `folder_is_unavailable`),
-nor under an unlistable or emptied dir (#868; logged only). A lost or replaced root's events are dropped (dev/ino).
+nor under an unlistable dir or one with no entries at all (#868; logged only; a `.DS_Store` is an entry). A lost or replaced root's events are dropped (dev/ino).
 
 ## Retrieval
 

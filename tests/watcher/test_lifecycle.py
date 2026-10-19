@@ -1487,8 +1487,10 @@ def _seed_subtree(factory, tmp_path):
 def test_an_emptied_subdirectory_is_left_alone_but_a_removed_one_is_not(factory, tmp_path, caplog):
     """#868: an unmounted mount point below the root is an empty directory, so
     its rows stay (logged once). A subdirectory that is gone altogether is
-    reconciled as before. The accepted cost: `rm sub/*` while the watcher is
-    down, keeping sub/, is held the same way."""
+    reconciled as before, and so is one that still holds an entry: here sub/
+    holds the empty deep/, so sub/a.txt is retired and only deep/ is held. The
+    accepted cost: `rm sub/*` while the watcher is down, leaving sub/ with no
+    entries at all, is held the same way."""
     import logging
 
     root, folder_id = _seed_subtree(factory, tmp_path)
@@ -1504,17 +1506,43 @@ def test_an_emptied_subdirectory_is_left_alone_but_a_removed_one_is_not(factory,
     with caplog.at_level(logging.WARNING, logger="harbor_clerk.watcher"):
         daemon._reconcile_folder(folder_id, str(root))
         daemon._reconcile_folder(folder_id, str(root))
-    assert len([r for r in caplog.records if "left sub alone" in r.getMessage()]) == 1, "logged once"
+    assert len([r for r in caplog.records if "left sub/deep alone" in r.getMessage()]) == 1, "logged once"
     st = _state(factory, folder_id)
-    assert st["sub/a.txt"][0:3:2] == (ACTIVE, "active")
+    assert st["sub/a.txt"][0:3:2] == (REMOVED, "removed"), "sub/ holds an entry (deep/): reconciled"
     assert st["sub/deep/b.txt"][0:3:2] == (ACTIVE, "active")
     assert st["gone/c.txt"][0:3:2] == (REMOVED, "removed")
     assert st["top.txt"][0:3:2] == (ACTIVE, "active")
 
-    daemon._on_event(
-        watcher_main.FileEvent(watcher_main.EventKind.deleted, folder_id, "sub/a.txt", str(root / "sub" / "a.txt"))
-    )
-    assert _state(factory, folder_id)["sub/a.txt"][0:3:2] == (REMOVED, "removed"), "live deletes still retire"
+    (root / "sub" / "deep").rmdir()
+    daemon._reconcile_folder(folder_id, str(root))
+    assert _state(factory, folder_id)["sub/deep/b.txt"][0:3:2] == (ACTIVE, "active"), "an empty sub/ holds it"
+
+    held = root / "sub" / "deep" / "b.txt"
+    daemon._on_event(watcher_main.FileEvent(watcher_main.EventKind.deleted, folder_id, "sub/deep/b.txt", str(held)))
+    assert _state(factory, folder_id)["sub/deep/b.txt"][0:3:2] == (REMOVED, "removed"), "live deletes still retire"
+
+
+@pytest.mark.parametrize(
+    "beside",
+    [[".DS_Store"], ["photo.heic"], [".DS_Store", "photo.heic"]],
+    ids=["ds-store", "unsupported", "both"],
+)
+def test_a_delete_while_down_beside_only_noise_or_unsupported_files_is_retired(factory, tmp_path, beside):
+    """Finder leaves a .DS_Store in almost every folder it shows, and an
+    unsupported file is an entry too: a directory holding them is not an empty
+    mount point, so a document deleted from it while down is retired."""
+    root = _root(tmp_path)
+    (root / "keep.txt").write_text("keep")
+    (root / "docs").mkdir()
+    (root / "docs" / "spec.pdf").write_bytes(b"%PDF-1.4 spec")
+    for name in beside:
+        (root / "docs" / name).write_bytes(b"x")
+    folder_id = _reconcile_once(factory, root)
+    assert _state(factory, folder_id)["docs/spec.pdf"][0] == ACTIVE
+
+    (root / "docs" / "spec.pdf").unlink()
+    WatcherDaemon(factory)._reconcile_folder(folder_id, str(root))
+    assert _state(factory, folder_id)["docs/spec.pdf"][0:3:2] == (REMOVED, "removed")
 
 
 def test_a_database_outage_while_recording_the_pass_retries_it(factory, _sync_engine, tmp_path):

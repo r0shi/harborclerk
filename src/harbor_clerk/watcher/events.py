@@ -36,7 +36,9 @@ from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.watched_source import (
+    entry_names,
     failed_for_a_missing_source,
+    file_names,
     is_file_exact_case,
     repaired_source_path,
     watched_state,
@@ -201,8 +203,7 @@ def _admitted_sibling_names(path: Path, names: "Iterable[str] | SiblingIndex | N
     """
     if names is None:
         try:
-            with os.scandir(path.parent) as entries:
-                names = [entry.name for entry in entries if entry.is_file()]
+            names = file_names(str(path.parent))
         except OSError:
             return []
     index = names if isinstance(names, SiblingIndex) else SiblingIndex(names)
@@ -271,7 +272,9 @@ def sidecar_entry_on_disk(source_path: str) -> str | None:
     if not target.is_file():
         return None
     try:
-        names = os.listdir(target.parent)
+        names = entry_names(str(target.parent))
+        if target.name not in names:
+            names = entry_names(str(target.parent), fresh=True)
     except OSError:
         return target.name
     if target.name in names:

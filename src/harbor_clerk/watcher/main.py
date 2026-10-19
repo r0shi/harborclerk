@@ -137,23 +137,15 @@ def _listable(path: str) -> bool:
         return False
 
 
-def _held_subtrees(dir_admitted: dict[str, int]) -> list[str]:
+def _held_subtrees(dir_entries: dict[str, int]) -> list[str]:
     """Walked directories below the root whose missing rows a reconcile must not retire (#868).
 
-    Those whose whole subtree holds no admitted file: an unmounted mount point
-    is an empty directory. The root itself has its own guard.
+    Those that hold no entries at all, as an unmounted mount point does. Nothing
+    is discounted: a ``.DS_Store`` or an unsupported file is an entry, so a
+    document deleted beside one while the watcher was down is retired. The root
+    itself has its own guard.
     """
-    subtree = dict.fromkeys(dir_admitted, 0)
-    for directory, count in dir_admitted.items():
-        if not count:
-            continue
-        subtree[""] = subtree.get("", 0) + count
-        parts = directory.split("/") if directory else []
-        for depth in range(1, len(parts) + 1):
-            ancestor = "/".join(parts[:depth])
-            if ancestor in subtree:
-                subtree[ancestor] += count
-    return sorted(d for d in dir_admitted if d and subtree.get(d, 0) == 0)
+    return sorted(d for d, entries in dir_entries.items() if d and not entries)
 
 
 def _under(relative_path: str, directories: list[str]) -> bool:
@@ -562,8 +554,9 @@ class WatcherDaemon:
         deleted, so nothing under it is removed; the rest of the folder is
         reconciled as usual. The whole folder is skipped when the root is
         missing or cannot be listed, or holds no files at all while the index
-        holds some (an empty mount point looks exactly like that). Deletes
-        still arrive as events.
+        holds some (an empty mount point looks exactly like that). Below the
+        root, a directory with no entries at all keeps the rows under it
+        (`_held_subtrees`, #868). Deletes still arrive as events.
 
         Updates `watched_folders.last_scan_at` when done, so the API's
         scan_status flips from "scanning" to "idle" and the folder says when
@@ -611,16 +604,16 @@ class WatcherDaemon:
         # Paths this pass found that the index does not know: created after the
         # walk, once each can be paired with a vanished row of the same content.
         new_files: list[tuple[str, str, StatKey | None]] = []
-        # Per walked directory: how many admitted files it holds.
-        dir_admitted: dict[str, int] = {}
+        # Per walked directory: how many entries it holds, before any pruning.
+        dir_entries: dict[str, int] = {}
         for dirpath, dirnames, filenames in os.walk(root, onerror=walk_errors.append):
             # Prune dotfile / __MACOSX directories so we don't recurse
             # into them — both for speed and to avoid the cost of
             # invoking _on_event for every file in a .git tree.
-            dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "__MACOSX"]
             rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
             rel_dir = "" if rel_dir == "." else rel_dir
-            dir_admitted[rel_dir] = 0
+            dir_entries[rel_dir] = len(dirnames) + len(filenames)
+            dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "__MACOSX"]
             # A folder deleted or disabled meanwhile ends the pass, checked
             # per directory and at most every FOLDER_CHECK_INTERVAL_SECS.
             last_alive_check = self._check_folder_alive(folder_id, last_alive_check)
@@ -668,7 +661,6 @@ class WatcherDaemon:
                     continue
 
                 admitted += 1
-                dir_admitted[rel_dir] += 1
                 stat = _stat_key(abs_path)
                 if stat is not None and rel_path in active and seen.get(rel_path) == stat:
                     continue
@@ -743,11 +735,11 @@ class WatcherDaemon:
         new_hashes: dict[str, bytes] = {}
         missing, new_files = self._pair_moves_while_down(folder_id, root, missing, new_files, seen, new_hashes)
         # A subtree the reconcile must not empty (#868): a directory that is
-        # there but holds no admitted file while indexed rows sit under it, as
+        # there but holds no entries at all while indexed rows sit under it, as
         # an unmounted mount point does. The reconcile is the backstop for
         # missed deletes, not the delete path: live delete events still retire
         # files there.
-        held = _held_subtrees(dir_admitted)
+        held = _held_subtrees(dir_entries)
         left_alone = sorted({d for d in held for p in missing if p.startswith(d + "/")})
         self._note_left_alone(folder_id, root, left_alone)
         missing = [p for p in missing if not _under(p, held)]
@@ -945,8 +937,8 @@ class WatcherDaemon:
         for subtree in subtrees:
             if subtree not in logged:
                 logger.warning(
-                    "watcher: reconcile of %s left %s alone: it is a mount point or holds no files while files "
-                    "are indexed under it (an unmounted volume looks the same); live deletes still apply",
+                    "watcher: reconcile of %s left %s alone: it is empty while files are indexed under it "
+                    "(an unmounted mount point looks the same); live deletes still apply",
                     root,
                     subtree,
                 )
