@@ -88,6 +88,19 @@ To keep running MinIO instead, set `STORAGE_BACKEND=minio` and `MINIO_IMAGE` in
 may restart once while it starts. This path depends on an image that is no
 longer maintained; copying is the supported one.
 
+## Docker: Postgres won't start after re-pulling `pgvector/pgvector:pg18`
+
+The pg18 image now defaults `PGDATA` to `/var/lib/postgresql/18/docker` and
+refuses to start when a volume is mounted at `/var/lib/postgresql/data` with
+`PGDATA` unset; its log says there "appears to be PostgreSQL data in
+/var/lib/postgresql/data (unused mount/volume)" (#894). Any install that pulls
+the current image hits it, fresh or existing. `docker-compose.yml` now sets
+`PGDATA: /var/lib/postgresql/data` on `postgres`, the directory the `pg_data`
+volume has always been mounted at, so pulling the new compose file is the whole
+fix: the existing cluster is used as it is. Do not move the volume to
+`/var/lib/postgresql` instead. Postgres would then initialize a new, empty
+cluster under `18/docker` and the existing data would look lost.
+
 ## Embedding v2
 
 ### What this upgrade does
