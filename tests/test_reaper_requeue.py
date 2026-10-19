@@ -198,10 +198,21 @@ async def test_reaper_run_announces_each_requeued_job(client, admin_user, admin_
     assert events[0]["status"] == "queued"
 
 
-async def _run_background_reaper_once(monkeypatch, engine) -> None:
-    """One pass of api/app.py's ``_session_reaper_loop``, against the test database."""
-    from harbor_clerk.api import app as app_module
+async def _run_background_reaper_once(monkeypatch, engine) -> list[tuple[uuid.UUID, JobStage]]:
+    """One pass of api/app.py's ``_session_reaper_loop``, against the test database.
 
+    Returns what it announced (``announce_requeued_jobs``, which still runs)."""
+    from harbor_clerk.api import app as app_module
+    from harbor_clerk.worker import pipeline
+
+    announced: list[tuple[uuid.UUID, JobStage]] = []
+    real_announce = pipeline.announce_requeued_jobs
+
+    def _announce(requeued):
+        announced.extend(requeued)
+        real_announce(requeued)
+
+    monkeypatch.setattr(pipeline, "announce_requeued_jobs", _announce)
     sleeps = 0
 
     async def _sleep(_seconds):
@@ -222,6 +233,7 @@ async def _run_background_reaper_once(monkeypatch, engine) -> None:
     with pytest.raises(asyncio.CancelledError):
         await app_module._session_reaper_loop()
     assert sleeps == 2
+    return announced
 
 
 _COMPARED = (
@@ -268,8 +280,9 @@ async def test_route_and_background_reaper_requeue_an_orphan_identically(
 
     by_background = await _doc_with_job(db_session, b"b", stage=JobStage.embed, **fields)
     await db_session.commit()
-    await _run_background_reaper_once(monkeypatch, _engine)
+    announced = await _run_background_reaper_once(monkeypatch, _engine)
     by_background = await _reload(db_session, by_background)
+    assert announced == [(by_background.doc_id, JobStage.embed)]
 
     assert route_state["status"] == JobStatus.queued
     assert (route_state["progress_current"], route_state["progress_total"]) == (0, 0)
