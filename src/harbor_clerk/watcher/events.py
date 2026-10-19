@@ -328,6 +328,12 @@ def handle_event(session: Session, event: FileEvent) -> None:
         if event.kind == EventKind.deleted:
             _handle_directory_deleted(session, event)
         return
+    # Noise and unsupported files first: whatever their kind, they are dropped,
+    # so the disk checks below (an open and F_GETPATH under the folder lock)
+    # are spent only on files the watcher indexes.
+    if _should_ignore(event.relative_path):
+        logger.debug("watcher: ignored event for %s", event.relative_path)
+        return
     if event.kind == EventKind.deleted and _exists_at_event(event):
         # A delete for a file that is on disk is an atomic save (the old inode
         # went, a new one was renamed into its place; macOS flags the replaced
@@ -348,9 +354,6 @@ def handle_event(session: Session, event: FileEvent) -> None:
         # being indexed beside the new one.
         logger.debug("watcher: %s reported %s but is gone; treating as deleted", event.relative_path, event.kind.value)
         event = replace(event, kind=EventKind.deleted)
-    if _should_ignore(event.relative_path):
-        logger.debug("watcher: ignored event for %s", event.relative_path)
-        return
 
     existing = (
         session.query(WatchedFile).filter_by(folder_id=event.folder_id, relative_path=event.relative_path).one_or_none()

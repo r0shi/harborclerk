@@ -2327,3 +2327,29 @@ def test_a_rename_split_into_two_creates_keeps_its_document(sync_session, folder
     assert _active_rows(sync_session) == {new: (doc.doc_id, hashlib.sha256(b"the body").digest())}
     assert sync_session.query(Document).count() == 1
     assert sync_session.query(WatchedFile).count() == 1
+
+
+@pytest.mark.parametrize("rel", [".DS_Store", ".git/config", "._report.txt", "photo.heic"])
+@pytest.mark.parametrize("kind", [EventKind.created, EventKind.modified, EventKind.deleted])
+def test_an_ignored_path_is_dropped_before_any_disk_check(sync_session, folder, tmp_path, monkeypatch, rel, kind):
+    """Noise (.git, .DS_Store, AppleDouble) and unsupported files are dropped
+    first, whatever the event's kind and whether the file is there: the
+    exact-spelling check (an open and F_GETPATH) is spent under the folder lock
+    only on files the watcher indexes."""
+    import harbor_clerk.watcher.events as ev
+
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"noise")
+    checked: list[str] = []
+    real_check = ev.is_file_exact_case
+    monkeypatch.setattr(ev, "is_file_exact_case", lambda *args: checked.append(args[0]) or real_check(*args))
+
+    handle_event(sync_session, _ev(folder, tmp_path, kind, rel))
+    path.unlink()
+    handle_event(sync_session, _ev(folder, tmp_path, kind, rel))
+    sync_session.commit()
+
+    assert checked == []
+    assert sync_session.query(WatchedFile).count() == 0
+    assert sync_session.query(Document).count() == 0
