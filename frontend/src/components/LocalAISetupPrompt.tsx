@@ -1,4 +1,6 @@
 import { Link } from 'react-router'
+import { composeSetupStep } from '../hooks/useLLMStatus'
+import { useOptionalLLMStatus } from './LLMStatusBanner'
 
 type LocalAISetupVariant = 'ask' | 'research'
 
@@ -34,6 +36,7 @@ const COPY: Record<
 
 export function LocalAISetupPrompt({ variant, compact = false, className = '' }: LocalAISetupPromptProps) {
   const copy = COPY[variant]
+  const composeStep = composeSetupStep(useOptionalLLMStatus())
 
   return (
     <div className={`mx-auto text-center empty-state-appear ${compact ? 'max-w-md' : 'max-w-lg'} ${className}`.trim()}>
@@ -62,11 +65,15 @@ export function LocalAISetupPrompt({ variant, compact = false, className = '' }:
 
       <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50/70 px-4 py-3 text-left text-[12px] text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
         <div className="font-medium text-gray-800 dark:text-gray-100">Setup path</div>
-        <ol className="mt-2 list-decimal space-y-1 pl-4">
-          <li>Open Models.</li>
-          <li>Download a model that fits this Mac.</li>
-          <li>Activate it when the download completes.</li>
-        </ol>
+        {composeStep ? (
+          <p className="mt-2">{composeStep}</p>
+        ) : (
+          <ol className="mt-2 list-decimal space-y-1 pl-4">
+            <li>Open Models.</li>
+            <li>Download a model that fits this Mac.</li>
+            <li>Activate it when the download completes.</li>
+          </ol>
+        )}
       </div>
 
       <p className="mb-5 text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">{copy.guidance}</p>

@@ -233,6 +233,8 @@ Open **https://localhost/** and accept the self-signed certificate. Create your 
 | `MINIO_ENDPOINT` | `minio:9000` | MinIO endpoint (currently used by legacy upload API; watched-folder originals are read in place from `./data/watch`) |
 | `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
 | `MINIO_SECRET_KEY` | `minioadmin123` | MinIO secret key |
+| `LLM_MODEL_FILE` | `Qwen3.5-4B-Q4_K_M.gguf` | The GGUF `llama-server` serves, from the `llama_models` volume (see [Local AI on Docker](#local-ai-on-docker)); empty runs no local model |
+| `LLM_CONTEXT_TOKENS` | `8192` | `llama-server`'s context (`-c`), which the app also budgets prompts to |
 | `ALLOW_SOURCE_DOWNLOAD` | `false` | Set `true` to expose `/api/docs/{id}/download` (see [Source files](#source-files-reveal-vs-download) below) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
@@ -244,6 +246,12 @@ docker compose down -v            # stop and delete all data
 docker compose logs -f app        # tail app logs
 docker compose logs -f watcher    # see what the watcher is picking up
 ```
+
+#### Local AI on Docker
+
+`llama-server` serves one model, the file `LLM_MODEL_FILE` names in the `llama_models` volume; by default the smallest current tier, Qwen3.5 4B. Download it from **Settings → Models** in the web app (or put the GGUF in the volume yourself): `llama-server` starts as soon as the file is there, and the app treats that model as active, so Ask, Research and LLM summaries work without a restart. Until then Ask reports that no model is configured, summaries are extractive, and the `llama-server` container waits for the file and reports unhealthy (`docker compose logs llama-server` says which file it is waiting for). While it starts and loads the model, Ask and Research say the local model is starting. For summaries, a load or a restart of `llama-server` is waited out, up to 90 seconds of waiting per document; a document whose wait runs out is summarized without it. There is no memory across documents: while `llama-server` keeps failing (a crash loop, a model that fails to load), each document waits its own 90 seconds before falling back. Summarizing runs in the background and does not hold up search. If you copy a GGUF into the volume by hand, copy it under a temporary name and rename it into place: the container waits while the file is still growing, but a rename is what guarantees it never starts on a partial file.
+
+To use another curated model, set `LLM_MODEL_FILE` to its file name and run `docker compose up -d`; under Compose the Models page shows no **Activate** button and names the file it serves. Set it empty to run no local model. The context is fixed at `LLM_CONTEXT_TOKENS` because a container cannot size it to the host the way the macOS app does; memory grows with it, so raise `--cache-ram` in `docker-compose.yml` with it. The Compose server runs without RoPE scaling, so the Models page shows no YaRN toggle. The `llama.cpp` server image is CPU-only.
 
 **Services:** `gateway` (Caddy), `app` (FastAPI + React SPA), `watcher` (folder watching + ingest queueing), `worker-io`, `worker-cpu`, `worker-llm` (summarize), `embedder` (Granite-R2 multilingual, 768-dim), `reranker` (cross-encoder re-ranking), `llama-server` (local LLM inference), `postgres` (pgvector + pg_trgm), `minio`, `tika`.
 

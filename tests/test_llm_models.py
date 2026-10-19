@@ -357,7 +357,8 @@ def test_compose_bounds_what_llama_server_keeps_and_the_cache_holds_a_whole_save
         "the same bound the macOS launcher passes"
     )
     bound = int(re.search(r'"--cache-ram",\s*"(\d+)"', code).group(1)) * MIB
-    context = int(re.search(r'"-c",\s*"(\d+)"', code).group(1))
+    # Compose's default context: `-c` is "${LLM_CONTEXT_TOKENS:-8192}", which the app budgets to as well (#654).
+    context = int(re.search(r'"-c",\s*"\$\{LLM_CONTEXT_TOKENS:-(\d+)\}"', code).group(1))
     assert max(kv_bytes(m, context) for m in MODELS.values()) <= bound < PROMPT_CACHE_MAX_BYTES
 
 

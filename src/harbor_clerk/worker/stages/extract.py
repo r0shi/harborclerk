@@ -1,7 +1,6 @@
 """Extract stage — pull text from documents, spreadsheets, and images via Tika."""
 
 import logging
-import os
 import re
 import uuid
 from pathlib import Path
@@ -12,11 +11,11 @@ from sqlalchemy import select
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.error_text import describe_error
-from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS, sniff_mime
+from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS, guess_mime_type, sniff_mime
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
 from harbor_clerk.models import Document, DocumentHeading, DocumentLink, DocumentPage
 from harbor_clerk.models.enums import JobStage
-from harbor_clerk.storage import get_storage
+from harbor_clerk.watched_source import read_document_bytes
 from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
 from harbor_clerk.worker.markdown_extract import MarkdownExtractResult, extract_markdown
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
@@ -243,18 +242,22 @@ def run_extract(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         if worker_seq is None:
             worker_seq = doc.pipeline_seq
 
-        # Read from storage if available; fall back to source_path for watched folder docs
-        if doc.original_object_key:
-            storage = get_storage()
-            response = storage.get_object(doc.original_bucket, doc.original_object_key)
-            data = response.read()
-        elif doc.source_path and os.path.exists(doc.source_path):
-            data = Path(doc.source_path).read_bytes()
-        else:
-            raise RuntimeError(f"No source for doc {doc_id}: source_path and original_object_key both empty")
+        # From the watched file when the document is read in place (even with a stored
+        # original, #859), else from the stored original (watched_source). A missing
+        # watched file, a document with neither, or a failed lookup fails the stage.
+        # The metadata extractors get the in-place path, so only when the body came
+        # from it.
+        data, in_place = read_document_bytes(session, doc)
 
-        mime = (doc.mime_type or "").lower()
-        obj_key = (doc.original_object_key or doc.source_path or "").lower()
+        if in_place is not None:
+            # The bytes are the file's, so is the type: never the stored original's
+            # name or mime, which may describe an older upload (#859). Persisted
+            # here so the OCR stage, which reads doc.mime_type, agrees.
+            obj_key = in_place.lower()
+            mime = doc.mime_type = guess_mime_type(in_place)
+        else:
+            mime = (doc.mime_type or "").lower()
+            obj_key = (doc.original_object_key or doc.source_path or "").lower()
 
         # Sniff RTF content regardless of extension/MIME
         is_rtf = data[:5] == b"{\\rtf"
@@ -575,7 +578,7 @@ def run_extract(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
         # extraction so raw_bytes are available and the document attributes
         # (mime_type, source_path) are fully resolved on the doc object.
         try:
-            metadata = run_metadata_extractors(doc=doc, raw_bytes=data, source_path=doc.source_path)
+            metadata = run_metadata_extractors(doc=doc, raw_bytes=data, in_place_path=in_place)
             doc.doc_metadata = metadata
         except Exception as exc:
             # Extractor framework swallows individual extractor failures already;

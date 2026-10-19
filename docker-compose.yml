@@ -23,6 +23,12 @@ services:
     environment:
       LLAMA_SERVER_URL: http://llama-server:8080
       MODELS_DIR: /models
+      # HC_DEPLOYMENT=compose (set only here and in worker-llm) makes the app follow the model and context
+      # llama-server is started with, below: the model is active while its file is in the volume, and
+      # prompts are budgeted to this context (#654).
+      HC_DEPLOYMENT: compose
+      LLM_MODEL_FILE: ${LLM_MODEL_FILE-Qwen3.5-4B-Q4_K_M.gguf}
+      LLM_CONTEXT_TOKENS: ${LLM_CONTEXT_TOKENS:-8192}
       HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
       RERANKER_URL: http://reranker:8001
       # The watch API reads it: Docker vs native folder picker (on Docker,
@@ -115,8 +121,16 @@ services:
       # after burning its retry budget. worker-io/worker-cpu don't need this
       # because no stage on those queues calls the LLM.
       LLAMA_SERVER_URL: http://llama-server:8080
+      # As for `app`: summaries use the model while its file is in the volume (read-only here), and
+      # are budgeted to the context llama-server runs at (#654).
+      MODELS_DIR: /models
+      HC_DEPLOYMENT: compose
+      LLM_MODEL_FILE: ${LLM_MODEL_FILE-Qwen3.5-4B-Q4_K_M.gguf}
+      LLM_CONTEXT_TOKENS: ${LLM_CONTEXT_TOKENS:-8192}
       HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
       RERANKER_URL: http://reranker:8001
+    volumes:
+      - llama_models:/models:ro
     depends_on:
       app:
         condition: service_healthy
@@ -246,23 +260,41 @@ services:
     # changed under us without a commit and ran a different llama.cpp than macOS.
     image: ghcr.io/ggml-org/llama.cpp:server-v0.4.1
     restart: unless-stopped
+    # An init as PID 1 forwards SIGTERM; the entrypoint also traps it while it waits for the model file.
+    init: true
     volumes:
-      - llama_models:/models
+      - llama_models:/models:ro
+      - ./docker/llama-server-entrypoint.sh:/usr/local/bin/llama-server-entrypoint.sh:ro
+    # One model, named with -m, as the macOS launcher runs it. Without -m this llama.cpp starts in router
+    # mode: /health says ok with no model loaded and every chat request is refused with 400, because the
+    # app names no `model` (#654). The entrypoint refuses a command without -m and waits for the file
+    # (downloaded from Settings > Models, or already in the volume) before it execs llama-server.
+    entrypoint: ["/bin/sh", "/usr/local/bin/llama-server-entrypoint.sh"]
     command: [
+      # LLM_MODEL_FILE picks the model: a curated model's file name (src/harbor_clerk/llm/models.py). The
+      # default is the smallest current tier. Set it empty in .env to run no local model. `app` and
+      # `worker-llm` read the same variable, so the model they report and budget for is the one served.
+      "-m", "/models/${LLM_MODEL_FILE-Qwen3.5-4B-Q4_K_M.gguf}",
       "--host", "0.0.0.0",
       "--port", "8080",
       "-ngl", "99",
-      "-c", "8192",
+      # One slot, as every curated model runs (ModelInfo.parallel_slots); this llama.cpp otherwise picks 4.
+      "-np", "1",
+      # A container cannot size the context to the host the way the macOS launcher does, so it is fixed
+      # here and `app` and `worker-llm` budget prompts to the same LLM_CONTEXT_TOKENS.
+      "-c", "${LLM_CONTEXT_TOKENS:-8192}",
       # llama-server's prompt cache defaults to 8 GiB of host RAM. The macOS launcher bounds it by what
       # the Mac has left (prompt_cache_mib in src/harbor_clerk/llm/models.py); a container cannot know
       # that. 2 GiB holds the whole saved state of a full -c 8192 conversation of any curated model: its KV
-      # and the context checkpoints saved with it, now that those are bounded below.
+      # and the context checkpoints saved with it, now that those are bounded below. Raise it with -c.
       "--cache-ram", "2048",
       # Context checkpoints: 32 per slot by default, each a copy of a sliding-window or recurrent model's
       # unrollable memory, in host RAM. The macOS launcher keeps LLAMA_CTX_CHECKPOINTS; so does this.
       "--ctx-checkpoints", "3",
     ]
     healthcheck:
+      # Single-model llama-server answers 200 only once the model is loaded (503 while loading), and
+      # nothing listens while the entrypoint waits for the file: healthy means a model is loaded.
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s

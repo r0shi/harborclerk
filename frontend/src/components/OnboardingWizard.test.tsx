@@ -143,7 +143,11 @@ describe('OnboardingWizard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Next →' }))
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
-    expect(screen.getByText('Download a model that fits this server.')).toBeInTheDocument()
+    // Before the LLM status says otherwise, Docker gets the Compose step (#654), not the Mac path.
+    expect(
+      screen.getByText('Download the model LLM_MODEL_FILE in .env names, in Settings → Models.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/fits this/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
     expect(screen.getByRole('heading', { name: 'Track ingestion progress' })).toBeInTheDocument()
     expect(screen.queryByText('Server menubar')).not.toBeInTheDocument()

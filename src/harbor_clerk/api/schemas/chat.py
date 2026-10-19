@@ -77,3 +77,6 @@ class ModelOut(BaseModel):
     max_context_here: int = 0
     fits_here: bool = True
     system_ram_gb: float = 0.0
+    # Docker Compose only (#654): the LLM_MODEL_FILE value, the same on every row, so the Models page knows it is
+    # under Compose from the list itself, before any status poll. None outside Compose.
+    compose_model_file: str | None = None

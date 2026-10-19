@@ -32,6 +32,13 @@ from harbor_clerk.models.watched import (
     WatchedFolder,
     folder_is_unavailable,
 )
+from harbor_clerk.watched_source import (
+    canonical_source_path,
+    failed_for_a_missing_source,
+    is_file_exact_case,
+    repaired_source_path,
+    watched_state_async,
+)
 from harbor_clerk.watcher.notify import notify_folder_change_async
 from harbor_clerk.watcher.relocate import apply_move, move_needs_reextract
 from harbor_clerk.watcher.visibility import restore_document, retire_watched_file
@@ -156,6 +163,74 @@ def _validate_source_path(source_path: str, folder_path: str) -> str:
     if not real_source.startswith(real_folder + os.sep):
         raise HTTPException(status_code=400, detail="source_path is outside the watched folder")
     return real_source
+
+
+async def _bring_up_to_date(session: AsyncSession, doc: Document, sha256_bytes: bytes) -> None:
+    """Queue the document's extract again, as the watcher does
+    (``watcher/events.py::_bring_up_to_date``), when its last run failed because its
+    file could not be read, or when its sha256 is not the watched file's (a #859-
+    shaped new version indexed an upload); and only when it verifies as read in
+    place, so one whose repair was declined is left as it is. The document takes the
+    watched file's sha256, so the next visit finds it current.
+    """
+    stale = doc.sha256 != sha256_bytes
+    if not stale and not failed_for_a_missing_source(doc):
+        return
+    if (await watched_state_async(session, doc)).path is None:
+        return
+    doc.sha256 = sha256_bytes
+    await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
+
+
+def _canonical_source_path(source_path: str, relative_path: str, folder_path: str) -> str:
+    """The ``source_path`` to store for a watched file: the folder's path joined with
+    its relative path, the form the watcher stores and ``watched_source`` verifies.
+
+    The client's ``source_path`` must name that same file inside the folder: an alias
+    (``/var`` vs ``/private/var``, a ``./`` segment, another Unicode normalization) is
+    accepted and canonicalized; a different file, or a relative path that is not
+    plain, is a 400.
+    """
+    real_source = _validate_source_path(source_path, folder_path)
+    canonical = canonical_source_path(folder_path, relative_path)
+    if canonical is None:
+        raise HTTPException(status_code=400, detail="relative_path must be a plain path inside the watched folder")
+    real_folder = os.path.realpath(folder_path)
+    real_canonical = os.path.realpath(canonical)
+    if not real_canonical.startswith(real_folder + os.sep):
+        raise HTTPException(status_code=400, detail="relative_path is outside the watched folder")
+    if real_canonical != real_source:
+        try:
+            same = os.path.samefile(real_canonical, real_source)
+        except OSError:
+            same = False
+        if not same:
+            raise HTTPException(status_code=400, detail="source_path and relative_path name different files")
+    return canonical
+
+
+def _rename_paths(folder_path: str, old_relative_path: str, new_relative_path: str, source_path: str):
+    """``(old_rel, new_rel, real_new, canonical source_path)`` for a rename, or a 400.
+
+    Both relative paths must be plain and stay inside the folder's realpath, and
+    ``source_path`` must name the new file; an alias of it is accepted and the
+    canonical path returned (``_canonical_source_path``). ``old_rel`` and
+    ``new_rel`` are spelled as under the folder's realpath, for
+    ``relocate.move_needs_reextract``.
+    """
+    real_root = os.path.realpath(folder_path)
+    real_old = _contained_path(real_root, old_relative_path, "old_relative_path")
+    real_new = _contained_path(real_root, new_relative_path, "new_relative_path")
+    real_source = _validate_source_path(source_path, folder_path)
+    if real_new != real_source:
+        try:
+            same = os.path.samefile(real_new, real_source)
+        except OSError:
+            same = False
+        if not same:
+            raise HTTPException(status_code=400, detail="source_path and new_relative_path name different files")
+    canonical = _canonical_source_path(source_path, new_relative_path, folder_path)
+    return real_old[len(real_root) + 1 :], real_new[len(real_root) + 1 :], real_new, canonical
 
 
 # ---------------------------------------------------------------------------
@@ -549,15 +624,14 @@ async def ingest_file(
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
 
-    # Security: validate source_path is within folder
-    _validate_source_path(body.source_path, folder.path)
-
     # Validate extension
     if is_excalidraw(body.relative_path):
         raise HTTPException(status_code=400, detail="Excalidraw drawings are not ingested")
     ext = PurePosixPath(body.relative_path).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file extension: {ext}")
+    # Stored in the canonical form, so the document verifies as read in place.
+    source_path = await asyncio.to_thread(_canonical_source_path, body.source_path, body.relative_path, folder.path)
 
     sha256_bytes = _parse_hex(body.sha256, "sha256")
     bookmark_bytes = _parse_base64(body.bookmark_data, "bookmark_data")
@@ -572,8 +646,20 @@ async def ingest_file(
     )
     wf = wf_result.scalar_one_or_none()
 
-    # Case 1: active + same SHA256 → skip
+    # Case 1: active + same SHA256 → skip, but for a source_path that is not the
+    # canonical path, which is repaired, and for a document whose index does not
+    # reflect its file, which is queued again (_bring_up_to_date).
     if wf and wf.status == WatchedFileStatus.active and wf.sha256 == sha256_bytes:
+        if wf.doc_id:
+            doc = (await session.execute(select(Document).where(Document.doc_id == wf.doc_id))).scalar_one_or_none()
+            if doc is not None:
+                repaired = await asyncio.to_thread(
+                    repaired_source_path, doc.source_path, folder.path, body.relative_path
+                )
+                if repaired is not None:
+                    doc.source_path = repaired
+                await _bring_up_to_date(session, doc, sha256_bytes)
+                await session.commit()
         return {"action": "skipped", "doc_id": str(wf.doc_id)}
 
     # Case 2: removed file at same path — resurrect (bookmark may differ after Trash restore)
@@ -588,7 +674,7 @@ async def ingest_file(
             if doc:
                 # As the watcher's resurrection: an admin's "deleted" stays deleted.
                 restore_document(doc)
-                doc.source_path = body.source_path
+                doc.source_path = source_path
 
         if wf.sha256 != sha256_bytes:
             # SHA changed — re-ingest same document with updated content
@@ -598,12 +684,18 @@ async def ingest_file(
                 doc = doc_result.scalar_one_or_none()
                 if doc:
                     doc.sha256 = sha256_bytes
-                    doc.source_path = body.source_path
+                    doc.source_path = source_path
                     doc.mime_type = body.mime_type
                     await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
                     await session.commit()
                     return {"action": "updated", "doc_id": str(doc.doc_id)}
 
+        # Same bytes: a document whose index does not reflect its file is queued
+        # again (_bring_up_to_date); otherwise its index is current.
+        if wf.doc_id:
+            doc = (await session.execute(select(Document).where(Document.doc_id == wf.doc_id))).scalar_one_or_none()
+            if doc is not None:
+                await _bring_up_to_date(session, doc, sha256_bytes)
         await session.commit()
         return {"action": "resurrected", "doc_id": str(wf.doc_id)}
 
@@ -616,7 +708,7 @@ async def ingest_file(
             doc = doc_result.scalar_one_or_none()
             if doc:
                 doc.sha256 = sha256_bytes
-                doc.source_path = body.source_path
+                doc.source_path = source_path
                 doc.mime_type = body.mime_type
                 await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
                 await session.commit()
@@ -629,7 +721,7 @@ async def ingest_file(
         status="active",
         sha256=sha256_bytes,
         mime_type=body.mime_type,
-        source_path=body.source_path,
+        source_path=source_path,
         pipeline_status=PipelineStatus.queued,
     )
     session.add(doc)
@@ -644,7 +736,7 @@ async def ingest_file(
         minio_bucket="",
         minio_object_key="",
         doc_id=doc.doc_id,
-        source_path=body.source_path,
+        source_path=source_path,
         status="confirmed",
     )
     session.add(upload)
@@ -681,6 +773,15 @@ async def remove_file(
     if not wf:
         raise HTTPException(status_code=404, detail="Watched file not found")
 
+    # A remove for a regular file still present under that exact spelling, every
+    # component below the folder (an atomic save's trailing delete), is not a
+    # removal: a removed watched file is unreadable. The same check as the
+    # watcher's delete (watched_source.is_file_exact_case).
+    folder = (await session.execute(select(WatchedFolder).where(WatchedFolder.folder_id == fid))).scalar_one_or_none()
+    canonical = canonical_source_path(folder.path, body.relative_path) if folder is not None else None
+    if canonical is not None and await asyncio.to_thread(is_file_exact_case, canonical, folder.path):
+        return {"action": "skipped", "doc_id": str(wf.doc_id)}
+
     # The same retirement as a file deleted from disk (watcher/visibility.py, #604).
     doc = await session.get(Document, wf.doc_id) if wf.doc_id else None
     retire_watched_file(wf, doc)
@@ -703,22 +804,14 @@ async def rename_file(
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
 
-    # Every path is validated before any filesystem call (CodeQL py/path-injection):
-    # both relative paths must stay inside the folder, and the new one must be the
-    # file source_path names.
-    real_root = os.path.realpath(folder.path)
-    real_old = _contained_path(real_root, body.old_relative_path, "old_relative_path")
-    real_new = _contained_path(real_root, body.new_relative_path, "new_relative_path")
-    real_source = _validate_source_path(body.source_path, folder.path)
-    if real_new != real_source:
-        try:
-            same = os.path.samefile(real_new, real_source)
-        except OSError:
-            same = False
-        if not same:
-            raise HTTPException(status_code=400, detail="source_path and new_relative_path name different files")
-    old_rel = real_old[len(real_root) + 1 :]
-    new_rel = real_new[len(real_root) + 1 :]
+    # Every path is validated before any other filesystem call (CodeQL
+    # py/path-injection), off the event loop: both relative paths must stay inside
+    # the folder, and the new one must be the file source_path names, which is
+    # stored in its canonical form (folder path + relative path) so the document
+    # verifies as read in place.
+    old_rel, new_rel, real_new, source_path = await asyncio.to_thread(
+        _rename_paths, folder.path, body.old_relative_path, body.new_relative_path, body.source_path
+    )
 
     result = await session.execute(
         select(WatchedFile).where(
@@ -752,7 +845,7 @@ async def rename_file(
             changed = dest.sha256 != wf.sha256
             dest.sha256 = wf.sha256
             if dest_doc is not None:
-                dest_doc.source_path = body.source_path
+                dest_doc.source_path = source_path
                 if changed:
                     dest_doc.sha256 = wf.sha256
                     await reset_and_queue_extract_for_doc(session, dest_doc.doc_id, priority=10)
@@ -768,8 +861,8 @@ async def rename_file(
             await session.flush()
 
     doc = await session.get(Document, wf.doc_id) if wf.doc_id else None
-    reextract = move_needs_reextract(old_rel, new_rel, doc, real_new)
-    apply_move(wf, doc, body.new_relative_path, body.source_path)
+    reextract = await asyncio.to_thread(move_needs_reextract, old_rel, new_rel, doc, real_new)
+    apply_move(wf, doc, body.new_relative_path, source_path)
     wf.bookmark_data = bookmark
     if doc is not None and reextract:
         await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)

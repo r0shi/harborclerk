@@ -370,3 +370,137 @@ async def test_legacy_upload_excalidraw_skipped(client, admin_user, admin_token)
     assert len(results) == 1
     assert results[0]["filename"] == "Diagram.excalidraw.md"
     assert results[0]["status"] == "skipped"
+
+
+# --- new_version on a watched document (#859) ---
+
+
+async def _pending_upload(client, token, name: str, content: bytes) -> str:
+    resp = await client.post(
+        "/api/uploads/sessions", json={"total_files": 1, "auto_confirm": False}, headers=auth_header(token)
+    )
+    sid = resp.json()["session_id"]
+    resp = await client.post(
+        f"/api/uploads/sessions/{sid}/files",
+        files={"file": (name, io.BytesIO(content), "text/plain")},
+        headers=auth_header(token),
+    )
+    assert resp.json()["status"] == "pending_confirmation"
+    return resp.json()["upload_id"]
+
+
+async def _document(db_session, *, watched: bool, tmp_path, removed: bool = False):
+    import hashlib
+
+    from harbor_clerk.models import Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+
+    source = tmp_path / "watched.txt"
+    source.write_text("on disk")
+    doc = Document(
+        title="watched",
+        canonical_filename="watched.txt",
+        status="active",
+        sha256=hashlib.sha256(b"on disk" + str(watched).encode()).digest(),
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/plain",
+        source_path=str(source) if watched else None,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    if watched:
+        folder = WatchedFolder(path=str(tmp_path), display_name=tmp_path.name)
+        db_session.add(folder)
+        await db_session.flush()
+        db_session.add(
+            WatchedFile(
+                folder_id=folder.folder_id,
+                relative_path=source.name,
+                bookmark_data=b"",
+                sha256=doc.sha256,
+                doc_id=doc.doc_id,
+                status=WatchedFileStatus.removed if removed else WatchedFileStatus.active,
+            )
+        )
+    await db_session.commit()
+    return doc
+
+
+async def test_confirm_refuses_new_version_of_a_watched_document(client, db_session, admin_user, admin_token, tmp_path):
+    """A watched document is read in place: new_version is a 409 and the document is unchanged."""
+    from sqlalchemy import select
+
+    from harbor_clerk.models import Document
+
+    doc = await _document(db_session, watched=True, tmp_path=tmp_path)
+    doc_id, source_path = doc.doc_id, doc.source_path
+    upload_id = await _pending_upload(client, admin_token, "replacement.txt", b"replacement content 859")
+
+    resp = await client.post(
+        "/api/uploads/confirm",
+        json={
+            "upload_id": upload_id,
+            "action": "new_version",
+            "existing_doc_id": str(doc_id),
+            "source_path": "/elsewhere/label.txt",
+        },
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 409
+    assert "watched folder" in resp.json()["detail"]
+
+    db_session.expire_all()
+    after = (await db_session.execute(select(Document).where(Document.doc_id == doc_id))).scalar_one()
+    assert after.source_path == source_path
+    assert after.original_object_key is None
+
+
+async def test_confirm_batch_refuses_new_version_of_a_watched_document(
+    client, db_session, admin_user, admin_token, tmp_path
+):
+    doc = await _document(db_session, watched=True, tmp_path=tmp_path)
+    doc_id = doc.doc_id
+    upload_id = await _pending_upload(client, admin_token, "replacement.txt", b"replacement content 859 batch")
+
+    resp = await client.post(
+        "/api/uploads/confirm-batch",
+        json={"items": [{"upload_id": upload_id, "action": "new_version", "existing_doc_id": str(doc_id)}]},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    (item,) = resp.json()["results"]
+    assert item["doc_id"] is None
+    assert "watched folder" in item["error"]
+
+
+async def test_confirm_new_version_of_an_unwatched_document_still_succeeds(
+    client, db_session, admin_user, admin_token, tmp_path
+):
+    doc = await _document(db_session, watched=False, tmp_path=tmp_path)
+    doc_id = doc.doc_id
+    upload_id = await _pending_upload(client, admin_token, "replacement.txt", b"replacement content 859 plain")
+
+    resp = await client.post(
+        "/api/uploads/confirm",
+        json={"upload_id": upload_id, "action": "new_version", "existing_doc_id": str(doc_id)},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["doc_id"] == str(doc_id)
+
+
+async def test_confirm_refuses_new_version_of_a_document_whose_watched_file_is_removed(
+    client, db_session, admin_user, admin_token, tmp_path
+):
+    """A document with a removed watched file is still a watched document: new_version is a 409."""
+    doc = await _document(db_session, watched=True, tmp_path=tmp_path, removed=True)
+    doc_id = doc.doc_id
+    upload_id = await _pending_upload(client, admin_token, "replacement.txt", b"replacement content removed")
+
+    resp = await client.post(
+        "/api/uploads/confirm",
+        json={"upload_id": upload_id, "action": "new_version", "existing_doc_id": str(doc_id)},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 409

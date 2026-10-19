@@ -8,8 +8,9 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.routing import Match
 
 from harbor_clerk.api.routes.api_keys import router as api_keys_router
 from harbor_clerk.api.routes.auth import router as auth_router
@@ -412,6 +413,87 @@ def build_version() -> str:
         return "0.0.0+unstamped"
 
 
+# First path segments that belong to the API, MCP and OAuth surfaces. A GET under
+# one of them that matches no route is a JSON 404, never the SPA shell (#603).
+_API_PREFIXES = frozenset({"api", "mcp", "t", "oauth", ".well-known"})
+
+# `_static_file`'s answer for a path that is malformed or names something outside
+# the static directory: a 404, not the SPA shell.
+_OUTSIDE = object()
+
+
+def _not_found() -> JSONResponse:
+    return JSONResponse({"detail": "Not Found"}, status_code=404)
+
+
+def _is_api_path(full_path: str) -> bool:
+    return full_path.split("/", 1)[0] in _API_PREFIXES
+
+
+_SPA_FALLBACK_PATH = "/{full_path:path}"
+
+
+def _slashless_redirect(request: Request) -> str | None:
+    """Where a GET to an API path with a trailing slash redirects, or None.
+
+    Without the SPA catch-all (no static dir, as in development) Starlette answers
+    such a request with a 307 to the path without the slash when that path is a
+    route; the catch-all would otherwise turn it into a 404. The target is built
+    from the path alone, starts with exactly one slash (never ``//host``: the
+    path's first segment is an API prefix), and keeps the query string.
+    """
+    path = request.scope["path"]
+    if not path.endswith("/"):
+        return None
+    # The catch-all calls this only for a path whose first segment is an API prefix
+    # (_is_api_path), so the path starts with exactly one slash and then a letter.
+    target = path.rstrip("/")
+    probe = {**request.scope, "path": target, "raw_path": target.encode()}
+    for route in request.app.router.routes:
+        if getattr(route, "path", None) == _SPA_FALLBACK_PATH:
+            continue
+        if route.matches(probe)[0] != Match.NONE:
+            query = request.scope.get("query_string", b"").decode("latin-1")
+            return f"{target}?{query}" if query else target
+    return None
+
+
+def _static_file(static_root: Path, full_path: str) -> str | object | None:
+    """The file inside ``static_root`` that ``full_path`` names.
+
+    ``static_root`` is already resolved; ``full_path`` is the URL path after its
+    leading slash, as the server decoded it. Returns the resolved file, None when
+    nothing inside the directory has that name (a client-side route), or
+    ``_OUTSIDE`` when the path is malformed, resolves (symlinks followed) to
+    somewhere outside the directory, or cannot be looked up at all. Every
+    filesystem call is inside the ``try``, defensively: ``os.path.realpath`` and
+    ``os.path.isfile`` swallow most lookup errors themselves, and any that gets
+    through is a 404, never a 500.
+    """
+    # A NUL is refused here, whatever the Python version: realpath raises on one in
+    # 3.12+, but returned it unchanged in older ones.
+    if "\x00" in full_path or "\\" in full_path:
+        return _OUTSIDE
+    segments = full_path.split("/")
+    if segments[0] == "":
+        # A leading empty segment (``//docs``): a client route at most, never a
+        # file. The index, without touching the disk.
+        return None
+    if ".." in segments:
+        return _OUTSIDE
+    try:
+        root = os.path.realpath(static_root)
+        candidate = os.path.realpath(os.path.join(root, full_path))
+        # The root itself is a directory, never a file to serve, so a strict
+        # prefix check is the whole containment test.
+        if not candidate.startswith(root + os.sep):
+            return _OUTSIDE
+        safe = candidate
+        return safe if os.path.isfile(safe) else None
+    except (OSError, RuntimeError, ValueError):
+        return _OUTSIDE
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Harbor Clerk",
@@ -460,6 +542,11 @@ def create_app() -> FastAPI:
     # Mount MCP Streamable HTTP endpoints
     app.mount("/mcp", _mcp_asgi)  # Header-based auth (Authorization: Bearer <key>)
     app.mount("/t", _mcp_token_asgi)  # URL-token auth for authless MCP clients (/t/<api_key>)
+    # A mount matches only below its prefix, so the bare paths (the URL the
+    # Integrations page shows is `/mcp`) would fall to the GET-only SPA route and
+    # get a 405. Route them, every method, to the same apps; no redirect.
+    app.add_route("/mcp", _mcp_asgi, include_in_schema=False)
+    app.add_route("/t", _mcp_token_asgi, include_in_schema=False)
 
     # Serve SPA static files (must be last — catches all unmatched routes)
     settings = get_settings()
@@ -469,13 +556,23 @@ def create_app() -> FastAPI:
         app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
 
         # SPA fallback: serve index.html for all non-API, non-asset routes
-        index_html = static_dir / "index.html"
+        static_root = static_dir.resolve()
+        index_html = static_root / "index.html"
 
-        @app.get("/{full_path:path}", include_in_schema=False)
-        async def spa_fallback(full_path: str):
+        @app.get(_SPA_FALLBACK_PATH, include_in_schema=False)
+        async def spa_fallback(full_path: str, request: Request):
+            if _is_api_path(full_path):
+                target = _slashless_redirect(request)
+                if target is not None:
+                    return RedirectResponse(target, status_code=307)
+                return _not_found()
+            if not full_path:
+                return FileResponse(index_html)
             # Try to serve a real file first (favicon.ico, etc.)
-            file = static_dir / full_path
-            if full_path and file.is_file():
+            file = _static_file(static_root, full_path)
+            if file is _OUTSIDE:
+                return _not_found()
+            if file is not None:
                 return FileResponse(file)
             return FileResponse(index_html)
 

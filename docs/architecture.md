@@ -210,6 +210,36 @@ graph TB
     wllm --> pg & llama
 ```
 
+#### Local model under Docker Compose
+
+Compose has no launcher to start llama-server per model, so the model is chosen in `.env` and the app follows it (#654).
+Setup: [README](../README.md#local-ai-on-docker).
+
+- **Gating.** Every Compose behaviour is gated on `config.is_compose()`: `HC_DEPLOYMENT=compose`, which only
+  docker-compose.yml sets (on `app` and `worker-llm`, so a `.env` copied for Docker cannot turn a source run into
+  Compose), and no native config.json (the macOS app never is Compose).
+- **The served model.** `llama-server` runs one model, `-m /models/$LLM_MODEL_FILE`, at `-c $LLM_CONTEXT_TOKENS`.
+  Without `-m` this llama.cpp is a router that refuses every request the app sends, so the entrypoint
+  (`docker/llama-server-entrypoint.sh`) refuses a command with no model, waits for a whole GGUF (the container is
+  healthy only once a model is loaded), and traps SIGTERM while it waits. It also puts the value of `-c` or
+  `--ctx-size` (spaced or `=`) through the context rule below, since llama-server's `std::stoi` would read `8k` as
+  8 and `0x0` as 0, crash on `-1` or anything above INT_MAX, and take 0 as the model's full training context.
+- **The active model.** `llm_model_id` is the curated id of `LLM_MODEL_FILE` while that file is in the
+  `llama_models` volume, and empty otherwise (`config._apply_model_file`, on every `refresh_llm_settings()`).
+  Only a leading `./` is dropped from the value; any other path component (`sub/name`, `nosuch/../name`,
+  `name/.`) makes it no curated file name.
+  Switching away from the served model, or deleting it, is refused with a 409 naming the `.env` change; activating the
+  served model, or deactivating when nothing is active, is a no-op.
+- **The context.** `effective_context` is `min(window without YaRN, LLM_CONTEXT_TOKENS)`. One rule decides
+  `LLM_CONTEXT_TOKENS`, applied identically by the app (`config.parse_context_tokens`) and the entrypoint
+  (`context_problem`), so the context prompts are budgeted to and the one llama-server runs at cannot disagree:
+  trim ASCII whitespace, then a valid value is 1 to 7 ASCII digits whose value is at least 1 (at most 9,999,999).
+  Anything else, zero and empty included, is logged naming the value and runs as the compose default (8192).
+  `tests/test_context_tokens_rule.py` runs one table through both sides.
+- **Waiting for the server.** Summaries wait for llama-server within one budget of 90 s of *waiting* per document
+  (`health.document_wait_budget`, charged only inside `wait_for_server`, never with inference or idle yields), shared
+  by the summary and the doc type, with no memory across documents: in a crash loop each document waits its own 90 s.
+
 ### macOS Native
 
 ```mermaid

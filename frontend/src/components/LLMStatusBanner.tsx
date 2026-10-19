@@ -9,6 +9,10 @@ interface LLMStatusContextValue {
 
 const LLMStatusContext = createContext<LLMStatusContextValue | null>(null)
 
+// Under Docker Compose a model that crash-loops (too big for the container, a bad file) reads as loading for
+// ever (#654). Past this, the banner says where to look.
+const COMPOSE_STUCK_LOADING_MS = 120_000
+
 /**
  * App-level provider for LLM status polling. Mount once near the top
  * of the tree (Layout). Components anywhere can call
@@ -18,6 +22,11 @@ const LLMStatusContext = createContext<LLMStatusContextValue | null>(null)
 export function LLMStatusProvider({ children }: { children: ReactNode }) {
   const value = useLLMStatus()
   return <LLMStatusContext.Provider value={value}>{children}</LLMStatusContext.Provider>
+}
+
+/** The LLM status when a provider is mounted, null otherwise: for components that render outside it too. */
+export function useOptionalLLMStatus(): LLMStatus | null {
+  return useContext(LLMStatusContext)?.status ?? null
 }
 
 export function useLLMStatusContext(): LLMStatusContextValue {
@@ -46,6 +55,18 @@ export function LLMStatusBanner() {
   // doesn't trigger a synchronous setState-in-effect cascade — that
   // pattern is flagged by react-hooks/set-state-in-effect.
   const prevStateRef = useRef(status.state)
+  const [stuck, setStuck] = useState(false)
+  const composeLoading = status.state === 'loading' && status.compose_model_file != null
+
+  // Restarted on every new loading spell, cleared when it ends.
+  useEffect(() => {
+    if (!composeLoading) return
+    const t = setTimeout(() => setStuck(true), COMPOSE_STUCK_LOADING_MS)
+    return () => {
+      clearTimeout(t)
+      setStuck(false)
+    }
+  }, [composeLoading])
 
   // When the state transitions from loading → ready, briefly flash
   // the success variant so the user sees positive confirmation, not
@@ -99,6 +120,11 @@ export function LLMStatusBanner() {
               {status.model_id && (
                 <div className="text-[11px] text-(--color-text-secondary) truncate">
                   {status.model_id} · the rest of the app may feel slow until weights finish loading
+                </div>
+              )}
+              {composeLoading && stuck && (
+                <div className="text-[11px] text-(--color-text-secondary)">
+                  If this persists, check <code>docker compose logs llama-server</code>
                 </div>
               )}
             </div>

@@ -7,7 +7,7 @@ from sqlalchemy import text
 
 from harbor_clerk.models import Chunk, Document, Entity, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
-from tests.conftest import auth_header
+from tests.conftest import auth_header, watch_document
 
 # Minimal required fields for a Document row (sha256 NOT NULL, pipeline_status NOT NULL)
 _DOC_DEFAULTS = {
@@ -493,6 +493,7 @@ async def test_download_returns_bytes_when_enabled(client, admin_user, admin_tok
     doc = Document(title="Permitted", status="active", source_path=str(src), **_DOC_DEFAULTS)
     db_session.add(doc)
     await db_session.flush()
+    await watch_document(db_session, doc, src)
 
     s = get_settings()
     original = s.allow_source_download
@@ -506,6 +507,137 @@ async def test_download_returns_bytes_when_enabled(client, admin_user, admin_tok
     assert resp.content == payload
     # Content-Disposition uses RFC 8187 encoding with the filename
     assert "doc.pdf" in resp.headers["content-disposition"]
+
+
+async def _download_watched_doc(
+    client,
+    admin_token,
+    db_session,
+    tmp_path,
+    *,
+    delete_file: bool,
+    mime_type: str | None = "application/pdf",
+    removed: bool = False,
+):
+    """Download a watched doc.txt (b"edited on disk") that also carries an older
+    stored original, doc.pdf (b"stale stored"), with ``mime_type`` on the document."""
+    import io
+
+    from harbor_clerk.config import get_settings
+    from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+    from harbor_clerk.storage import get_storage
+
+    src = tmp_path / "doc.txt"
+    src.write_bytes(b"edited on disk")
+    key = f"originals/docs/{uuid.uuid4()}/doc.pdf"
+    get_storage().put_object("originals", key, io.BytesIO(b"stale stored"), len(b"stale stored"), "application/pdf")
+    doc = Document(
+        title="Watched",
+        status="active",
+        source_path=str(src),
+        original_bucket="originals",
+        original_object_key=key,
+        mime_type=mime_type,
+        **_DOC_DEFAULTS,
+    )
+    db_session.add(doc)
+    folder = WatchedFolder(path=str(tmp_path), display_name=tmp_path.name)
+    db_session.add(folder)
+    await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=folder.folder_id,
+            relative_path=src.name,
+            bookmark_data=b"",
+            sha256=doc.sha256,
+            doc_id=doc.doc_id,
+            status=WatchedFileStatus.removed if removed else WatchedFileStatus.active,
+        )
+    )
+    await db_session.flush()
+    if delete_file:
+        src.unlink()
+
+    s = get_settings()
+    original = s.allow_source_download
+    s.allow_source_download = True
+    try:
+        return await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
+    finally:
+        s.allow_source_download = original
+        get_storage().remove_object("originals", key)
+
+
+async def test_download_serves_a_watched_doc_from_disk_despite_a_stale_stored_original(
+    client, admin_user, admin_token, db_session, tmp_path
+):
+    """A watched document that also carries an older stored original (#859)
+    downloads its file; with no mime on the document, the file's extension types it."""
+    resp = await _download_watched_doc(client, admin_token, db_session, tmp_path, delete_file=False, mime_type=None)
+    assert resp.status_code == 200
+    assert resp.content == b"edited on disk"
+    assert resp.headers["content-type"].startswith("text/plain")
+    assert "doc.txt" in resp.headers["content-disposition"]
+
+
+async def test_download_of_a_watched_doc_sends_the_documents_mime_when_set(
+    client, admin_user, admin_token, db_session, tmp_path
+):
+    """doc.mime_type (set by the extract stage from the file and its magic bytes) wins over the extension."""
+    resp = await _download_watched_doc(
+        client, admin_token, db_session, tmp_path, delete_file=False, mime_type="image/png"
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"edited on disk"
+    assert resp.headers["content-type"].startswith("image/png")
+
+
+async def test_download_is_a_503_when_the_watched_file_lookup_fails(
+    client, admin_user, admin_token, db_session, tmp_path, monkeypatch
+):
+    """A failed lookup never serves the stored original."""
+    from sqlalchemy.exc import OperationalError
+
+    import harbor_clerk.watched_source as watched_source
+
+    def failing_query(doc_id):
+        raise OperationalError("SELECT watched files", {}, Exception("database unavailable"))
+
+    monkeypatch.setattr(watched_source, "watched_paths_query", failing_query)
+    resp = await _download_watched_doc(client, admin_token, db_session, tmp_path, delete_file=False)
+    assert resp.status_code == 503
+    assert b"stale stored" not in resp.content
+
+
+async def test_download_is_a_404_when_the_watched_file_is_missing(
+    client, admin_user, admin_token, db_session, tmp_path
+):
+    """A missing watched file is a 404, never its stored original (maybe an older upload)."""
+    resp = await _download_watched_doc(client, admin_token, db_session, tmp_path, delete_file=True)
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Source file is missing"
+    assert b"stale stored" not in resp.content
+
+
+async def test_download_never_reads_an_unverified_source_path(client, admin_user, admin_token, db_session, tmp_path):
+    """No watched file and no stored original: a 404, without reading the file at source_path."""
+    from harbor_clerk.config import get_settings
+
+    src = tmp_path / "label.txt"
+    src.write_bytes(b"a file at the label")
+    doc = Document(title="Label", status="active", source_path=str(src), **_DOC_DEFAULTS)
+    db_session.add(doc)
+    await db_session.flush()
+
+    s = get_settings()
+    original = s.allow_source_download
+    s.allow_source_download = True
+    try:
+        resp = await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
+    finally:
+        s.allow_source_download = original
+    assert resp.status_code == 404
+    assert b"a file at the label" not in resp.content
 
 
 async def test_download_403_fires_before_doc_existence_check(client, admin_user, admin_token):
@@ -600,3 +732,59 @@ async def test_entity_autocomplete_escapes_percent(client, admin_user, admin_tok
     texts = {row["entity_text"] for row in resp.json()}
     assert "100% Complete" in texts
     assert "100 percent complete" not in texts
+
+
+async def test_download_never_serves_the_stored_original_of_a_removed_watched_file(
+    client, admin_user, admin_token, db_session, tmp_path
+):
+    """A watched document whose watched file is removed (its file deleted) is a 404,
+    not its stored original."""
+    resp = await _download_watched_doc(client, admin_token, db_session, tmp_path, delete_file=True, removed=True)
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Source file is missing"
+    assert b"stale stored" not in resp.content
+
+
+@pytest.mark.parametrize("breakage", ["not-a-directory", "permission"])
+async def test_download_is_a_404_without_a_path_for_any_unreadable_watched_file(
+    client, admin_user, admin_token, db_session, tmp_path, breakage, caplog
+):
+    """Its folder replaced by a file, or no permission: a 404 that names no path; the
+    read error is logged at WARNING with its errno."""
+    import logging
+    import os
+    import shutil
+
+    from harbor_clerk.config import get_settings
+
+    if breakage == "permission" and os.geteuid() == 0:
+        pytest.skip("root reads a file whatever its mode")
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    src = folder / "doc.txt"
+    src.write_bytes(b"on disk")
+    doc = Document(title="Watched", status="active", source_path=str(src), **_DOC_DEFAULTS)
+    db_session.add(doc)
+    await db_session.flush()
+    await watch_document(db_session, doc, src)
+    if breakage == "not-a-directory":
+        shutil.rmtree(folder)
+        folder.write_text("a file where the folder was")
+    else:
+        src.chmod(0)
+
+    s = get_settings()
+    original = s.allow_source_download
+    s.allow_source_download = True
+    try:
+        with caplog.at_level(logging.INFO, logger="harbor_clerk.watched_source"):
+            resp = await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
+    finally:
+        s.allow_source_download = original
+        if breakage == "permission":
+            src.chmod(0o644)
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Source file is missing"
+    assert str(tmp_path) not in resp.text
+    errname = "ENOTDIR" if breakage == "not-a-directory" else "EACCES"
+    assert any(r.levelno == logging.WARNING and errname in r.getMessage() for r in caplog.records)

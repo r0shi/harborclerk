@@ -34,7 +34,13 @@ from harbor_clerk.models.document_page import DocumentPage
 from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
-from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
+from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+from harbor_clerk.watched_source import (
+    failed_for_a_missing_source,
+    is_file_exact_case,
+    repaired_source_path,
+    watched_state,
+)
 from harbor_clerk.watcher.relocate import apply_move, move_needs_reextract, sidecar_relative_path
 from harbor_clerk.watcher.visibility import restore_document, retire_watched_file
 
@@ -303,49 +309,9 @@ def sha256_of(path: str) -> bytes:
     return h.digest()
 
 
-def _listed_name(names: list[str], name: str) -> str | None:
-    """The entry of ``names`` that is ``name`` exactly, compared NFC-normalised; None when there is none."""
-    if name in names:
-        return name
-    wanted = unicodedata.normalize("NFC", name)
-    return next((n for n in names if unicodedata.normalize("NFC", n) == wanted), None)
-
-
 def file_exists_exact(base: str, relative_path: str) -> bool:
-    """True when a regular file is at ``base``/``relative_path`` under exactly that spelling, every component.
-
-    ``os.path.isfile`` alone answers yes for ``Invoices/Doc.pdf`` after a
-    rename to ``invoices/doc.pdf`` on a case-insensitive volume (APFS's
-    default): it resolves each component case-insensitively. That would keep
-    a renamed-away path alive beside the new one. So each component below
-    ``base`` (the watched root, whose own spelling is the folder's) is looked
-    up in its parent's listing. Names are compared NFC-normalised, since
-    macOS may hand back either form, and the walk continues under the name
-    the listing holds.
-
-    A path that does not resolve at all is answered from one ``lstat``: the
-    listings settle only the case-insensitive ambiguity, and listing a 20,000
-    entry directory per deleted file made ``rm *.pdf`` cost minutes of serial
-    work under the folder lock.
-
-    A path that resolves under a directory that cannot be listed (search
-    permission without read, mode 0311) cannot be settled; it is answered
-    from the resolved path, since guessing a deletion would retire a live
-    document.
-    """
-    if not os.path.lexists(os.path.join(base, relative_path)):
-        return False
-    current = base
-    for part in relative_path.split("/"):
-        try:
-            names = os.listdir(current)
-        except OSError:
-            return os.path.isfile(os.path.join(base, relative_path))
-        name = _listed_name(names, part)
-        if name is None:
-            return False
-        current = os.path.join(current, name)
-    return os.path.isfile(current)
+    """``is_file_exact_case`` for ``relative_path`` below the watched root ``base``: every component's spelling."""
+    return is_file_exact_case(os.path.join(base, relative_path), base)
 
 
 def _event_base(event: "FileEvent") -> tuple[str, str]:
@@ -376,9 +342,12 @@ def handle_event(session: Session, event: FileEvent) -> None:
         return
     if event.kind == EventKind.deleted and _exists_at_event(event):
         # A delete for a file that is on disk is an atomic save (the old inode
-        # went, a new one was renamed into its place) or a delete followed by
-        # a re-create, reported in either order (#847). The file's state is
-        # what is on disk now: compare its content instead.
+        # went, a new one was renamed into its place; macOS flags the replaced
+        # inode) or a delete followed by a re-create, reported in either order
+        # (#847). Marking it removed would make the document unreadable: the
+        # file's state is what is on disk now, so compare its content instead.
+        # Only a regular file under that exact spelling counts; a dangling
+        # symlink or a directory in its place is a delete.
         logger.debug("watcher: %s reported deleted but exists; treating as modified", event.relative_path)
         event = replace(event, kind=EventKind.modified)
     if _should_ignore(event.relative_path):
@@ -461,8 +430,12 @@ def handle_event(session: Session, event: FileEvent) -> None:
             rel_dir = posixpath.dirname(event.relative_path)
             _retire_sidecar_row(session, event.folder_id, posixpath.join(rel_dir, entry) if rel_dir else entry)
 
-    # Branch 1: existing+active+same → no-op
+    # Branch 1: existing+active+same → no-op, but for an aliased source_path, which is
+    # canonicalized so the document verifies as read in place (the startup scan
+    # visits every file, so this heals rows older clients stored).
     if existing is not None and existing.status == WatchedFileStatus.active and existing.sha256 == sha:
+        _repair_source_path(session, existing)
+        _bring_up_to_date(session, existing, sha)
         return
 
     # Branch 2: existing+active+different → reprocess in place
@@ -476,6 +449,8 @@ def handle_event(session: Session, event: FileEvent) -> None:
         existing.status = WatchedFileStatus.active
         existing.removed_at = None
         _unhide_document(session, existing.doc_id)
+        _repair_source_path(session, existing)
+        _bring_up_to_date(session, existing, sha)
         return
 
     # Branch 4: existing+removed+different → resurrect + reprocess
@@ -695,6 +670,51 @@ def _handle_directory_deleted(session: Session, event: FileEvent) -> None:
         retired += 1
     if retired:
         logger.info("watcher: directory %s removed; retired %d files under it", rel, retired)
+
+
+def _repair_source_path(session: Session, watched_file: WatchedFile) -> None:
+    """Rewrite the document's source_path to this watched file's canonical path when
+    it is anything else and that file is present (``watched_source.repaired_source_path``)."""
+    if watched_file.doc_id is None:
+        return
+    folder = session.get(WatchedFolder, watched_file.folder_id)
+    doc = session.get(Document, watched_file.doc_id)
+    if folder is None or doc is None:
+        return
+    repaired = repaired_source_path(doc.source_path, folder.path, watched_file.relative_path)
+    if repaired is not None:
+        logger.info("watcher: canonicalized the source_path of doc %s", doc.doc_id)
+        doc.source_path = repaired
+
+
+def _bring_up_to_date(session: Session, watched_file: WatchedFile, sha: bytes) -> None:
+    """Queue the document's extract again, from its file, when its index does not
+    reflect the file it is read from:
+
+    - its last run failed because its file could not be read
+      (``watched_source.failed_for_a_missing_source``): mid atomic save, or deleted
+      and later restored with the same bytes. Other errors are left;
+    - its sha256 is not the watched file's: a new version confirmed before that was
+      refused (#859) indexed an upload, while reads now come from the file.
+
+    The unchanged-file branches would otherwise leave either for good.
+    """
+    if watched_file.doc_id is None:
+        return
+    doc = session.get(Document, watched_file.doc_id)
+    if doc is None:
+        return
+    stale = doc.sha256 != sha
+    if not stale and not failed_for_a_missing_source(doc):
+        return
+    # Only a document that now verifies as read in place: one whose repair was
+    # declined stays as it is (it would fail again), and the path handed on is the
+    # verified one, never a source_path that did not verify.
+    in_place = watched_state(session, doc).path
+    if in_place is None:
+        return
+    logger.info("watcher: queueing doc %s again (%s)", doc.doc_id, "stale index" if stale else "after a failed run")
+    _reprocess_doc(session, doc.doc_id, sha, in_place)
 
 
 def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path: str) -> None:

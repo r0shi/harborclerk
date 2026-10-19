@@ -5,14 +5,14 @@ SDK returns a Starlette *wrapper* around the actual handler — that wrapper
 has its own /mcp route inside, so mounting it at /mcp meant requests had to
 target /mcp/mcp (double prefix) to reach the handler.
 
-Even after extracting the inner handler, FastAPI's mount semantics on the
-exact path /mcp collide with the SPA catch-all route. The SPA's
-@app.get("/{full_path:path}") matches POST /mcp first (GET-only → 405). The
-fix is to extract the bare ASGI handler AND have clients POST to /mcp/
-(trailing slash), which routes cleanly through the mount.
+Even after extracting the inner handler, a mount matches only below its
+prefix, so the exact path /mcp fell to the SPA catch-all
+(@app.get("/{full_path:path}"), GET-only → 405 for POST). The bare /mcp and
+/t paths are now routed, every method, to the same apps as the mounts.
 
-These tests pin both: the mount reaches the middleware for /mcp/, and the
-middleware-handler chain is the bare ASGI handler (not the Starlette wrapper).
+These tests pin: the mount reaches the middleware for /mcp/, the bare /mcp and
+/t reach the same apps with the SPA served, and the middleware-handler chain
+is the bare ASGI handler (not the Starlette wrapper).
 """
 
 from __future__ import annotations
@@ -110,3 +110,85 @@ def test_create_mcp_app_returns_bare_handler_not_starlette_wrapper():
     )
     assert inner_header is inner_token, "Both middlewares should wrap the same handler instance"
     assert session_manager is inner_header.session_manager
+
+
+@pytest.fixture
+def app_with_spa(tmp_path, monkeypatch):
+    """The app with a static dir, so the SPA catch-all is registered as in production."""
+    import harbor_clerk.config as _config
+    from harbor_clerk.api.app import create_app
+
+    static = tmp_path / "static"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text("<!doctype html>")
+    monkeypatch.setenv("STATIC_DIR", str(static))
+    _config._settings = None
+    return create_app()
+
+
+_INITIALIZE = (
+    b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18",'
+    b'"capabilities":{},"clientInfo":{"name":"test","version":"0"}}}'
+)
+
+
+async def _post(app, path: str, headers: list[tuple[bytes, bytes]] | None = None) -> tuple[int, bytes]:
+    async def receive():
+        return {"type": "http.request", "body": _INITIALIZE, "more_body": False}
+
+    sent: dict = {"body": b""}
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            sent["status"] = msg["status"]
+        elif msg["type"] == "http.response.body":
+            sent["body"] += msg.get("body", b"")
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "method": "POST",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "headers": [
+            (b"host", b"test"),
+            (b"content-type", b"application/json"),
+            (b"accept", b"application/json, text/event-stream"),
+            *(headers or []),
+        ],
+        "root_path": "",
+        "http_version": "1.1",
+        "scheme": "http",
+        "client": ("127.0.0.1", 0),
+        "server": ("test", 80),
+    }
+    await app(scope, receive, send)
+    return sent["status"], sent["body"]
+
+
+@pytest.mark.parametrize(("bare", "slashed"), [("/mcp", "/mcp/"), ("/t", "/t/")])
+async def test_bare_mcp_path_answers_initialize_like_the_slashed_one(app_with_spa, bare, slashed):
+    """An unauthenticated initialize to /mcp (or /t) gets the MCP 401, as /mcp/ does: no 405, no redirect."""
+    bare_status, bare_body = await _post(app_with_spa, bare)
+    slashed_status, slashed_body = await _post(app_with_spa, slashed)
+    assert slashed_status == 401
+    assert (bare_status, bare_body) == (slashed_status, slashed_body)
+
+
+@pytest.mark.parametrize("path", ["/mcp", "/mcp/"])
+async def test_bare_mcp_path_reaches_the_auth_middleware(app_with_spa, monkeypatch, path):
+    """With a bearer token, POST /mcp is handed to MCPAuthMiddleware like /mcp/."""
+    from harbor_clerk import mcp_server
+
+    captured: dict = {}
+
+    async def patched(self, scope, receive, send):
+        captured["reached"] = True
+        await send({"type": "http.response.start", "status": 999, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    monkeypatch.setattr(mcp_server.MCPAuthMiddleware, "__call__", patched)
+    status, _ = await _post(app_with_spa, path, [(b"authorization", b"Bearer hc_test")])
+    assert captured.get("reached") is True
+    assert status == 999

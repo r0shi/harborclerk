@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useOptionalLLMStatus } from './LLMStatusBanner'
+import { composeSetupStep } from '../hooks/useLLMStatus'
 import { useNavigate } from 'react-router'
 import { get, patch, post, ApiError } from '../api'
 import { Card } from './Card'
@@ -62,6 +64,8 @@ export default function OnboardingWizard({ onComplete }: Props) {
   // platform-neutral copy rather than guessing.
   const isDocker = system?.platform === 'docker'
   const isMac = system?.platform === 'macos'
+  const llmStatus = useOptionalLLMStatus()
+  const composeStep = composeSetupStep(llmStatus, system?.platform)
   const [error, setError] = useState('')
   const [picking, setPicking] = useState(false)
   const [languages, setLanguages] = useState<LanguageRow[]>([])
@@ -377,11 +381,18 @@ export default function OnboardingWizard({ onComplete }: Props) {
             </p>
             <div className="mb-5 border-l-2 border-blue-500/70 pl-3 text-sm text-(--color-text-secondary)">
               <div className="font-medium text-(--color-text-primary)">Setup path</div>
-              <ol className="mt-2 list-decimal space-y-1 pl-4">
-                <li>Download a model that fits this {isMac ? 'Mac' : isDocker ? 'server' : 'machine'}.</li>
-                <li>Activate it after the download completes.</li>
-                <li>Return to Ask or Research when the local AI status is ready.</li>
-              </ol>
+              {composeStep ? (
+                <ol className="mt-2 list-decimal space-y-1 pl-4">
+                  <li>{composeStep}</li>
+                  <li>Return to Ask or Research when the local AI status is ready.</li>
+                </ol>
+              ) : (
+                <ol className="mt-2 list-decimal space-y-1 pl-4">
+                  <li>{`Download a model that fits this ${isMac ? 'Mac' : isDocker ? 'server' : 'machine'}.`}</li>
+                  <li>Activate it after the download completes.</li>
+                  <li>Return to Ask or Research when the local AI status is ready.</li>
+                </ol>
+              )}
             </div>
             <p className="mb-6 text-xs leading-relaxed text-(--color-text-secondary)">
               Larger models are better for synthesis; smaller models are useful for quick lookup. Citations remain the
