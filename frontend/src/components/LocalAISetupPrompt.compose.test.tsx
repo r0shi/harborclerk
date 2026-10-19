@@ -95,13 +95,14 @@ describe('local AI setup under Docker Compose (#654)', () => {
     expect(screen.queryByText(/Activate it/)).not.toBeInTheDocument()
   })
 
-  it('onboarding on a Mac keeps the Mac setup path', () => {
+  it('onboarding on a Mac keeps the Mac setup path', async () => {
     useOptionalLLMStatusMock.mockReturnValue(null)
     renderWizardAtModels('macos')
-    expect(screen.getByText('Download a model that fits this Mac.')).toBeInTheDocument()
+    // The platform word arrives with /api/watch/system.
+    expect(await screen.findByText('Download a model that fits this Mac.')).toBeInTheDocument()
   })
 
-  it('onboarding on Docker once the status says it is not Compose keeps the Mac path', () => {
+  it('onboarding on Docker once the status says it is not Compose keeps the Mac path', async () => {
     // WATCH_ROOT makes the platform "docker" in a source run or a plain `docker run` too, where Activate works.
     useOptionalLLMStatusMock.mockReturnValue({
       state: 'deactivated',
@@ -110,7 +111,8 @@ describe('local AI setup under Docker Compose (#654)', () => {
       compose_model_file: null,
     })
     renderWizardAtModels('docker')
-    expect(screen.getByText('Download a model that fits this Mac.')).toBeInTheDocument()
+    // The platform word arrives with /api/watch/system.
+    expect(await screen.findByText('Download a model that fits this server.')).toBeInTheDocument()
     expect(screen.queryByText(/LLM_MODEL_FILE/)).not.toBeInTheDocument()
   })
 

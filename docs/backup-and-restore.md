@@ -45,7 +45,8 @@ Docker deployments are operator-managed. Back up:
 
 - The Postgres data volume or a proper `pg_dump`.
 - Any object-storage volume if your deployment still uses legacy uploads.
-- The host directories mounted into the watcher.
+- The watched-folder host directories (`./data/watch` and anything else mounted
+  under `/data/watch`). Harbor Clerk reads them in place and keeps no copy.
 - `.env`, especially `SECRET_KEY` and `HARBOR_CLERK_MASTER_KEY` if configured.
 
 Do not treat `docker compose down -v` as a normal stop command; it deletes named

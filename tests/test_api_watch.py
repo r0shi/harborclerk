@@ -2,6 +2,8 @@
 
 import uuid
 
+from sqlalchemy import func, select
+
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
@@ -267,8 +269,8 @@ async def test_post_folder_macos_accepts_existing_dir(client, admin_token, monke
     assert resp.status_code == 201
 
 
-async def test_post_folder_docker_rejects_outside_root(client, admin_token, monkeypatch, tmp_path):
-    """Docker: path must be a top-level subdir of WATCH_ROOT."""
+async def test_post_folder_docker_refuses_outside_root(client, admin_token, db_session, monkeypatch, tmp_path):
+    """Docker: no folder is added by hand, inside WATCH_ROOT or out."""
     monkeypatch.setenv("WATCH_ROOT", str(tmp_path))
     _reset_settings_cache(monkeypatch)
     resp = await client.post(
@@ -276,11 +278,16 @@ async def test_post_folder_docker_rejects_outside_root(client, admin_token, monk
         json={"path": "/etc"},
         headers=auth_header(admin_token),
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 409
+    assert (await db_session.execute(select(func.count()).select_from(WatchedFolder))).scalar_one() == 0
 
 
-async def test_post_folder_docker_accepts_subdir_of_root(client, admin_token, monkeypatch, tmp_path):
-    """Docker: an existing top-level subdir of WATCH_ROOT is accepted."""
+async def test_post_folder_docker_refuses_subdir_of_root(client, admin_token, db_session, monkeypatch, tmp_path):
+    """Docker: a subdirectory of WATCH_ROOT is discovered, never POSTed.
+
+    Accepting it created a manual row the discovery loop then duplicated with an
+    auto-discovered one: two observers, two documents per file (#870 review).
+    """
     sub = tmp_path / "inbox"
     sub.mkdir()
     monkeypatch.setenv("WATCH_ROOT", str(tmp_path))
@@ -290,7 +297,9 @@ async def test_post_folder_docker_accepts_subdir_of_root(client, admin_token, mo
         json={"path": str(sub)},
         headers=auth_header(admin_token),
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 409
+    assert "discovered automatically" in resp.json()["detail"]
+    assert (await db_session.execute(select(func.count()).select_from(WatchedFolder))).scalar_one() == 0
 
 
 # ---------------------------------------------------------------------------

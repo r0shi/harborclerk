@@ -102,6 +102,7 @@ describe('DocumentsPage', () => {
       enableCliAccess: false,
       cliShimInstallStatus: null,
       localMcpUrl: null,
+      version: null,
       loaded: true,
     })
     useLLMStatusContextMock.mockReturnValue({

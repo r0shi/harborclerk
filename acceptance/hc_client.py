@@ -155,7 +155,7 @@ class HarborClerk:
         return self._json("GET", "/api/system/status-summary")
 
     def watch_system(self) -> dict[str, Any]:
-        """`platform` is "docker" on Compose, where WATCH_ROOT confines folders."""
+        """`platform` is "docker" on Compose, where folders under WATCH_ROOT are discovered and POST /folders is 409."""
         return self._json("GET", "/api/watch/system")
 
     def document_count(self) -> int:

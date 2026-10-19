@@ -351,36 +351,32 @@ async def create_folder(
     _: None = Depends(require_human_user),
 ):
     settings = get_settings()
-    normalized = os.path.realpath(body.path)
-
     if settings.watch_root:
-        # Docker: confine the user-supplied path to immediate children of
-        # WATCH_ROOT BEFORE any filesystem access, so a malicious request
-        # can't probe arbitrary paths via the validation responses.
-        root = os.path.realpath(settings.watch_root)
-        if os.path.dirname(normalized) != root:
-            raise HTTPException(
-                status_code=400,
-                detail="Path must be a top-level subdirectory of WATCH_ROOT",
-            )
-        # Now safe to touch the filesystem — `normalized` is bounded to root/*.
-        if not Path(normalized).is_dir():
-            raise HTTPException(
-                status_code=400,
-                detail="Path must be a top-level subdirectory of WATCH_ROOT",
-            )
-    else:
-        # macOS native deployment: this endpoint requires an authenticated
-        # human admin (`require_human_user`). Admins are trusted to specify
-        # their own filesystem paths — same trust level as ssh-ing into the
-        # box. The is_dir / access checks below operate on user-controlled
-        # input by design.
-        p = Path(normalized)
-        if not p.is_dir() or not os.access(p, os.R_OK):  # codeql[py/path-injection-pre-validated]
-            raise HTTPException(
-                status_code=400,
-                detail="Path is not a readable directory",
-            )
+        # Docker: every top-level subdirectory of WATCH_ROOT is registered by the
+        # watcher's discovery loop. A folder added here as well became a second
+        # row for the same path (two observers, two documents per file), and a
+        # path outside WATCH_ROOT is not mounted in the workers. Refused before
+        # any filesystem access, so the response reveals nothing about the path.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Folders are discovered automatically on Docker: every top-level "
+                "subdirectory of WATCH_ROOT is watched. Mount or create the folder there instead."
+            ),
+        )
+
+    # macOS native deployment: this endpoint requires an authenticated
+    # human admin (`require_human_user`). Admins are trusted to specify
+    # their own filesystem paths — same trust level as ssh-ing into the
+    # box. The is_dir / access checks below operate on user-controlled
+    # input by design.
+    normalized = os.path.realpath(body.path)
+    p = Path(normalized)
+    if not p.is_dir() or not os.access(p, os.R_OK):  # codeql[py/path-injection-pre-validated]
+        raise HTTPException(
+            status_code=400,
+            detail="Path is not a readable directory",
+        )
 
     # Check for overlapping folders
     existing = await session.execute(select(WatchedFolder))
@@ -393,9 +389,9 @@ async def create_folder(
         if existing_real.startswith(normalized + os.sep):
             raise HTTPException(status_code=409, detail="An already-watched folder is inside this folder")
 
-    # bookmark_data is optional; ignored on Docker; legacy macOS clients can still send it.
+    # bookmark_data is optional; legacy macOS clients can still send it.
     bookmark_bytes: bytes | None = None
-    if body.bookmark_data and not settings.watch_root:
+    if body.bookmark_data:
         bookmark_bytes = _parse_base64(body.bookmark_data, "bookmark_data")
 
     folder = WatchedFolder(
