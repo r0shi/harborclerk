@@ -852,7 +852,9 @@ async def test_rename_onto_a_live_file_replaces_it_as_the_watcher_does(
     assert b_doc.pipeline_seq == (0 if same_content else 1)
 
 
-async def test_rename_onto_a_retired_path_keeps_the_moved_document(client, admin_token, db_session, tmp_path):
+async def test_rename_onto_a_retired_path_deletes_nothing(client, admin_token, db_session, tmp_path):
+    """As the watcher's moved event: the path's own row comes back with the moved
+    content, the source is retired (still adoptable), and nothing is deleted."""
     folder = await _folder(db_session, tmp_path)
     wf, doc = await _seed_watched(db_session, folder, "draft.txt")
     _old_wf, old_doc = await _seed_watched(
@@ -867,9 +869,16 @@ async def test_rename_onto_a_retired_path_keeps_the_moved_document(client, admin
     )
     assert resp.status_code == 200
     db_session.expire_all()
-    rows = (await db_session.execute(select(WatchedFile).where(WatchedFile.folder_id == folder_id))).scalars().all()
-    assert [(r.relative_path, r.doc_id, r.status) for r in rows] == [("report.txt", doc_id, WatchedFileStatus.active)]
-    assert await db_session.get(Document, old_doc_id) is None
+    assert resp.json() == {"action": "replaced", "doc_id": str(old_doc_id)}
+    stmt = select(WatchedFile).where(WatchedFile.folder_id == folder_id).order_by(WatchedFile.relative_path)
+    rows = (await db_session.execute(stmt)).scalars().all()
+    assert [(r.relative_path, r.doc_id, r.status) for r in rows] == [
+        ("draft.txt", doc_id, WatchedFileStatus.removed),
+        ("report.txt", old_doc_id, WatchedFileStatus.active),
+    ]
+    old_doc = await db_session.get(Document, old_doc_id)
+    assert (old_doc.status, old_doc.pipeline_seq) == ("active", 1), "back in search, reprocessed with the new content"
+    assert (await db_session.get(Document, doc_id)).status == "removed"
 
 
 @pytest.mark.parametrize(

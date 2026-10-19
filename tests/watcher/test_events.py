@@ -1506,10 +1506,12 @@ def test_rename_within_a_stem_change_without_sidecars_does_not_reextract(sync_se
     assert sync_session.query(WatchedFile).count() == 1
 
 
-def test_rename_onto_a_retired_path_keeps_the_moved_document(sync_session, folder, tmp_path):
-    """Delete report.txt, later `mv draft.txt report.txt`: draft's document,
-    with its citations, follows the file. The retired report row is a leftover
-    and gives way (with its hidden document, as the reaper would drop it)."""
+def test_rename_onto_a_retired_path_deletes_nothing(sync_session, folder, tmp_path):
+    """Delete report.txt, later `mv draft.txt report.txt`: the path's own row
+    comes back with the moved content (reprocessed), as on main, and draft's row
+    is retired, still there to be adopted. Nothing on the event path deletes a
+    row or a document: an earlier version dropped the retired report row and its
+    document, which a stale event could aim at a live one."""
     report = tmp_path / "report.txt"
     report.write_text("old report")
     old_wf, old_doc = _index(sync_session, folder, report, "report.txt")
@@ -1525,12 +1527,15 @@ def test_rename_onto_a_retired_path_keeps_the_moved_document(sync_session, folde
     handle_event(sync_session, _moved(folder, tmp_path, "draft.txt", "report.txt"))
     sync_session.commit()
 
-    rows = sync_session.query(WatchedFile).all()
+    rows = sync_session.query(WatchedFile).order_by(WatchedFile.relative_path).all()
     assert [(r.relative_path, r.status, r.doc_id) for r in rows] == [
-        ("report.txt", WatchedFileStatus.active, doc.doc_id)
+        ("draft.txt", WatchedFileStatus.removed, doc.doc_id),
+        ("report.txt", WatchedFileStatus.active, old_doc_id),
     ]
-    assert (doc.status, doc.pipeline_seq) == ("active", 0)
-    assert sync_session.get(Document, old_doc_id) is None
+    old_doc = sync_session.get(Document, old_doc_id)
+    assert (old_doc.status, old_doc.pipeline_seq) == ("active", 1)
+    assert old_doc.sha256 == hashlib.sha256(b"draft body").digest()
+    assert doc.status == "removed"
 
 
 def test_file_exists_exact_finds_the_spelling_on_disk(tmp_path):
@@ -1562,7 +1567,7 @@ def test_a_missing_file_is_answered_without_listing_its_directory(tmp_path, monk
     assert not file_exists_exact(str(tmp_path), "big/gone.pdf")
     assert calls == [], "a path that does not resolve needs no listing"
     assert file_exists_exact(str(tmp_path), "big/00001.pdf")
-    assert len(calls) == 2, "a path that resolves is checked component by component"
+    assert calls == [], "a path that resolves has its spelling read without a listing"
 
 
 def test_a_resolving_path_under_an_unlistable_directory_is_not_guessed_deleted(tmp_path, monkeypatch):
@@ -1766,8 +1771,9 @@ def _seed_pair(sync_session, folder, tmp_path):
 
 def test_a_swap_whose_last_rename_was_dropped_leaves_no_phantom(sync_session, folder, tmp_path):
     """watchdog 6's FSEvents emitter reports the swap as `a→t`, `b→a` and a
-    create of `b`. The row moved to t.txt must not stay active at a path that
-    is gone, and b.txt adopts a's document, whose content it now holds."""
+    create of `b`. Both sources are still on disk when the moves are handled, so
+    nothing moves: each path keeps its document and is reprocessed with the
+    content it now holds (main's by-path result). Nothing is left at t.txt."""
     a_id, b_id = _seed_pair(sync_session, folder, tmp_path)
     _swap_on_disk(tmp_path)
 
@@ -1777,18 +1783,21 @@ def test_a_swap_whose_last_rename_was_dropped_leaves_no_phantom(sync_session, fo
     sync_session.commit()
 
     assert _active_rows(sync_session) == {
-        "a.txt": (b_id, hashlib.sha256(b"beta").digest()),
-        "b.txt": (a_id, hashlib.sha256(b"alpha").digest()),
+        "a.txt": (a_id, hashlib.sha256(b"beta").digest()),
+        "b.txt": (b_id, hashlib.sha256(b"alpha").digest()),
     }
-    assert {d.doc_id: d.status for d in sync_session.query(Document).all()} == {a_id: "active", b_id: "active"}
+    assert {d.doc_id: (d.status, d.pipeline_seq) for d in sync_session.query(Document).all()} == {
+        a_id: ("active", 1),
+        b_id: ("active", 1),
+    }
+    assert sync_session.query(WatchedFile).filter_by(relative_path="t.txt").count() == 0
 
 
 def test_a_swap_reported_with_coalesced_history_leaves_no_phantom(sync_session, folder, tmp_path):
     """The same swap as logged live, with the coalesced create/modify events
-    FSEvents adds before each move. Content and paths end right, with no row
-    left active at t.txt; the spurious early create re-indexed a's document
-    with b's content, so it cannot be adopted by content (see #866)."""
-    _a_id, _b_id = _seed_pair(sync_session, folder, tmp_path)
+    FSEvents adds before each move. Content and paths end right, each path
+    keeping its document (main's by-path result), and nothing at t.txt."""
+    a_id, b_id = _seed_pair(sync_session, folder, tmp_path)
     _swap_on_disk(tmp_path)
 
     def ev(kind, rel):
@@ -1806,13 +1815,11 @@ def test_a_swap_reported_with_coalesced_history_leaves_no_phantom(sync_session, 
         handle_event(sync_session, event)
         sync_session.commit()
 
-    active = _active_rows(sync_session)
-    assert set(active) == {"a.txt", "b.txt"}
-    assert active["a.txt"][1] == hashlib.sha256(b"beta").digest()
-    assert active["b.txt"][1] == hashlib.sha256(b"alpha").digest()
-    t_row = sync_session.query(WatchedFile).filter_by(relative_path="t.txt").one()
-    assert t_row.status == WatchedFileStatus.removed
-    assert sync_session.get(Document, t_row.doc_id).status == "removed", "no phantom in search"
+    assert _active_rows(sync_session) == {
+        "a.txt": (a_id, hashlib.sha256(b"beta").digest()),
+        "b.txt": (b_id, hashlib.sha256(b"alpha").digest()),
+    }
+    assert sync_session.query(WatchedFile).filter_by(relative_path="t.txt").count() == 0
 
 
 def test_a_move_whose_destination_is_gone_by_handling_time_is_retired(sync_session, folder, tmp_path):
@@ -2225,16 +2232,14 @@ def test_a_later_atomic_save_sending_only_a_delete_reprocesses_the_new_content(s
 
 @pytest.mark.parametrize("n", [4, 40])
 def test_moves_into_one_directory_list_it_a_bounded_number_of_times(sync_session, folder, tmp_path, monkeypatch, n):
-    """`mv proj proj2023`: every move checks its destination exactly (every
-    component) and judges its sidecar, which listed proj2023 once per file:
-    8,000 files cost 17 s under the folder lock. The listings are shared while
-    the directory is unchanged, so the count does not grow with the moves."""
+    """`mv proj proj2023`: every document's move checks its destination exactly
+    (every component) and finds its sidecar's on-disk spelling, which listed
+    proj2023 once per file: 8,000 files cost 17 s under the folder lock. Both are
+    read without a listing now, so none is made however many files move. (A
+    `.json`'s own event still lists its directory once to find its owners, as on
+    main.)"""
     from collections import Counter
 
-    import harbor_clerk.watched_source as watched_source
-
-    monkeypatch.setattr(watched_source, "LISTING_SETTLED_FINE_SECS", 0.0)
-    monkeypatch.setattr(watched_source, "LISTING_SETTLED_SECS", 0.0)
     (tmp_path / "proj").mkdir()
     docs = {}
     for i in range(n):
@@ -2250,12 +2255,75 @@ def test_moves_into_one_directory_list_it_a_bounded_number_of_times(sync_session
     monkeypatch.setattr(os, "listdir", lambda path=".": listed.update([str(path)]) or real_listdir(path))
     monkeypatch.setattr(os, "scandir", lambda path=".": listed.update([str(path)]) or real_scandir(path))
     for i in range(n):
-        for ext in (".pdf", ".json"):
-            name = f"INV-{i:03d}{ext}"
-            handle_event(sync_session, _moved(folder, tmp_path, f"proj/{name}", f"proj2023/{name}"))
+        name = f"INV-{i:03d}.pdf"
+        handle_event(sync_session, _moved(folder, tmp_path, f"proj/{name}", f"proj2023/{name}"))
     sync_session.commit()
 
     rows = sync_session.query(WatchedFile).filter(WatchedFile.status == WatchedFileStatus.active).all()
     assert {r.relative_path: r.doc_id for r in rows} == docs
-    assert listed[str(tmp_path / "proj2023")] <= 2, listed
-    assert listed[str(tmp_path)] <= 1, listed
+    assert listed[str(tmp_path / "proj2023")] == 0, listed
+    assert listed[str(tmp_path)] == 0, listed
+
+
+# ---------------------------------------------------------------------------
+# Events are hints: act only on what is on disk now, never hard-delete
+# ---------------------------------------------------------------------------
+
+
+def _ev(folder, tmp_path, kind, rel):
+    return FileEvent(kind, folder.folder_id, rel, str(tmp_path / rel))
+
+
+def test_a_safe_save_swapping_a_temp_file_in_keeps_the_document(sync_session, folder, tmp_path):
+    """An editor's safe save with RENAME_SWAP: the new content is written to a
+    temp file, swapped with the original, and the temp file (now holding the old
+    content) deleted. FSEvents reports `a→tmp`, a modify of tmp, a create of a,
+    `a→tmp` again and a delete of tmp. Each move's source is still on disk when
+    it is handled, so nothing moves: a keeps its document, reprocessed with the
+    new content, and no document is deleted (an earlier version moved a's row to
+    tmp, then dropped it with its document)."""
+    a = tmp_path / "a.txt"
+    a.write_text("version one")
+    _wf, doc = _index(sync_session, folder, a, "a.txt")
+    doc_id = doc.doc_id
+    tmp = tmp_path / "a-tmp.txt"
+    tmp.write_text("version two")
+    (tmp_path / "swap").write_bytes(b"")
+    a.rename(tmp_path / "swap")
+    tmp.rename(a)
+    (tmp_path / "swap").rename(tmp)
+    tmp.unlink()
+
+    for event in (
+        _moved(folder, tmp_path, "a.txt", "a-tmp.txt"),
+        _ev(folder, tmp_path, EventKind.modified, "a-tmp.txt"),
+        _ev(folder, tmp_path, EventKind.created, "a.txt"),
+        _moved(folder, tmp_path, "a.txt", "a-tmp.txt"),
+        _ev(folder, tmp_path, EventKind.deleted, "a-tmp.txt"),
+    ):
+        handle_event(sync_session, event)
+        sync_session.commit()
+
+    sync_session.expire_all()
+    assert _active_rows(sync_session) == {"a.txt": (doc_id, hashlib.sha256(b"version two").digest())}
+    assert [(d.doc_id, d.status, d.pipeline_seq) for d in sync_session.query(Document).all()] == [(doc_id, "active", 1)]
+
+
+@pytest.mark.parametrize(("old", "new"), [("Report.txt", "report.txt"), ("draft.txt", "final.txt")])
+def test_a_rename_split_into_two_creates_keeps_its_document(sync_session, folder, tmp_path, old, new):
+    """FSEvents can report a rename as two creates, the old name's first. The old
+    name is gone under that exact spelling (a case-only rename still resolves on
+    a case-insensitive volume), so its event retires it, and the new name's
+    create adopts the document: no duplicate for the reconcile to keep instead."""
+    path = tmp_path / old
+    path.write_text("the body")
+    _wf, doc = _index(sync_session, folder, path, old)
+    path.rename(tmp_path / new)
+
+    handle_event(sync_session, _ev(folder, tmp_path, EventKind.created, old))
+    handle_event(sync_session, _ev(folder, tmp_path, EventKind.created, new))
+    sync_session.commit()
+
+    assert _active_rows(sync_session) == {new: (doc.doc_id, hashlib.sha256(b"the body").digest())}
+    assert sync_session.query(Document).count() == 1
+    assert sync_session.query(WatchedFile).count() == 1

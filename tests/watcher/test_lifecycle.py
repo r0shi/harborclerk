@@ -1289,11 +1289,20 @@ def test_disabling_a_folder_mid_pass_stops_the_walk_at_the_next_directory(factor
 
 
 def test_a_swap_through_a_temp_name_live_leaves_no_phantom(factory, tmp_path):
+    """`mv a t; mv b a; mv t b` live: content ends right, nothing hidden stays
+    searchable, and neither document is lost. Which path keeps which document
+    depends on how FSEvents batches the renames: handled against the disk, a
+    move whose source is back is compared by path (main's result: each path
+    keeps its document)."""
     root = _root(tmp_path)
     (root / "a.txt").write_text("alpha")
     (root / "b.txt").write_text("beta")
     folder_id = _add_folder(factory, root)
     with _Running(factory, folder_id) as run:
+        run.wait_for(
+            "both files indexed", lambda st: {k for k, v in st.items() if v[0] == ACTIVE} == {"a.txt", "b.txt"}
+        )
+        before = {k: v[1] for k, v in run.state().items()}
         (root / "a.txt").rename(root / "t.txt")
         (root / "b.txt").rename(root / "a.txt")
         (root / "t.txt").rename(root / "b.txt")
@@ -1311,6 +1320,7 @@ def test_a_swap_through_a_temp_name_live_leaves_no_phantom(factory, tmp_path):
         st = run.state()
     assert settled(st), st
     assert all(v[2] == "removed" for k, v in st.items() if v[0] == REMOVED), "nothing hidden stays searchable"
+    assert {st["a.txt"][1], st["b.txt"][1]} == {before["a.txt"], before["b.txt"]}, "no document lost"
 
 
 class _DeadOnArrival:

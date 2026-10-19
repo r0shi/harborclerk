@@ -835,13 +835,21 @@ async def rename_file(
             )
         )
         dest = dest_result.scalar_one_or_none()
-        if dest is not None and dest.status == WatchedFileStatus.active:
-            # A rename onto a live file replaced it. The destination keeps its
-            # document, the one its path cites, and takes the moved content
-            # (reprocessed when it differs); the source is retired as a deleted file.
+        if dest is not None:
+            # A rename onto a path the index holds a row for (a live file it
+            # replaced, or one retired earlier): the destination keeps its
+            # document, the one its path cites, back in search if it was
+            # retired, and takes the moved content (reprocessed when it
+            # differs); the source is retired as a deleted file. Nothing is
+            # deleted: the retired source can still be adopted.
             retire_watched_file(wf, await session.get(Document, wf.doc_id) if wf.doc_id else None)
             dest.bookmark_data = bookmark
             dest_doc = await session.get(Document, dest.doc_id) if dest.doc_id else None
+            if dest.status == WatchedFileStatus.removed:
+                dest.status = WatchedFileStatus.active
+                dest.removed_at = None
+                restore_document(dest_doc)
+                await session.flush()  # the requeue below is raw SQL that only touches an active doc
             changed = dest.sha256 != wf.sha256
             dest.sha256 = wf.sha256
             if dest_doc is not None:
@@ -851,14 +859,6 @@ async def rename_file(
                     await reset_and_queue_extract_for_doc(session, dest_doc.doc_id, priority=10)
             await session.commit()
             return {"action": "replaced", "doc_id": str(dest.doc_id)}
-        if dest is not None:
-            # A retired file's leftover row gives way, with its hidden document,
-            # as the reaper would drop them; the moved file keeps its own.
-            stale_doc = await session.get(Document, dest.doc_id) if dest.doc_id else None
-            await session.delete(dest)
-            if stale_doc is not None:
-                await session.delete(stale_doc)
-            await session.flush()
 
     doc = await session.get(Document, wf.doc_id) if wf.doc_id else None
     reextract = await asyncio.to_thread(move_needs_reextract, old_rel, new_rel, doc, real_new)

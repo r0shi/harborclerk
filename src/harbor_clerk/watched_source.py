@@ -31,12 +31,10 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import fcntl
 import logging
 import os
-import threading
-import time
 import unicodedata
-from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -187,98 +185,116 @@ _MISSING_SOURCE_ERRORS = frozenset(cls.__name__ for cls in (WatchedFileMissing, 
 _LEGACY_MISSING_SOURCE_PREFIX = "RuntimeError: No source for doc "
 
 
-class _Listing:
-    """One directory's entry names, with an NFC index built on first need, and its
-    regular files (``DirEntry.is_file``, symlinks followed) when listed with them."""
-
-    __slots__ = ("names", "files", "_nfc")
-
-    def __init__(self, names: list[str], files: tuple[str, ...] | None = None):
-        self.names = frozenset(names)
-        self.files = files
-        self._nfc: dict[str, str] | None = None
-
-    def find(self, name: str) -> str | None:
-        """The entry that is ``name`` exactly, else the one equal to it NFC-normalised; None when there is none."""
-        if name in self.names:
-            return name
-        if self._nfc is None:
-            self._nfc = {unicodedata.normalize("NFC", n): n for n in self.names}
-        return self._nfc.get(unicodedata.normalize("NFC", name))
+def _listed_name(names: list[str], name: str) -> str | None:
+    """The entry of ``names`` that is ``name`` exactly, compared NFC-normalised; None when there is none."""
+    if name in names:
+        return name
+    wanted = unicodedata.normalize("NFC", name)
+    return next((n for n in names if unicodedata.normalize("NFC", n) == wanted), None)
 
 
-# Listings reused across checks, so a burst of moves into one large directory
-# lists it once rather than once per file (`mv proj proj2023` with 8,000 files
-# spent 17 s listing, a 20,000-file case-only rename 110 s, serially under the
-# folder lock). An entry is used only while its directory's stat is unchanged,
-# and stored only when the directory had not changed for a settle time before
-# it was listed: timestamps are coarse (a kernel tick on Linux, 1 s on HFS+, 2 s
-# on FAT), so a change in the same tick as the last one leaves the stat as it
-# was. A volume stamping whole seconds waits LISTING_SETTLED_SECS, any other
-# LISTING_SETTLED_FINE_SECS. A name the cache lacks is looked up in a fresh
-# listing before the answer is "absent", since that answer retires a document.
-LISTING_SETTLED_SECS = 2.0
-LISTING_SETTLED_FINE_SECS = 0.05
-LISTING_CACHE_DIRS = 64
-_listings: OrderedDict[str, tuple[tuple, _Listing]] = OrderedDict()
-_listings_lock = threading.Lock()
+# macOS reports the path an open file has on disk, every component spelled as
+# stored, whatever spelling opened it. O_EVTONLY opens without read permission
+# and without keeping a volume from unmounting; O_NOFOLLOW makes a symlink leaf
+# fail, so it falls back to the listing.
+_F_GETPATH = getattr(fcntl, "F_GETPATH", None)
+_OPEN_FOR_PATH = getattr(os, "O_EVTONLY", os.O_RDONLY) | os.O_NOFOLLOW | os.O_NONBLOCK
 
 
-def _dir_key(st: os.stat_result) -> tuple:
-    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_nlink)
+def _on_disk_path(path: str) -> str | None:
+    """``path`` as the filesystem spells it (macOS ``F_GETPATH``); None where that cannot be read."""
+    if _F_GETPATH is None:
+        return None
+    try:
+        fd = os.open(path, _OPEN_FOR_PATH)
+    except OSError:
+        return None
+    try:
+        return os.fsdecode(fcntl.fcntl(fd, _F_GETPATH, bytes(1024)).split(b"\0", 1)[0])
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
 
 
-def _settle_secs(st: os.stat_result) -> float:
-    whole_seconds = st.st_mtime_ns % 1_000_000_000 == 0 or st.st_ctime_ns % 1_000_000_000 == 0
-    return LISTING_SETTLED_SECS if whole_seconds else LISTING_SETTLED_FINE_SECS
+def _nfc(name: str) -> str:
+    return unicodedata.normalize("NFC", name)
 
 
-def _listing(directory: str, *, fresh: bool = False, files: bool = False) -> _Listing:
-    """``directory``'s entries, from the cache when its stat is unchanged (unless ``fresh``);
-    with ``files``, its regular files too (one ``scandir``). Raises OSError."""
-    st = os.stat(directory)  # before the listing: a change after it gives a new key
-    key = _dir_key(st)
-    if not fresh:
-        with _listings_lock:
-            hit = _listings.get(directory)
-            if hit is not None and hit[0] == key and (not files or hit[1].files is not None):
-                _listings.move_to_end(directory)
-                return hit[1]
-    if files:
-        with os.scandir(directory) as it:
-            entries = list(it)
-        listing = _Listing([e.name for e in entries], tuple(e.name for e in entries if e.is_file()))
-    else:
-        listing = _Listing(os.listdir(directory))
-    if time.time() - max(st.st_mtime_ns, st.st_ctime_ns) / 1e9 >= _settle_secs(st):
-        with _listings_lock:
-            _listings[directory] = (key, listing)
-            _listings.move_to_end(directory)
-            while len(_listings) > LISTING_CACHE_DIRS:
-                _listings.popitem(last=False)
-    return listing
+def _no_other_spelling_resolves(current: str, parts: list[str]) -> bool:
+    """True when each component of ``parts`` below ``current`` exists and no other
+    spelling of it (case swapped, the other normal form) names the same file.
 
-
-def entry_named(directory: str, name: str) -> str | None:
-    """The entry of ``directory`` spelled ``name`` (exactly, else NFC-equal), or None when there is none.
-
-    Answered from the shared listing cache; an absent name is confirmed in a
-    fresh listing. Raises OSError when the directory cannot be listed.
+    On a case- and normalisation-sensitive volume (Linux's ext4, CI) ``lstat``
+    succeeding is then the exact spelling; where another spelling resolves to the
+    same file, the volume ignores the difference and only a listing can tell.
     """
-    found = _listing(directory).find(name)
-    return found if found is not None else _listing(directory, fresh=True).find(name)
+    for part in parts:
+        here = os.path.join(current, part)
+        try:
+            st = os.lstat(here)
+        except OSError:
+            return False
+        for other in {part.swapcase(), _nfc(part), unicodedata.normalize("NFD", part)} - {part}:
+            try:
+                alias = os.lstat(os.path.join(current, other))
+            except OSError:
+                continue
+            if (alias.st_dev, alias.st_ino) == (st.st_dev, st.st_ino):
+                return False
+        current = here
+    return True
 
 
-def entry_names(directory: str, *, fresh: bool = False) -> frozenset[str]:
-    """Every entry name in ``directory``, from the shared listing cache unless ``fresh``. Raises OSError."""
-    return _listing(directory, fresh=fresh).names
+def _spelled_as_given(path: str, current: str, parts: list[str]) -> bool:
+    """True when ``path`` is known, without listing a directory, to be spelled as on
+    disk in each of ``parts``; False when that cannot be told this way."""
+    on_disk = _on_disk_path(path)
+    if on_disk is not None:
+        tail = on_disk.split(os.sep)[-len(parts) :]
+        # A mismatch is not proof: a symlinked directory or another hard link
+        # reports another path. The listing settles it.
+        return len(tail) == len(parts) and all(_nfc(a) == _nfc(b) for a, b in zip(tail, parts, strict=True))
+    return _no_other_spelling_resolves(current, parts)
 
 
-def file_names(directory: str) -> tuple[str, ...]:
-    """The regular files in ``directory`` (symlinks followed), from the shared listing cache. Raises OSError."""
-    files = _listing(directory, files=True).files
-    assert files is not None
-    return files
+def on_disk_name(path: str) -> str | None:
+    """The directory entry ``path`` opens, as spelled on disk; None when it is not a regular file.
+
+    On a case-insensitive volume ``report.json`` may open ``Report.json``. Read
+    without a listing where the spelling can be (macOS ``F_GETPATH``, or no other
+    spelling resolving on a sensitive volume); otherwise the directory is listed.
+    """
+    if not os.path.isfile(path):
+        return None
+    directory, name = os.path.dirname(path) or ".", os.path.basename(path)
+    on_disk = _on_disk_path(path)
+    if on_disk is not None:
+        # The stored name, unless the file was reached another way (a hard link
+        # elsewhere): then it must name this same file here too.
+        candidate = os.path.basename(on_disk)
+        if _same_entry(os.path.join(directory, candidate), path):
+            return candidate
+    elif _no_other_spelling_resolves(directory, [name]):
+        return name
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return name
+    if name in names:
+        return name
+    folded = _nfc(name).casefold()
+    return next(
+        (n for n in names if _nfc(n).casefold() == folded and _same_entry(os.path.join(directory, n), path)),
+        name,
+    )
+
+
+def _same_entry(a: str, b: str) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 def is_file_exact_case(path: str, root: str | None = None) -> bool:
@@ -300,8 +316,12 @@ def is_file_exact_case(path: str, root: str | None = None) -> bool:
     ``isfile`` goes first: a path that does not resolve to a file is answered
     without listing anything, since listing a 20,000-entry directory per deleted
     file made ``rm *.pdf`` cost minutes of serial work under the folder lock. A
-    path that does resolve reuses its directories' listings while they are
-    unchanged (``_listing``), so checks in one directory list it once.
+    path that does resolve is answered without a listing too where the spelling
+    can be read directly (``_spelled_as_given``: macOS's ``F_GETPATH``, or no
+    other spelling resolving on a sensitive volume): every move checks its
+    destination, and listing per file made `mv proj proj2023` with 8,000 files
+    cost 17 s. Only what that cannot settle is listed, per call, never cached
+    (a FAT or exFAT volume root's stat never changes, so no cache key is safe).
 
     A file under a directory that cannot be listed (search permission without
     read, mode 0311) cannot be settled; it counts as present, since guessing a
@@ -314,11 +334,14 @@ def is_file_exact_case(path: str, root: str | None = None) -> bool:
         current, parts = root, path[len(prefix) :].split(os.sep)
     else:
         current, parts = os.path.dirname(path) or ".", [os.path.basename(path)]
+    if _spelled_as_given(path, current, parts):
+        return True
     for part in parts:
         try:
-            name = entry_named(current, part)
+            names = os.listdir(current)
         except OSError:
             return True
+        name = _listed_name(names, part)
         if name is None:
             return False
         current = os.path.join(current, name)

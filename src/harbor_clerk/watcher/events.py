@@ -36,10 +36,9 @@ from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.watched_source import (
-    entry_names,
     failed_for_a_missing_source,
-    file_names,
     is_file_exact_case,
+    on_disk_name,
     repaired_source_path,
     watched_state,
 )
@@ -203,7 +202,8 @@ def _admitted_sibling_names(path: Path, names: "Iterable[str] | SiblingIndex | N
     """
     if names is None:
         try:
-            names = file_names(str(path.parent))
+            with os.scandir(path.parent) as entries:
+                names = [entry.name for entry in entries if entry.is_file()]
         except OSError:
             return []
     index = names if isinstance(names, SiblingIndex) else SiblingIndex(names)
@@ -268,22 +268,7 @@ def sidecar_entry_on_disk(source_path: str) -> str | None:
     case-insensitive volume ``report.txt`` opens ``Report.json``, whose row
     must then be found under that spelling.
     """
-    target = Path(source_path).with_suffix(SIDECAR_SUFFIX)
-    if not target.is_file():
-        return None
-    try:
-        names = entry_names(str(target.parent))
-        if target.name not in names:
-            names = entry_names(str(target.parent), fresh=True)
-    except OSError:
-        return target.name
-    if target.name in names:
-        return target.name
-    folded = _fold(target.name)
-    return next(
-        (n for n in names if _fold(n) == folded and _same_file(target.parent / n, target)),
-        target.name,
-    )
+    return on_disk_name(str(Path(source_path).with_suffix(SIDECAR_SUFFIX)))
 
 
 def _should_ignore(relative_path: str) -> bool:
@@ -353,6 +338,16 @@ def handle_event(session: Session, event: FileEvent) -> None:
         # symlink or a directory in its place is a delete.
         logger.debug("watcher: %s reported deleted but exists; treating as modified", event.relative_path)
         event = replace(event, kind=EventKind.modified)
+    elif event.kind in (EventKind.created, EventKind.modified) and not _exists_at_event(event):
+        # Events are hints: a create or modify for a path that is not on disk
+        # under that exact spelling is about a file that is gone. A rename can
+        # arrive as two creates, the old name's first (after `mv Old new`, or a
+        # case-only `mv Old old`, which `isfile` would still answer for on a
+        # case-insensitive volume): retired here, its document is adopted by
+        # the other half (`_adopt_recently_retired`) instead of the old path
+        # being indexed beside the new one.
+        logger.debug("watcher: %s reported %s but is gone; treating as deleted", event.relative_path, event.kind.value)
+        event = replace(event, kind=EventKind.deleted)
     if _should_ignore(event.relative_path):
         logger.debug("watcher: ignored event for %s", event.relative_path)
         return
@@ -477,13 +472,18 @@ def handle_event(session: Session, event: FileEvent) -> None:
 def _adopt_recently_retired(session: Session, event: FileEvent, sha: bytes) -> bool:
     """Give a new file the document of one retired moments ago in the same folder with the same content.
 
-    A rename can reach the watcher as two halves: a move whose destination is
-    already gone again (watchdog's FSEvents emitter drops the last leg of a
-    swap through a temp name: ``mv a t; mv b a; mv t b`` reports ``a→t``,
-    ``b→a`` and a create of ``b``), or a delete then a create. The retired
-    row is adopted only within ADOPT_WINDOW_SECS, only when its own path is
-    gone (otherwise this is a copy), and only for identical content, so the
-    adopted document's text is exactly this file's.
+    A rename can reach the watcher as two halves: a delete (or a create for the
+    old name, which is gone: a delete) then a create, including a case-only
+    rename split across FSEvents callbacks, or a move whose destination is
+    already gone again. The retired row is adopted only within
+    ADOPT_WINDOW_SECS, only when its own path is gone (otherwise this is a
+    copy), and only for identical content, so the adopted document's text is
+    exactly this file's.
+
+    It does not carry documents through a swap via a temp name (``mv a t;
+    mv b a; mv t b``): each move's source is back on disk when it is handled,
+    so ``_handle_moved`` compares both paths in place, and each path keeps its
+    document with the other's content, as on main.
     """
     cutoff = datetime.now(UTC) - timedelta(seconds=ADOPT_WINDOW_SECS)
     candidates = (
@@ -529,13 +529,17 @@ def _handle_moved(session: Session, event: FileEvent) -> None:
     judged again: with its document gone from beside it, it is an ordinary
     document (or another sibling's sidecar), never in neither place.
 
-    A move onto a path the index holds as an active file (an atomic save
-    renaming a temp file over the original, or ``mv a b`` over a live ``b``)
-    keeps the destination's document, which is the one cited by that path; the
-    source's row is retired as a deleted file. A destination row that is only
-    a retired file's leftover does not win: the moved file keeps its document
-    and the leftover is dropped, as the reaper would drop it. A move from a
-    name the watcher ignores (an editor's temp file) is a modify of the
+    The event is a hint, checked against the disk before anything moves: a
+    source still there under its exact spelling (and not the destination's
+    file) was put back by a later rename, as a safe-save swapping a temp file
+    in does, so both paths are compared by path instead (main's behaviour).
+
+    A move onto a path the index holds a row for (an atomic save renaming a
+    temp file over the original, ``mv a b`` over a live ``b``, or a path
+    retired moments ago) keeps the destination's document, which is the one
+    cited by that path; the source's row is retired as a deleted file, still
+    there to be adopted. Nothing here deletes a row or a document. A move from
+    a name the watcher ignores (an editor's temp file) is a modify of the
     destination; a move to one is a delete of the source. A move of a sidecar
     itself takes the delete-and-create route, where its rules live.
     """
@@ -555,17 +559,21 @@ def _handle_moved(session: Session, event: FileEvent) -> None:
         handle_event(session, dest_modified)
         return
 
+    if _exists_at_event(src_deleted) and not _same_file(event.absolute_path, dest_abs):
+        logger.info("watcher: %s moved to %s, but it is still there; compared by path", event.relative_path, dest_rel)
+        handle_event(session, replace(src_deleted, kind=EventKind.modified))
+        handle_event(session, dest_modified)
+        return
+
     src_wf = (
         session.query(WatchedFile).filter_by(folder_id=event.folder_id, relative_path=event.relative_path).one_or_none()
     )
     dest_wf = session.query(WatchedFile).filter_by(folder_id=event.folder_id, relative_path=dest_rel).one_or_none()
-    if src_wf is None or (dest_wf is not None and dest_wf.status == WatchedFileStatus.active):
+    if src_wf is None or dest_wf is not None:
         handle_event(session, src_deleted)
         handle_event(session, dest_modified)
         _rejudge_old_sidecar(session, event)
         return
-    if dest_wf is not None:
-        _drop_retired_row(session, dest_wf)
 
     doc = session.get(Document, src_wf.doc_id) if src_wf.doc_id else None
     reextract = move_needs_reextract(event.relative_path, dest_rel, doc, dest_abs)
@@ -617,20 +625,6 @@ def _rejudge_old_sidecar(session: Session, event: FileEvent) -> None:
     rel_dir = posixpath.dirname(event.relative_path)
     old_rel = posixpath.join(rel_dir, entry) if rel_dir else entry
     handle_event(session, FileEvent(EventKind.modified, event.folder_id, old_rel, os.path.join(base, old_rel)))
-
-
-def _drop_retired_row(session: Session, wf: WatchedFile) -> None:
-    """Delete a retired file's leftover row and its hidden document, as the reaper would 30 days on.
-
-    Called when another file is moved onto its path: the unique key holds one
-    row per path, and the moved file's own document is the one to keep.
-    """
-    doc = session.get(Document, wf.doc_id) if wf.doc_id else None
-    session.delete(wf)
-    if doc is not None:
-        session.delete(doc)
-    session.flush()
-    logger.info("watcher: dropped the retired row at %s for the file moved onto it", wf.relative_path)
 
 
 def _extract_queued(session: Session, doc_id: uuid.UUID) -> bool:

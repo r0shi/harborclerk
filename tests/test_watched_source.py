@@ -168,7 +168,9 @@ def test_is_file_exact_case_refuses_a_case_only_match(tmp_path, monkeypatch):
 
 
 def test_is_file_exact_case_lists_the_parent_only_for_a_file(tmp_path, monkeypatch):
-    """Listing a large directory on every delete event is O(entries): isfile goes first."""
+    """Listing a large directory on every delete event is O(entries): isfile goes first,
+    and a file's spelling is read without a listing where it can be (F_GETPATH on
+    macOS; on a case-sensitive volume no other spelling resolves)."""
     import os
 
     from harbor_clerk.watched_source import is_file_exact_case
@@ -187,7 +189,7 @@ def test_is_file_exact_case_lists_the_parent_only_for_a_file(tmp_path, monkeypat
     assert not is_file_exact_case(str(tmp_path / "dir.txt"))
     assert calls == []
     assert is_file_exact_case(str(tmp_path / "note.txt"))
-    assert calls == [str(tmp_path)]
+    assert calls == []
 
 
 def _case_insensitive_isfile(monkeypatch, *existing):
@@ -217,6 +219,7 @@ def test_is_file_exact_case_counts_a_file_under_an_unlistable_directory_present(
     gone would retire a live document."""
     import os
 
+    import harbor_clerk.watched_source as watched_source
     from harbor_clerk.watched_source import is_file_exact_case
 
     (tmp_path / "locked").mkdir()
@@ -229,6 +232,8 @@ def test_is_file_exact_case_counts_a_file_under_an_unlistable_directory_present(
         return real_listdir(path)
 
     monkeypatch.setattr(os, "listdir", refusing_listdir)
+    # Where the spelling cannot be read directly, the listing decides.
+    monkeypatch.setattr(watched_source, "_spelled_as_given", lambda *args: False)
     assert is_file_exact_case(str(tmp_path / "locked" / "doc.txt"))
     assert is_file_exact_case(str(tmp_path / "locked" / "doc.txt"), str(tmp_path))
 
@@ -242,68 +247,50 @@ def _counting_listdir(monkeypatch) -> list[str]:
     return calls
 
 
-def _settle(monkeypatch, secs: float) -> None:
-    import harbor_clerk.watched_source as watched_source
-
-    monkeypatch.setattr(watched_source, "LISTING_SETTLED_FINE_SECS", secs)
-    monkeypatch.setattr(watched_source, "LISTING_SETTLED_SECS", secs)
-
-
-def test_a_settled_directory_is_listed_once_for_many_checks(tmp_path, monkeypatch):
+def test_checks_in_a_large_directory_list_nothing(tmp_path, monkeypatch):
+    """Every move checks its destination: listing per file made `mv proj proj2023`
+    with 8,000 files cost 17 s under the folder lock. Nothing is cached instead:
+    a FAT or exFAT volume root's stat never changes, so a cached listing could be
+    served forever."""
     from harbor_clerk.watched_source import is_file_exact_case
 
-    for i in range(20):
-        (tmp_path / f"{i:02d}.txt").write_text("x")
-    _settle(monkeypatch, 0.0)
+    (tmp_path / "big").mkdir()
+    for i in range(500):
+        (tmp_path / "big" / f"{i:03d}.txt").write_text("x")
     calls = _counting_listdir(monkeypatch)
-    assert all(is_file_exact_case(str(tmp_path / f"{i:02d}.txt"), str(tmp_path)) for i in range(20))
-    assert calls == [str(tmp_path)]
+    assert all(is_file_exact_case(str(tmp_path / "big" / f"{i:03d}.txt"), str(tmp_path)) for i in range(500))
+    assert calls == []
 
 
-def test_a_listing_taken_before_the_directory_settled_is_not_reused(tmp_path, monkeypatch):
-    """Timestamps are coarse: a change in the same tick as the listing would leave
-    the directory's stat as it was, so only a settled directory's listing is kept."""
-    from harbor_clerk.watched_source import is_file_exact_case
-
-    (tmp_path / "a.txt").write_text("x")
-    _settle(monkeypatch, 3600.0)
-    calls = _counting_listdir(monkeypatch)
-    assert is_file_exact_case(str(tmp_path / "a.txt"))
-    assert is_file_exact_case(str(tmp_path / "a.txt"))
-    assert calls == [str(tmp_path)] * 2
-
-
-def test_a_cached_listing_is_dropped_when_the_directory_changes(tmp_path, monkeypatch):
-    """After `mv Invoices invoices` the cached root listing (which held Invoices)
-    must not answer for the old spelling: the root's stat changed."""
+def test_a_spelling_read_another_way_is_settled_by_the_listing(tmp_path, monkeypatch):
+    """A symlinked directory reports its target's path: not proof the spelling is
+    wrong, so the listing decides (and the file is present)."""
     import os
 
     from harbor_clerk.watched_source import is_file_exact_case
 
-    (tmp_path / "Invoices").mkdir()
-    (tmp_path / "Invoices" / "x.txt").write_text("x")
-    _settle(monkeypatch, 0.0)
-    assert is_file_exact_case(str(tmp_path / "Invoices" / "x.txt"), str(tmp_path))
-    before = os.stat(tmp_path)
-    (tmp_path / "Invoices").rename(tmp_path / "invoices")
-    # A distinct stamp, whatever the clock's tick: the key is what is tested here.
-    os.utime(tmp_path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
-    _case_insensitive_isfile(monkeypatch, tmp_path / "invoices" / "x.txt")
-    assert not is_file_exact_case(str(tmp_path / "Invoices" / "x.txt"), str(tmp_path))
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "x.txt").write_text("x")
+    os.symlink(tmp_path / "real", tmp_path / "link", target_is_directory=True)
+    assert is_file_exact_case(str(tmp_path / "link" / "x.txt"), str(tmp_path))
 
 
-def test_a_name_missing_from_a_cached_listing_is_confirmed_in_a_fresh_one(tmp_path, monkeypatch):
-    """ "Absent" retires a document, so it is never answered from the cache alone:
-    here the directory's stat is made to look unchanged after a file arrives."""
+def test_the_fast_path_never_confirms_another_case_on_a_case_insensitive_volume(tmp_path, monkeypatch):
+    """Without F_GETPATH (Linux), a component is exact only when no other spelling
+    resolves to the same file; on a volume that ignores case one always does, and
+    the listing decides."""
     import harbor_clerk.watched_source as watched_source
-    from harbor_clerk.watched_source import is_file_exact_case
+    from tests.watcher._fs import volume_is_case_insensitive
 
-    (tmp_path / "a.txt").write_text("x")
-    _settle(monkeypatch, 0.0)
-    monkeypatch.setattr(watched_source, "_dir_key", lambda st: "same tick")
-    assert is_file_exact_case(str(tmp_path / "a.txt"))
-    (tmp_path / "b.txt").write_text("x")
-    assert is_file_exact_case(str(tmp_path / "b.txt"))
+    (tmp_path / "Invoices").mkdir()
+    (tmp_path / "Invoices" / "doc.txt").write_text("x")
+    monkeypatch.setattr(watched_source, "_on_disk_path", lambda path: None)
+    insensitive = volume_is_case_insensitive(tmp_path)
+    exact = watched_source._no_other_spelling_resolves(str(tmp_path), ["Invoices", "doc.txt"])
+    assert exact is not insensitive
+    assert not watched_source._no_other_spelling_resolves(str(tmp_path), ["invoices", "doc.txt"])
+    assert watched_source.is_file_exact_case(str(tmp_path / "Invoices" / "doc.txt"), str(tmp_path))
+    assert not watched_source.is_file_exact_case(str(tmp_path / "invoices" / "doc.txt"), str(tmp_path))
 
 
 def test_repaired_source_path_requires_every_component_spelled_as_on_disk(tmp_path, monkeypatch):
