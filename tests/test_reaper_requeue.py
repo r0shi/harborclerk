@@ -303,7 +303,9 @@ async def test_reaper_run_announces_each_requeued_job_after_committing_it(
     finally:
         conn.close()
 
-    assert claims == [(doc_id, JobStage.embed, 3)]
+    # (doc, stage, seq) first: #862 appends the claim's started_at to what claim_next_job returns.
+    assert len(claims) == 1 and claims[0] is not None
+    assert tuple(claims[0][:3]) == (doc_id, JobStage.embed, 3)
     assert ("job_enqueued_cpu", str(doc_id)) in got
     events = [json.loads(payload) for channel, payload in got if channel == "job_progress"]
     assert len(events) == 1
