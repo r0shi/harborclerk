@@ -173,7 +173,8 @@ async def search(
                     possible_conflict=False,
                     conflict_sources=[],
                 )
-        else:
+        elif doc_id is None:
+            # A visible doc_id already narrows the search; hybrid_search refuses both (#873).
             doc_ids = list(visible_ids)
         # Also enforce single-doc filter against visible set
         if doc_id is not None and doc_id not in visible_ids:
@@ -210,7 +211,7 @@ async def search(
                     possible_conflict=False,
                     conflict_sources=[],
                 )
-        else:
+        elif doc_id is None:
             doc_ids = list(scoped_visible)
         # Also enforce single-doc filter against scoped visible set
         if doc_id is not None and doc_id not in scoped_visible:
