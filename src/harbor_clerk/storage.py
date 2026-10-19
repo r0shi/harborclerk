@@ -1,7 +1,9 @@
 """Storage backend abstraction — MinIO or local filesystem."""
 
 import logging
+import os
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import BinaryIO
@@ -176,6 +178,47 @@ class FilesystemBackend(StorageBackend):
                     break
                 f.write(chunk)
 
+    def put_new_object(self, bucket: str, key: str, data: BinaryIO) -> None:
+        """Write an object only if nothing is at its path, atomically; raise FileExistsError otherwise.
+
+        The bytes go to a temporary file in the destination directory and are
+        fsynced, then hard-linked into place: the link fails if the path exists,
+        so an existing file is never replaced, and a failed read leaves nothing
+        at the final path. Where hard links are unsupported, the existence check
+        and `os.replace` are separate steps.
+        """
+        path = self._path(bucket, key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".partial-")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                while chunk := data.read(64 * 1024):
+                    f.write(chunk)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                raise
+            except OSError:
+                if path.exists():
+                    raise FileExistsError(str(path)) from None
+                os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+    def bucket_is_empty(self, bucket: str) -> bool:
+        """True if the bucket directory is missing or holds nothing. One directory read."""
+        root = self._base / bucket
+        if not root.is_dir():
+            return True
+        with os.scandir(root) as entries:
+            return next(entries, None) is None
+
+    def location(self, bucket: str) -> str:
+        return str((self._base / bucket).resolve())
+
     def get_object(self, bucket: str, key: str) -> StorageResponse:
         path = self._path(bucket, key)
         if not path.is_file():
@@ -252,9 +295,12 @@ def get_storage() -> StorageBackend:
         if settings.storage_backend == "filesystem":
             _storage = FilesystemBackend()
             location = str(Path(settings.storage_path).expanduser().resolve())
-        else:
+        elif settings.storage_backend == "minio":
             _storage = MinIOBackend()
             location = settings.minio_endpoint
+        else:
+            # The validator refuses this at startup; config.json overlays assign without validation.
+            raise ValueError(f"STORAGE_BACKEND must be filesystem or minio; got {settings.storage_backend!r}")
         if "storage_backend" in settings.model_fields_set:
             logger.info("Storage backend: %s (%s)", settings.storage_backend, location)
         else:
@@ -266,3 +312,34 @@ def get_storage() -> StorageBackend:
                 location,
             )
     return _storage
+
+
+async def log_missing_originals(session) -> bool:
+    """Log an ERROR when documents have stored originals but the filesystem bucket is empty (#888).
+
+    Catches an upgrade that started the filesystem-backed Compose stack without
+    copying its originals out of MinIO; Compose always sets STORAGE_BACKEND, so
+    the unset-variable warning in get_storage() never fires there. Cheap: one
+    directory read and, only when that finds nothing, one EXISTS query. Returns
+    whether it logged.
+    """
+    from sqlalchemy import exists, select
+
+    from harbor_clerk.models import Document
+
+    settings = get_settings()
+    storage = get_storage()
+    if not isinstance(storage, FilesystemBackend) or not storage.bucket_is_empty(settings.minio_bucket):
+        return False
+    referenced = await session.scalar(
+        select(exists().where(Document.original_object_key.isnot(None), Document.status == "active"))
+    )
+    if not referenced:
+        return False
+    logger.error(
+        "Documents reference stored originals (uploads or mail) but %s is empty, so downloading or "
+        "re-extracting them will fail. If this install kept its originals in MinIO, copy them as "
+        "docs/upgrade-runbook.md describes (section: Docker: MinIO to filesystem storage).",
+        storage.location(settings.minio_bucket),
+    )
+    return True

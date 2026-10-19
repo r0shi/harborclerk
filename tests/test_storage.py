@@ -272,3 +272,99 @@ def test_explicit_minio_still_selects_minio(fresh_storage, caplog):
         backend = fresh_storage(STORAGE_BACKEND="minio")
     assert isinstance(backend, MinIOBackend)
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+# --- FilesystemBackend.put_new_object: atomic, never replaces (#888) ---
+
+
+class _FailsMidway(io.RawIOBase):
+    """Yields one chunk, then raises: a read that fails part-way through."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def read(self, size=-1):
+        self.calls += 1
+        if self.calls == 1:
+            return b"x" * 1024
+        raise ConnectionError("source went away")
+
+
+def _leftovers(root):
+    return sorted(p.name for p in root.rglob("*") if p.is_file())
+
+
+def test_put_new_object_writes_the_bytes(fs_backend, tmp_path):
+    fs_backend.put_new_object("b", "d/k.bin", io.BytesIO(b"payload"))
+    assert fs_backend.get_object("b", "d/k.bin").read() == b"payload"
+    assert _leftovers(tmp_path) == ["k.bin"], "no temporary file is left behind"
+
+
+def test_put_new_object_leaves_nothing_when_the_read_fails(fs_backend, tmp_path):
+    with pytest.raises(ConnectionError):
+        fs_backend.put_new_object("b", "d/k.bin", _FailsMidway())
+    assert not (tmp_path / "b" / "d" / "k.bin").exists()
+    assert _leftovers(tmp_path) == [], "neither a partial file nor a temporary one"
+
+
+def test_put_new_object_never_replaces_an_existing_file(fs_backend, tmp_path):
+    fs_backend.put_object("b", "k", io.BytesIO(b"newer"), 5)
+    with pytest.raises(FileExistsError):
+        fs_backend.put_new_object("b", "k", io.BytesIO(b"stale bytes"))
+    assert fs_backend.get_object("b", "k").read() == b"newer"
+    assert _leftovers(tmp_path) == ["k"]
+
+
+def test_put_new_object_without_hard_links(fs_backend, tmp_path):
+    """Where link() is unsupported the write still lands, and still refuses an existing file."""
+    with patch("harbor_clerk.storage.os.link", side_effect=PermissionError("no hard links here")):
+        fs_backend.put_new_object("b", "k", io.BytesIO(b"first"))
+        with pytest.raises(FileExistsError):
+            fs_backend.put_new_object("b", "k", io.BytesIO(b"second"))
+    assert fs_backend.get_object("b", "k").read() == b"first"
+    assert _leftovers(tmp_path) == ["k"]
+
+
+def test_bucket_is_empty(fs_backend, tmp_path):
+    assert fs_backend.bucket_is_empty("b"), "missing counts as empty"
+    fs_backend.ensure_bucket("b")
+    assert fs_backend.bucket_is_empty("b")
+    fs_backend.put_object("b", "originals/docs/1/a", io.BytesIO(b"a"), 1)
+    assert not fs_backend.bucket_is_empty("b")
+
+
+# --- STORAGE_BACKEND parsing (#888) ---
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("filesystem", "filesystem"), (" Filesystem ", "filesystem"), ("MINIO", "minio"), ("", "filesystem")],
+)
+def test_storage_backend_is_normalised(monkeypatch, raw, expected):
+    from harbor_clerk.config import Settings
+
+    monkeypatch.setenv("STORAGE_BACKEND", raw)
+    assert Settings(_env_file=None).storage_backend == expected
+
+
+def test_unknown_storage_backend_fails_at_startup(monkeypatch):
+    from pydantic import ValidationError
+
+    from harbor_clerk.config import Settings
+
+    monkeypatch.setenv("STORAGE_BACKEND", "s3")
+    with pytest.raises(ValidationError, match="STORAGE_BACKEND must be one of filesystem, minio; got 's3'"):
+        Settings(_env_file=None)
+
+
+def test_get_storage_refuses_an_unvalidated_unknown_backend(fresh_storage, monkeypatch):
+    """config.json overlays assign without validation; get_storage must not fall back to MinIO."""
+    import harbor_clerk.storage as storage_mod
+    from harbor_clerk.config import Settings
+
+    settings = Settings(_env_file=None)
+    object.__setattr__(settings, "storage_backend", "Filesystem")
+    monkeypatch.setattr(storage_mod, "get_settings", lambda: settings)
+    monkeypatch.setattr(storage_mod, "_storage", None)
+    with pytest.raises(ValueError, match="filesystem or minio"):
+        storage_mod.get_storage()

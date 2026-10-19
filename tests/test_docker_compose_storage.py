@@ -35,13 +35,13 @@ STORAGE_PATH = "/data/originals"
 
 # Names that reach the storage backend; storage.py itself defines them.
 STORAGE_NAMES = {"get_storage", "FilesystemBackend", "MinIOBackend"}
-WRITE_OPS = {"put_object", "copy_object", "copy_and_delete", "remove_object", "ensure_bucket"}
+WRITE_OPS = {"put_object", "put_new_object", "copy_object", "copy_and_delete", "remove_object", "ensure_bucket"}
 
 # Every non-stage module that reaches storage, and the compose service that runs it.
 MODULE_SERVICES = {
     "api/app.py": "app",  # startup ensure_bucket, stale-upload reaper
     "api/routes/documents.py": "app",  # download
-    "api/routes/system.py": "app",  # health check, purge, orphan cleanup
+    "api/routes/system.py": "app",  # health check, storage stats, purge, delete-all
     "api/routes/uploads.py": "app",
     "mcp_server.py": "app",  # mounted on the API at /mcp; health check
     "maintenance/rename_originals.py": "app",  # run at API startup

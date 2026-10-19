@@ -9,6 +9,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 logger = logging.getLogger(__name__)
 
 
+STORAGE_BACKENDS = ("filesystem", "minio")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -178,6 +181,18 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
         return v.rstrip("/")
+
+    @field_validator("storage_backend", mode="before")
+    @classmethod
+    def _normalise_storage_backend(cls, v: object) -> str:
+        """Case and whitespace don't matter and empty is the default; anything else is refused at startup.
+
+        Before #888 every value other than exactly "filesystem" silently meant MinIO.
+        """
+        value = str(v or "").strip().lower() or "filesystem"
+        if value not in STORAGE_BACKENDS:
+            raise ValueError(f"STORAGE_BACKEND must be one of {', '.join(STORAGE_BACKENDS)}; got {v!r}")
+        return value
 
 
 _settings: Settings | None = None

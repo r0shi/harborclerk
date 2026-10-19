@@ -17,21 +17,27 @@ Watched-folder documents are unaffected: they are read in place and were never
 in MinIO. A fresh install, or one that never used uploads or IMAP, needs nothing.
 
 An install with objects in MinIO that starts the new stack without copying them
-keeps searching (the text is in Postgres), but:
+keeps searching (the text is in Postgres), and `app` logs an ERROR at startup
+naming this section. Until the copy:
 
 - downloading one of those documents (with `ALLOW_SOURCE_DOWNLOAD=true`) fails
-  with a server error (500) until its object is copied, and works again as soon
-  as it is;
-- an extract that runs on one of them in between (only a reprocess re-extracts
-  an existing document) fails, and the document stays failed after the copy
-  until it is reprocessed: on the Documents page filter by status **Failed**,
-  select, and **Reprocess**, or as an admin `POST /api/docs/reprocess-failed`.
+  with a server error (500); it works again as soon as its object is copied;
+- an extract that runs on one of them (only a reprocess re-extracts an existing
+  document) fails, and the document stays failed after the copy until it is
+  reprocessed: on the Documents page filter by status **Failed**, select, and
+  **Reprocess**, or as an admin `POST /api/docs/reprocess-failed`.
+
+If that already happened, follow the steps below from step 2 anyway. The copy
+never replaces a file the new stack wrote. It can bring back objects that the
+new stack deleted in the meantime, such as staging files of uploads that
+finished or were cancelled. Nothing references those, so they only take space.
 
 The filesystem backend keeps MinIO's bucket and key, at
 `STORAGE_PATH/<bucket>/<key>`, so the database needs no change. MinIO keeps its
 own on-disk format, so copy through its API rather than out of its volume. The
-old `app` and `watcher` write to MinIO until they are replaced, so stop them
-first, or mail and uploads that arrive during the copy stay only in MinIO:
+copy runs once, with `app` and `watcher` stopped, before the new stack starts:
+they are the only services that write originals, so once they are stopped
+nothing new reaches MinIO, and once the new stack runs nothing ever does.
 
 1. Find the MinIO image you already have: `docker image ls | grep -i minio`.
    The commands below use `minio/minio:latest`; substitute yours.
@@ -43,11 +49,13 @@ first, or mail and uploads that arrive during the copy stay only in MinIO:
    docker compose stop app watcher
    ```
 
-3. Build the new images. `docker compose run` builds only when no image exists,
-   so without this it runs the old image, which has no copy command:
+3. Build the images that run Harbor Clerk's code. `docker compose run` builds
+   only when no image exists, so without this it runs the old image, which has
+   no copy command. The embedder and reranker images are large and unchanged by
+   this upgrade, so leave them out:
 
    ```bash
-   docker compose build
+   docker compose build app watcher worker-io worker-cpu worker-llm
    ```
 
 4. Start MinIO alone from the profile; it reuses the existing `minio_data`
@@ -57,30 +65,42 @@ first, or mail and uploads that arrive during the copy stay only in MinIO:
    MINIO_IMAGE=minio/minio:latest docker compose --profile minio up -d minio
    ```
 
-5. Copy every object into the `originals` volume. MinIO is only read; objects
-   already copied with the same size are skipped, so the command can be rerun,
-   and it exits non-zero if anything failed:
+5. Copy every object into the `originals` volume:
 
    ```bash
    docker compose run --rm --no-deps app python -m harbor_clerk.maintenance.copy_minio_originals
    ```
 
-   It ends with `copied N, already present N, folder markers skipped N, failed N`.
+   MinIO is only read, and a file already in the volume is never replaced. Each
+   object is written to a temporary file and moved into place, so if the run is
+   interrupted, run it again: what was copied counts as already present. It ends
+   with `copied N, already present N, differs N, folder markers skipped N,
+   failed N`, and exits non-zero if anything failed:
+
+   - **already present**: the volume has a file of the same size at that key.
+   - **differs**: the volume has a file of a different size at that key, which
+     was left alone and its key logged. On a first copy into an empty volume
+     this is 0. Otherwise the volume's file was written by the new stack (a new
+     version of an upload keeps its key) and is the one to keep.
+   - **folder markers**: zero-byte keys ending in `/`, which are not originals.
+   - **failed**: an object that could not be read, or a key that would land
+     outside the bucket directory; the log names each one.
+
    `--bucket NAME` copies a bucket other than `MINIO_BUCKET` (default `originals`).
-6. Start the new stack, leaving `STORAGE_BACKEND` unset. With
-   `ALLOW_SOURCE_DOWNLOAD=true`, download one uploaded or mailed document to
-   confirm:
+6. Start the new stack, leaving `STORAGE_BACKEND` unset. It uses the images
+   built in step 3. With `ALLOW_SOURCE_DOWNLOAD=true`, download one uploaded or
+   mailed document to confirm:
 
    ```bash
-   docker compose up -d --build
+   docker compose up -d
    ```
 
-7. Run the copy from step 5 once more as a catch-up. It must report `copied 0`
-   and `failed 0`: anything it copies reached MinIO after step 2. Repeat until
-   it does. Do not retire MinIO before a run reports `copied 0`.
-8. Retire MinIO: `MINIO_IMAGE=minio/minio:latest docker compose --profile minio rm -sf minio`.
-   Keep the `<project>_minio_data` volume until you are satisfied, then remove
-   it with `docker volume rm`. The `MINIO_*` lines in `.env` are then unused.
+7. Retire MinIO: `MINIO_IMAGE=minio/minio:latest docker compose --profile minio rm -sf minio`.
+   Do not run the copy again from here on. It would not replace anything, but it
+   would bring back objects the new stack has since deleted: finished uploads'
+   staging files, purged documents, deleted mail. Keep the
+   `<project>_minio_data` volume until you are satisfied, then remove it with
+   `docker volume rm`. The `MINIO_*` lines in `.env` are then unused.
 
 To keep running MinIO instead, set `STORAGE_BACKEND=minio` and `MINIO_IMAGE` in
 `.env` and add `--profile minio` to every `docker compose` command (or set

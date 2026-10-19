@@ -2,7 +2,8 @@
 
 Docker Compose stores originals on the filesystem backend now; the MinIO image
 it used is no longer published. An install with uploads or IMAP mail in MinIO
-runs this once, with MinIO started from the opt-in ``minio`` profile:
+runs this once, with `app` and `watcher` stopped and MinIO started from the
+opt-in ``minio`` profile, before the new stack starts:
 
     docker compose run --rm --no-deps app python -m harbor_clerk.maintenance.copy_minio_originals
 
@@ -11,14 +12,17 @@ backend and writes every object through the filesystem backend, which keeps the
 same bucket and key: ``STORAGE_PATH/<bucket>/<key>``. Documents record the
 bucket and key, so nothing in the database changes. MinIO is only read.
 
-An object already present at the destination with the same size is skipped, so
-an interrupted run is resumed by running it again (a partly written file has a
-different size and is copied again). A zero-byte key ending in `/` is a folder
-marker, not an original, and is skipped. A key that could resolve outside the
-bucket directory (leading `/`, an empty, `.` or `..` segment) is refused; a
-backslash is an ordinary character (an upload named `notes\\draft.txt` on Linux
-keeps it), but `..` between backslashes is still refused. Exits non-zero if any
-object was not copied.
+It never replaces a file that is already at the destination. Same size: the
+object counts as already present. Different size: it is left alone, counted in
+``differs`` and logged, because the filesystem copy may be newer (a new version
+of an upload reuses its key) and MinIO's bytes must not replace it. Each object
+is written to a temporary file, fsynced and linked into place, so an interrupted
+run leaves no partial file and can simply be run again.
+
+A zero-byte key ending in `/` is a folder marker, not an original, and is
+skipped. A key with an empty, `.` or `..` segment between slashes (which covers
+a leading `/`) is refused; a backslash is an ordinary character (Linux upload
+keys keep one, e.g. `notes\\draft.txt`). Exits non-zero if any object failed.
 """
 
 from __future__ import annotations
@@ -28,8 +32,12 @@ import io
 import logging
 import sys
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from harbor_clerk.storage import StorageBackend
+
+if TYPE_CHECKING:
+    from harbor_clerk.storage import FilesystemBackend
 
 logger = logging.getLogger(__name__)
 
@@ -39,24 +47,22 @@ class CopyReport:
     copied: int = 0
     skipped: int = 0
     folder_markers: int = 0
+    differs: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
 
 
 def _safe_key(key: str) -> bool:
     """A key the filesystem backend maps inside the bucket directory.
 
-    No empty segment, which also refuses the empty key and a leading, doubled or
-    trailing `/`; and no `.` or `..` segment whether split on `/` or on a
-    backslash. A backslash inside a name is otherwise allowed.
+    No empty segment between slashes (which also refuses the empty key and a
+    leading, doubled or trailing `/`), and no `.` or `..` segment. Only `/`
+    separates segments; a backslash is an ordinary character.
     """
-    parts = key.split("/")
-    if "" in parts:
-        return False
-    return not any(seg in (".", "..") for part in parts for seg in part.split("\\"))
+    return all(part not in ("", ".", "..") for part in key.split("/"))
 
 
-def copy_originals(source: StorageBackend, destination: StorageBackend, bucket: str) -> CopyReport:
-    """Copy every object in ``bucket`` from ``source`` to ``destination`` under the same key."""
+def copy_originals(source: StorageBackend, destination: FilesystemBackend, bucket: str) -> CopyReport:
+    """Copy every object in ``bucket`` from ``source`` to ``destination`` under the same key, never replacing a file."""
     report = CopyReport()
     present = {obj["key"]: obj["size"] for obj in destination.list_objects(bucket, recursive=True)}
     destination.ensure_bucket(bucket)
@@ -70,14 +76,24 @@ def copy_originals(source: StorageBackend, destination: StorageBackend, bucket: 
             logger.error("refusing key outside the bucket directory: %r", key)
             report.failed.append(key)
             continue
-        if present.get(key) == size:
-            report.skipped += 1
+        if key in present:
+            if present[key] == size:
+                report.skipped += 1
+            else:
+                logger.warning(
+                    "left alone, destination differs: %s (%d bytes in MinIO, %d here)", key, size, present[key]
+                )
+                report.differs.append(key)
             continue
         try:
             data = source.get_object(bucket, key).read()
             if len(data) != size:
                 raise ValueError(f"read {len(data)} bytes, listed size {size}")
-            destination.put_object(bucket, key, io.BytesIO(data), len(data))
+            destination.put_new_object(bucket, key, io.BytesIO(data))
+        except FileExistsError:
+            logger.warning("left alone, appeared at the destination during the copy: %s", key)
+            report.differs.append(key)
+            continue
         except Exception:
             logger.exception("failed to copy %s/%s", bucket, key)
             report.failed.append(key)
@@ -99,9 +115,10 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("copying bucket %r from MinIO at %s to %s", args.bucket, settings.minio_endpoint, settings.storage_path)
     report = copy_originals(MinIOBackend(), FilesystemBackend(), args.bucket)
     logger.info(
-        "copied %d, already present %d, folder markers skipped %d, failed %d",
+        "copied %d, already present %d, differs %d, folder markers skipped %d, failed %d",
         report.copied,
         report.skipped,
+        len(report.differs),
         report.folder_markers,
         len(report.failed),
     )

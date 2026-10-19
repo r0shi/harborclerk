@@ -62,13 +62,34 @@ def test_copies_every_object_to_bucket_slash_key(dest, tmp_path):
     assert source.writes == 0, "MinIO must only be read"
 
 
-def test_rerun_skips_what_is_present_and_recopies_a_partial_file(dest, tmp_path):
+def test_rerun_skips_what_is_already_copied(dest):
     source = FakeMinIO({"a": b"complete", "b": b"also complete"})
     copy_originals(source, dest, BUCKET)
-    (tmp_path / BUCKET / "b").write_bytes(b"also")  # an interrupted write
     report = copy_originals(source, dest, BUCKET)
-    assert (report.copied, report.skipped, report.failed) == (1, 1, [])
-    assert dest.get_object(BUCKET, "b").read() == b"also complete"
+    assert (report.copied, report.skipped, report.differs, report.failed) == (0, 2, [], [])
+
+
+def test_a_different_destination_file_is_never_replaced(dest, tmp_path):
+    """A new version of an upload reuses its key; MinIO's stale bytes must not replace it."""
+    key = "originals/docs/1111/report.pdf"
+    (tmp_path / BUCKET / "originals/docs/1111").mkdir(parents=True)
+    (tmp_path / BUCKET / key).write_bytes(b"NEW version 2 bytes")
+    report = copy_originals(FakeMinIO({key: b"OLD v1", "other": b"o"}), dest, BUCKET)
+    assert (report.copied, report.skipped, report.differs, report.failed) == (1, 0, [key], [])
+    assert (tmp_path / BUCKET / key).read_bytes() == b"NEW version 2 bytes"
+
+
+def test_a_file_appearing_during_the_copy_is_left_alone(dest, tmp_path):
+    """Listed absent, present by write time: put_new_object refuses, and the file survives."""
+
+    class Racing(FakeMinIO):
+        def get_object(self, bucket, key):
+            (tmp_path / BUCKET / key).write_bytes(b"written meanwhile")
+            return super().get_object(bucket, key)
+
+    report = copy_originals(Racing({"k": b"from minio"}), dest, BUCKET)
+    assert (report.copied, report.differs, report.failed) == (0, ["k"], [])
+    assert (tmp_path / BUCKET / "k").read_bytes() == b"written meanwhile"
 
 
 class SpyDest(FilesystemBackend):
@@ -78,9 +99,9 @@ class SpyDest(FilesystemBackend):
         super().__init__()
         self.written: list[str] = []
 
-    def put_object(self, bucket, key, data, length, content_type=""):
+    def put_new_object(self, bucket, key, data):
         self.written.append(key)
-        super().put_object(bucket, key, data, length, content_type)
+        super().put_new_object(bucket, key, data)
 
 
 @pytest.fixture
@@ -90,7 +111,7 @@ def spy(tmp_path):
         return SpyDest()
 
 
-REFUSED = ["../escape", "a/../../escape", "/abs", "a//b", "./a", "a/.", "a\\..\\b", "x\\.\\y", ""]
+REFUSED = ["../escape", "a/../../escape", "/abs", "a//b", "./a", "a/.", "a/", ""]
 
 
 @pytest.mark.parametrize("key", REFUSED)
@@ -102,14 +123,15 @@ def test_a_key_outside_the_bucket_is_refused_before_any_write(spy, tmp_path, key
     assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file()) == ["ok"]
 
 
-def test_a_backslash_in_a_name_copies_and_reads_back(dest, tmp_path):
-    """Upload keys keep a backslash on Linux (`os.path.basename("notes\\draft.txt")`)."""
-    key = "originals/docs/1/notes\\draft.txt"
+@pytest.mark.parametrize("name", ["notes\\draft.txt", "..\\x.pdf", "a\\..\\b", ".\\y"])
+def test_a_backslash_is_an_ordinary_character(dest, tmp_path, name):
+    """Upload keys keep a backslash on Linux (`os.path.basename("notes\\draft.txt")`): one component."""
+    key = f"originals/docs/1/{name}"
     assert _safe_key(key) is True
     report = copy_originals(FakeMinIO({key: b"draft"}), dest, BUCKET)
     assert (report.copied, report.failed) == (1, [])
     assert dest.get_object(BUCKET, key).read() == b"draft"
-    assert (tmp_path / BUCKET / "originals/docs/1" / "notes\\draft.txt").read_bytes() == b"draft"
+    assert (tmp_path / BUCKET / "originals/docs/1" / name).read_bytes() == b"draft"
 
 
 def test_a_folder_marker_is_skipped_not_failed(spy):
@@ -132,7 +154,13 @@ def test_a_short_read_is_not_written(dest, tmp_path):
 def test_a_failed_read_does_not_stop_the_rest(dest):
     report = copy_originals(FakeMinIO({"bad": b"x", "good": b"y"}, broken={"bad"}), dest, BUCKET)
     assert report.failed == ["bad"]
+    assert report.copied == 1, "a failed object is not counted as copied"
     assert dest.get_object(BUCKET, "good").read() == b"y"
+
+
+def test_a_refused_key_is_not_counted_as_copied(spy):
+    report = copy_originals(FakeMinIO({"../x": b"x", "ok": b"y"}), spy, BUCKET)
+    assert (report.copied, report.failed) == (1, ["../x"])
 
 
 def test_main_exit_code_reports_failures(dest):
