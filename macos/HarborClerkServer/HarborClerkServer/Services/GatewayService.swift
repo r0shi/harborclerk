@@ -75,18 +75,26 @@ final class GatewayService: ManagedService {
         proc.terminationHandler = { [weak self] p in
             guard let self else { return }
             Task { @MainActor in
-                if self.state == .running {
-                    self.state = .errored
-                    Log.logger("gateway").error(
-                        "Process exited unexpectedly: status=\(p.terminationStatus, privacy: .public)"
-                    )
-                    self.onUnexpectedExit?()
-                }
+                self.processExited(p)
             }
         }
 
         try proc.runAsProcessGroupLeader()
         process = proc
+    }
+
+    /// An exit of `p` that no stop asked for. Only the process this service
+    /// tracks counts: a stop that gave up its wait (#890) can see that
+    /// process's exit land later, after a successor is `running`, and acting
+    /// on it would mark the healthy successor errored and restart it.
+    @MainActor
+    func processExited(_ p: Process) {
+        guard process === p, state == .running else { return }
+        state = .errored
+        Log.logger("gateway").error(
+            "Process exited unexpectedly: status=\(p.terminationStatus, privacy: .public)"
+        )
+        onUnexpectedExit?()
     }
 
     func stop() async {
@@ -98,9 +106,14 @@ final class GatewayService: ManagedService {
         }
 
         proc.terminate()
-        await proc.waitForExitWithDeadline(graceSeconds: 10, serviceName: name)
-        process = nil
-        state = .stopped
+        // A wait that gave up (#890) keeps the process tracked and says
+        // `errored`, not `stopped`: see `PythonService.settleStop`.
+        if await proc.waitForExitWithDeadline(graceSeconds: 10, serviceName: name) {
+            process = nil
+            state = .stopped
+        } else {
+            state = .errored
+        }
     }
 
     func healthCheck() async -> Bool {

@@ -640,12 +640,18 @@ final class ServiceConfigTests: XCTestCase {
     /// `PythonService.start()` is async; run it to completion with a bound.
     private func awaitStart(_ svc: PythonService) throws {
         let done = expectation(description: "start() returned")
+        let finish = ResumeOnce()
         var failure: Error?
         Task {
-            do { try await svc.start() } catch { failure = error }
+            var error: Error?
+            do { try await svc.start() } catch let e { error = e }
+            // Late, after the timeout claimed `finish`: no write, no fulfil.
+            guard finish.claim() else { return }
+            failure = error
             done.fulfill()
         }
         wait(for: [done], timeout: 10)
+        _ = finish.claim()
         if let failure { throw failure }
     }
 
@@ -663,12 +669,18 @@ final class ServiceConfigTests: XCTestCase {
         }
 
         let done = expectation(description: "run() returned")
+        let finish = ResumeOnce()
         var failure: Error?
         Task {
-            do { try await runner.run() } catch { failure = error }
+            var error: Error?
+            do { try await runner.run() } catch let e { error = e }
+            // Late, after the timeout claimed `finish`: no write, no fulfil.
+            guard finish.claim() else { return }
+            failure = error
             done.fulfill()
         }
         wait(for: [done], timeout: 10)
+        _ = finish.claim()
         XCTAssertNil(failure)
 
         let env = try XCTUnwrap(launched, "run() did not reach the launcher")

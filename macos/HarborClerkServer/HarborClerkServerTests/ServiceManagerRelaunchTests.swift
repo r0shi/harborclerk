@@ -364,13 +364,17 @@ final class ServiceManagerRelaunchTests: XCTestCase {
         svc.stateAfterStart = .errored  // refuses nothing, so the restart runs its course, and the start is reached
 
         let done = expectation(description: "attemptAutoRestart returned")
+        let finish = ResumeOnce()
         let task = Task { @MainActor in
             await sm.attemptAutoRestart(svc)
-            done.fulfill()
+            // Late, after the timeout claimed `finish`: no API-violating fulfil.
+            if finish.claim() { done.fulfill() }
         }
         // The restart path sleeps 5 s for the old socket; well inside this bound.
         await fulfillment(of: [done], timeout: 30)
-        await task.value
+        // Not `await task.value`: after a timeout that wait has no bound.
+        _ = finish.claim()
+        task.cancel()
 
         XCTAssertEqual(svc.startCalls, 1, "the guard is for refusals only")
     }

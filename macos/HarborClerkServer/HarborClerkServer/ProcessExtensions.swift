@@ -103,8 +103,9 @@ extension Process {
     ///     foo" line is informative.
     ///   - killWaitSeconds: how long after the SIGKILL to keep waiting.
     /// - Returns: whether the process was seen to exit. `false` means the
-    ///   caller is still holding a process Foundation reports as running.
-    @discardableResult
+    ///   caller is still holding a process Foundation reports as running,
+    ///   and must keep it tracked and not report a clean stop. Not
+    ///   discardable, so every caller decides.
     func waitForExitWithDeadline(
         graceSeconds: TimeInterval,
         serviceName: String,

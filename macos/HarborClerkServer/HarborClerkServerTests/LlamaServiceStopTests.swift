@@ -71,11 +71,15 @@ final class LlamaServiceStopTests: XCTestCase {
     /// lines hung the run for over an hour instead of failing it.
     private func bounded(_ seconds: TimeInterval = 10, _ body: @escaping @Sendable () async -> Void) async {
         let returned = expectation(description: "returned within \(seconds)s")
+        let finish = ResumeOnce()
         let task = Task {
             await body()
-            returned.fulfill()
+            // Late, after the timeout below claimed `finish`: the test has
+            // already failed, and a fulfil now would be an API violation.
+            if finish.claim() { returned.fulfill() }
         }
         await fulfillment(of: [returned], timeout: seconds)
+        _ = finish.claim()
         task.cancel()
     }
 
@@ -144,6 +148,103 @@ final class LlamaServiceStopTests: XCTestCase {
         XCTAssertTrue(successor.isRunning)
         XCTAssertIdentical(svc.process, successor, "the successor stays tracked; clearing it would orphan a live server")
         XCTAssertTrue(svc.holdsLiveProcess)
+    }
+
+    // MARK: - A stop whose wait gave up (#890)
+
+    /// A wait that gives up leaves a process still reported running. The stop
+    /// keeps it tracked and does not call itself `stopped`: untracked, the next
+    /// start would launch a second server onto the port it may still hold.
+    func testStopWhoseWaitGaveUpKeepsTheProcessTrackedAndIsNotStopped() async throws {
+        let svc = try makeService()
+        svc.waitForExit = { _, _, _, _ in false }
+        let proc = try spawnSleeper(ignoringSigterm: true)
+        svc.process = proc
+        svc.state = .running
+
+        await bounded { await svc.stop() }
+
+        XCTAssertIdentical(svc.process, proc, "a process the wait gave up on stays tracked")
+        XCTAssertTrue(svc.holdsLiveProcess)
+        XCTAssertEqual(svc.state, .errored, "a stop that did not see the exit is not a clean stop")
+    }
+
+    /// After a stop gave up its wait, the old process's exit can land while a
+    /// successor is running. It must not mark the successor errored or restart
+    /// it; only the tracked process's exit counts.
+    @MainActor
+    func testExitOfAProcessNoLongerTrackedIsIgnored() throws {
+        let svc = try makeService()
+        let old = try spawnSleeper()
+        let successor = try spawnSleeper()
+        svc.process = successor
+        svc.state = .running
+        var unexpectedExits = 0
+        svc.onUnexpectedExit = { unexpectedExits += 1 }
+
+        killAndReap(old)  // its exit has landed
+        svc.processExited(old)
+        XCTAssertEqual(svc.state, .running, "a stale exit leaves the healthy successor alone")
+        XCTAssertEqual(unexpectedExits, 0, "and does not restart it")
+
+        // Control: the tracked process's exit still counts.
+        killAndReap(successor)
+        svc.processExited(successor)
+        XCTAssertEqual(svc.state, .errored)
+        XCTAssertEqual(unexpectedExits, 1)
+    }
+
+    @MainActor
+    func testPythonServiceIgnoresTheExitOfAProcessNoLongerTracked() async throws {
+        let svc = PythonService(name: "probe")
+        svc.launcher = { _ in }  // a restart, if one wrongly ran, spawns nothing
+        let old = try spawnSleeper()
+        let successor = try spawnSleeper()
+        svc.process = successor
+        svc.state = .running
+
+        killAndReap(old)  // its exit has landed
+        await svc.processExited(old, logger: Log.logger("probe"))
+
+        XCTAssertIdentical(svc.process, successor, "no restart replaced the healthy successor")
+        XCTAssertEqual(svc.state, .running)
+    }
+
+    @MainActor
+    func testGatewayServiceIgnoresTheExitOfAProcessNoLongerTracked() throws {
+        let svc = GatewayService()
+        let old = try spawnSleeper()
+        let successor = try spawnSleeper()
+        svc.process = successor
+        svc.state = .running
+        var unexpectedExits = 0
+        svc.onUnexpectedExit = { unexpectedExits += 1 }
+
+        killAndReap(old)  // its exit has landed
+        svc.processExited(old)
+        XCTAssertEqual(svc.state, .running)
+        XCTAssertEqual(unexpectedExits, 0)
+
+        killAndReap(successor)
+        svc.processExited(successor)
+        XCTAssertEqual(svc.state, .errored, "control: the tracked process's exit still counts")
+        XCTAssertEqual(unexpectedExits, 1)
+    }
+
+    /// The give-up policy at the Python services and the parallel worker stops.
+    func testPythonServiceSettleStopKeepsAProcessTheWaitGaveUpOn() throws {
+        let svc = PythonService(name: "probe")
+        let proc = try spawnSleeper()
+        svc.process = proc
+        svc.state = .stopping
+
+        svc.settleStop(exited: false)
+        XCTAssertIdentical(svc.process, proc)
+        XCTAssertEqual(svc.state, .errored)
+
+        svc.settleStop(exited: true)
+        XCTAssertNil(svc.process)
+        XCTAssertEqual(svc.state, .stopped)
     }
 
     /// Foundation's `Process.run()` already spawns its child as a group

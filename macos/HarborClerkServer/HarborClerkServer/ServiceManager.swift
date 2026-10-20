@@ -509,15 +509,19 @@ class ServiceManager: ObservableObject {
                 let grace = worker.shutdownGracePeriod
                 let workerName = worker.name
                 group.addTask {
+                    let exited: Bool
                     if let proc, proc.isRunning {
-                        await proc.waitForExitWithDeadline(
+                        exited = await proc.waitForExitWithDeadline(
                             graceSeconds: grace,
                             serviceName: workerName,
                         )
+                    } else {
+                        exited = true
                     }
                     await MainActor.run {
-                        worker.process = nil
-                        worker.state = .stopped
+                        // Gave up (#890): kept tracked and `errored`, not
+                        // `stopped`; see `PythonService.settleStop`.
+                        worker.settleStop(exited: exited)
                         self.notifyStateChanged()
                     }
                 }
@@ -1108,15 +1112,19 @@ class ServiceManager: ObservableObject {
                 let grace = worker.shutdownGracePeriod
                 let workerName = worker.name
                 group.addTask {
+                    let exited: Bool
                     if let proc, proc.isRunning {
-                        await proc.waitForExitWithDeadline(
+                        exited = await proc.waitForExitWithDeadline(
                             graceSeconds: grace,
                             serviceName: workerName,
                         )
+                    } else {
+                        exited = true
                     }
                     await MainActor.run {
-                        worker.process = nil
-                        worker.state = .stopped
+                        // Gave up (#890): kept tracked and `errored`, not
+                        // `stopped`; see `PythonService.settleStop`.
+                        worker.settleStop(exited: exited)
                         self.notifyStateChanged()
                     }
                 }

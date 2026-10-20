@@ -397,12 +397,19 @@ extension XCTestCase {
         _ body: @escaping () async -> T
     ) async -> T? {
         let box = Box<T>()
+        let finish = ResumeOnce()
         let returned = expectation(description: "\(what) returned within \(seconds)s")
         let task = Task {
-            box.value = await body()
+            let result = await body()
+            // A body that finishes after the timeout neither writes nor fulfils:
+            // the timeout below claimed `finish` first, so the test has already
+            // failed cleanly and a late fulfil would be an API violation.
+            guard finish.claim() else { return }
+            box.value = result
             returned.fulfill()
         }
         await fulfillment(of: [returned], timeout: seconds)
+        _ = finish.claim()
         task.cancel()
         return box.value
     }
@@ -412,12 +419,16 @@ extension XCTestCase {
     /// pool the test's own timeout needs.
     func boundedBlocking<T>(_ what: String, seconds: TimeInterval, _ body: @escaping () -> T) async -> T? {
         let box = Box<T>()
+        let finish = ResumeOnce()
         let returned = expectation(description: "\(what) returned within \(seconds)s")
         DispatchQueue.global().async {
-            box.value = body()
+            let result = body()
+            guard finish.claim() else { return }  // late: see `withinBound`
+            box.value = result
             returned.fulfill()
         }
         await fulfillment(of: [returned], timeout: seconds)
+        _ = finish.claim()
         return box.value
     }
 }
