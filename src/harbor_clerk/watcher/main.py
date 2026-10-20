@@ -1,6 +1,7 @@
 """harbor-clerk-watcher entry point.
 
 Lifecycle:
+  - Waits at start until the database is reachable and migrated (#904).
   - Loads enabled watched_folders rows from DB at start.
   - Spawns one FolderObserver per folder, and reconciles each folder with
     the index when its observer attaches and every WATCH_RESCAN_INTERVAL_SECS.
@@ -22,15 +23,18 @@ import uuid
 from datetime import UTC, datetime
 
 import psycopg2
-from sqlalchemy import case, null, update
+from sqlalchemy import bindparam, case, null, text, update
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.exc import DBAPIError, IntegrityError, InterfaceError, OperationalError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.types import Text
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_engine
 from harbor_clerk.error_text import describe_error
 from harbor_clerk.ingest.metadata_extractors.sidecar import load_sidecar
 from harbor_clerk.log_setup import setup_logging
+from harbor_clerk.models import Base
 from harbor_clerk.models.watched import (
     ROOT_EMPTY,
     ROOT_MISSING,
@@ -79,6 +83,9 @@ FOLDER_CHECK_INTERVAL_SECS = 1.0
 # A pass that ended early (database unreachable, an unexpected error) is retried after this, doubling.
 RETRY_FIRST_SECS = 30.0
 RETRY_MAX_SECS = 300.0
+# At start, the wait for a reachable, migrated database (#904): retried after this, doubling, one log line per try.
+SCHEMA_WAIT_FIRST_SECS = 2.0
+SCHEMA_WAIT_MAX_SECS = 30.0
 
 StatKey = tuple[int, int, int, int]
 
@@ -111,6 +118,17 @@ def _is_db_unreachable(exc: BaseException) -> bool:
         pgcode = getattr(driver, "pgcode", None)
         return pgcode is None or str(pgcode).startswith("08")
     return False
+
+
+_MISSING_TABLES_SQL = text(
+    "SELECT name FROM unnest(:names) AS name WHERE to_regclass(quote_ident(name)) IS NULL ORDER BY name"
+).bindparams(bindparam("names", type_=ARRAY(Text)))
+
+
+def _missing_tables(session: Session) -> list[str]:
+    """The tables this build maps that the database does not have yet: all of them before the first migration."""
+    names = sorted(table.name for table in Base.metadata.sorted_tables)
+    return list(session.execute(_MISSING_TABLES_SQL, {"names": names}).scalars())
 
 
 def _fold(relative_path: str) -> str:
@@ -196,6 +214,10 @@ class WatcherDaemon:
         # The database unreachable is one failure for the daemon, not one per file.
         self._db_streak = FailureStreak()
         self._db_streak_lock = threading.Lock()
+        # Folders that lost work to an outage (a live event dropped, a pass ended early): each gets one
+        # pass when the database is next seen reachable (#892). Changed only under _db_streak_lock, with
+        # the streak: non-empty only while a failure is recorded.
+        self._catch_up: set[uuid.UUID] = set()
         # Per folder whose observer failed to attach: [consecutive failures, root checks still to skip].
         self._reattach_failures: dict[uuid.UUID, list[int]] = {}
         # Folders whose observer was (re)started and not yet seen alive by a check.
@@ -246,6 +268,8 @@ class WatcherDaemon:
                     self._note_db_failure(exc)
                     if in_pass:
                         raise _DatabaseUnavailable from exc
+                    # Not replayed: the folder is compared with the index once the database is back (#892).
+                    self._need_catch_up(event.folder_id)
                     return False
                 if isinstance(exc, IntegrityError) and self._folder_gone(event.folder_id):
                     logger.debug("watcher: folder %s is gone; dropped the event for %s", event.folder_id, key[1])
@@ -307,6 +331,7 @@ class WatcherDaemon:
             sess.rollback()
             if _is_db_unreachable(exc):
                 self._note_db_failure(exc)
+                self._need_catch_up(event.folder_id)  # the catch-up pass clears it
             else:
                 logger.exception("watcher: failed to clear root_empty for %s", event.folder_id)
         finally:
@@ -319,6 +344,7 @@ class WatcherDaemon:
             wanted = {row.folder_id: row.path for row in rows}
         finally:
             sess.close()
+        self._note_db_ok()
 
         with self._observers_lock:
             # Stop observers no longer wanted
@@ -337,6 +363,8 @@ class WatcherDaemon:
                     self._retry_delay.pop(fid, None)
                     self._left_alone.pop(fid, None)
                     self._dead_on_attach.discard(fid)
+                    with self._db_streak_lock:
+                        self._catch_up.discard(fid)
                     with self._folder_locks_guard:
                         self._folder_locks.pop(fid, None)
                     logger.info("watcher: stopped observer for folder %s", fid)
@@ -501,11 +529,13 @@ class WatcherDaemon:
         except _DatabaseUnavailable as exc:
             logger.debug("watcher: reconcile of %s ended: the database is unreachable (%s)", root, exc.__cause__)
             self._schedule_retry(folder_id)
+            self._need_catch_up(folder_id)
         except _FolderGone:
             logger.info("watcher: reconcile of %s stopped: the folder was removed or disabled", root)
         except Exception as exc:
             if _is_db_unreachable(exc):
                 self._note_db_failure(exc)
+                self._need_catch_up(folder_id)
             else:
                 logger.exception("watcher: reconcile of %s failed", root)
             self._schedule_retry(folder_id)
@@ -1010,13 +1040,65 @@ class WatcherDaemon:
         else:
             logger.debug("watcher: the database is unreachable (failure %d): %s", failures, describe_error(exc))
 
+    def _need_catch_up(self, folder_id: uuid.UUID) -> None:
+        """Pass a folder that lost work to an outage once the database is reachable again (#892).
+
+        Recorded with the outage, under the streak's lock, so `_note_db_ok` takes
+        it with the reset that ends the outage. A success on another thread may
+        have ended the outage since this one failed; then no reset will come for
+        it, and the pass is requested now.
+        """
+        with self._db_streak_lock:
+            if self._db_streak.failures:
+                self._catch_up.add(folder_id)
+                return
+        self._request_reconcile(folder_id)
+
     def _note_db_ok(self) -> None:
+        """The database answered. After an outage, pass every folder that lost work to it, once (#892).
+
+        The positive signal is the success itself, whatever made it: a live event,
+        a pass, an observer sync or the monitor's probe (`_probe_db`). Each folder
+        is requested once per recovery, and `_request_reconcile` coalesces with a
+        pass already running (it runs once more, after), so a database that flaps
+        cannot pile passes up. The pass is the ordinary one: should it end early
+        again, its retry and backoff apply, and it waits for the next recovery.
+        """
         if not self._db_streak.failures:
             return
         with self._db_streak_lock:
             failures = self._db_streak.reset()
+            pending, self._catch_up = self._catch_up, set()
         if failures:
-            logger.info("watcher: the database is reachable again after %d failed attempt(s)", failures)
+            logger.info(
+                "watcher: the database is reachable again after %d failed attempt(s); comparing %d folder(s) now",
+                failures,
+                len(pending),
+            )
+        for fid in sorted(pending):
+            self._retry_at.pop(fid, None)  # this pass is the retry; its backoff (_retry_delay) stands
+            self._request_reconcile(fid)
+
+    def _probe_db(self) -> None:
+        """While folders wait for a recovery, ask the database whether it is back (one round trip).
+
+        Without it a recovery is seen only by the next event or retried pass, up
+        to RETRY_MAX_SECS late, or never for a dropped event with
+        WATCH_RESCAN_INTERVAL_SECS=0.
+        """
+        if not self._catch_up:
+            return
+        sess = self._session_factory()
+        try:
+            sess.execute(text("SELECT 1"))
+        except Exception as exc:
+            if not _is_db_unreachable(exc):
+                raise
+            self._note_db_failure(exc)
+            return
+        finally:
+            sess.close()
+        self._note_db_ok()
 
     def _active_paths(self, folder_id: uuid.UUID) -> set[str]:
         sess = self._session_factory()
@@ -1049,6 +1131,7 @@ class WatcherDaemon:
         """
         try:
             self._check_roots()
+            self._probe_db()
             self._run_due_retries()
             if interval > 0 and time.monotonic() >= next_rescan:
                 next_rescan = time.monotonic() + interval
@@ -1141,7 +1224,55 @@ class WatcherDaemon:
                 delay = min(LISTENER_RETRY_MAX_SECS, LISTENER_RETRY_BASE_SECS * 2 ** min(streak.failures - 1, 8))
                 self._stop.wait(timeout=delay)
 
+    def _wait_for_schema(self) -> bool:
+        """Wait until the database is reachable and holds every table this build maps (#904).
+
+        On a fresh Docker install the watcher starts once Postgres is up, while
+        `app` is still waiting to migrate it; querying `watched_folders` then
+        crashed the watcher with a traceback per restart. A database that is
+        down, or not migrated yet, is retried with backoff, one line per try and
+        no traceback. Any other error (a missing column, a permission refused)
+        is not waited out: it raises, as before. Returns False when stopped
+        while waiting.
+        """
+        attempt = 0
+        delay = SCHEMA_WAIT_FIRST_SECS
+        while not self._stop.is_set():
+            attempt += 1
+            sess = self._session_factory()
+            try:
+                missing = _missing_tables(sess)
+            except Exception as exc:
+                if not _is_db_unreachable(exc):
+                    raise
+                logger.warning(
+                    "watcher: waiting for the database (attempt %d, next in %.0fs): %s",
+                    attempt,
+                    delay,
+                    describe_error(exc),
+                )
+            else:
+                if not missing:
+                    if attempt > 1:
+                        logger.info("watcher: the database is ready after %d attempt(s)", attempt)
+                    return True
+                logger.info(
+                    "watcher: waiting for the database to be migrated: %d table(s) missing, %s first "
+                    "(attempt %d, next in %.0fs)",
+                    len(missing),
+                    missing[0],
+                    attempt,
+                    delay,
+                )
+            finally:
+                sess.close()
+            self._stop.wait(timeout=delay)
+            delay = min(delay * 2, SCHEMA_WAIT_MAX_SECS)
+        return False
+
     def start(self) -> None:
+        if not self._wait_for_schema():
+            return
         self._sync_observers()
         for target in (self._discovery_loop, self._listener_loop, self._monitor_loop):
             t = threading.Thread(target=target, daemon=True, name=target.__name__)
