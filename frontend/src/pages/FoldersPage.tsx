@@ -230,7 +230,11 @@ export default function FoldersPage() {
 
   if (!system) return <div className="text-sm text-(--color-text-secondary)">Loading…</div>
 
-  const addButton = system.picker === 'native' ? <AddFolderButton onClick={handleAdd} /> : null
+  // Watched-folder management is admin-only (#852): a folder's files become
+  // searchable by every user, and on the Mac app it can be any readable
+  // directory. Non-admins see the folders and their progress, not the controls.
+  const canAdd = isAdmin && system.picker === 'native'
+  const addButton = canAdd ? <AddFolderButton onClick={handleAdd} /> : null
 
   return (
     <div className="animate-slide-in">
@@ -261,11 +265,13 @@ export default function FoldersPage() {
           <IconTile size={56}>📁</IconTile>
           <h3 className="font-serif text-lg font-semibold">No folders yet</h3>
           <p className="text-sm text-(--color-text-secondary)">
-            {system.picker === 'native'
-              ? 'Add a folder to start watching for documents to ingest.'
-              : `Mount a folder under ${system.watch_root ?? 'WATCH_ROOT'} to begin.`}
+            {!isAdmin
+              ? 'An administrator adds the folders Harbor Clerk watches.'
+              : system.picker === 'native'
+                ? 'Add a folder to start watching for documents to ingest.'
+                : `Mount a folder under ${system.watch_root ?? 'WATCH_ROOT'} to begin.`}
           </p>
-          {system.picker === 'native' && <AddFolderButton onClick={handleAdd} />}
+          {canAdd && <AddFolderButton onClick={handleAdd} />}
         </Card>
       ) : (
         <div>
@@ -279,6 +285,7 @@ export default function FoldersPage() {
                 key={f.folder_id}
                 folder={f}
                 progress={p}
+                canManage={isAdmin}
                 isExpanded={isExpanded}
                 deleteDisabled={deleteDisabled}
                 pendingDelete={pendingDelete}
@@ -318,6 +325,8 @@ export default function FoldersPage() {
 interface FolderRowProps {
   folder: FolderInfo
   progress?: ProgressInfo
+  /** Admin only (#852): rename, enable/disable and delete. */
+  canManage: boolean
   isExpanded: boolean
   deleteDisabled: boolean
   pendingDelete: boolean
@@ -337,6 +346,7 @@ interface FolderRowProps {
 function FolderRow({
   folder: f,
   progress: p,
+  canManage,
   isExpanded,
   deleteDisabled,
   pendingDelete,
@@ -394,14 +404,16 @@ function FolderRow({
                 <span className="font-medium text-(--color-text-primary)" title={f.path}>
                   {f.display_name ?? f.path.split('/').filter(Boolean).pop() ?? f.folder_id}
                 </span>
-                <button
-                  type="button"
-                  onClick={onStartEdit}
-                  aria-label={`Rename ${f.display_name ?? f.folder_id}`}
-                  className="text-(--color-text-secondary) hover:text-(--color-text-primary)"
-                >
-                  ✎
-                </button>
+                {canManage && (
+                  <button
+                    type="button"
+                    onClick={onStartEdit}
+                    aria-label={`Rename ${f.display_name ?? f.folder_id}`}
+                    className="text-(--color-text-secondary) hover:text-(--color-text-primary)"
+                  >
+                    ✎
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -429,38 +441,40 @@ function FolderRow({
           })()}
         </div>
         <StatusPill state={mapFolderStatusToPillState(f, p)} label={mapFolderStatusLabel(f, p)} />
-        <div className="flex shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
-          {!pendingDelete && (
-            <button
-              onClick={onToggleEnabled}
-              className="rounded-lg border border-(--color-border) px-2 py-1 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary)"
-            >
-              {f.enabled ? 'Disable' : 'Enable'}
-            </button>
-          )}
-          {pendingDelete ? (
-            <>
+        {canManage && (
+          <div className="flex shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            {!pendingDelete && (
               <button
-                onClick={onCancelDelete}
+                onClick={onToggleEnabled}
                 className="rounded-lg border border-(--color-border) px-2 py-1 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary)"
               >
-                Cancel
+                {f.enabled ? 'Disable' : 'Enable'}
               </button>
-              <button onClick={onDelete} className="rounded-lg bg-red-600 px-2 py-1 text-xs font-medium text-white">
-                Confirm Delete
+            )}
+            {pendingDelete ? (
+              <>
+                <button
+                  onClick={onCancelDelete}
+                  className="rounded-lg border border-(--color-border) px-2 py-1 text-xs text-(--color-text-secondary) hover:text-(--color-text-primary)"
+                >
+                  Cancel
+                </button>
+                <button onClick={onDelete} className="rounded-lg bg-red-600 px-2 py-1 text-xs font-medium text-white">
+                  Confirm Delete
+                </button>
+              </>
+            ) : (
+              <button
+                disabled={deleteDisabled}
+                title={deleteDisabled ? 'Active Docker mount — unmount first' : ''}
+                onClick={onDelete}
+                className="rounded-lg bg-red-600 px-2 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Delete
               </button>
-            </>
-          ) : (
-            <button
-              disabled={deleteDisabled}
-              title={deleteDisabled ? 'Active Docker mount — unmount first' : ''}
-              onClick={onDelete}
-              className="rounded-lg bg-red-600 px-2 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Delete
-            </button>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
       {isExpanded && p && (
         <div className="border-t border-(--color-border) bg-(--color-bg-secondary) px-4 py-3">

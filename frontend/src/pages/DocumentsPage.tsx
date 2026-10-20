@@ -11,6 +11,7 @@ import { IconTile } from '../components/IconTile'
 import SummaryChip, { resolveSummaryState } from '../components/SummaryChip'
 import DocumentErrorNotice from '../components/DocumentErrorNotice'
 import { failurePill, type ErrorInfo } from '../utils/documentFailure'
+import ReprocessFailedAction from '../components/ReprocessFailedAction'
 import { documentTypeIcon } from '../utils/documentTypeIcon'
 import { entityTypeClass } from '../utils/entityTypeColors'
 
@@ -1108,6 +1109,11 @@ export default function DocumentsPage() {
         </p>
       ) : (
         <>
+          {/* Admin-only "Reprocess all failed" on the Failed view (#554) */}
+          {isAdmin && pipelineStatusFilter === 'error' && (
+            <ReprocessFailedAction onDone={() => loadDocs(currentPage, pageSize, filter)} />
+          )}
+
           {/* Bulk actions bar */}
           {selected.size > 0 && (
             <BulkActionsBar

@@ -13,7 +13,8 @@ vi.mock('../api', () => ({
   post: vi.fn(),
 }))
 
-vi.mock('../auth', () => ({ useAuth: () => ({ isAdmin: false }) }))
+const auth = vi.hoisted(() => ({ isAdmin: true }))
+vi.mock('../auth', () => ({ useAuth: () => auth }))
 vi.mock('../hooks/useFolderProgress', () => ({ useFolderProgress: () => {} }))
 vi.mock('../hooks/useSystemConfig', () => ({ useSystemConfig: vi.fn() }))
 
@@ -73,6 +74,7 @@ function renderPage() {
 
 describe('FoldersPage on Docker', () => {
   beforeEach(() => {
+    auth.isAdmin = true
     getMock.mockReset()
     useSystemConfigMock.mockReturnValue(systemConfig('0.9.3+unstamped'))
   })
@@ -123,5 +125,47 @@ describe('FoldersPage on Docker', () => {
 
     expect(await screen.findAllByRole('button', { name: /Add Folder/ })).not.toHaveLength(0)
     expect(screen.queryByRole('link', { name: /How to add a folder/ })).not.toBeInTheDocument()
+  })
+})
+
+const MAC_FOLDER = { ...DOCKER_FOLDER, path: '/Users/me/Documents', display_name: 'Documents', auto_discovered: false }
+const MAC_SYSTEM = { platform: 'macos', picker: 'native', watch_root: null } as never
+
+describe('FoldersPage for a non-admin (#852)', () => {
+  beforeEach(() => {
+    auth.isAdmin = false
+    getMock.mockReset()
+    useSystemConfigMock.mockReturnValue(systemConfig('0.9.3+unstamped'))
+  })
+
+  it('shows the folders but none of the management controls', async () => {
+    mockApi([MAC_FOLDER], MAC_SYSTEM)
+    renderPage()
+
+    expect(await screen.findByText('/Users/me/Documents')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Add Folder/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Rename/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Disable|Enable/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+  })
+
+  it('tells an empty install that an administrator adds folders, with no Add Folder button', async () => {
+    mockApi([], MAC_SYSTEM)
+    renderPage()
+
+    expect(await screen.findByText('An administrator adds the folders Harbor Clerk watches.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Add Folder/ })).not.toBeInTheDocument()
+  })
+
+  it('an admin sees every control on the same folder', async () => {
+    auth.isAdmin = true
+    mockApi([MAC_FOLDER], MAC_SYSTEM)
+    renderPage()
+
+    expect(await screen.findByText('/Users/me/Documents')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Add Folder/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Rename/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Disable' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled()
   })
 })

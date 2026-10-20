@@ -350,7 +350,7 @@ harbor-clerk <command> --help        # man-page-class help with JSON return shap
 
 ### Auth
 
-- **Human users**: email + password, JWT access tokens + refresh cookies. Roles: `admin` / `user`.
+- **Human users**: email + password, JWT access tokens + refresh cookies. Roles: `admin` / `user`. Every user can search, chat, research and upload; only an admin manages watched folders and mail accounts, deletes or reprocesses documents, and manages users, keys, models and settings.
 - **API keys**: admin-created, read-only, scoped. Per-key permission tiers (enforced on REST routes as on MCP tools), document scope, rate limits, snippet caps, expiry. Stored as SHA-256 hashes. Keys never receive absolute on-disk paths.
 - **OAuth 2.1**: Dynamic client registration for ChatGPT and other OAuth-based MCP clients.
 
@@ -370,7 +370,7 @@ harbor-clerk <command> --help        # man-page-class help with JSON return shap
 | `system` | 22 | 19 | `/api/system` |
 | `chat` | 19 | 7 | `/api/chat` |
 | `documents` | 16 | 5 | `/api/docs` |
-| `watch` | 12 | — | `/api/watch` |
+| `watch` | 12 | 7 | `/api/watch` |
 | `oauth` | 11 | 4 | `(various)` |
 | `api-keys` | 10 | 10 | `/api/api-keys` |
 | `uploads` | 10 | — | `/api/uploads` |

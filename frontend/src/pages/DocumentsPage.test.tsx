@@ -370,3 +370,83 @@ describe('DocumentsPage', () => {
     expect(screen.queryByText("This file can't be read")).not.toBeInTheDocument() // doc-2 is collapsed
   })
 })
+
+describe('DocumentsPage "Reprocess all failed" (#554, #852)', () => {
+  function setup(isAdmin: boolean, pipelineStatusFilter: string) {
+    sessionStorage.clear()
+    sessionStorage.setItem('docs-page-state', JSON.stringify({ ...SAVED_STATE, expanded: [], pipelineStatusFilter }))
+    useAuthMock.mockReturnValue({
+      user: { user_id: 'u', email: 'u@example.com', role: isAdmin ? 'admin' : 'user', preferences: { page_size: 10 } },
+      token: 'token',
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      logout: vi.fn(),
+      updatePreferences: vi.fn().mockResolvedValue(undefined),
+      isAdmin,
+    } as ReturnType<typeof useAuth>)
+    useJobEventsMock.mockReturnValue(undefined)
+    useSystemConfigMock.mockReturnValue({
+      healthStatus: 'healthy',
+      allowSourceDownload: false,
+      enableCliAccess: false,
+      cliShimInstallStatus: null,
+      localMcpUrl: null,
+      version: null,
+      loaded: true,
+    })
+    useLLMStatusContextMock.mockReturnValue({
+      status: { state: 'ready', model_id: 'qwen3', model_name: 'Qwen3' },
+      markTransitioning: vi.fn(),
+    })
+    getMock.mockReset()
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/filters') {
+        return Promise.resolve({ mime_types: [], doc_types: [], languages: [], entity_types: [] })
+      }
+      if (url === '/api/stats/topics') return Promise.resolve({ clusters: [] })
+      if (url === '/api/watch/folders') return Promise.resolve([])
+      if (url === '/api/docs') {
+        return Promise.resolve({
+          items: [
+            {
+              doc_id: 'doc-1',
+              title: 'Broken doc',
+              canonical_filename: 'broken.pdf',
+              status: 'active',
+              pipeline_status: 'error',
+              created_at: '2026-06-04T12:00:00Z',
+              updated_at: '2026-06-04T12:30:00Z',
+              summary: null,
+              summary_model: null,
+              doc_type: null,
+            },
+          ],
+          total: 1,
+          limit: 10,
+          offset: 0,
+        })
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+    renderDocumentsPage()
+  }
+
+  it('an admin on the Failed view gets the action', async () => {
+    setup(true, 'error')
+    expect(await screen.findByText('Broken doc')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reprocess all failed' })).toBeInTheDocument()
+  })
+
+  it('a non-admin on the Failed view does not', async () => {
+    setup(false, 'error')
+    expect(await screen.findByText('Broken doc')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reprocess all failed' })).not.toBeInTheDocument()
+  })
+
+  it('an admin on any other view does not', async () => {
+    setup(true, '')
+    expect(await screen.findByText('Broken doc')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reprocess all failed' })).not.toBeInTheDocument()
+  })
+})

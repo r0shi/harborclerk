@@ -103,6 +103,31 @@ async def test_limit_reports_what_it_left_behind(client, admin_user, admin_token
     assert resp.json() == {"requeued": 2, "remaining": 3}
 
 
+async def test_dry_run_counts_what_a_real_call_would_requeue_and_changes_nothing(
+    client, admin_user, admin_token, db_session
+):
+    """The Documents page confirms with this number before the real call.
+
+    It must be the endpoint's own filter: the list's "Failed" view also counts
+    cancelled and queue-cleared documents, which a real call leaves alone, so
+    confirming with that count would promise work that will not happen.
+    """
+    failed = [_doc(f"Failed {i}", sha=bytes([i]) * 32) for i in range(3)]
+    cancelled = _doc("Cancelled", sha=b"c" * 32)
+    cancelled.error = "Cancelled by user"
+    db_session.add_all([*failed, cancelled])
+    await db_session.commit()
+
+    resp = await client.post("/api/docs/reprocess-failed?dry_run=true", headers=auth_header(admin_token))
+    assert resp.status_code == 202, resp.text
+    assert resp.json() == {"requeued": 0, "remaining": 3}
+
+    for doc in [*failed, cancelled]:
+        await db_session.refresh(doc)
+        assert doc.pipeline_status == PipelineStatus.error, f"{doc.title} was touched by a dry run"
+        assert doc.pipeline_seq == 3, f"{doc.title} was touched by a dry run"
+
+
 async def test_no_failed_documents_is_not_an_error(client, admin_user, admin_token, db_session):
     db_session.add(_doc("Ready", sha=b"r" * 32, pipeline_status=PipelineStatus.ready))
     await db_session.commit()

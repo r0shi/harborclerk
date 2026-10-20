@@ -156,9 +156,12 @@ async def require_human_user(
 ) -> Principal:
     """Human user only — rejects API keys.
 
-    Use this for mutating endpoints (uploads, chat, watched folders, etc.), to
-    enforce the project's read-only API key contract, and for reads that have no
-    MCP counterpart (jobs, stats, watched folders, chat, research). There is no
+    Use this for mutating endpoints any signed-in human may call (uploads,
+    chat, research), to enforce the project's read-only API key contract, and
+    for reads that have no MCP counterpart (jobs, stats, watched folders, chat,
+    research). A write that shapes the corpus for everyone (watched folders,
+    mail accounts, document delete and reprocess) is ``require_admin``, which
+    rejects keys as well (#852). There is no
     "any authenticated principal" dependency on purpose: a key reaches a route
     only through ``require_read_access`` and its ``REST_ROUTE_TOOLS`` entry.
     """
