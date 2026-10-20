@@ -1720,7 +1720,13 @@ async def kb_read_passages(
     uuids = [uuid.UUID(cid) for cid in chunk_ids]
 
     async with async_session_factory() as session:
-        result = await session.execute(select(Chunk).where(Chunk.chunk_id.in_(uuids)))
+        # A chunk of a deleted (non-active) document is omitted, exactly like an
+        # unknown chunk_id, for every principal (#909).
+        result = await session.execute(
+            select(Chunk)
+            .join(Document, Document.doc_id == Chunk.doc_id)
+            .where(Chunk.chunk_id.in_(uuids), Document.status == "active")
+        )
         chunks = {c.chunk_id: c for c in result.scalars().all()}
 
         # Per-API-key scope: drop chunks from documents the key can't see.
@@ -1814,7 +1820,15 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
     target_id = uuid.UUID(chunk_id)
 
     async with async_session_factory() as session:
-        target = (await session.execute(select(Chunk).where(Chunk.chunk_id == target_id))).scalar_one_or_none()
+        # A chunk of a deleted (non-active) document is "not found", like an unknown
+        # chunk_id, for every principal (#909). Its neighbours share its document.
+        target = (
+            await session.execute(
+                select(Chunk)
+                .join(Document, Document.doc_id == Chunk.doc_id)
+                .where(Chunk.chunk_id == target_id, Document.status == "active")
+            )
+        ).scalar_one_or_none()
         if target is None:
             return json.dumps({"error": "Chunk not found"})
 

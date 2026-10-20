@@ -470,7 +470,13 @@ async def read_passages(
         )
         visible_ids = {row[0] for row in (await session.execute(visible_q)).all()}
 
-    result = await session.execute(select(Chunk).where(Chunk.chunk_id.in_(chunk_uuids)))
+    # A chunk of a deleted (non-active) document is omitted, exactly like an
+    # unknown chunk_id, for every principal (#909).
+    result = await session.execute(
+        select(Chunk)
+        .join(Document, Document.doc_id == Chunk.doc_id)
+        .where(Chunk.chunk_id.in_(chunk_uuids), Document.status == "active")
+    )
     chunks = {c.chunk_id: c for c in result.scalars().all()}
 
     # Drop chunks whose parent doc is outside this key's scope — scoped-out
