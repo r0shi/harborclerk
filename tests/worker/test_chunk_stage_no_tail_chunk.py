@@ -79,7 +79,12 @@ async def test_stored_chunks_of_a_multi_page_document_have_no_tail_duplicate(db_
 @pytest.mark.asyncio
 async def test_a_document_of_exactly_the_ceiling_is_indexed(db_session, monkeypatch):
     full_text = "".join(p + "\n" for p in PAGES).rstrip()
-    n = len(_split_text(full_text, target=1000, overlap=150))
+    # The distinct passages: a range lying inside another one is not counted, so
+    # a duplicate tail chunk would push the document over this ceiling.
+    ranges = _split_text(full_text, target=1000, overlap=150)
+    n = sum(
+        1 for i, (s, e) in enumerate(ranges) if not any(j != i and a <= s and e <= b for j, (a, b) in enumerate(ranges))
+    )
     monkeypatch.setenv("MAX_CHUNKS_PER_DOCUMENT", str(n))
     doc_id = await _make_doc(db_session, "at-ceiling", PAGES)
 
