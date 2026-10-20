@@ -820,3 +820,77 @@ class TestUserLLMActiveQueriesChatMessage:
         from harbor_clerk.worker.stages.summarize import _user_llm_active
 
         assert _user_llm_active() is False
+
+
+class TestSummarizeDisablesThinking:
+    """Every summarize and doc-type request to llama-server turns thinking off (#863).
+
+    A thinking model (Qwen3.5-4B on the pinned llama-server) otherwise spent the
+    call on reasoning and returned no JSON, so the summary fell back to extractive.
+    Each tier is driven through the real ``_call_llm`` and the body it posts is read.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _server_ready(self, monkeypatch):
+        monkeypatch.setattr("harbor_clerk.llm.summarize._local_server_not_ready", lambda: False)
+        monkeypatch.setattr("harbor_clerk.llm.summarize._llm_intentionally_deactivated", lambda: False)
+
+    @staticmethod
+    def _response(body: str):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {"choices": [{"message": {"content": body}}]}
+        return resp
+
+    @staticmethod
+    def _assert_no_thinking(mock_post):
+        assert mock_post.call_count >= 1
+        for call in mock_post.call_args_list:
+            body = call.kwargs["json"]
+            assert body["chat_template_kwargs"] == {"enable_thinking": False}
+            assert body["reasoning_effort"] == "low"
+
+    @pytest.mark.parametrize("num_chunks", [pytest.param(5, id="short"), pytest.param(50, id="medium")])
+    def test_single_call_tiers(self, num_chunks):
+        with (
+            patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
+            patch("harbor_clerk.llm.summarize.get_model", return_value=_fake_model()),
+            patch(
+                "harbor_clerk.llm.summarize.httpx.post",
+                return_value=self._response('{"summary": "A model summary."}'),
+            ) as mock_post,
+        ):
+            summary, model = generate_summary([f"chunk {i} text" for i in range(num_chunks)])
+        assert (summary, model) == ("A model summary.", "test-model")
+        assert mock_post.call_count == 1
+        self._assert_no_thinking(mock_post)
+
+    def test_long_tier_map_and_reduce(self):
+        with (
+            patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
+            patch("harbor_clerk.llm.summarize.get_model", return_value=_fake_model()),
+            patch(
+                "harbor_clerk.llm.summarize.httpx.post",
+                return_value=self._response('{"summary": "A model summary."}'),
+            ) as mock_post,
+        ):
+            summary, model = generate_summary(["word " * 400 for _ in range(150)])
+        assert (summary, model) == ("A model summary.", "test-model")
+        # The map calls and the reduce call, every one of them without thinking.
+        assert mock_post.call_count >= 2
+        self._assert_no_thinking(mock_post)
+
+    def test_doc_type(self):
+        from harbor_clerk.llm.summarize import classify_doc_type
+
+        with (
+            patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
+            patch(
+                "harbor_clerk.llm.summarize.httpx.post",
+                return_value=self._response('{"document_type": "Meeting Notes"}'),
+            ) as mock_post,
+        ):
+            assert classify_doc_type(["Some text content"], mime_type="application/pdf") == "Meeting Notes"
+        assert mock_post.call_count == 1
+        self._assert_no_thinking(mock_post)

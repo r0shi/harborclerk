@@ -241,6 +241,14 @@ def _call_llm(
         "stream": False,
         "temperature": 0.3,
         "max_tokens": max_tokens,
+        # No thinking: every caller (short, medium, map, reduce, doc-type) wants a short JSON answer, and a
+        # thinking model can spend the whole max_tokens on reasoning and return no JSON, so the summary fell
+        # back to extractive (#863). As in chat.py's forced call: llama-server reads ``enable_thinking`` for the
+        # templates that take it (Qwen3, Gemma 4) and passes ``reasoning_effort`` to gpt-oss's, which thinks
+        # regardless and reasons least at "low" (not "none", which at the pin erases the kwarg). Templates that
+        # know neither ignore both. The reasoning_content recovery below stays as the fallback.
+        "chat_template_kwargs": {"enable_thinking": False},
+        "reasoning_effort": "low",
     }
     if json_schema:
         # Use json_object mode (simpler, better compatibility with thinking models)
