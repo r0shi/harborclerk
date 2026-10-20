@@ -189,6 +189,13 @@ def _split_text(
 
         chunks.append((start, end))
 
+        # This chunk reaches the end of the text, so the text is covered. Going
+        # on would emit one more chunk, starting `overlap` before the end, that
+        # lies wholly inside this one: a duplicate passage in every document
+        # (#886).
+        if end >= text_len:
+            break
+
         next_start = end - overlap
         if next_start <= start:
             next_start = end
