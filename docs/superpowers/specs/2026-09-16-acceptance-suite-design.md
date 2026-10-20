@@ -146,7 +146,7 @@ release template can be filled from the run.
 
 | ID | Check |
 |---|---|
-| H1 | Soft-deleting a dedicated fixture removes it from REST search (with and without a text filter), Find All, the document list, `kb_search`, and `kb_read_passages` for a folder-scoped key (whose visibility set filters on status); a scoped Ask must not cite it (regression for #621/#622). Reading the deleted chunk by id still succeeds for unscoped principals over REST `passages/read` and MCP `kb_read_passages`: the "#621 follow-up" of the v0.9.2 notes, recorded as strict expected failures H1c/H1d |
+| H1 | Soft-deleting a dedicated fixture removes it from REST search (with and without a text filter), Find All, the document list, `kb_search`, and `kb_read_passages` for a folder-scoped key (whose visibility set filters on status); a scoped Ask must not cite it (regression for #621/#622). Reading the deleted chunk by id is refused too: H1c (REST `passages/read` as admin), H1e (REST, folder-scoped key) and H1d (MCP `kb_read_passages`, unscoped key) are ordinary checks since #909, which closed the "#621 follow-up" of the v0.9.2 notes |
 | H2 | Deleting a folder registered for the check removes its document and the folder, and every request-log row a key wrote against it is still there afterwards |
 
 Claims deliberately not covered here: onboarding routes, Status UI, Research,

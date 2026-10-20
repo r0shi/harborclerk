@@ -8,7 +8,11 @@ identical to the unknown-id case, so a caller cannot tell the two apart.
 
 Each surface is driven as the signed-in admin, a folder-scoped key and an
 unscoped key. The deleted document keeps its active ``WatchedFile`` in the
-scoped folder, so a scope check alone does not hide it: the status filter must.
+scoped folder. Over REST a scope check alone does not hide it (``apply_key_scope``
+has no status filter), so every REST case guards the new filter. Over MCP,
+``_visible_doc_ids`` already filters a scoped key on status: the MCP
+``scoped_key`` cases are a backstop, and the admin and unscoped-key cases are
+the ones that fail without the chunk query's own filter.
 """
 
 import json
@@ -26,6 +30,8 @@ from harbor_clerk.models import ApiKey, Chunk, Document
 from harbor_clerk.models.enums import PipelineStatus
 from tests.conftest import auth_header, watch_document
 
+# On MCP only "admin" and "unscoped_key" guard the chunk query's status filter; "scoped_key" is
+# also hidden by _visible_doc_ids (see the module docstring). On REST all three guard it.
 PRINCIPALS = ["admin", "scoped_key", "unscoped_key"]
 
 
