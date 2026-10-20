@@ -1,19 +1,21 @@
 import { useState } from 'react'
 import { post } from '../api'
 
-/** The server's default `limit` for POST /api/docs/reprocess-failed: what one run queues at most. */
-export const REPROCESS_FAILED_BATCH = 1000
-
 interface ReprocessFailedResult {
   requeued: number
   remaining: number
 }
 
+/** A dry run also states the batch size (`limit`) a real call will use; the server owns the default. */
+interface ReprocessFailedDryRun extends ReprocessFailedResult {
+  limit: number
+}
+
 type Phase =
   | { kind: 'idle' }
   | { kind: 'counting' }
-  | { kind: 'confirm'; matching: number }
-  | { kind: 'running'; matching: number }
+  | { kind: 'confirm'; matching: number; limit: number }
+  | { kind: 'running'; matching: number; limit: number }
   | { kind: 'done'; requeued: number; remaining: number }
   | { kind: 'nothing' }
   | { kind: 'error'; message: string }
@@ -40,7 +42,9 @@ function plural(n: number, word: string): string {
  * `remaining` would only pick up documents that failed again in the meantime:
  * a permanently broken file failing fast would be requeued over and over. When
  * more than one batch is failed, the result says how many are left and the
- * admin runs it again.
+ * admin runs it again. The batch size is the `limit` the dry run reports, and
+ * the real call sends that same `limit`, so the wording and the run agree
+ * without this file restating the server's default.
  *
  * Two-click confirmation, never `window.confirm`: WKWebView in the Mac app
  * returns false from native dialogs without showing them.
@@ -51,17 +55,17 @@ export default function ReprocessFailedAction({ onDone }: Props) {
   async function count() {
     setPhase({ kind: 'counting' })
     try {
-      const { remaining } = await post<ReprocessFailedResult>('/api/docs/reprocess-failed?dry_run=true')
-      setPhase(remaining > 0 ? { kind: 'confirm', matching: remaining } : { kind: 'nothing' })
+      const { remaining, limit } = await post<ReprocessFailedDryRun>('/api/docs/reprocess-failed?dry_run=true')
+      setPhase(remaining > 0 ? { kind: 'confirm', matching: remaining, limit } : { kind: 'nothing' })
     } catch (e) {
       setPhase({ kind: 'error', message: e instanceof Error ? e.message : 'Could not count failed documents' })
     }
   }
 
-  async function run(matching: number) {
-    setPhase({ kind: 'running', matching })
+  async function run(matching: number, limit: number) {
+    setPhase({ kind: 'running', matching, limit })
     try {
-      const result = await post<ReprocessFailedResult>('/api/docs/reprocess-failed')
+      const result = await post<ReprocessFailedResult>(`/api/docs/reprocess-failed?limit=${limit}`)
       setPhase({ kind: 'done', requeued: result.requeued, remaining: result.remaining })
       if (result.requeued > 0) onDone()
     } catch (e) {
@@ -84,12 +88,12 @@ export default function ReprocessFailedAction({ onDone }: Props) {
         <>
           <span className="text-(--color-text-primary)">
             Reprocess {plural(phase.matching, 'failed document')}?
-            {phase.matching > REPROCESS_FAILED_BATCH &&
-              ` The ${REPROCESS_FAILED_BATCH.toLocaleString()} most recent are queued now; run it again for the rest.`}
+            {phase.matching > phase.limit &&
+              ` The ${phase.limit.toLocaleString()} most recent are queued now; run it again for the rest.`}
           </span>
           <button
             type="button"
-            onClick={() => run(phase.matching)}
+            onClick={() => run(phase.matching, phase.limit)}
             disabled={phase.kind === 'running'}
             className="rounded-lg bg-amber-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-50"
           >

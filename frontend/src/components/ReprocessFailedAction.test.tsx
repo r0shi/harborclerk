@@ -7,7 +7,6 @@ vi.mock('../api', () => ({ post: vi.fn() }))
 
 const postMock = vi.mocked(post)
 const DRY_RUN = '/api/docs/reprocess-failed?dry_run=true'
-const RUN = '/api/docs/reprocess-failed'
 
 describe('ReprocessFailedAction (#554)', () => {
   beforeEach(() => {
@@ -16,7 +15,7 @@ describe('ReprocessFailedAction (#554)', () => {
 
   it('confirms with the endpoint’s own count, then reports how many were queued', async () => {
     postMock.mockImplementation((url: string) =>
-      Promise.resolve(url === DRY_RUN ? { requeued: 0, remaining: 7 } : { requeued: 7, remaining: 0 }),
+      Promise.resolve(url === DRY_RUN ? { requeued: 0, remaining: 7, limit: 1000 } : { requeued: 7, remaining: 0 }),
     )
     const onDone = vi.fn()
     render(<ReprocessFailedAction onDone={onDone} />)
@@ -28,12 +27,12 @@ describe('ReprocessFailedAction (#554)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm reprocess' }))
     expect(await screen.findByRole('status')).toHaveTextContent('Queued 7 documents for reprocessing.')
-    expect(postMock).toHaveBeenLastCalledWith(RUN)
+    expect(postMock).toHaveBeenLastCalledWith('/api/docs/reprocess-failed?limit=1000')
     expect(onDone).toHaveBeenCalledOnce()
   })
 
   it('does nothing until confirmed: Cancel makes no real call', async () => {
-    postMock.mockResolvedValue({ requeued: 0, remaining: 3 })
+    postMock.mockResolvedValue({ requeued: 0, remaining: 3, limit: 1000 })
     render(<ReprocessFailedAction onDone={vi.fn()} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Reprocess all failed' }))
@@ -44,24 +43,35 @@ describe('ReprocessFailedAction (#554)', () => {
     expect(postMock).toHaveBeenCalledWith(DRY_RUN)
   })
 
-  it('says how many are left when more than one batch failed, and offers the rest', async () => {
+  it('takes the batch size from the dry run, sends it with the real call, and offers the rest', async () => {
+    // A limit the frontend has no copy of: the wording and the call must follow the server.
     postMock.mockImplementation((url: string) =>
-      Promise.resolve(url === DRY_RUN ? { requeued: 0, remaining: 1500 } : { requeued: 1000, remaining: 500 }),
+      Promise.resolve(url === DRY_RUN ? { requeued: 0, remaining: 40, limit: 25 } : { requeued: 25, remaining: 15 }),
     )
     render(<ReprocessFailedAction onDone={vi.fn()} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Reprocess all failed' }))
-    expect(await screen.findByText(/The 1,000 most recent are queued now/)).toBeInTheDocument()
+    expect(await screen.findByText(/The 25 most recent are queued now/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Confirm reprocess' }))
 
     expect(await screen.findByRole('status')).toHaveTextContent(
-      'Queued 1,000 documents for reprocessing. 500 failed documents still waiting.',
+      'Queued 25 documents for reprocessing. 15 failed documents still waiting.',
     )
+    expect(postMock).toHaveBeenLastCalledWith('/api/docs/reprocess-failed?limit=25')
     expect(screen.getByRole('button', { name: 'Reprocess the rest' })).toBeInTheDocument()
   })
 
+  it('says nothing about batches when everything fits in one', async () => {
+    postMock.mockResolvedValue({ requeued: 0, remaining: 25, limit: 25 })
+    render(<ReprocessFailedAction onDone={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reprocess all failed' }))
+    expect(await screen.findByText('Reprocess 25 failed documents?')).toBeInTheDocument()
+    expect(screen.queryByText(/most recent are queued now/)).not.toBeInTheDocument()
+  })
+
   it('makes no real call when nothing matches', async () => {
-    postMock.mockResolvedValue({ requeued: 0, remaining: 0 })
+    postMock.mockResolvedValue({ requeued: 0, remaining: 0, limit: 1000 })
     render(<ReprocessFailedAction onDone={vi.fn()} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Reprocess all failed' }))

@@ -946,13 +946,16 @@ DELIBERATELY_STOPPED_ERRORS = ("Cancelled by user", "Queue cleared before pipeli
 
 @router.post("/docs/reprocess-failed", status_code=status.HTTP_202_ACCEPTED)
 async def reprocess_failed_documents(
+    response: Response,
     # 1000 at once is safe since #619 (#862): the embedder answers 503 past its
     # encode slots and the worker requeues the embed with a retry_after, so the
     # queue depth no longer becomes embedder memory as it did for #554's 125.
     limit: int = Query(default=1000, ge=1, le=10000),
     # Counts what a real call would consider, requeuing nothing: the Documents
     # page confirms with this number, which its own "Failed" filter cannot give
-    # (that filter also counts cancelled and queue-cleared documents).
+    # (that filter also counts cancelled and queue-cleared documents). Answers
+    # 200, not 202, since it does no work, and carries the `limit` a real call
+    # with the same parameters would use, so a client never restates the default.
     dry_run: bool = Query(default=False),
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
@@ -996,7 +999,8 @@ async def reprocess_failed_documents(
     )
     if dry_run:
         matching = await session.scalar(select(func.count()).select_from(failed.subquery())) or 0
-        return {"requeued": 0, "remaining": matching}
+        response.status_code = status.HTTP_200_OK
+        return {"requeued": 0, "remaining": matching, "limit": limit}
 
     doc_ids = list((await session.execute(failed.limit(limit))).scalars().all())
 

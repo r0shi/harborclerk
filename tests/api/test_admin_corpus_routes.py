@@ -99,8 +99,9 @@ async def test_admin_passes_the_gate(client, admin_user, admin_token, method: st
 
     The ids are random and the body empty, so the handler answers 404 or 422
     here; the success paths themselves are covered per route in
-    test_api_watch.py, test_mail_routes.py, test_api_documents.py and
-    test_reprocess_failed.py, all as admin.
+    tests/test_api_watch.py, tests/api/test_mail_routes.py,
+    tests/test_api_documents.py and tests/api/test_reprocess_failed.py, all
+    as admin.
     """
     resp = await client.request(method, _url(path), json={}, headers=auth_header(admin_token))
     assert resp.status_code not in (401, 403), f"{method} {path}: {resp.status_code} {resp.text}"

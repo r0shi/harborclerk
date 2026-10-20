@@ -119,13 +119,32 @@ async def test_dry_run_counts_what_a_real_call_would_requeue_and_changes_nothing
     await db_session.commit()
 
     resp = await client.post("/api/docs/reprocess-failed?dry_run=true", headers=auth_header(admin_token))
-    assert resp.status_code == 202, resp.text
-    assert resp.json() == {"requeued": 0, "remaining": 3}
+    assert resp.status_code == 200, f"a dry run does no work, so it is not 202 Accepted: {resp.text}"
+    assert resp.json() == {"requeued": 0, "remaining": 3, "limit": 1000}
 
     for doc in [*failed, cancelled]:
         await db_session.refresh(doc)
         assert doc.pipeline_status == PipelineStatus.error, f"{doc.title} was touched by a dry run"
         assert doc.pipeline_seq == 3, f"{doc.title} was touched by a dry run"
+
+
+async def test_dry_run_reports_the_limit_the_real_call_will_use(client, admin_user, admin_token, db_session):
+    """The UI's batch wording comes from this, not from a copy of the default."""
+    db_session.add_all([_doc(f"Failed {i}", sha=bytes([i]) * 32) for i in range(5)])
+    await db_session.commit()
+
+    resp = await client.post("/api/docs/reprocess-failed?dry_run=true&limit=2", headers=auth_header(admin_token))
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"requeued": 0, "remaining": 5, "limit": 2}
+
+
+async def test_dry_run_requires_admin(client, regular_user, user_token, db_session):
+    db_session.add(_doc("Failed", sha=b"f" * 32))
+    await db_session.commit()
+
+    resp = await client.post("/api/docs/reprocess-failed?dry_run=true", headers=auth_header(user_token))
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == "Admin access required"
 
 
 async def test_no_failed_documents_is_not_an_error(client, admin_user, admin_token, db_session):

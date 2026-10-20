@@ -350,8 +350,8 @@ graph LR
     hash --> api
     dcr --> api
 
-    api -- "any human" --> write["Read + write<br/>(own conversations, folders, ingest)"]
-    api -- "require_admin" --> admin["Admin<br/>(users, keys, models, destructive ops)"]
+    api -- "any human" --> write["Read + write<br/>(own conversations, research, uploads;<br/>read folders and documents)"]
+    api -- "require_admin" --> admin["Admin<br/>(watched folders, mail accounts,<br/>document delete / reprocess,<br/>users, keys, models, system)"]
     api -- "api key" --> readonly["Read-only, scoped"]
 ```
 
