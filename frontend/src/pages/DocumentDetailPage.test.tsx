@@ -142,6 +142,35 @@ describe('DocumentDetailPage', () => {
     })
   })
 
+  it('names the stage whose error failed the document, not a summarize failure listed first', async () => {
+    const embedError = 'EmbedderUnavailableError: embedder call failed after 7/7 attempts: HTTP 503'
+    const failed = {
+      ...READY_DOC,
+      pipeline_status: 'error',
+      error: embedError,
+      error_info: { family: 'temporary', message: 'The embedding service was unavailable.', action: 'Reprocess.' },
+      jobs: [
+        {
+          job_id: 'job-summarize',
+          stage: 'summarize',
+          status: 'error',
+          error: 'ConnectError: [Errno 61] Connection refused',
+          created_at: '2026-06-04T12:03:00Z',
+        },
+        { job_id: 'job-embed', stage: 'embed', status: 'error', error: embedError, created_at: '2026-06-04T12:04:00Z' },
+      ],
+    }
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') return Promise.resolve(failed)
+      if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
+      return Promise.resolve({})
+    })
+    renderDocumentDetail()
+
+    expect(await screen.findByText('(during Embed)')).toBeInTheDocument()
+    expect(screen.queryByText('(during Summarize)')).not.toBeInTheDocument()
+  })
+
   it('explains a failed document in plain language, with the raw error kept once', async () => {
     const raw = 'ConnectError: [Errno 61] Connection refused'
     const info = {

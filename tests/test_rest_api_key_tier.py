@@ -430,6 +430,27 @@ async def test_a_ready_document_is_not_explained_as_failed_in_the_detail(
     assert corpus.folder.path not in resp.text
 
 
+async def test_a_skipped_job_with_a_reason_is_not_explained_as_a_failure(
+    client, db_session, corpus, admin_token
+) -> None:
+    """A skipped stage reports its reason in `error`; that is not a failure to explain."""
+    db_session.add(
+        IngestionJob(
+            doc_id=corpus.doc.doc_id,
+            stage=JobStage.entities,
+            status=JobStatus.done,
+            pipeline_seq=corpus.doc.pipeline_seq,
+            metrics={"skipped": True, "reason": "spacy_unavailable"},
+        )
+    )
+    await db_session.flush()
+    detail = (await client.get(f"/api/docs/{corpus.doc.doc_id}", headers=auth_header(admin_token))).json()
+    (job,) = detail["jobs"]
+    assert job["status"] == "skipped"
+    assert job["error"] == "spaCy NER models not available"
+    assert job["error_info"] is None
+
+
 def test_redact_paths_blanks_nested_fields_for_keys_only() -> None:
     now = datetime.now(UTC)
 

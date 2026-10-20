@@ -89,6 +89,13 @@ CASES: list[tuple[str, FailureFamily]] = [
     ("IndexError: list index 503 out of range", OTHER),
     ("ValueError: expected 500 rows, got 12", OTHER),
     ("EmbedderUnavailableError: embedder call failed after 7/7 attempts: HTTP 429", TEMP),
+    # A path or file name never decides the family (review of #920).
+    ("KeyError: '/Users/a/unavailable docs/x.pdf'", OTHER),
+    ("KeyError: '/Users/a/timed out/Connection refused.pdf'", OTHER),
+    ('ValueError: bad page in "/Volumes/Archive/Service Unavailable/a.pdf"', OTHER),
+    # "unavailable" alone is not an outage.
+    ("RuntimeError: OCR language pack fra unavailable", OTHER),
+    ("RuntimeError: page image unavailable for page 3", OTHER),
     (
         "DocumentTooLargeError: Document too large to index: it splits into 57,180 chunks, over the "
         "per-document limit of 20,000",
@@ -186,3 +193,16 @@ def test_missing_source_agrees_with_the_watcher_requeue_check(error: str, _famil
         explanation = explain_failure(error)
         assert explanation is not None
         assert explanation.family is FailureFamily.unreadable
+
+
+def test_a_stage_alarm_timeout_is_temporary_but_honest_about_repeats() -> None:
+    stage = explain_failure("TimeoutError: Stage entities timed out after 1800s")
+    assert stage is not None
+    assert stage.family is FailureFamily.temporary
+    assert "If it times out again" in stage.action
+    assert "too large" in stage.action
+    # An HTTP timeout keeps the plain retry advice.
+    http = explain_failure("ReadTimeout")
+    assert http is not None
+    assert http.family is FailureFamily.temporary
+    assert "times out again" not in http.action

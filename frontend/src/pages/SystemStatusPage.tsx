@@ -9,6 +9,8 @@ import { StatusPill, type PillState } from '../components/StatusPill'
 import { useLLMStatusContext } from '../components/LLMStatusBanner'
 import type { LLMStatus } from '../hooks/useLLMStatus'
 import { folderNotesSummary } from '../utils/watchedFolders'
+import DocumentErrorNotice from '../components/DocumentErrorNotice'
+import { failurePill, type ErrorInfo } from '../utils/documentFailure'
 
 interface HealthCheck {
   status: string
@@ -55,6 +57,7 @@ interface StatusDoc {
   processing_stage?: string | null
   job_status?: string | null
   error?: string | null
+  error_info?: ErrorInfo | null
   failed_stage?: string | null
   updated_at?: string | null
 }
@@ -713,7 +716,12 @@ function DocumentStatusRow({ doc, tone }: { doc: StatusDoc; tone: 'error' | 'run
     tone === 'running' && doc.processing_stage && doc.job_status
       ? `${doc.processing_stage} ${doc.job_status}`
       : doc.pipeline_status
-  const detail = tone === 'running' ? processingDetail : doc.error || doc.canonical_filename || doc.pipeline_status
+  const explained = tone === 'error' && (doc.error_info || doc.error)
+  const detail = tone === 'running' ? processingDetail : doc.canonical_filename || doc.pipeline_status
+  const pill =
+    tone === 'error'
+      ? failurePill(doc.error_info)
+      : { state: 'running' as PillState, label: doc.job_status ?? doc.pipeline_status }
 
   return (
     <Card interactive className="p-3">
@@ -726,8 +734,9 @@ function DocumentStatusRow({ doc, tone }: { doc: StatusDoc; tone: 'error' | 'run
             {doc.failed_stage ? `${doc.failed_stage}: ` : ''}
             {detail}
           </div>
+          {explained && <DocumentErrorNotice compact showRaw info={doc.error_info} raw={doc.error} />}
         </div>
-        <StatusPill state={tone === 'error' ? 'error' : 'running'} label={doc.job_status ?? doc.pipeline_status} />
+        <StatusPill {...pill} />
       </div>
     </Card>
   )

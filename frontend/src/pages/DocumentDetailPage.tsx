@@ -195,10 +195,15 @@ function DocStatusBanner({ doc }: { doc: DocumentDetail }) {
   }
 
   if (hasError) {
-    const errorJob = doc.jobs.find((j) => j.status === 'error')
     // The document's own error is the one that failed the pipeline; a job's covers a
     // background stage (summarize) that never touches documents.error.
     const fromDoc = doc.pipeline_status === 'error' && !!doc.error
+    const errorJobs = doc.jobs.filter((j) => j.status === 'error')
+    // Name the stage whose error the notice shows: summarize can fail beside embed in
+    // the same outage, and the jobs arrive in no particular order.
+    const errorJob = fromDoc
+      ? (errorJobs.find((j) => j.error === doc.error) ?? errorJobs.find((j) => j.stage !== 'summarize'))
+      : errorJobs[0]
     return (
       <DocumentErrorNotice
         info={fromDoc ? doc.error_info : errorJob?.error_info}

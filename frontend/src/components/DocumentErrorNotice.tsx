@@ -39,18 +39,48 @@ interface DocumentErrorNoticeProps {
   stage?: string | null
   /** One wrapped line for a list row; the full box otherwise. */
   compact?: boolean
+  /** Compact only: add the raw error behind a "Technical details" toggle under the line. */
+  showRaw?: boolean
 }
 
-export default function DocumentErrorNotice({ info, raw, stage, compact = false }: DocumentErrorNoticeProps) {
+function RawErrorDetails({ raw, className }: { raw: string; className: string }) {
+  return (
+    <details className={className}>
+      <summary className="cursor-pointer text-xs font-medium opacity-80 hover:opacity-100">Technical details</summary>
+      <div className="mt-1.5 flex items-start gap-2">
+        <pre className="min-w-0 flex-1 whitespace-pre-wrap wrap-break-word rounded-md bg-black/5 p-2 font-mono text-[11px] leading-snug dark:bg-white/5">
+          {raw}
+        </pre>
+        <CopyButton text={raw} />
+      </div>
+    </details>
+  )
+}
+
+export default function DocumentErrorNotice({
+  info,
+  raw,
+  stage,
+  compact = false,
+  showRaw = false,
+}: DocumentErrorNoticeProps) {
   if (!info && !raw) return null
-  const explained = info ?? (compact ? UNCLASSIFIED_COMPACT : UNCLASSIFIED)
+  const rawBelow = !compact || showRaw
+  const explained = info ?? (rawBelow ? UNCLASSIFIED : UNCLASSIFIED_COMPACT)
   const style = FAMILY_STYLES[explained.family]
 
   if (compact) {
-    return (
+    const line = (
       <p className={`mt-0.5 text-xs leading-snug ${style.accent}`} data-family={explained.family}>
         {explained.message} {explained.action}
       </p>
+    )
+    if (!showRaw || !raw) return line
+    return (
+      <div>
+        {line}
+        <RawErrorDetails raw={raw} className="mt-1 text-(--color-text-secondary)" />
+      </div>
     )
   }
 
@@ -66,19 +96,7 @@ export default function DocumentErrorNotice({ info, raw, stage, compact = false 
       </p>
       <p className="mt-0.5 leading-relaxed">{explained.message}</p>
       <p className={`mt-0.5 leading-relaxed ${style.accent}`}>{explained.action}</p>
-      {raw && (
-        <details className="mt-2">
-          <summary className="cursor-pointer text-xs font-medium opacity-80 hover:opacity-100">
-            Technical details
-          </summary>
-          <div className="mt-1.5 flex items-start gap-2">
-            <pre className="min-w-0 flex-1 whitespace-pre-wrap wrap-break-word rounded-md bg-black/5 p-2 font-mono text-[11px] leading-snug dark:bg-white/5">
-              {raw}
-            </pre>
-            <CopyButton text={raw} />
-          </div>
-        </details>
-      )}
+      {raw && <RawErrorDetails raw={raw} className="mt-2" />}
     </div>
   )
 }

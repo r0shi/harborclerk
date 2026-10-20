@@ -29,6 +29,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+from harbor_clerk.api.scope import redact_path_tokens
+
 
 class FailureFamily(StrEnum):
     temporary = "temporary"
@@ -210,7 +212,18 @@ _RULES: tuple[tuple[re.Pattern[str], FailureExplanation], ...] = tuple(
                 "Retry the summary later.",
             ),
         ),
-        # Timeouts: a stage alarm ("Stage X timed out after Ns") or an HTTP timeout.
+        # The worker's stage alarm (worker/entry.py). Still temporary, but a file that is
+        # simply too big to finish in time times out every run, so the action says so.
+        (
+            r"^TimeoutError: Stage \w+ timed out\b",
+            0,
+            FailureExplanation(
+                FailureFamily.temporary,
+                "A processing step took too long and was stopped, usually because the machine or a service was busy.",
+                "Reprocess to try again. If it times out again, the file may be too large to process in time.",
+            ),
+        ),
+        # Other timeouts: an HTTP or socket timeout.
         (
             r"\b(TimeoutError|ReadTimeout|ConnectTimeout|WriteTimeout|PoolTimeout|TimeoutException)\b|timed out",
             0,
@@ -234,13 +247,15 @@ _RULES: tuple[tuple[re.Pattern[str], FailureExplanation], ...] = tuple(
                 _REPROCESS,
             ),
         ),
-        # 5xx, 429 and explicit retry-later answers. Status codes match only in an HTTP
+        # 5xx, 429 and explicit retry-later answers. "Unavailable" counts only in the shapes a
+        # service writes ("503 Service Unavailable", "temporarily unavailable", and the
+        # embedder and Apple Intelligence types above), never bare: "language pack fra
+        # unavailable" is not an outage. Status codes match only in an HTTP
         # context (httpx's "Server error '503 …'", the embedder's "HTTP 503"), never a
         # bare number: "IndexError: index 429 is out of bounds" is not a rate limit.
         (
             r"Server error '5\d\d|\bHTTP 5\d\d\b|Internal Server Error|Bad Gateway|Service Unavailable"
-            r"|Gateway Timeout|\bHTTP 429\b|'429 |Too Many Requests|try again later|retry later|temporarily unavailable"
-            r"|\bunavailable\b",
+            r"|Gateway Timeout|\bHTTP 429\b|'429 |Too Many Requests|try again later|retry later|temporarily unavailable",
             re.IGNORECASE,
             FailureExplanation(
                 FailureFamily.temporary,
@@ -263,7 +278,10 @@ def explain_failure(error: str | None) -> FailureExplanation | None:
     """Classify a stored pipeline error; None when there is no error text."""
     if error is None or not error.strip():
         return None
+    # Match on the text with path tokens replaced, so a folder or file name ("/Users/a/
+    # unavailable docs/x.pdf") never decides the family.
+    text = redact_path_tokens(error)
     for pattern, explanation in _RULES:
-        if pattern.search(error):
+        if pattern.search(text):
             return explanation
     return _FALLBACK
