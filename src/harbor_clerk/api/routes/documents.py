@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -987,8 +987,10 @@ async def reprocess_failed_documents(
             # this text. Requeuing those would restart work an admin deliberately
             # stopped and silently undo the emergency stop — and since they tend
             # to be older, an ordering by age would have requeued them *first*
-            # and spent the whole limit on them.
-            Document.error.not_in(DELIBERATELY_STOPPED_ERRORS),
+            # and spent the whole limit on them. A NULL `error` is a failure
+            # with no text, not a deliberate stop: `NOT IN` alone is never true
+            # for NULL, which silently skipped those documents.
+            or_(Document.error.is_(None), Document.error.not_in(DELIBERATELY_STOPPED_ERRORS)),
         )
         # Most recently failed first, matching the failed-docs query in
         # routes/system.py. The motivating case is an outage that just failed a

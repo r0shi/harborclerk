@@ -23,6 +23,12 @@ type Phase =
 interface Props {
   /** Called after a run that queued anything, so the list drops the documents that left `error`. */
   onDone: () => void
+  /**
+   * True when the page has filters besides the Failed status (folder, search,
+   * type…). The endpoint takes none of them: it covers every failed document in
+   * the library, so the confirmation says so rather than implying the view.
+   */
+  otherFiltersActive?: boolean
 }
 
 function plural(n: number, word: string): string {
@@ -49,7 +55,7 @@ function plural(n: number, word: string): string {
  * Two-click confirmation, never `window.confirm`: WKWebView in the Mac app
  * returns false from native dialogs without showing them.
  */
-export default function ReprocessFailedAction({ onDone }: Props) {
+export default function ReprocessFailedAction({ onDone, otherFiltersActive = false }: Props) {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
 
   async function count() {
@@ -87,7 +93,8 @@ export default function ReprocessFailedAction({ onDone }: Props) {
       {(phase.kind === 'confirm' || phase.kind === 'running') && (
         <>
           <span className="text-(--color-text-primary)">
-            Reprocess {plural(phase.matching, 'failed document')}?
+            Reprocess all {plural(phase.matching, 'failed document')} in the library?
+            {otherFiltersActive && ' Your other filters do not apply: this covers every failed document.'}
             {phase.matching > phase.limit &&
               ` The ${phase.limit.toLocaleString()} most recent are queued now; run it again for the rest.`}
           </span>

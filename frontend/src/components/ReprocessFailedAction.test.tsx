@@ -21,7 +21,7 @@ describe('ReprocessFailedAction (#554)', () => {
     render(<ReprocessFailedAction onDone={onDone} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Reprocess all failed' }))
-    expect(await screen.findByText('Reprocess 7 failed documents?')).toBeInTheDocument()
+    expect(await screen.findByText('Reprocess all 7 failed documents in the library?')).toBeInTheDocument()
     expect(postMock).toHaveBeenCalledTimes(1)
     expect(postMock).toHaveBeenCalledWith(DRY_RUN)
 
@@ -66,8 +66,31 @@ describe('ReprocessFailedAction (#554)', () => {
     render(<ReprocessFailedAction onDone={vi.fn()} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Reprocess all failed' }))
-    expect(await screen.findByText('Reprocess 25 failed documents?')).toBeInTheDocument()
+    expect(await screen.findByText('Reprocess all 25 failed documents in the library?')).toBeInTheDocument()
     expect(screen.queryByText(/most recent are queued now/)).not.toBeInTheDocument()
+  })
+
+  it('with other filters active, says they do not apply and the count is the whole library', async () => {
+    // The view may show 3 failed documents in one folder; the endpoint covers all 500.
+    postMock.mockResolvedValue({ requeued: 0, remaining: 500, limit: 1000 })
+    render(<ReprocessFailedAction onDone={vi.fn()} otherFiltersActive />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reprocess all failed' }))
+    expect(
+      await screen.findByText(
+        'Reprocess all 500 failed documents in the library? Your other filters do not apply: this covers every failed document.',
+      ),
+    ).toBeInTheDocument()
+    expect(postMock).toHaveBeenCalledWith(DRY_RUN)
+  })
+
+  it('without other filters, makes no claim about them', async () => {
+    postMock.mockResolvedValue({ requeued: 0, remaining: 500, limit: 1000 })
+    render(<ReprocessFailedAction onDone={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reprocess all failed' }))
+    expect(await screen.findByText('Reprocess all 500 failed documents in the library?')).toBeInTheDocument()
+    expect(screen.queryByText(/other filters do not apply/)).not.toBeInTheDocument()
   })
 
   it('makes no real call when nothing matches', async () => {
