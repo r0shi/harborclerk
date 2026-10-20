@@ -76,14 +76,20 @@ class _Switch:
 
 @pytest.fixture
 def unmigrated(_sync_engine):
-    """A session factory on an empty schema: a database no migration has run on."""
+    """A session factory on an empty schema: a database no migration has run on.
+
+    The drops are bounded (lock_timeout): a session the code under test leaked holds a lock on the
+    schema, and the drop must then fail the test rather than wait for good.
+    """
     with _sync_engine.begin() as conn:
+        conn.execute(text("SET LOCAL lock_timeout = '5s'"))
         conn.execute(text(f"DROP SCHEMA IF EXISTS {EMPTY_SCHEMA} CASCADE"))
         conn.execute(text(f"CREATE SCHEMA {EMPTY_SCHEMA}"))
     engine = create_engine(_url(_sync_engine), connect_args={"options": f"-c search_path={EMPTY_SCHEMA}"})
     yield sessionmaker(bind=engine, expire_on_commit=False)
     engine.dispose()
     with _sync_engine.begin() as conn:
+        conn.execute(text("SET LOCAL lock_timeout = '5s'"))
         conn.execute(text(f"DROP SCHEMA IF EXISTS {EMPTY_SCHEMA} CASCADE"))
 
 
