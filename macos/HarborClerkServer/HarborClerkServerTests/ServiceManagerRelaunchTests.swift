@@ -308,6 +308,29 @@ final class ServiceManagerRelaunchTests: XCTestCase {
         XCTAssertEqual(clean.state, .stopped)
     }
 
+    /// `stopAll` ends with the PID file: removed when every stop completed,
+    /// kept with just the still-tracked pids when one gave up, so the next
+    /// launch's orphan pass finds that process. (Driven directly: `stopAll`
+    /// itself also boots out the launchd Postgres and Tika agents, which are
+    /// the live app's on a dev machine.)
+    func testPidFileIsKeptWithTheStillTrackedPidsOnlyWhenAStopGaveUp() throws {
+        let sm = makeManager()
+        try "11111\n22222".write(to: sm.pidFileURL, atomically: true, encoding: .utf8)
+
+        sm.settlePidFileAfterStop()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sm.pidFileURL.path), "every stop completed: removed")
+
+        guard let stuck = sm.allWorkers.first else { return XCTFail("fixture: no workers") }
+        let proc = try spawnSigtermIgnoringSleeper()
+        defer { killAndReap(proc) }
+        stuck.process = proc
+        stuck.state = .errored
+
+        sm.settlePidFileAfterStop()
+        let content = try String(contentsOf: sm.pidFileURL, encoding: .utf8)
+        XCTAssertEqual(content, String(proc.processIdentifier), "kept, holding only the pid still tracked")
+    }
+
     /// A preset change recreates the workers, dropping the old objects. One
     /// whose stop gave up holds the only reference to a live process, so the
     /// workers are not recreated this time: the old one stays in the manager,

@@ -306,6 +306,21 @@ class ServiceManager: ObservableObject {
         try? content.write(to: pidFileURL, atomically: true, encoding: .utf8)
     }
 
+    /// The PID file after `stopAll()`: removed when every stop completed,
+    /// rewritten to the pids still tracked when any stop gave up its wait
+    /// (#890), so the next launch's orphan pass still finds them.
+    func settlePidFileAfterStop() {
+        let stillAlive = services.filter { !$0.isLaunchdManaged && $0.holdsLiveProcess }
+        if stillAlive.isEmpty {
+            removePidFile()
+        } else {
+            savePidFile()
+            Log.logger("lifecycle").error(
+                "Keeping the child PID file: \(stillAlive.map(\.name).joined(separator: ", "), privacy: .public) still hold a live process their stop gave up on"
+            )
+        }
+    }
+
     /// Remove the PID file (called after orderly shutdown).
     private func removePidFile() {
         try? FileManager.default.removeItem(at: pidFileURL)
@@ -514,8 +529,8 @@ class ServiceManager: ObservableObject {
             notifyStateChanged()
         }
 
-        // All children stopped — remove PID file
-        removePidFile()
+        // Removed only if every child stopped; see settlePidFileAfterStop.
+        settlePidFileAfterStop()
 
         // App typically exit(0)s right after stopAll, so this clear is a
         // safety net for any non-quit caller (none today). Cheap to keep.
@@ -1120,16 +1135,16 @@ class ServiceManager: ObservableObject {
         //    Not over a worker whose stop gave up (#890): recreating drops the
         //    old WorkerService objects, and with them the only reference to a
         //    process that is still alive. Those stay `errored` and tracked,
-        //    so the next Stop or Restart deals with them; the new preset
-        //    applies when workers are next recreated (the next preset change,
-        //    or the app's next launch).
+        //    so the next Stop or Restart deals with them. The new preset takes
+        //    effect at the next app launch: saving the same preset again sends
+        //    no `worker_preset` change, so nothing else recreates them.
         if needsWorkerRecreate {
             let stillAlive = allWorkers.filter { $0.holdsLiveProcess }
             if stillAlive.isEmpty {
                 recreateWorkers()
             } else {
                 Log.logger("lifecycle").error(
-                    "Not recreating workers for the new preset: \(stillAlive.map(\.name).joined(separator: ", "), privacy: .public) still hold a live process their stop gave up on; Stop or Restart them, then save the preset again (or relaunch the app) to apply it"
+                    "Not recreating workers for the new preset: \(stillAlive.map(\.name).joined(separator: ", "), privacy: .public) still hold a live process their stop gave up on; Stop or Restart them. The new preset takes effect at the next app launch"
                 )
             }
         }
