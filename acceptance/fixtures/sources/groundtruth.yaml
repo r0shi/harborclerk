@@ -95,7 +95,7 @@ fixtures:
     language: english
     source_kind: document
     # D5 makes this one unreadable after ingest and reprocesses it, so its
-    # pipeline error quotes the absolute path; no other check depends on it.
+    # extract stage fails; no other check depends on it.
     failure_target: true
   notes.xyz:
     render: copy
