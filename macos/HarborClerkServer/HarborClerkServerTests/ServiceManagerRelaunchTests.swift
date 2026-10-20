@@ -19,6 +19,10 @@ final class MockProcessService: ManagedService {
     /// stop that landed while the real `start()` was suspended in an await,
     /// or a start that refused and said why.
     var stateAfterStart: ServiceState?
+    /// What `start()` sets `holdsLiveProcess` to, or nil to leave it alone.
+    /// Models the spawn: `startService` refuses a service that already holds
+    /// a live child (#890), so a start-path test begins without one.
+    var holdsLiveProcessAfterStart: Bool?
     /// What `healthCheck()` moves the state to before answering, or nil.
     /// Models a stop that landed during the probe.
     var stateDuringHealthCheck: ServiceState?
@@ -42,6 +46,7 @@ final class MockProcessService: ManagedService {
     func start() async throws {
         startCalls += 1
         if let next = stateAfterStart { state = next }
+        if let alive = holdsLiveProcessAfterStart { holdsLiveProcess = alive }
     }
 
     func stop() async {
@@ -233,7 +238,8 @@ final class ServiceManagerRelaunchTests: XCTestCase {
 
     func testStartServiceRunsAHealthyService() async {
         let sm = makeManager()
-        let svc = MockProcessService(state: .stopped, holdsLiveProcess: true)
+        let svc = MockProcessService(state: .stopped)
+        svc.holdsLiveProcessAfterStart = true
         svc.healthy = true
 
         await sm.startService(svc)
@@ -252,6 +258,60 @@ final class ServiceManagerRelaunchTests: XCTestCase {
 
         XCTAssertEqual(svc.startCalls, 0, "no spawn while a stop is in flight")
         XCTAssertEqual(svc.state, .stopping)
+    }
+
+    // MARK: - No start beside a process a stop gave up on (#890)
+
+    /// A stop whose wait gave up leaves the service `errored` with its process
+    /// still tracked. Any start would spawn a second child beside it.
+    func testStartServiceRefusesAServiceThatStillHoldsALiveProcess() async {
+        let sm = makeManager()
+        let errored = MockProcessService(state: .errored, holdsLiveProcess: true)
+        await sm.startService(errored)
+        XCTAssertEqual(errored.startCalls, 0, "no spawn beside a live child")
+        XCTAssertEqual(errored.state, .errored)
+
+        let running = MockProcessService(state: .running, holdsLiveProcess: true)
+        await sm.startService(running)
+        XCTAssertEqual(running.startCalls, 0)
+        XCTAssertEqual(running.state, .running, "a running service is left as it is")
+    }
+
+    /// The settings restart stops a service and then starts it. When the stop's
+    /// wait gave up, the start must not run: the old llama-server is still
+    /// tracked, still alive, and may still hold the port.
+    func testSettingsRestartDoesNotStartBesideAProcessItsStopGaveUpOn() async throws {
+        let sm = makeManager()
+        let llama = sm.llamaService
+        // A config of this test's own with no model: were the start to run, it
+        // stops at "no model selected", before it touches any port; and the
+        // stop's straggler probe is pointed at a port nothing holds.
+        let settings = AppSettings(configURL: tempDir.appendingPathComponent("config.json"))
+        llama.settingsOverride = settings
+        guard settings.activeModelPath.isEmpty else {
+            return XCTFail("the scratch config must name no model, so no start can reach the live app's port")
+        }
+        llama.portOverride = try freePort()
+        llama.waitForExit = { _, _, _, _ in false }  // the wait gives up
+        let old = try spawnSigtermIgnoringSleeper()
+        defer { killAndReap(old) }
+        llama.process = old
+        llama.state = .running
+
+        let finish = ResumeOnce()
+        let done = expectation(description: "the settings restart returned")
+        let task = Task { @MainActor in
+            await sm.restartForChangedSettings(["llm_yarn_enabled"])
+            if finish.claim() { done.fulfill() }
+        }
+        await fulfillment(of: [done], timeout: 20)
+        _ = finish.claim()
+        task.cancel()
+
+        XCTAssertEqual(llama.stopsPerformed, 1, "the restart did stop it")
+        XCTAssertIdentical(llama.process, old, "still tracked")
+        XCTAssertTrue(llama.holdsLiveProcess)
+        XCTAssertEqual(llama.state, .errored, "not started, and not called stopped or running")
     }
 
     /// A second driver on a service another caller is already starting would

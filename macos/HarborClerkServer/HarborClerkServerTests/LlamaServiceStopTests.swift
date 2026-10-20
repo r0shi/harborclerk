@@ -46,25 +46,6 @@ final class LlamaServiceStopTests: XCTestCase {
         return proc
     }
 
-    /// A TCP port nothing holds right now: bind an ephemeral one, read it back, close it.
-    private func freePort() throws -> Int {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        XCTAssertGreaterThanOrEqual(fd, 0)
-        defer { close(fd) }
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = 0
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let bound = withUnsafeMutablePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                Darwin.bind(fd, sa, len) == 0 && getsockname(fd, sa, &len) == 0
-            }
-        }
-        XCTAssertTrue(bound, "bind/getsockname on an ephemeral port")
-        return Int(UInt16(bigEndian: addr.sin_port))
-    }
-
     /// Run `body` and fail the test if it has not returned within `seconds`.
     /// A stop that never returns is what a broken coalescing or cleanup line
     /// looks like from here; without the bound, a mutation of one of those

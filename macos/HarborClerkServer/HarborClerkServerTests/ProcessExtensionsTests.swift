@@ -359,6 +359,41 @@ extension XCTestCase {
         }
     }
 
+    /// A TCP port nothing holds right now: bind an ephemeral one, read it back, close it.
+    func freePort() throws -> Int {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.bind(fd, sa, len) == 0 && getsockname(fd, sa, &len) == 0
+            }
+        }
+        XCTAssertTrue(bound, "bind/getsockname on an ephemeral port")
+        return Int(UInt16(bigEndian: addr.sin_port))
+    }
+
+    /// A child in its own process group that ignores SIGTERM (SIG_IGN survives
+    /// the exec), so a stop's SIGTERM leaves it alive, as llama-server can be
+    /// while it unloads. The caller reaps it.
+    func spawnSigtermIgnoringSleeper(file: StaticString = #filePath, line: UInt = #line) throws -> Process {
+        let proc = Process()
+        proc.standardError = FileHandle.nullDevice
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", "trap '' TERM; echo ready; exec /bin/sleep 30"]
+        let ready = Pipe()
+        proc.standardOutput = ready
+        try proc.runAsProcessGroupLeader()
+        let banner = readBounded(ready.fileHandleForReading, count: 6, within: 5)
+        XCTAssertEqual(String(data: banner, encoding: .utf8), "ready\n", "the SIGTERM-ignoring fixture never said ready", file: file, line: line)
+        return proc
+    }
+
     /// Wait up to `seconds` for Foundation to report `proc` gone. Sends nothing.
     func awaitExit(_ proc: Process, within seconds: TimeInterval = 5) -> Bool {
         let deadline = Date().addingTimeInterval(seconds)

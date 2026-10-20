@@ -802,6 +802,21 @@ class ServiceManager: ObservableObject {
                 "[\(service.name, privacy: .public)] Not starting: \(service.state.rawValue, privacy: .public)")
             return
         }
+        // Never spawn beside a child this service still holds. Every path that
+        // starts after a stop reaches here (settings restart, restartService and
+        // so auto-restart, relaunchLlama, startAll), and a stop whose wait gave
+        // up (#890) leaves its process tracked and the service `errored`;
+        // starting would launch a second server onto a port the first may still
+        // hold. Left `errored` (a `running` one is left alone): a later Stop or
+        // Restart goes through `stop()` again, which is where the process is
+        // dealt with.
+        guard !service.holdsLiveProcess else {
+            if service.state != .running { service.state = .errored }
+            notifyStateChanged()
+            Log.logger("lifecycle").error(
+                "[\(service.name, privacy: .public)] Not starting: it still holds a live process that a stop could not reap; stop it again first")
+            return
+        }
 
         // Ensure Python services have env set
         if let pySvc = service as? PythonService, pySvc.baseEnvironment.isEmpty {
