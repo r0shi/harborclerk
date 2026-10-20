@@ -362,23 +362,13 @@ class ServiceManager: ObservableObject {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         proc.arguments = ["-ti", "tcp:\(port)"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
-        // `Process.runAndAwait` uses terminationHandler — safer than
-        // `waitUntilExit` for short-lived children like lsof (see
-        // ProcessAsync.swift). On error we still try to read the pipe;
-        // it'll be empty and we fall through to the no-output guard.
-        _ = try? await proc.runAndAwait()
-        // Explicitly close the parent's write-end copy before the read.
-        // Foundation usually closes it on its own when the child exits,
-        // but that's undocumented — without our own close, an unlucky
-        // future regression would leave readDataToEndOfFile blocked on
-        // MainActor.
-        try? pipe.fileHandleForWriting.close()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-
-        guard let output = String(data: data, encoding: .utf8)?
+        // terminationHandler rather than `waitUntilExit` for short-lived
+        // children like lsof (see ProcessAsync.swift), with both the exit
+        // wait and the pipe read bounded (#890): every start of the LLM runs
+        // this first. A launch failure or timeout reads as no output.
+        guard let data = await proc.runCapturingOutput(timeout: Process.probeTimeoutSeconds),
+              let output = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !output.isEmpty else { return }
 

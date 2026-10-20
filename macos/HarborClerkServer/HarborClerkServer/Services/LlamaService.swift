@@ -32,6 +32,9 @@ final class LlamaService: ManagedService {
     /// unload can be slow, hence 10; a test that needs the stop to stay in
     /// flight for a measurable moment shortens it.
     var stopGraceSeconds: TimeInterval = 10
+    /// Seconds after the SIGKILL before the stop gives up waiting for the
+    /// process to be reported gone (#890). A test shortens it.
+    var stopKillWaitSeconds: TimeInterval = Process.defaultKillWaitSeconds
 
     private var llamaBin: URL {
         Bundle.main.resourceURL!.appendingPathComponent("llama/llama-server")
@@ -255,14 +258,22 @@ final class LlamaService: ManagedService {
             // Pipe+waitUntilExit deadlock pattern (audit memo:
             // project_menubar_process_management_audit.md) can't make this
             // stall the rest of stopAll().
-            await proc.waitForExitWithDeadline(graceSeconds: stopGraceSeconds, serviceName: name)
+            let exited = await proc.waitForExitWithDeadline(
+                graceSeconds: stopGraceSeconds,
+                serviceName: name,
+                killWaitSeconds: stopKillWaitSeconds
+            )
             // Only the process this stop waited on. A start that ran while the
             // wait was in flight (Start or Restart from the status window
             // passes `startService` while the state is `stopping`) has
             // assigned its own child here; clearing that one would leave a
             // live server that `holdsLiveProcess` denies and no relaunch path
             // can reach — the one orphan path the state guards do not close.
-            if process === proc { process = nil }
+            //
+            // And only if it was seen to exit: a wait that gave up (#890)
+            // leaves a process still reported running, which stays tracked so
+            // `holdsLiveProcess` and the force-stop pass still see it.
+            if exited, process === proc { process = nil }
         } else if process?.isRunning != true {
             // Re-read rather than reusing the capture above: a concurrent
             // reassignment to a live child between the two must stay.
@@ -313,21 +324,19 @@ final class LlamaService: ManagedService {
 
     /// Return PIDs (if any) currently bound to the LLM port.
     ///
-    /// `runAndAwait` (terminationHandler) rather than `run()` on one thread
-    /// and `waitUntilExit()` on another: lsof is a short-lived child, and that
+    /// terminationHandler rather than `run()` on one thread and
+    /// `waitUntilExit()` on another: lsof is a short-lived child, and that
     /// pattern has missed the exit of exactly those (ProcessAsync.swift). Here
     /// it showed as a stop that took seconds instead of one, and once as one
     /// that never returned, so the same shape as `killStaleProcess(onPort:)`.
+    /// Bounded both ways (`runCapturingOutput`): a stop must not wait on lsof
+    /// forever either (#890).
     private func pidsHoldingPort() async -> [Int32] {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         proc.arguments = ["-ti", "tcp:\(self.port)"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
-        guard (try? await proc.runAndAwait()) != nil else { return [] }
-        try? pipe.fileHandleForWriting.close()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let data = await proc.runCapturingOutput(timeout: Process.probeTimeoutSeconds) else { return [] }
         return (String(data: data, encoding: .utf8) ?? "")
             .split(whereSeparator: \.isNewline)
             .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }

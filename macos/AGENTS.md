@@ -6,10 +6,10 @@ service) and **Harbor Clerk** (WKWebView shell around the SPA). Build scripts in
 
 ## Process management — the rules that cost real outages
 
-- **Never call `proc.waitUntilExit()` on the MainActor.** It blocks, and every
-  other service stalls in `startupPending` behind it. Use
-  `await withCheckedContinuation` instead — the pattern `MigrationRunner`
-  already uses.
+- **Never call `proc.waitUntilExit()` on the MainActor, nor unbounded anywhere.**
+  It stalls every service behind it, has parked forever on an exited child, and
+  in a test `tearDown` escapes every XCTest timeout (#890). Use `await
+  withCheckedContinuation` (as `MigrationRunner` does); in tests, `killAndReap`.
 - **Nil the `readabilityHandler` on EOF.** `Log.createPipe()` installs a
   readability handler; if it is never cleared, `waitUntilExit()` deadlocks
   because the pipe's read end never closes. Set

@@ -11,10 +11,10 @@ final class LlamaServiceStopTests: XCTestCase {
     private var spawned: [Process] = []
 
     override func tearDown() {
-        for proc in spawned where proc.isRunning {
-            kill(proc.processIdentifier, SIGKILL)
-            proc.waitUntilExit()
-        }
+        // Bounded, not `waitUntilExit()`: tearDown is synchronous and outside
+        // every test's own bound, so a reap that never returned here hung the
+        // CI job to its 20-minute timeout instead of failing (#890).
+        for proc in spawned { killAndReap(proc) }
         spawned = []
         super.tearDown()
     }
@@ -34,8 +34,8 @@ final class LlamaServiceStopTests: XCTestCase {
             proc.standardOutput = ready
             try proc.runAsProcessGroupLeader()
             spawned.append(proc)
-            let banner = ready.fileHandleForReading.readData(ofLength: 6)
-            XCTAssertEqual(String(data: banner, encoding: .utf8), "ready\n")
+            let banner = readBounded(ready.fileHandleForReading, count: 6, within: 5)
+            XCTAssertEqual(String(data: banner, encoding: .utf8), "ready\n", "the SIGTERM-ignoring fixture never said ready")
         } else {
             proc.executableURL = URL(fileURLWithPath: "/bin/sleep")
             proc.arguments = ["30"]
@@ -83,6 +83,7 @@ final class LlamaServiceStopTests: XCTestCase {
         let svc = LlamaService()
         svc.portOverride = try freePort()
         svc.stopGraceSeconds = 1
+        svc.stopKillWaitSeconds = 2
         return svc
     }
 
@@ -177,8 +178,7 @@ final class LlamaServiceStopTests: XCTestCase {
         let proc = try spawnSleeper()
         svc.process = proc
         XCTAssertTrue(svc.holdsLiveProcess)
-        kill(proc.processIdentifier, SIGKILL)
-        proc.waitUntilExit()
+        killAndReap(proc)
         XCTAssertFalse(svc.holdsLiveProcess)
     }
 
@@ -188,8 +188,7 @@ final class LlamaServiceStopTests: XCTestCase {
         let proc = try spawnSleeper()
         svc.process = proc
         XCTAssertTrue(svc.holdsLiveProcess)
-        kill(proc.processIdentifier, SIGKILL)
-        proc.waitUntilExit()
+        killAndReap(proc)
         XCTAssertFalse(svc.holdsLiveProcess)
     }
 }
