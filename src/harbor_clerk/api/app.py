@@ -30,53 +30,16 @@ from harbor_clerk.api.routes.users import router as users_router
 from harbor_clerk.api.routes.watch import router as watch_router
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_health import panic_on_sentinel_mismatch
+from harbor_clerk.schema_version import expected_schema_version, find_alembic_dir
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
 
 
-def _find_alembic_dir() -> Path | None:
-    """Walk parents of this file looking for an `alembic/` directory next to
-    an `alembic.ini`. Works in dev (src layout: repo root has both) and in
-    the bundled macOS app (bundle resource dir has both). Returns None if
-    no candidate is found.
-    """
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        candidate = parent / "alembic"
-        if candidate.is_dir() and (parent / "alembic.ini").exists():
-            return candidate
-    return None
-
-
-def _get_expected_schema_version() -> str | None:
-    """Discover the head migration revision via alembic's ScriptDirectory.
-
-    Returns the revision id string (e.g. "0018") or None if alembic isn't
-    importable or the migrations directory can't be located. Called once at
-    startup; the result is logged for the schema-version sanity check.
-
-    This replaces the previous pattern of hardcoding `_EXPECTED_SCHEMA_VERSION`
-    inside the lifespan function — that constant had to be bumped on every
-    new migration, which was easy to forget and produced misleading
-    "schema mismatch" log lines after every release. Reading the head
-    dynamically keeps the check in sync automatically.
-    """
-    try:
-        from alembic.script import ScriptDirectory
-    except ImportError:
-        return None
-
-    alembic_dir = _find_alembic_dir()
-    if alembic_dir is None:
-        return None
-
-    try:
-        script = ScriptDirectory(str(alembic_dir))
-        return script.get_current_head()
-    except Exception:
-        logger.exception("Found alembic dir at %s but could not read head", alembic_dir)
-        return None
+# The head lookup lives in harbor_clerk.schema_version, shared with the watcher (#904); these names stay for
+# api/routes/system.py and tests/test_schema_version_check.py.
+_find_alembic_dir = find_alembic_dir
+_get_expected_schema_version = expected_schema_version
 
 
 # Create MCP app + session manager at module level so we can wire lifespan

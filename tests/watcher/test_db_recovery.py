@@ -1,12 +1,13 @@
 """The watcher and a database that is not there yet, or goes away (#904, #892).
 
-At start the watcher waits for a reachable, migrated database instead of
-crashing (#904). A live event dropped during an outage, or a pass that ended
+At start the watcher waits for a reachable database at its Alembic head instead
+of crashing (#904). A live event dropped during an outage, or a pass that ended
 early, makes its folder pass once when the database is next seen reachable
 (#892). Every wait is bounded.
 """
 
 import logging
+import socket
 import threading
 import time
 import uuid
@@ -16,11 +17,15 @@ import psycopg2
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy import event as sa_event
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import sessionmaker
 
 import harbor_clerk.watcher.main as watcher_main
 from harbor_clerk.models import Base
+from harbor_clerk.models.watched import ROOT_EMPTY
+from harbor_clerk.schema_version import schema_head
+from harbor_clerk.watcher.events import EventKind, FileEvent
 from harbor_clerk.watcher.main import WatcherDaemon
 from tests.watcher.test_lifecycle import (
     ACTIVE,
@@ -92,18 +97,51 @@ def unreachable():
 
 @pytest.fixture
 def outage(_sync_engine):
-    """A daemon's own engine, and a switch that makes every statement on it fail as an outage does."""
+    """A daemon's own engine, and a switch that makes every statement fail as an outage does.
+
+    On every engine but the test's own, so the daemon's recovery probe (its own engine) fails too.
+    """
     engine = create_engine(_url(_sync_engine))
     down = threading.Event()
 
     def refuse(conn, cursor, statement, parameters, context, executemany):
-        if down.is_set():
+        if down.is_set() and conn.engine is not _sync_engine:
             raise psycopg2.OperationalError("server closed the connection unexpectedly")
 
-    sa_event.listen(engine, "before_cursor_execute", refuse)
+    sa_event.listen(Engine, "before_cursor_execute", refuse)
     yield SimpleNamespace(factory=sessionmaker(bind=engine, expire_on_commit=False), down=down)
-    sa_event.remove(engine, "before_cursor_execute", refuse)
+    sa_event.remove(Engine, "before_cursor_execute", refuse)
     engine.dispose()
+
+
+@pytest.fixture
+def stamped(unmigrated):
+    """The empty schema with an `alembic_version` table, and a function that stamps it at a revision."""
+    engine = unmigrated.kw["bind"]
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE alembic_version (version_num varchar(64) PRIMARY KEY)"))
+
+    def stamp(revision: str) -> None:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM alembic_version"))
+            conn.execute(text("INSERT INTO alembic_version VALUES (:rev)"), {"rev": revision})
+
+    return SimpleNamespace(factory=unmigrated, stamp=stamp)
+
+
+def _wait_in_thread(daemon: WatcherDaemon) -> tuple[threading.Thread, list]:
+    """Run `_wait_for_schema` in a thread; the list gets its result, or the exception it raised."""
+    out: list = []
+
+    def run():
+        try:
+            out.append(daemon._wait_for_schema())
+        except BaseException as exc:  # noqa: BLE001 - handed to the test
+            out.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True, name="test-wait")
+    thread.start()
+    return thread, out
 
 
 def _start_in_thread(daemon: WatcherDaemon) -> tuple[threading.Thread, list[BaseException]]:
@@ -188,6 +226,7 @@ def test_start_does_not_wait_out_a_schema_error_that_is_not_a_missing_table(fact
         raise ProgrammingError("SELECT ...", {}, refused)
 
     monkeypatch.setattr(watcher_main, "_missing_tables", failing)
+    monkeypatch.setattr(watcher_main, "_schema_wait", lambda session, _head: failing(session))
     monkeypatch.setattr(watcher_main, "SCHEMA_WAIT_FIRST_SECS", 0.05)
     daemon = WatcherDaemon(factory)
     try:
@@ -209,6 +248,75 @@ def test_stop_while_waiting_for_the_schema_returns_promptly(unmigrated, monkeypa
     thread.join(WAIT_SECS)
     assert not thread.is_alive(), "start() kept waiting after stop()"
     assert not errors and not daemon._threads
+
+
+@pytest.fixture
+def fast_wait(monkeypatch):
+    monkeypatch.setattr(watcher_main, "SCHEMA_WAIT_FIRST_SECS", 0.05)
+    monkeypatch.setattr(watcher_main, "SCHEMA_WAIT_MAX_SECS", 0.1)
+
+
+def test_a_pending_migration_is_waited_for_until_the_database_is_at_head(stamped, fast_wait, caplog):
+    """An upgrade: every table exists but `app` has not run the new migration (a new column would
+    fail every query). The watcher waits while the stored revision is an ancestor of its head."""
+    head = schema_head()
+    assert head is not None, "the migrations directory is beside the code in the repo"
+    older = sorted(head.ancestors - {head.revision})
+    if not older:
+        pytest.skip("a one-migration chain has no ancestor to stamp")
+    stamped.stamp(older[-1])
+    daemon = WatcherDaemon(stamped.factory)
+    with caplog.at_level(logging.INFO, logger="harbor_clerk.watcher"):
+        thread, out = _wait_in_thread(daemon)
+        try:
+            _wait_for(
+                "two tries at a database behind the head", lambda: _tries(caplog, f"head is {head.revision}") >= 2
+            )
+            assert thread.is_alive() and not out, out
+            stamped.stamp(head.revision)
+            thread.join(WAIT_SECS)
+            assert not thread.is_alive() and out == [True], out
+        finally:
+            daemon.stop()
+            thread.join(WAIT_SECS)
+    assert not [r for r in caplog.records if r.exc_info]
+
+
+def test_a_database_at_head_is_not_waited_for(factory, caplog):
+    daemon = WatcherDaemon(factory)
+    with caplog.at_level(logging.INFO, logger="harbor_clerk.watcher"):
+        assert daemon._wait_for_schema() is True
+    assert not [r for r in caplog.records if "waiting" in r.getMessage()]
+
+
+def test_a_database_at_a_revision_this_build_does_not_know_is_warned_about_once_and_used(stamped, fast_wait, caplog):
+    stamped.stamp("not_a_revision_of_this_build")
+    daemon = WatcherDaemon(stamped.factory)
+    with caplog.at_level(logging.INFO, logger="harbor_clerk.watcher"):
+        thread, out = _wait_in_thread(daemon)
+        thread.join(WAIT_SECS)
+        daemon.stop()
+    assert out == [True], "a newer database is not waited out"
+    loud = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(loud) == 1 and "does not know" in loud[0].getMessage(), [r.getMessage() for r in loud]
+
+
+def test_without_a_readable_head_the_tables_are_waited_for(factory, unmigrated, fast_wait, monkeypatch, caplog):
+    """No migrations directory beside the code: fall back to every mapped table existing."""
+    monkeypatch.setattr(watcher_main, "schema_head", lambda: None)
+    switch = _Switch(unmigrated)
+    daemon = WatcherDaemon(switch)
+    with caplog.at_level(logging.INFO, logger="harbor_clerk.watcher"):
+        thread, out = _wait_in_thread(daemon)
+        try:
+            _wait_for("two tries at missing tables", lambda: _tries(caplog, "table(s) missing") >= 2)
+            assert thread.is_alive() and not out, out
+            switch.current = factory
+            thread.join(WAIT_SECS)
+            assert not thread.is_alive() and out == [True], out
+        finally:
+            daemon.stop()
+            thread.join(WAIT_SECS)
 
 
 # ---------------------------------------------------------------------------
@@ -385,3 +493,92 @@ def test_the_monitor_probes_only_while_a_folder_waits_for_recovery(factory, outa
     assert requested == [folder_id]
     daemon._monitor_tick(interval=0, next_rescan=0.0)
     assert len(statements) == 4, "recovered: no more probes"
+
+
+def test_a_root_empty_clear_lost_to_an_outage_is_caught_up(outage):
+    """A live event indexed a file in a `root_empty` folder; clearing the reason fails in the outage."""
+    daemon = WatcherDaemon(outage.factory)
+    folder_id = uuid.uuid4()
+    daemon._reasons[folder_id] = ROOT_EMPTY
+    outage.down.set()
+    daemon._clear_root_empty_if_indexed(FileEvent(EventKind.created, folder_id, "a.txt", "/nowhere/a.txt"))
+    assert daemon._catch_up == {folder_id}, "the catch-up pass clears it once the database is back"
+
+
+def test_an_observer_sync_is_a_recovery(factory, monkeypatch):
+    """The listener's resync after it reconnects (or discovery's) sees the database back first."""
+    daemon = WatcherDaemon(factory)
+    folder_id = uuid.uuid4()
+    requested = []
+    monkeypatch.setattr(daemon, "_request_reconcile", requested.append)
+    daemon._note_db_failure(_outage())
+    daemon._need_catch_up(folder_id)
+    daemon._sync_observers()  # no folder rows: starts nothing, requests nothing of its own
+    assert requested == [folder_id] and not daemon._catch_up
+
+
+def test_a_folder_removed_during_the_outage_gets_no_catch_up_pass(factory, monkeypatch):
+    daemon = WatcherDaemon(factory)
+    folder_id = uuid.uuid4()
+    daemon._observers[folder_id] = SimpleNamespace(stop=lambda: None, root="/nowhere")
+    requested = []
+    monkeypatch.setattr(daemon, "_request_reconcile", requested.append)
+    daemon._note_db_failure(_outage())
+    daemon._need_catch_up(folder_id)
+    daemon._sync_observers()  # its row is gone: the observer is stopped, then the recovery is noted
+    assert folder_id not in daemon._observers
+    assert requested == [] and not daemon._catch_up
+
+
+def test_the_probe_gives_up_on_a_host_that_never_answers(monkeypatch):
+    """A blackholed host: the TCP connect completes (the kernel's backlog) and nothing ever answers.
+
+    Without a connect timeout the probe, and with it the monitor thread, waits for good."""
+    monkeypatch.setattr(watcher_main, "PROBE_CONNECT_TIMEOUT_SECS", 2)
+    silent = socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen(8)
+    port = silent.getsockname()[1]
+    engine = create_engine(f"postgresql+psycopg2://nobody@127.0.0.1:{port}/nothing")
+    daemon = WatcherDaemon(sessionmaker(bind=engine))
+    daemon._note_db_failure(_outage())
+    daemon._need_catch_up(uuid.uuid4())
+    started = time.monotonic()
+    tick = threading.Thread(target=daemon._monitor_tick, args=(0, 0.0), daemon=True, name="test-tick")
+    try:
+        tick.start()
+        tick.join(15)
+        assert not tick.is_alive(), "the probe was still connecting after 15 s"
+        assert time.monotonic() - started < 10
+        assert daemon._db_streak.failures == 2, "the timeout counts as the database still unreachable"
+        assert daemon._catch_up, "still waiting for a recovery"
+    finally:
+        silent.close()
+        tick.join(WAIT_SECS)
+        engine.dispose()
+
+
+def test_an_unexpected_probe_error_is_contained_and_the_tick_goes_on(factory, monkeypatch, caplog):
+    daemon = WatcherDaemon(factory)
+    waiting, retried = uuid.uuid4(), uuid.uuid4()
+    daemon._note_db_failure(_outage())
+    daemon._need_catch_up(waiting)
+
+    def broken(_url):
+        raise RuntimeError("the probe broke")
+
+    monkeypatch.setattr(daemon, "_probe_engine", broken)
+    requested, synced = [], []
+    monkeypatch.setattr(daemon, "_request_reconcile", requested.append)
+    monkeypatch.setattr(daemon, "_sync_observers", lambda: synced.append(1))
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="harbor_clerk.watcher"):
+        for _ in range(4):
+            daemon._retry_at[retried] = 0.0
+            daemon._monitor_tick(interval=0.001, next_rescan=0.0)
+    assert requested == [retried] * 4, "the due retries ran on every tick"
+    assert len(synced) == 4, "and the periodic pass"
+    assert daemon._catch_up == {waiting}, "a failed probe is not a recovery"
+    assert not any("monitor pass failed" in r.getMessage() for r in caplog.records)
+    loud = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(loud) == 1 and "probe failed" in loud[0].getMessage(), [r.getMessage() for r in loud]

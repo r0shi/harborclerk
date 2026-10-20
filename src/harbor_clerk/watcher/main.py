@@ -1,7 +1,7 @@
 """harbor-clerk-watcher entry point.
 
 Lifecycle:
-  - Waits at start until the database is reachable and migrated (#904).
+  - Waits at start until the database is reachable and at this build's Alembic head (#904).
   - Loads enabled watched_folders rows from DB at start.
   - Spawns one FolderObserver per folder, and reconciles each folder with
     the index when its observer attaches and every WATCH_RESCAN_INTERVAL_SECS.
@@ -23,10 +23,12 @@ import uuid
 from datetime import UTC, datetime
 
 import psycopg2
-from sqlalchemy import bindparam, case, null, text, update
+from sqlalchemy import bindparam, case, create_engine, null, text, update
 from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.engine import URL, Engine
 from sqlalchemy.exc import DBAPIError, IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 from sqlalchemy.types import Text
 
 from harbor_clerk.config import get_settings
@@ -44,6 +46,7 @@ from harbor_clerk.models.watched import (
     WatchedFileStatus,
     WatchedFolder,
 )
+from harbor_clerk.schema_version import SchemaHead, schema_head
 from harbor_clerk.watcher.db_listener import listen_for_folder_changes
 from harbor_clerk.watcher.discovery import log_watch_root_problem, scan_watch_root
 from harbor_clerk.watcher.events import (
@@ -86,6 +89,8 @@ RETRY_MAX_SECS = 300.0
 # At start, the wait for a reachable, migrated database (#904): retried after this, doubling, one log line per try.
 SCHEMA_WAIT_FIRST_SECS = 2.0
 SCHEMA_WAIT_MAX_SECS = 30.0
+# The recovery probe's connect bound (#892): a blackholed host must not hold the monitor for the OS TCP timeout.
+PROBE_CONNECT_TIMEOUT_SECS = 5
 
 StatKey = tuple[int, int, int, int]
 
@@ -129,6 +134,33 @@ def _missing_tables(session: Session) -> list[str]:
     """The tables this build maps that the database does not have yet: all of them before the first migration."""
     names = sorted(table.name for table in Base.metadata.sorted_tables)
     return list(session.execute(_MISSING_TABLES_SQL, {"names": names}).scalars())
+
+
+def _schema_wait(session: Session, head: SchemaHead | None) -> tuple[str, str]:
+    """Whether the database is ready for this build: ("ready" | "pending" | "unknown", what to log).
+
+    Ready at this build's Alembic head. Pending while no migration has run or the
+    stored revision is one of the head's ancestors (an upgrade whose migration
+    `app` has not run yet: a new column would fail every query). Unknown when the
+    stored revision is not on this build's chain (the database is newer, say
+    after a rollback): not waited out. Without a readable head (no migrations
+    directory beside the code), ready once every mapped table exists.
+    """
+    if head is None:
+        missing = _missing_tables(session)
+        if missing:
+            return "pending", f"{len(missing)} table(s) missing, {missing[0]} first"
+        return "ready", ""
+    if session.execute(text("SELECT to_regclass('alembic_version') IS NOT NULL")).scalar() is not True:
+        return "pending", "no migration has run yet"
+    stored = sorted(session.execute(text("SELECT version_num FROM alembic_version")).scalars())
+    if not stored:
+        return "pending", "no migration has run yet"
+    if stored == [head.revision]:
+        return "ready", ""
+    if all(rev in head.ancestors for rev in stored):
+        return "pending", f"at revision {', '.join(stored)}, head is {head.revision}"
+    return "unknown", f"at revision {', '.join(stored)}, which this build does not know (head is {head.revision})"
 
 
 def _fold(relative_path: str) -> str:
@@ -218,6 +250,9 @@ class WatcherDaemon:
         # pass when the database is next seen reachable (#892). Changed only under _db_streak_lock, with
         # the streak: non-empty only while a failure is recorded.
         self._catch_up: set[uuid.UUID] = set()
+        # The recovery probe's own engines (one per database URL), and its failures that are not an outage.
+        self._probe_engines: dict[str, Engine] = {}
+        self._probe_streak = FailureStreak()
         # Per folder whose observer failed to attach: [consecutive failures, root checks still to skip].
         self._reattach_failures: dict[uuid.UUID, list[int]] = {}
         # Folders whose observer was (re)started and not yet seen alive by a check.
@@ -344,7 +379,6 @@ class WatcherDaemon:
             wanted = {row.folder_id: row.path for row in rows}
         finally:
             sess.close()
-        self._note_db_ok()
 
         with self._observers_lock:
             # Stop observers no longer wanted
@@ -390,6 +424,8 @@ class WatcherDaemon:
                 # during the walk is caught by both; the sha comparison makes
                 # the overlap a no-op.
                 self._request_reconcile(fid)
+        # The read above answered: a recovery (#892). Last, so a folder just removed gets no catch-up pass.
+        self._note_db_ok()
 
     def _check_roots(self) -> None:
         """Re-attach every observer whose root was replaced or whose emitter stopped (#739), then reconcile.
@@ -1084,21 +1120,55 @@ class WatcherDaemon:
 
         Without it a recovery is seen only by the next event or retried pass, up
         to RETRY_MAX_SECS late, or never for a dropped event with
-        WATCH_RESCAN_INTERVAL_SECS=0.
+        WATCH_RESCAN_INTERVAL_SECS=0. It connects on its own unpooled engine
+        with a connect timeout (`_probe_engine`), so a blackholed host costs the
+        monitor PROBE_CONNECT_TIMEOUT_SECS per tick, not the OS TCP timeout.
+        Never raises: any failure is "not back yet", and one that is not an
+        outage is logged once per streak (FailureStreak), so the rest of the
+        monitor tick (retries, the periodic pass) still runs.
         """
         if not self._catch_up:
             return
-        sess = self._session_factory()
         try:
-            sess.execute(text("SELECT 1"))
+            sess = self._session_factory()
+            try:
+                url = sess.get_bind().url
+            finally:
+                sess.close()
+            with self._probe_engine(url).connect() as conn:
+                conn.execute(text("SELECT 1"))
         except Exception as exc:
-            if not _is_db_unreachable(exc):
-                raise
-            self._note_db_failure(exc)
+            if _is_db_unreachable(exc):
+                self._note_db_failure(exc)
+                return
+            loudness = self._probe_streak.record(exc)
+            if loudness is not None:
+                logger.warning(
+                    "watcher: the database recovery probe failed (failure %d): %s",
+                    self._probe_streak.failures,
+                    describe_error(exc),
+                    exc_info=exc if loudness != "heartbeat" else None,
+                )
+            else:
+                logger.debug("watcher: the database recovery probe failed again: %s", describe_error(exc))
             return
-        finally:
-            sess.close()
+        self._probe_streak.reset()
         self._note_db_ok()
+
+    def _probe_engine(self, url: URL) -> Engine:
+        """An unpooled engine on ``url`` whose connect gives up after PROBE_CONNECT_TIMEOUT_SECS.
+
+        The probe's alone: the shared sync engine (`db_sync.get_sync_engine`) sets
+        no connect timeout, and the workers use it too.
+        """
+        key = url.render_as_string(hide_password=False)
+        engine = self._probe_engines.get(key)
+        if engine is None:
+            engine = create_engine(
+                url, poolclass=NullPool, connect_args={"connect_timeout": PROBE_CONNECT_TIMEOUT_SECS}
+            )
+            self._probe_engines[key] = engine
+        return engine
 
     def _active_paths(self, folder_id: uuid.UUID) -> set[str]:
         sess = self._session_factory()
@@ -1225,23 +1295,28 @@ class WatcherDaemon:
                 self._stop.wait(timeout=delay)
 
     def _wait_for_schema(self) -> bool:
-        """Wait until the database is reachable and holds every table this build maps (#904).
+        """Wait until the database is reachable and at this build's Alembic head (#904).
 
         On a fresh Docker install the watcher starts once Postgres is up, while
         `app` is still waiting to migrate it; querying `watched_folders` then
-        crashed the watcher with a traceback per restart. A database that is
-        down, or not migrated yet, is retried with backoff, one line per try and
-        no traceback. Any other error (a missing column, a permission refused)
-        is not waited out: it raises, as before. Returns False when stopped
-        while waiting.
+        crashed the watcher with a traceback per restart, and an upgrade that
+        adds a column crashed it the same way until `app` had migrated. A
+        database that is down, or behind this build's head (`_schema_wait`), is
+        retried with backoff, one line per try and no traceback. A database at a
+        revision this build does not know is warned about once and used. Any
+        other error (a permission refused) is not waited out: it raises, as
+        before. Returns False when stopped while waiting.
         """
+        head = schema_head()
+        if head is None:
+            logger.info("watcher: no migrations directory beside the code; waiting for the tables only")
         attempt = 0
         delay = SCHEMA_WAIT_FIRST_SECS
         while not self._stop.is_set():
             attempt += 1
             sess = self._session_factory()
             try:
-                missing = _missing_tables(sess)
+                state, detail = _schema_wait(sess, head)
             except Exception as exc:
                 if not _is_db_unreachable(exc):
                     raise
@@ -1252,15 +1327,16 @@ class WatcherDaemon:
                     describe_error(exc),
                 )
             else:
-                if not missing:
+                if state == "unknown":
+                    logger.warning("watcher: the database is %s; it may be newer than this build; starting", detail)
+                    return True
+                if state == "ready":
                     if attempt > 1:
                         logger.info("watcher: the database is ready after %d attempt(s)", attempt)
                     return True
                 logger.info(
-                    "watcher: waiting for the database to be migrated: %d table(s) missing, %s first "
-                    "(attempt %d, next in %.0fs)",
-                    len(missing),
-                    missing[0],
+                    "watcher: waiting for the database to be migrated: %s (attempt %d, next in %.0fs)",
+                    detail,
                     attempt,
                     delay,
                 )
