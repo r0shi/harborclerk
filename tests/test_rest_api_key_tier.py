@@ -410,6 +410,26 @@ async def test_a_ready_document_carries_no_error_in_the_list(client, db_session,
     assert item["error_info"] is None
 
 
+async def test_a_ready_document_is_not_explained_as_failed_in_the_detail(
+    client, db_session, corpus, make_key, admin_token
+) -> None:
+    """The detail follows the list's rule for error_info; its raw `error` is unchanged
+    (still the stored text, path-redacted for a key)."""
+    stale = f"PermissionError: [Errno 13] Permission denied: '{corpus.source_path}'"
+    corpus.doc.error = stale
+    await db_session.flush()
+    url = f"/api/docs/{corpus.doc.doc_id}"
+
+    human = (await client.get(url, headers=auth_header(admin_token))).json()
+    assert human["error_info"] is None
+    assert human["error"] == stale
+
+    resp = await client.get(url, headers=auth_header(await make_key("read")))
+    assert resp.json()["error_info"] is None
+    assert resp.json()["error"] == "PermissionError: [Errno 13] Permission denied: [path]"
+    assert corpus.folder.path not in resp.text
+
+
 def test_redact_paths_blanks_nested_fields_for_keys_only() -> None:
     now = datetime.now(UTC)
 

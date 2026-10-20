@@ -55,6 +55,12 @@ export const UNCLASSIFIED: ErrorInfo = {
   action: 'See the technical details below.',
 }
 
+// The compact (list-row) form shows no details, so it points to where they are.
+export const UNCLASSIFIED_COMPACT: ErrorInfo = {
+  ...UNCLASSIFIED,
+  action: 'Open the document for the technical details.',
+}
+
 /** Status pill props for a failed document, by failure family. */
 export function failurePill(info: ErrorInfo | null | undefined): {
   state: PillState

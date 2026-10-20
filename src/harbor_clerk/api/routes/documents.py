@@ -548,7 +548,10 @@ async def get_document(
         size_bytes=doc.size_bytes,
         ocr_languages_used=doc.ocr_languages_used,
         error=doc.error,
-        error_info=ErrorInfo.from_explanation(explain_failure(doc.error)),
+        # As in the list: a stale documents.error on a reprocessed, now-ready document is not a failure.
+        error_info=ErrorInfo.from_explanation(
+            explain_failure(doc.error if doc.pipeline_status == PipelineStatus.error else None)
+        ),
         created_at=doc.created_at,
         updated_at=doc.updated_at,
         jobs=jobs,

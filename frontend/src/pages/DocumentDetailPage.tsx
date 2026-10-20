@@ -183,7 +183,7 @@ function DocStatusBanner({ doc }: { doc: DocumentDetail }) {
     return status === 'running' || status === 'queued'
   })
 
-  if (doc.pipeline_status === 'ready' || allDone) {
+  if (doc.pipeline_status === 'ready' || (allDone && doc.pipeline_status !== 'error')) {
     return (
       <div className="mb-3 flex items-center gap-2 rounded-lg bg-green-50 dark:bg-green-900/20 px-3 py-2 text-sm text-green-700 dark:text-green-400">
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>

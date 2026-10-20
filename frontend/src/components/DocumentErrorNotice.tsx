@@ -7,7 +7,7 @@
 // red, so a service blip no longer looks like a broken file; anything else is neutral.
 
 import { useState } from 'react'
-import { FAMILY_STYLES, UNCLASSIFIED, type ErrorInfo } from '../utils/documentFailure'
+import { FAMILY_STYLES, UNCLASSIFIED, UNCLASSIFIED_COMPACT, type ErrorInfo } from '../utils/documentFailure'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -43,7 +43,7 @@ interface DocumentErrorNoticeProps {
 
 export default function DocumentErrorNotice({ info, raw, stage, compact = false }: DocumentErrorNoticeProps) {
   if (!info && !raw) return null
-  const explained = info ?? UNCLASSIFIED
+  const explained = info ?? (compact ? UNCLASSIFIED_COMPACT : UNCLASSIFIED)
   const style = FAMILY_STYLES[explained.family]
 
   if (compact) {

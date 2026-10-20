@@ -8,14 +8,18 @@ the #555 data comment from the dogfood corpus.
 
 from __future__ import annotations
 
+import ast
 import types
+from pathlib import Path
 
 import pytest
 
-from harbor_clerk.document_failure import FailureFamily, explain_failure
+from harbor_clerk.document_failure import DELIBERATE_STOP_ERRORS, FailureFamily, explain_failure
 from harbor_clerk.error_text import describe_error
 from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.watched_source import NoReadableSource, WatchedFileMissing, failed_for_a_missing_source
+
+_SRC = Path(__file__).resolve().parent.parent / "src" / "harbor_clerk"
 
 TEMP, UNREAD, OTHER = FailureFamily.temporary, FailureFamily.unreadable, FailureFamily.other
 
@@ -78,6 +82,13 @@ CASES: list[tuple[str, FailureFamily]] = [
     # --- other ---
     ("Cancelled by user", OTHER),
     ("Queue cleared before pipeline completed", OTHER),
+    ("Cancelled by admin (queue clear)", OTHER),
+    # A bare status-like number is not an HTTP status (review of #920).
+    ("IndexError: index 429 is out of bounds for axis 0 with size 12", OTHER),
+    ("KeyError: 429", OTHER),
+    ("IndexError: list index 503 out of range", OTHER),
+    ("ValueError: expected 500 rows, got 12", OTHER),
+    ("EmbedderUnavailableError: embedder call failed after 7/7 attempts: HTTP 429", TEMP),
     (
         "DocumentTooLargeError: Document too large to index: it splits into 57,180 chunks, over the "
         "per-document limit of 20,000",
@@ -119,11 +130,47 @@ def test_message_and_action_never_quote_the_raw_error(error: str, _family: Failu
         assert "Errno" not in text and "Error:" not in text
 
 
-def test_deliberate_stops_are_in_step_with_reprocess_failed() -> None:
-    """The deliberately-stopped texts read as a stop, not as a failure family."""
+# Modules that write a pipeline error into ingestion_jobs.error / documents.error.
+_ERROR_WRITERS = [
+    *sorted((_SRC / "worker").rglob("*.py")),
+    *sorted((_SRC / "watcher").rglob("*.py")),
+    _SRC / "api" / "routes" / "system.py",
+    _SRC / "api" / "routes" / "documents.py",
+]
+
+
+def _literal_error_writes() -> set[str]:
+    """Every string literal assigned to an ``.error`` attribute or passed as
+    ``error=`` in the modules above (AST, so comments and docstrings never match)."""
+    found: set[str] = set()
+    for path in _ERROR_WRITERS:
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            value = getattr(node, "value", None)
+            if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
+                continue
+            assigns_error = isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Attribute) and t.attr == "error" for t in node.targets
+            )
+            passes_error = isinstance(node, ast.keyword) and node.arg == "error"
+            if assigns_error or passes_error:
+                found.add(value.value)
+    return found
+
+
+def test_every_literal_stop_text_written_by_the_pipeline_is_a_known_deliberate_stop() -> None:
+    """Job- and document-level: a new cancel or stop string written anywhere in the
+    pipeline must be added to DELIBERATE_STOP_ERRORS, or it reads as "unexpected"."""
+    written = _literal_error_writes()
+    assert written == set(DELIBERATE_STOP_ERRORS)
+
+
+def test_deliberate_stops_read_as_a_stop() -> None:
+    """Every stop text, including reprocess-failed's document-level list, reads as a
+    stop, not as a failure family."""
     from harbor_clerk.api.routes.documents import DELIBERATELY_STOPPED_ERRORS
 
-    for text in DELIBERATELY_STOPPED_ERRORS:
+    assert set(DELIBERATELY_STOPPED_ERRORS) <= set(DELIBERATE_STOP_ERRORS)
+    for text in DELIBERATE_STOP_ERRORS:
         explanation = explain_failure(text)
         assert explanation is not None
         assert explanation.family is FailureFamily.other

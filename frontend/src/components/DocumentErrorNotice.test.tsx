@@ -66,6 +66,12 @@ describe('DocumentErrorNotice', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it('compact fallback does not point at details it does not show', () => {
+    render(<DocumentErrorNotice compact raw="KeyError: 'pages'" />)
+    expect(screen.getByText(/Processing failed\./)).toHaveTextContent('Open the document for the technical details.')
+    expect(screen.queryByText(/below/)).not.toBeInTheDocument()
+  })
+
   it('compact form is one wrapped line with message and action', () => {
     render(<DocumentErrorNotice compact info={TEMPORARY} raw="ConnectError" />)
     const line = screen.getByText(`${TEMPORARY.message} ${TEMPORARY.action}`)

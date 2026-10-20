@@ -1,9 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { get, post, del } from '../api'
 import { useAuth } from '../auth'
-import { useJobEvents } from '../hooks/useJobEvents'
+import { useJobEvents, type JobEvent } from '../hooks/useJobEvents'
 import { useSystemConfig } from '../hooks/useSystemConfig'
 import DocumentDetailPage from './DocumentDetailPage'
 
@@ -180,6 +180,70 @@ describe('DocumentDetailPage', () => {
     // Shown once, behind the disclosure, not as the old red "Error: ..." line.
     expect(screen.getAllByText(raw)).toHaveLength(1)
     expect(screen.queryByText(`Error: ${raw}`)).not.toBeInTheDocument()
+  })
+
+  it('explains a pipeline error the document carries even when no job row is in error', async () => {
+    const info = {
+      family: 'unreadable',
+      message: 'The source file could not be read.',
+      action: 'Check that the file is still in the watched folder and can be opened.',
+    }
+    const failed = {
+      ...READY_DOC,
+      pipeline_status: 'error',
+      error: 'WatchedFileMissing: the watched file of doc doc-1 cannot be read in place',
+      error_info: info,
+      jobs: [{ ...READY_DOC.jobs[0] }],
+    }
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') return Promise.resolve(failed)
+      if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
+      return Promise.resolve({})
+    })
+    renderDocumentDetail()
+
+    expect(await screen.findByText(info.message)).toBeInTheDocument()
+    expect(screen.getByText(info.message).closest('[data-family]')).toHaveAttribute('data-family', 'unreadable')
+  })
+
+  it('refetches the document when a live job event reports an error, so its explanation arrives', async () => {
+    let listener: ((event: JobEvent) => void) | undefined
+    useJobEventsMock.mockImplementation((cb) => {
+      listener = cb
+    })
+    const info = {
+      family: 'temporary',
+      message: 'The embedding service was unavailable, so this document could not be indexed.',
+      action: 'Reprocess the document once the embedding service is running again.',
+    }
+    const running = {
+      ...READY_DOC,
+      pipeline_status: 'embedding',
+      jobs: [{ ...READY_DOC.jobs[0] }, { ...READY_DOC.jobs[5], status: 'running', finished_at: null }],
+    }
+    const failed = {
+      ...running,
+      pipeline_status: 'error',
+      error: 'Embedder unavailable: gave up after 6 attempts',
+      error_info: info,
+      jobs: [running.jobs[0], { ...running.jobs[1], status: 'error', error: 'x', error_info: info }],
+    }
+    let detailCalls = 0
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') return Promise.resolve(detailCalls++ === 0 ? running : failed)
+      if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
+      return Promise.resolve({})
+    })
+    renderDocumentDetail()
+    expect(await screen.findByText('Ready document')).toBeInTheDocument()
+    expect(detailCalls).toBe(1)
+
+    act(() => {
+      listener?.({ doc_id: 'doc-1', stage: 'embed', status: 'error', error: 'Embedder unavailable: gave up' })
+    })
+
+    expect(await screen.findByText(info.message)).toBeInTheDocument()
+    expect(detailCalls).toBeGreaterThanOrEqual(2)
   })
 
   it('renders skipped ingestion stages as skipped instead of pending', async () => {

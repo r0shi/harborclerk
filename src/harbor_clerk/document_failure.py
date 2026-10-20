@@ -45,6 +45,18 @@ class FailureExplanation:
 
 _REPROCESS = "Reprocess the document to try again."
 
+# Every text the pipeline writes into ``ingestion_jobs.error`` or
+# ``documents.error`` when work is stopped on purpose rather than failing:
+# a user cancel (worker/pipeline.py, job and document) and the admin queue clear
+# (api/routes/system.py, job and document). tests/test_document_failure.py
+# collects every literal error written in those modules and fails on one
+# missing here, so a new cancel string cannot fall through to "unexpected".
+DELIBERATE_STOP_ERRORS: tuple[str, ...] = (
+    "Cancelled by user",
+    "Cancelled by admin (queue clear)",
+    "Queue cleared before pipeline completed",
+)
+
 # Ordered: the first matching rule wins. Specific causes come before the
 # generic connection/timeout patterns because their messages often quote one
 # (a Tika 422 whose rmeta refetch then timed out, a watched file read that
@@ -52,9 +64,9 @@ _REPROCESS = "Reprocess the document to try again."
 _RULES: tuple[tuple[re.Pattern[str], FailureExplanation], ...] = tuple(
     (re.compile(pattern, flags), explanation)
     for pattern, flags, explanation in (
-        # Deliberate stops (api/routes/documents.py DELIBERATELY_STOPPED_ERRORS).
+        # Deliberate stops, job- and document-level.
         (
-            r"^\s*(Cancelled by user|Queue cleared before pipeline completed)\s*$",
+            r"^\s*(" + "|".join(re.escape(text) for text in DELIBERATE_STOP_ERRORS) + r")\s*$",
             0,
             FailureExplanation(
                 FailureFamily.other,
@@ -222,10 +234,12 @@ _RULES: tuple[tuple[re.Pattern[str], FailureExplanation], ...] = tuple(
                 _REPROCESS,
             ),
         ),
-        # 5xx, 429 and explicit retry-later answers.
+        # 5xx, 429 and explicit retry-later answers. Status codes match only in an HTTP
+        # context (httpx's "Server error '503 …'", the embedder's "HTTP 503"), never a
+        # bare number: "IndexError: index 429 is out of bounds" is not a rate limit.
         (
             r"Server error '5\d\d|\bHTTP 5\d\d\b|Internal Server Error|Bad Gateway|Service Unavailable"
-            r"|Gateway Timeout|\b429\b|Too Many Requests|try again later|retry later|temporarily unavailable"
+            r"|Gateway Timeout|\bHTTP 429\b|'429 |Too Many Requests|try again later|retry later|temporarily unavailable"
             r"|\bunavailable\b",
             re.IGNORECASE,
             FailureExplanation(
