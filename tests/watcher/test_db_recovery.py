@@ -164,6 +164,7 @@ def test_start_waits_for_a_database_that_is_down_then_unmigrated(
             switch.current = unmigrated
             _wait_for("two tries at an unmigrated database", lambda: _tries(caplog, "to be migrated") >= 2)
             assert thread.is_alive() and not errors, errors
+            assert unmigrated.kw["bind"].pool.checkedout() == 0, "no connection held between tries"
             switch.current = factory
             thread.join(WAIT_SECS)
             assert not thread.is_alive(), "start() never returned once the schema was there"
@@ -187,10 +188,13 @@ def test_start_does_not_wait_out_a_schema_error_that_is_not_a_missing_table(fact
         raise ProgrammingError("SELECT ...", {}, refused)
 
     monkeypatch.setattr(watcher_main, "_missing_tables", failing)
+    monkeypatch.setattr(watcher_main, "SCHEMA_WAIT_FIRST_SECS", 0.05)
     daemon = WatcherDaemon(factory)
     try:
-        with pytest.raises(ProgrammingError):
-            daemon.start()
+        thread, errors = _start_in_thread(daemon)
+        thread.join(WAIT_SECS)
+        assert not thread.is_alive(), "start() waited out an error that is not the database down"
+        assert len(errors) == 1 and isinstance(errors[0], ProgrammingError), errors
         assert not daemon._threads, "nothing started"
     finally:
         daemon.stop()
