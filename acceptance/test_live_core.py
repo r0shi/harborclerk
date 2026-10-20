@@ -345,6 +345,7 @@ def test_d5_mcp_payloads_never_contain_an_absolute_path(
     leaked = [(where, f) for where, text in stored for f in forbidden if f in text]
     assert not leaked, f"stored errors quote a path: {leaked}; {stored}"
 
+    # Every doc_id below is a fixture document, inside the key's folder scope.
     raw = keys.create("d5-full", scope_folder_ids=[corpus.folder_id])["raw_key"]
     session = mcp.bearer(raw)
     for name, args in (
@@ -358,9 +359,12 @@ def test_d5_mcp_payloads_never_contain_an_absolute_path(
         ("kb_get_document", {"doc_id": failed_id}),
         ("kb_ingest_status", {"doc_id": failed_id}),
     ):
+        # A denied, rate-limited or removed tool, or a doc the key cannot see,
+        # carries no path either: the scan below only counts on a real payload.
         result = session.call_tool(name, args)
+        payload = tool_json(result)  # raises on an error result
+        assert not (isinstance(payload, dict) and "error" in payload), f"{name} {args}: {payload}"
         text = tool_text(result)
-        assert text, name
         leaked = [f for f in forbidden if f in text]
         assert not leaked, f"{name} payload contains {leaked}"
     # The key still learns what failed: the error is reported, not dropped.

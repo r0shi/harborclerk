@@ -271,7 +271,8 @@ def failed_document(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -
     restored when the session ends, before the folder and its files are
     removed. When the worker ignores the mode (a Compose instance with no
     `user:` runs as root) the document becomes ready again and the check is
-    skipped with that reason."""
+    skipped with that reason; when it fails with any other error, the fixture
+    fails rather than yields."""
     name = failure_target(corpus.groundtruth)
     path = corpus.fixtures[name].path
     doc_id = corpus.doc_id(name)
@@ -279,7 +280,11 @@ def failed_document(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -
     path.chmod(0)
     try:
         admin.reprocess_document(doc_id)
-        yield _wait_for_injected_failure(admin, doc_id, timeout_s=cfg.ingest_timeout_s)
+        doc = _wait_for_injected_failure(admin, doc_id, timeout_s=cfg.ingest_timeout_s)
+        error = doc.get("error") or ""
+        if not error.startswith("WatchedFileMissing"):
+            pytest.fail(f"the document failed, but not on the unreadable watched file D5 injected: {error!r}")
+        yield doc
     finally:
         # Until here the document sits in pipeline_status=error for the rest of
         # the session (every check after D5 must tolerate that). Restoring the
