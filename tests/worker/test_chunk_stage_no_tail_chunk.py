@@ -8,6 +8,7 @@ import hashlib
 import pytest
 from sqlalchemy import select
 
+from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.models import Chunk, Document, DocumentPage, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
@@ -71,7 +72,8 @@ async def test_stored_chunks_of_a_multi_page_document_have_no_tail_duplicate(db_
         for j, (s2, e2) in enumerate(spans):
             assert i == j or not (s2 <= s1 and e1 <= e2), f"chunk {i} lies inside chunk {j}"
     assert spans[0][0] == 0 and spans[-1][1] == len(full_text), "the whole text is still covered"
-    assert all(e1 - s2 == 150 for (_, e1), (s2, _) in zip(spans, spans[1:])), "overlap is the configured 150"
+    overlap = get_settings().chunk_overlap
+    assert all(e1 - s2 == overlap for (_, e1), (s2, _) in zip(spans, spans[1:])), "overlap is as configured"
     assert rows[0][3] == 1 and rows[-1][4] == len(PAGES), "the chunks still span the first to the last page"
     assert sum(1 for r in rows if r[2] == len(full_text)) == 1, "exactly one chunk reaches the end"
 
@@ -81,7 +83,8 @@ async def test_a_document_of_exactly_the_ceiling_is_indexed(db_session, monkeypa
     full_text = "".join(p + "\n" for p in PAGES).rstrip()
     # The distinct passages: a range lying inside another one is not counted, so
     # a duplicate tail chunk would push the document over this ceiling.
-    ranges = _split_text(full_text, target=1000, overlap=150)
+    settings = get_settings()
+    ranges = _split_text(full_text, target=settings.chunk_target_size, overlap=settings.chunk_overlap)
     n = sum(
         1 for i, (s, e) in enumerate(ranges) if not any(j != i and a <= s and e <= b for j, (a, b) in enumerate(ranges))
     )

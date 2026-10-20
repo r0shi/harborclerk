@@ -404,10 +404,8 @@ def _inputs() -> list[tuple[str, str]]:
         ("fenced", "Intro.\n\n```\n" + "code();\n" * 200 + "```\n\n" + sentence * 60),
     ]
     # Exact multiples of the stride (target - overlap) and of the target, and one either side.
-    for n in range(1, 6):
-        for length in (n * 850, n * 1000, n * 850 + 150):
-            for delta in (-1, 0, 1):
-                out.append((f"length {length + delta}", "y" * (length + delta)))
+    lengths = {base + delta for n in range(1, 6) for base in (n * 850, n * 1000, n * 850 + 150) for delta in (-1, 0, 1)}
+    out.extend((f"length {length}", "y" * length) for length in sorted(lengths))
     return out
 
 
