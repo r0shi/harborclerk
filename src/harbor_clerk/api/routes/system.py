@@ -681,8 +681,13 @@ async def status_summary(
         # The stage whose error failed the document: summarize runs beside embed and
         # entities, so the newest error job may be a background stage's (#555).
         candidates = failed_jobs_by_doc.get(doc.doc_id, [])
-        failed_job = next((j for j in candidates if doc.error and j.error == doc.error), None) or next(
-            (j for j in candidates if j.stage not in _BACKGROUND_JOB_STAGES), candidates[0] if candidates else None
+        # A cancel or queue clear writes one text on every job, summarize included, so among
+        # the exact matches a gating stage wins; summarize only when it is the only match.
+        matches = [j for j in candidates if doc.error and j.error == doc.error]
+        gating = [j for j in candidates if j.stage not in _BACKGROUND_JOB_STAGES]
+        failed_job = next(
+            (j for j in matches if j.stage not in _BACKGROUND_JOB_STAGES),
+            matches[0] if matches else (gating[0] if gating else (candidates[0] if candidates else None)),
         )
         error = doc.error or (failed_job.error if failed_job else None)
         recent_failed_documents.append(

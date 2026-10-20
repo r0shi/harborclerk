@@ -171,6 +171,52 @@ describe('DocumentDetailPage', () => {
     expect(screen.queryByText('(during Summarize)')).not.toBeInTheDocument()
   })
 
+  it.each([
+    {
+      name: 'a cancel writes one text on every job: the gating stage is named, not summarize',
+      docError: 'Cancelled by user',
+      jobs: [
+        ['summarize', 'Cancelled by user'],
+        ['embed', 'Cancelled by user'],
+      ],
+      expected: 'Embed',
+      notExpected: 'Summarize',
+    },
+    {
+      name: 'two gating stages with different errors: the one matching the document error is named',
+      docError: "KeyError: 'label'",
+      jobs: [
+        ['embed', 'ReadTimeout'],
+        ['entities', "KeyError: 'label'"],
+      ],
+      expected: 'Entities',
+      notExpected: 'Embed',
+    },
+  ])('stage pick: $name', async ({ docError, jobs, expected, notExpected }) => {
+    const failed = {
+      ...READY_DOC,
+      pipeline_status: 'error',
+      error: docError,
+      error_info: { family: 'other', message: 'Processing failed.', action: 'Reprocess.' },
+      jobs: jobs.map(([stage, error]) => ({
+        job_id: `job-${stage}`,
+        stage,
+        status: 'error',
+        error,
+        created_at: '2026-06-04T12:03:00Z',
+      })),
+    }
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') return Promise.resolve(failed)
+      if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
+      return Promise.resolve({})
+    })
+    renderDocumentDetail()
+
+    expect(await screen.findByText(`(during ${expected})`)).toBeInTheDocument()
+    expect(screen.queryByText(`(during ${notExpected})`)).not.toBeInTheDocument()
+  })
+
   it('explains a failed document in plain language, with the raw error kept once', async () => {
     const raw = 'ConnectError: [Errno 61] Connection refused'
     const info = {

@@ -200,9 +200,12 @@ function DocStatusBanner({ doc }: { doc: DocumentDetail }) {
     const fromDoc = doc.pipeline_status === 'error' && !!doc.error
     const errorJobs = doc.jobs.filter((j) => j.status === 'error')
     // Name the stage whose error the notice shows: summarize can fail beside embed in
-    // the same outage, and the jobs arrive in no particular order.
+    // the same outage, and the jobs arrive in no particular order. A cancel or queue clear
+    // writes one text on every job, summarize included, so among exact matches a gating
+    // stage wins; summarize only when it is the only match.
+    const matches = errorJobs.filter((j) => j.error === doc.error)
     const errorJob = fromDoc
-      ? (errorJobs.find((j) => j.error === doc.error) ?? errorJobs.find((j) => j.stage !== 'summarize'))
+      ? (matches.find((j) => j.stage !== 'summarize') ?? matches[0] ?? errorJobs.find((j) => j.stage !== 'summarize'))
       : errorJobs[0]
     return (
       <DocumentErrorNotice
