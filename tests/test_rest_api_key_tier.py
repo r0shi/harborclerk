@@ -362,6 +362,54 @@ async def test_key_reads_error_text_with_paths_redacted_human_reads_it_whole(
     assert corpus.folder.path not in resp.text
 
 
+async def test_failed_document_explains_its_error_and_keys_still_get_no_path(
+    client, db_session, corpus, make_key, admin_user, admin_token
+) -> None:
+    """#555: the list and detail carry the raw error plus a plain-language
+    error_info. The explanation is fixed text, so it holds for a key too, while
+    the raw error keeps its path redaction on both routes."""
+    message = f"PermissionError: [Errno 13] Permission denied: '{corpus.source_path}'"
+    corpus.doc.pipeline_status = PipelineStatus.error
+    corpus.doc.error = message
+    db_session.add(
+        IngestionJob(
+            doc_id=corpus.doc.doc_id,
+            stage=JobStage.extract,
+            status=JobStatus.error,
+            pipeline_seq=corpus.doc.pipeline_seq,
+            error=message,
+        )
+    )
+    await db_session.flush()
+    detail_url = f"/api/docs/{corpus.doc.doc_id}"
+
+    (human_item,) = (await client.get("/api/docs", headers=auth_header(admin_token))).json()["items"]
+    human_detail = (await client.get(detail_url, headers=auth_header(admin_token))).json()
+    assert human_item["error"] == message
+    for info in (human_item["error_info"], human_detail["error_info"], human_detail["jobs"][0]["error_info"]):
+        assert info["family"] == "unreadable"
+        assert info["message"] and info["action"]
+
+    key_headers = auth_header(await make_key("read"))
+    listing = await client.get("/api/docs", headers=key_headers)
+    detail = await client.get(detail_url, headers=key_headers)
+    (key_item,) = listing.json()["items"]
+    assert key_item["error"] == "PermissionError: [Errno 13] Permission denied: [path]"
+    assert key_item["error_info"] == human_item["error_info"]
+    assert detail.json()["error_info"] == human_detail["error_info"]
+    for resp in (listing, detail):
+        assert corpus.folder.path not in resp.text
+
+
+async def test_a_ready_document_carries_no_error_in_the_list(client, db_session, corpus, admin_token) -> None:
+    """A stale error left on a document that has since become ready is not shown as a failure."""
+    corpus.doc.error = "ConnectError: [Errno 61] Connection refused"
+    await db_session.flush()
+    (item,) = (await client.get("/api/docs", headers=auth_header(admin_token))).json()["items"]
+    assert item["error"] is None
+    assert item["error_info"] is None
+
+
 def test_redact_paths_blanks_nested_fields_for_keys_only() -> None:
     now = datetime.now(UTC)
 

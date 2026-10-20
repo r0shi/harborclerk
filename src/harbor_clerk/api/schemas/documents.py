@@ -1,8 +1,29 @@
 """Document management schemas."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
+
+from harbor_clerk.document_failure import FailureExplanation
+
+
+class ErrorInfo(BaseModel):
+    """A stored pipeline error in plain language (#555); the raw text stays in ``error``.
+
+    ``message`` and ``action`` are fixed strings chosen by family, never a quote of
+    the raw error, so they carry no path for any principal.
+    """
+
+    family: Literal["temporary", "unreadable", "other"]
+    message: str
+    action: str
+
+    @classmethod
+    def from_explanation(cls, explanation: FailureExplanation | None) -> "ErrorInfo | None":
+        if explanation is None:
+            return None
+        return cls(family=explanation.family.value, message=explanation.message, action=explanation.action)
 
 
 class JobInfo(BaseModel):
@@ -12,6 +33,7 @@ class JobInfo(BaseModel):
     progress_current: int | None = None
     progress_total: int | None = None
     error: str | None = None
+    error_info: ErrorInfo | None = None
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -34,6 +56,9 @@ class DocumentSummary(BaseModel):
     watch_status: str | None = None
     folder_name: str | None = None
     summarize_job_status: str | None = None
+    # Set only while the pipeline is in `error`: the raw stored error (path-redacted for keys) and its explanation.
+    error: str | None = None
+    error_info: ErrorInfo | None = None
 
 
 class DocumentDetail(BaseModel):
@@ -57,6 +82,7 @@ class DocumentDetail(BaseModel):
     # French now?" reprocess affordance.
     ocr_languages_used: list[str] | None = None
     error: str | None = None
+    error_info: ErrorInfo | None = None
     created_at: datetime
     updated_at: datetime
     jobs: list[JobInfo] = []

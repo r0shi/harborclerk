@@ -142,6 +142,46 @@ describe('DocumentDetailPage', () => {
     })
   })
 
+  it('explains a failed document in plain language, with the raw error kept once', async () => {
+    const raw = 'ConnectError: [Errno 61] Connection refused'
+    const info = {
+      family: 'temporary',
+      message: 'A background service could not be reached while this file was processed.',
+      action: 'Reprocess the document to try again.',
+    }
+    const failed = {
+      ...READY_DOC,
+      pipeline_status: 'error',
+      error: raw,
+      error_info: info,
+      jobs: [
+        { ...READY_DOC.jobs[0] },
+        {
+          job_id: 'job-embed',
+          stage: 'embed',
+          status: 'error',
+          error: raw,
+          error_info: info,
+          created_at: '2026-06-04T12:04:00Z',
+          finished_at: '2026-06-04T12:04:00Z',
+        },
+      ],
+    }
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') return Promise.resolve(failed)
+      if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
+      return Promise.resolve({})
+    })
+    renderDocumentDetail()
+
+    expect(await screen.findByText(info.message)).toBeInTheDocument()
+    expect(screen.getByText(info.action)).toBeInTheDocument()
+    expect(screen.getByText(info.message).closest('[data-family]')).toHaveAttribute('data-family', 'temporary')
+    // Shown once, behind the disclosure, not as the old red "Error: ..." line.
+    expect(screen.getAllByText(raw)).toHaveLength(1)
+    expect(screen.queryByText(`Error: ${raw}`)).not.toBeInTheDocument()
+  })
+
   it('renders skipped ingestion stages as skipped instead of pending', async () => {
     renderDocumentDetail()
 
