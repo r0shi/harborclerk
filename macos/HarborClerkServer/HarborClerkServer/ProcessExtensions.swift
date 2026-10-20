@@ -75,6 +75,20 @@ extension Process {
     /// milliseconds; this is the bound for when it has not (#890).
     static let defaultKillWaitSeconds: TimeInterval = 5
 
+    /// The real wait, in the shape every service's `waitForExit` seam takes.
+    static let realExitWait: ExitWait = {
+        await $0.waitForExitWithDeadline(graceSeconds: $1, serviceName: $2, killWaitSeconds: $3)
+    }
+
+    /// Foundation reports it running and the kernel agrees. `isRunning` alone
+    /// can stay true over a process that is gone, when Foundation never
+    /// noticed the exit (#890); then a stop's wait gave up on it and every
+    /// later start refused it, for good. Used for the stop's exit signal
+    /// (`waitForExitWithDeadline`) and for each service's `holdsLiveProcess`.
+    var isRunningAndAlive: Bool {
+        isRunning && ProcessLiveness.isAlive(processIdentifier)
+    }
+
     /// Wait for this Process to exit, with a bounded grace period and a
     /// bounded wait after the SIGKILL.
     ///
@@ -111,7 +125,7 @@ extension Process {
         serviceName: String,
         killWaitSeconds: TimeInterval = Process.defaultKillWaitSeconds,
     ) async -> Bool {
-        guard self.isRunning else { return true }
+        guard self.isRunningAndAlive else { return true }
 
         detachPipesForShutdown()
 
@@ -119,7 +133,7 @@ extension Process {
         return await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
             DispatchQueue.global().async {
                 c.resume(returning: Process.pollUntilExited(
-                    isRunning: { proc.isRunning },
+                    isRunning: { proc.isRunningAndAlive },
                     sendKill: {
                         // killpg targets the entire process group (which the
                         // leader's pid identifies after runAsProcessGroupLeader).
@@ -224,5 +238,39 @@ extension Process {
                 "setpgid(\(pid, privacy: .public), 0) failed: errno=\(err, privacy: .public) — grandchildren may leak on force-kill of this pid"
             )
         }
+    }
+}
+
+/// The wait a stop runs on the process it signalled: grace, SIGKILL, bounded
+/// wait; returns whether the exit was seen. Every service that stops a child
+/// takes one as its `waitForExit` seam, defaulting to `Process.realExitWait`,
+/// so a test can stand in a wait that gives up, which no real child can be
+/// made to cause on demand.
+typealias ExitWait = (_ proc: Process, _ grace: TimeInterval, _ name: String, _ killWait: TimeInterval) async -> Bool
+
+/// Whether a pid names a live process, asked of the kernel rather than of
+/// Foundation's bookkeeping.
+enum ProcessLiveness {
+    /// Gone if `kill(pid, 0)` fails with ESRCH (no such process: exited and
+    /// reaped), or if the process is a zombie (exited, not yet reaped by
+    /// Foundation). Alive otherwise, including EPERM (it exists, it is not
+    /// ours to signal). Never reaps: a `waitpid` here would take the exit
+    /// status Foundation is waiting to collect.
+    ///
+    /// The zombie check reads `p_stat` through `sysctl(KERN_PROC_PID)`.
+    /// `proc_pidinfo(PROC_PIDTBSDINFO)` cannot do it: measured on macOS 27, it
+    /// fails with ESRCH on a zombie, while `kill(pid, 0)` still succeeds.
+    static func isAlive(_ pid: pid_t) -> Bool {
+        guard pid > 0 else { return false }
+        if kill(pid, 0) != 0 {
+            return errno != ESRCH
+        }
+        var kp = kinfo_proc()
+        var len = MemoryLayout<kinfo_proc>.size
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        if sysctl(&mib, 4, &kp, &len, nil, 0) == 0, len > 0, kp.kp_proc.p_stat == SZOMB {
+            return false
+        }
+        return true
     }
 }

@@ -331,6 +331,88 @@ final class ProcessExtensionsTests: XCTestCase {
     }
 }
 
+// MARK: - Liveness asked of the kernel (#890)
+
+final class ProcessLivenessTests: XCTestCase {
+
+    /// A zombie (exited, not yet reaped) and a reaped pid both read as dead;
+    /// Foundation's `isRunning` can stay true over either.
+    func testAZombieAndAReapedPidReadAsDead() throws {
+        let pid = try XCTUnwrap(posixSpawn("/usr/bin/true"))
+        var reaped = false
+        defer { if !reaped { var st: Int32 = 0; waitpid(pid, &st, 0) } }
+        // Wait for the exit without reaping it: the child is now a zombie.
+        var info = siginfo_t()
+        XCTAssertEqual(waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT), 0)
+        XCTAssertEqual(kill(pid, 0), 0, "fixture: a zombie still answers kill(0)")
+        XCTAssertFalse(ProcessLiveness.isAlive(pid), "a zombie has exited")
+
+        var status: Int32 = 0
+        XCTAssertEqual(waitpid(pid, &status, 0), pid)
+        reaped = true
+        XCTAssertFalse(ProcessLiveness.isAlive(pid), "a reaped pid names no process")
+    }
+
+    func testALiveChildReadsAsAlive() throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        proc.arguments = ["30"]
+        try proc.run()
+        defer { killAndReap(proc) }
+        XCTAssertTrue(ProcessLiveness.isAlive(proc.processIdentifier))
+        XCTAssertTrue(proc.isRunningAndAlive)
+    }
+
+    /// A process that dies while the stop waits, with Foundation never told,
+    /// still ends the wait as an exit, rather than costing grace + kill wait
+    /// and leaving the service errored over nothing. Without the kernel check
+    /// the wait below runs to its 30 s grace.
+    func testTheStopsWaitCountsAnExitFoundationNeverNoticed() async throws {
+        let pid = try XCTUnwrap(posixSpawn("/bin/sleep", "30"))
+        var reaped = false
+        defer { if !reaped { kill(pid, SIGKILL); var st: Int32 = 0; waitpid(pid, &st, 0) } }
+        let proc = UnnoticedExitProcess(pid: pid)
+
+        let killer = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            kill(pid, SIGKILL)
+            var st: Int32 = 0
+            waitpid(pid, &st, 0)  // our own posix_spawn child, not Foundation's
+        }
+        let exited = await withinBound("the wait on a process Foundation never saw exit", seconds: 5) {
+            await proc.waitForExitWithDeadline(graceSeconds: 30, serviceName: "unnoticed")
+        }
+        await killer.value
+        reaped = true
+        XCTAssertEqual(exited, true, "a process the kernel says is gone has exited")
+    }
+}
+
+/// A `Process` Foundation reports as running whatever the kernel says: the
+/// state in which Foundation never noticed an exit (#890).
+final class UnnoticedExitProcess: Process, @unchecked Sendable {
+    private let pid: Int32
+    init(pid: Int32) {
+        self.pid = pid
+        super.init()
+    }
+    override var isRunning: Bool { true }
+    override var processIdentifier: Int32 { pid }
+    override var standardOutput: Any? { get { nil } set {} }
+    override var standardError: Any? { get { nil } set {} }
+}
+
+/// Spawn `path` with `args` outside Foundation, so the test owns the reap.
+func posixSpawn(_ path: String, _ args: String...) -> pid_t? {
+    var pid: pid_t = 0
+    let argv: [UnsafeMutablePointer<CChar>?] = ([path] + args).map { strdup($0) } + [nil]
+    defer { argv.forEach { free($0) } }
+    let rc = argv.withUnsafeBufferPointer { buf in
+        posix_spawn(&pid, path, nil, nil, UnsafeMutablePointer(mutating: buf.baseAddress!), environ)
+    }
+    return rc == 0 ? pid : nil
+}
+
 // MARK: - Bounded waits for tests
 
 /// Thread-safe counter for closures the code under test calls from another thread.

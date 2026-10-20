@@ -14,7 +14,7 @@ final class LlamaService: ManagedService {
 
     /// Expose the child PID for orphan tracking.
     var processIdentifier: Int32? { process?.isRunning == true ? process?.processIdentifier : nil }
-    var holdsLiveProcess: Bool { processIdentifier != nil }
+    var holdsLiveProcess: Bool { process?.isRunningAndAlive == true }
 
     /// The stop in flight, so a second caller joins it instead of racing it.
     /// Two relaunches overlap when config.json changes twice within a few
@@ -44,9 +44,7 @@ final class LlamaService: ManagedService {
     /// whether the exit was seen. The default is the real one. A test swaps in
     /// a wait that gives up, which no real child can be made to cause on
     /// demand.
-    var waitForExit: (_ proc: Process, _ grace: TimeInterval, _ name: String, _ killWait: TimeInterval) async -> Bool = {
-        await $0.waitForExitWithDeadline(graceSeconds: $1, serviceName: $2, killWaitSeconds: $3)
-    }
+    var waitForExit: ExitWait = Process.realExitWait
 
     private var llamaBin: URL {
         Bundle.main.resourceURL!.appendingPathComponent("llama/llama-server")

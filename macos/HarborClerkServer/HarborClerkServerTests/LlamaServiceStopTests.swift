@@ -214,6 +214,52 @@ final class LlamaServiceStopTests: XCTestCase {
         XCTAssertEqual(unexpectedExits, 1)
     }
 
+    func testPythonServiceStopWhoseWaitGaveUpKeepsTheProcessTrackedAndIsNotStopped() async throws {
+        let svc = WorkerService(queue: "probe", index: 0)
+        svc.waitForExit = { _, _, _, _ in false }
+        let proc = try spawnSleeper(ignoringSigterm: true)
+        svc.process = proc
+        svc.state = .running
+
+        await bounded { await svc.stop() }
+
+        XCTAssertIdentical(svc.process, proc, "a process the wait gave up on stays tracked")
+        XCTAssertEqual(svc.state, .errored, "a stop that did not see the exit is not a clean stop")
+    }
+
+    func testGatewayServiceStopWhoseWaitGaveUpKeepsTheProcessTrackedAndIsNotStopped() async throws {
+        let svc = GatewayService()
+        svc.waitForExit = { _, _, _, _ in false }
+        let proc = try spawnSleeper(ignoringSigterm: true)
+        svc.process = proc
+        svc.state = .running
+
+        await bounded { await svc.stop() }
+
+        XCTAssertIdentical(svc.process, proc, "a process the wait gave up on stays tracked")
+        XCTAssertEqual(svc.state, .errored, "a stop that did not see the exit is not a clean stop")
+    }
+
+    /// A process Foundation still calls running but the kernel says is gone is
+    /// not a live process: otherwise the service that tracks it refuses every
+    /// start for good, and only quitting the app recovers.
+    func testHoldsLiveProcessIgnoresAnExitFoundationNeverNoticed() throws {
+        let pid = try XCTUnwrap(posixSpawn("/usr/bin/true"))
+        var st: Int32 = 0
+        XCTAssertEqual(waitpid(pid, &st, 0), pid)
+        let gone = UnnoticedExitProcess(pid: pid)
+
+        let llama = try makeService()
+        llama.process = gone
+        XCTAssertFalse(llama.holdsLiveProcess, "LLM")
+        let python = WorkerService(queue: "probe", index: 0)
+        python.process = gone
+        XCTAssertFalse(python.holdsLiveProcess, "Python")
+        let gateway = GatewayService()
+        gateway.process = gone
+        XCTAssertFalse(gateway.holdsLiveProcess, "Gateway")
+    }
+
     /// The give-up policy at the Python services and the parallel worker stops.
     func testPythonServiceSettleStopKeepsAProcessTheWaitGaveUpOn() throws {
         let svc = PythonService(name: "probe")

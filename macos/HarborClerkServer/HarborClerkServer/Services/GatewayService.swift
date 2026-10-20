@@ -27,7 +27,10 @@ final class GatewayService: ManagedService {
         guard let process, process.isRunning else { return nil }
         return process.processIdentifier
     }
-    var holdsLiveProcess: Bool { processIdentifier != nil }
+    var holdsLiveProcess: Bool { process?.isRunningAndAlive == true }
+    /// The wait `stop()` runs on the signalled process; a test swaps in one
+    /// that gives up (#890).
+    var waitForExit: ExitWait = Process.realExitWait
 
     func start() async throws {
         let settings = AppSettings.shared
@@ -108,7 +111,7 @@ final class GatewayService: ManagedService {
         proc.terminate()
         // A wait that gave up (#890) keeps the process tracked and says
         // `errored`, not `stopped`: see `PythonService.settleStop`.
-        if await proc.waitForExitWithDeadline(graceSeconds: 10, serviceName: name) {
+        if await waitForExit(proc, 10, name, Process.defaultKillWaitSeconds) {
             process = nil
             state = .stopped
         } else {

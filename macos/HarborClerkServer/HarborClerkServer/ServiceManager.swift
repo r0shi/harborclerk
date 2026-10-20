@@ -173,7 +173,7 @@ class ServiceManager: ObservableObject {
 
     /// All worker services regardless of queue. Use this anywhere a
     /// generic "stop / restart / iterate over workers" is needed.
-    private var allWorkers: [WorkerService] { ioWorkers + cpuWorkers + llmWorkers }
+    var allWorkers: [WorkerService] { ioWorkers + cpuWorkers + llmWorkers }
 
     /// Set by AppDelegate after creating the HealthChecker.
     weak var healthChecker: HealthChecker?
@@ -497,36 +497,7 @@ class ServiceManager: ObservableObject {
         // rewrite uses the shared `Process.waitForExitWithDeadline` helper,
         // which detaches pipes and escalates to SIGKILL after the grace
         // period — bounded at ~12s regardless of how many workers are hung.
-        for worker in allWorkers {
-            worker.state = .stopping
-            worker.process?.terminate()
-        }
-        notifyStateChanged()
-
-        await withTaskGroup(of: Void.self) { group in
-            for worker in allWorkers {
-                let proc = worker.process
-                let grace = worker.shutdownGracePeriod
-                let workerName = worker.name
-                group.addTask {
-                    let exited: Bool
-                    if let proc, proc.isRunning {
-                        exited = await proc.waitForExitWithDeadline(
-                            graceSeconds: grace,
-                            serviceName: workerName,
-                        )
-                    } else {
-                        exited = true
-                    }
-                    await MainActor.run {
-                        // Gave up (#890): kept tracked and `errored`, not
-                        // `stopped`; see `PythonService.settleStop`.
-                        worker.settleStop(exited: exited)
-                        self.notifyStateChanged()
-                    }
-                }
-            }
-        }
+        await stopWorkersInParallel(allWorkers)
 
         // Stop remaining services in reverse order, notifying after each.
         // Sequential here is intentional: shutdown ordering matters
@@ -814,7 +785,7 @@ class ServiceManager: ObservableObject {
             if service.state != .running { service.state = .errored }
             notifyStateChanged()
             Log.logger("lifecycle").error(
-                "[\(service.name, privacy: .public)] Not starting: it still holds a live process that a stop could not reap; stop it again first")
+                "[\(service.name, privacy: .public)] Not starting: a process from an earlier start is still alive (the kernel says so, not just Foundation); Stop or Restart the service to deal with it first")
             return
         }
 
@@ -1116,35 +1087,7 @@ class ServiceManager: ObservableObject {
         // flow indefinitely. The rewrite uses the same helper, so a
         // settings change that triggers a worker restart is now bounded
         // at ~12s regardless of how many are hung.
-        for worker in workersToStop {
-            worker.state = .stopping
-            worker.process?.terminate()
-        }
-        notifyStateChanged()
-        await withTaskGroup(of: Void.self) { group in
-            for worker in workersToStop {
-                let proc = worker.process
-                let grace = worker.shutdownGracePeriod
-                let workerName = worker.name
-                group.addTask {
-                    let exited: Bool
-                    if let proc, proc.isRunning {
-                        exited = await proc.waitForExitWithDeadline(
-                            graceSeconds: grace,
-                            serviceName: workerName,
-                        )
-                    } else {
-                        exited = true
-                    }
-                    await MainActor.run {
-                        // Gave up (#890): kept tracked and `errored`, not
-                        // `stopped`; see `PythonService.settleStop`.
-                        worker.settleStop(exited: exited)
-                        self.notifyStateChanged()
-                    }
-                }
-            }
-        }
+        await stopWorkersInParallel(workersToStop)
         if needsGatewayRestart {
             await stopForRelaunch(gatewayService)
         }
@@ -1174,8 +1117,21 @@ class ServiceManager: ObservableObject {
         }
 
         // 5. Recreate workers if preset changed
+        //    Not over a worker whose stop gave up (#890): recreating drops the
+        //    old WorkerService objects, and with them the only reference to a
+        //    process that is still alive. Those stay `errored` and tracked,
+        //    so the next Stop or Restart deals with them; the new preset
+        //    applies when workers are next recreated (the next preset change,
+        //    or the app's next launch).
         if needsWorkerRecreate {
-            recreateWorkers()
+            let stillAlive = allWorkers.filter { $0.holdsLiveProcess }
+            if stillAlive.isEmpty {
+                recreateWorkers()
+            } else {
+                Log.logger("lifecycle").error(
+                    "Not recreating workers for the new preset: \(stillAlive.map(\.name).joined(separator: ", "), privacy: .public) still hold a live process their stop gave up on; Stop or Restart them, then save the preset again (or relaunch the app) to apply it"
+                )
+            }
         }
 
         // 6. Update environment on all affected python services
@@ -1213,6 +1169,41 @@ class ServiceManager: ObservableObject {
         }
 
         notifyStateChanged()
+    }
+
+    /// SIGTERM every worker, then wait for all of them in parallel, each
+    /// through its own `waitForExit` seam (grace, SIGKILL, bounded wait), so
+    /// one hung worker costs its grace period, not the whole stop. Shared by
+    /// `stopAll()` and `restartForChangedSettings`, which each carried a copy.
+    /// A wait that gave up (#890) leaves that worker `errored` with its
+    /// process tracked; see `PythonService.settleStop`.
+    func stopWorkersInParallel(_ workers: [WorkerService]) async {
+        for worker in workers {
+            worker.state = .stopping
+            worker.process?.terminate()
+        }
+        notifyStateChanged()
+
+        await withTaskGroup(of: Void.self) { group in
+            for worker in workers {
+                let proc = worker.process
+                let grace = worker.shutdownGracePeriod
+                let workerName = worker.name
+                let wait = worker.waitForExit
+                group.addTask {
+                    let exited: Bool
+                    if let proc, proc.isRunning {
+                        exited = await wait(proc, grace, workerName, Process.defaultKillWaitSeconds)
+                    } else {
+                        exited = true
+                    }
+                    await MainActor.run {
+                        worker.settleStop(exited: exited)
+                        self.notifyStateChanged()
+                    }
+                }
+            }
+        }
     }
 
     /// Tear down old workers and create new ones based on current preset.

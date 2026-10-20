@@ -6,7 +6,7 @@ class PythonService: ManagedService {
     let name: String
     var state: ServiceState = .stopped
     var process: Process?
-    var holdsLiveProcess: Bool { process?.isRunning == true }
+    var holdsLiveProcess: Bool { process?.isRunningAndAlive == true }
     var baseEnvironment: [String: String] = [:]
     /// The settings a service's own environment and health check read. A test
     /// points it at a config file of its own; the default is the live app's.
@@ -19,6 +19,9 @@ class PythonService: ManagedService {
     /// Seconds to wait after SIGTERM before sending SIGKILL.
     /// API server needs more time when mid-research (SSE streams, agent threads, DB sessions).
     var shutdownGracePeriod: TimeInterval = 30.0
+    /// The wait `stop()` (and `ServiceManager.stopWorkersInParallel`) runs on
+    /// the signalled process; a test swaps in one that gives up (#890).
+    var waitForExit: ExitWait = Process.realExitWait
     /// Called after process exits unexpectedly and internal restarts are exhausted.
     var onUnexpectedExit: (@MainActor () -> Void)?
 
@@ -111,10 +114,7 @@ class PythonService: ManagedService {
         // Pipe+waitUntilExit deadlock described in
         // project_menubar_process_management_audit.md), schedules SIGKILL
         // after the grace period, then waits.
-        let exited = await proc.waitForExitWithDeadline(
-            graceSeconds: shutdownGracePeriod,
-            serviceName: name,
-        )
+        let exited = await waitForExit(proc, shutdownGracePeriod, name, Process.defaultKillWaitSeconds)
         settleStop(exited: exited)
     }
 

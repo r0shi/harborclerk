@@ -277,6 +277,63 @@ final class ServiceManagerRelaunchTests: XCTestCase {
         XCTAssertEqual(running.state, .running, "a running service is left as it is")
     }
 
+    /// The parallel worker stop (`stopAll` and the settings restart both run
+    /// it): a worker whose wait gave up stays tracked and `errored`; one whose
+    /// wait saw the exit is untracked and `stopped`.
+    func testStopWorkersInParallelKeepsAWorkerWhoseWaitGaveUp() async throws {
+        let sm = makeManager()
+        let workers = sm.allWorkers
+        guard workers.count >= 2 else { return XCTFail("fixture: the manager has \(workers.count) workers") }
+        let stuck = workers[0], clean = workers[1]
+        stuck.waitForExit = { _, _, _, _ in false }
+        let stuckProc = try spawnSigtermIgnoringSleeper()
+        defer { killAndReap(stuckProc) }
+        let cleanProc = Process()
+        cleanProc.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        cleanProc.arguments = ["30"]
+        try cleanProc.runAsProcessGroupLeader()
+        defer { killAndReap(cleanProc) }
+        stuck.process = stuckProc
+        stuck.state = .running
+        clean.process = cleanProc
+        clean.state = .running
+
+        await withinBound("the parallel worker stop", seconds: 20) {
+            await sm.stopWorkersInParallel([stuck, clean])
+        }
+
+        XCTAssertIdentical(stuck.process, stuckProc, "the given-up worker stays tracked")
+        XCTAssertEqual(stuck.state, .errored)
+        XCTAssertNil(clean.process, "control: the worker whose wait saw the exit is untracked")
+        XCTAssertEqual(clean.state, .stopped)
+    }
+
+    /// A preset change recreates the workers, dropping the old objects. One
+    /// whose stop gave up holds the only reference to a live process, so the
+    /// workers are not recreated this time: the old one stays in the manager,
+    /// tracked and `errored`, for the next Stop or Restart.
+    func testWorkerPresetChangeDoesNotDropAWorkerItsStopGaveUpOn() async throws {
+        let sm = makeManager()
+        let workers = sm.allWorkers
+        guard let stuck = workers.first else { return XCTFail("fixture: no workers") }
+        for worker in workers { worker.launcher = { _ in } }  // the restart's starts spawn nothing
+        stuck.waitForExit = { _, _, _, _ in false }
+        let old = try spawnSigtermIgnoringSleeper()
+        defer { killAndReap(old) }
+        stuck.process = old
+        stuck.state = .running
+
+        await withinBound("the preset restart", seconds: 30) {
+            await sm.restartForChangedSettings(["worker_preset"])
+        }
+
+        XCTAssertTrue(sm.allWorkers.contains { $0 === stuck }, "the worker holding a live process is not dropped")
+        XCTAssertTrue(sm.services.contains { ObjectIdentifier($0) == ObjectIdentifier(stuck) })
+        XCTAssertIdentical(stuck.process, old, "and still tracks it")
+        XCTAssertTrue(stuck.holdsLiveProcess)
+        XCTAssertEqual(stuck.state, .errored, "left errored; the restart's start refused it")
+    }
+
     /// The settings restart stops a service and then starts it. When the stop's
     /// wait gave up, the start must not run: the old llama-server is still
     /// tracked, still alive, and may still hold the port.
