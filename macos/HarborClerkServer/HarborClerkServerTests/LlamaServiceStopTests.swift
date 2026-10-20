@@ -196,7 +196,9 @@ final class LlamaServiceStopTests: XCTestCase {
 
     @MainActor
     func testPythonServiceIgnoresTheExitOfAProcessNoLongerTracked() async throws {
-        let svc = PythonService(name: "probe")
+        // A concrete subclass, so a restart that wrongly ran fails an assertion
+        // below rather than the base class's "Subclasses must override" trap.
+        let svc = WorkerService(queue: "probe", index: 0)
         svc.launcher = { _ in }  // a restart, if one wrongly ran, spawns nothing
         let old = try spawnSleeper()
         let successor = try spawnSleeper()
