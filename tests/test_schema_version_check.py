@@ -29,3 +29,21 @@ def test_get_expected_schema_version_returns_alembic_head():
     assert alembic_dir is not None
     versions = sorted(p.name for p in (alembic_dir / "versions").glob("[0-9]*.py"))
     assert versions, "No numbered migration files found"
+
+
+def test_a_failing_history_walk_still_yields_the_head(monkeypatch):
+    """Only the watcher walks the history (`schema_head`); the API's head must not depend on it."""
+    from alembic.script import ScriptDirectory
+
+    from harbor_clerk.schema_version import expected_schema_version, schema_head
+
+    head = expected_schema_version()
+    assert head is not None
+
+    def broken_walk(self, *args, **kwargs):
+        raise RuntimeError("the history walk broke")
+
+    monkeypatch.setattr(ScriptDirectory, "iterate_revisions", broken_walk)
+    assert expected_schema_version() == head
+    assert _get_expected_schema_version() == head
+    assert schema_head() is None, "the watcher falls back to the table check"

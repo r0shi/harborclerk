@@ -62,8 +62,14 @@ def expected_schema_version() -> str | None:
     "schema mismatch" log lines after every release. Reading the head
     dynamically keeps the check in sync automatically.
     """
-    head = schema_head()
-    return head.revision if head is not None else None
+    script = _script_directory()
+    if script is None:
+        return None
+    try:
+        return script.get_current_head()
+    except Exception:
+        logger.exception("Could not read the alembic head")
+        return None
 
 
 @dataclass(frozen=True)
@@ -75,7 +81,11 @@ class SchemaHead:
 
 
 def schema_head() -> SchemaHead | None:
-    """The head and its ancestors, or None when they cannot be read (see `expected_schema_version`)."""
+    """The head and its ancestors, or None when they cannot be read (see `expected_schema_version`).
+
+    The watcher's alone: the walk over the whole history is never on the API's path, so its failure
+    cannot hide the head from the API's schema check or `system.py`'s report.
+    """
     script = _script_directory()
     if script is None:
         return None
