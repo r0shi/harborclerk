@@ -133,7 +133,9 @@ _MISSING_TABLES_SQL = text(
 def _missing_tables(session: Session) -> list[str]:
     """The tables this build maps that the database does not have yet: all of them before the first migration."""
     names = sorted(table.name for table in Base.metadata.sorted_tables)
-    return list(session.execute(_MISSING_TABLES_SQL, {"names": names}).scalars())
+    # Sorted here, not by the database: ORDER BY follows the server collation, which
+    # orders "uploads" before "upload_sessions" under en_US and after it under C.
+    return sorted(session.execute(_MISSING_TABLES_SQL, {"names": names}).scalars())
 
 
 def _schema_wait(session: Session, head: SchemaHead | None) -> tuple[str, str]:
