@@ -173,7 +173,7 @@ class ServiceManager: ObservableObject {
 
     /// All worker services regardless of queue. Use this anywhere a
     /// generic "stop / restart / iterate over workers" is needed.
-    private var allWorkers: [WorkerService] { ioWorkers + cpuWorkers + llmWorkers }
+    var allWorkers: [WorkerService] { ioWorkers + cpuWorkers + llmWorkers }
 
     /// Set by AppDelegate after creating the HealthChecker.
     weak var healthChecker: HealthChecker?
@@ -306,6 +306,21 @@ class ServiceManager: ObservableObject {
         try? content.write(to: pidFileURL, atomically: true, encoding: .utf8)
     }
 
+    /// The PID file after `stopAll()`: removed when every stop completed,
+    /// rewritten to the pids still tracked when any stop gave up its wait
+    /// (#890), so the next launch's orphan pass still finds them.
+    func settlePidFileAfterStop() {
+        let stillAlive = services.filter { !$0.isLaunchdManaged && $0.holdsLiveProcess }
+        if stillAlive.isEmpty {
+            removePidFile()
+        } else {
+            savePidFile()
+            Log.logger("lifecycle").error(
+                "Keeping the child PID file: \(stillAlive.map(\.name).joined(separator: ", "), privacy: .public) still hold a live process their stop gave up on"
+            )
+        }
+    }
+
     /// Remove the PID file (called after orderly shutdown).
     private func removePidFile() {
         try? FileManager.default.removeItem(at: pidFileURL)
@@ -362,23 +377,13 @@ class ServiceManager: ObservableObject {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         proc.arguments = ["-ti", "tcp:\(port)"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
-        // `Process.runAndAwait` uses terminationHandler — safer than
-        // `waitUntilExit` for short-lived children like lsof (see
-        // ProcessAsync.swift). On error we still try to read the pipe;
-        // it'll be empty and we fall through to the no-output guard.
-        _ = try? await proc.runAndAwait()
-        // Explicitly close the parent's write-end copy before the read.
-        // Foundation usually closes it on its own when the child exits,
-        // but that's undocumented — without our own close, an unlucky
-        // future regression would leave readDataToEndOfFile blocked on
-        // MainActor.
-        try? pipe.fileHandleForWriting.close()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-
-        guard let output = String(data: data, encoding: .utf8)?
+        // terminationHandler rather than `waitUntilExit` for short-lived
+        // children like lsof (see ProcessAsync.swift), with both the exit
+        // wait and the pipe read bounded (#890): every start of the LLM runs
+        // this first. A launch failure or timeout reads as no output.
+        guard let data = await proc.runCapturingOutput(timeout: Process.probeTimeoutSeconds),
+              let output = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !output.isEmpty else { return }
 
@@ -507,32 +512,7 @@ class ServiceManager: ObservableObject {
         // rewrite uses the shared `Process.waitForExitWithDeadline` helper,
         // which detaches pipes and escalates to SIGKILL after the grace
         // period — bounded at ~12s regardless of how many workers are hung.
-        for worker in allWorkers {
-            worker.state = .stopping
-            worker.process?.terminate()
-        }
-        notifyStateChanged()
-
-        await withTaskGroup(of: Void.self) { group in
-            for worker in allWorkers {
-                let proc = worker.process
-                let grace = worker.shutdownGracePeriod
-                let workerName = worker.name
-                group.addTask {
-                    if let proc, proc.isRunning {
-                        await proc.waitForExitWithDeadline(
-                            graceSeconds: grace,
-                            serviceName: workerName,
-                        )
-                    }
-                    await MainActor.run {
-                        worker.process = nil
-                        worker.state = .stopped
-                        self.notifyStateChanged()
-                    }
-                }
-            }
-        }
+        await stopWorkersInParallel(allWorkers)
 
         // Stop remaining services in reverse order, notifying after each.
         // Sequential here is intentional: shutdown ordering matters
@@ -549,8 +529,8 @@ class ServiceManager: ObservableObject {
             notifyStateChanged()
         }
 
-        // All children stopped — remove PID file
-        removePidFile()
+        // Removed only if every child stopped; see settlePidFileAfterStop.
+        settlePidFileAfterStop()
 
         // App typically exit(0)s right after stopAll, so this clear is a
         // safety net for any non-quit caller (none today). Cheap to keep.
@@ -806,6 +786,21 @@ class ServiceManager: ObservableObject {
         guard service.state != .shutdownPending, service.state != .stopping, service.state != .starting else {
             Log.logger("lifecycle").notice(
                 "[\(service.name, privacy: .public)] Not starting: \(service.state.rawValue, privacy: .public)")
+            return
+        }
+        // Never spawn beside a child this service still holds. Every path that
+        // starts after a stop reaches here (settings restart, restartService and
+        // so auto-restart, relaunchLlama, startAll), and a stop whose wait gave
+        // up (#890) leaves its process tracked and the service `errored`;
+        // starting would launch a second server onto a port the first may still
+        // hold. Left `errored` (a `running` one is left alone): a later Stop or
+        // Restart goes through `stop()` again, which is where the process is
+        // dealt with.
+        guard !service.holdsLiveProcess else {
+            if service.state != .running { service.state = .errored }
+            notifyStateChanged()
+            Log.logger("lifecycle").error(
+                "[\(service.name, privacy: .public)] Not starting: a process from an earlier start is still alive (the kernel says so, not just Foundation); Stop or Restart the service to deal with it first")
             return
         }
 
@@ -1107,31 +1102,7 @@ class ServiceManager: ObservableObject {
         // flow indefinitely. The rewrite uses the same helper, so a
         // settings change that triggers a worker restart is now bounded
         // at ~12s regardless of how many are hung.
-        for worker in workersToStop {
-            worker.state = .stopping
-            worker.process?.terminate()
-        }
-        notifyStateChanged()
-        await withTaskGroup(of: Void.self) { group in
-            for worker in workersToStop {
-                let proc = worker.process
-                let grace = worker.shutdownGracePeriod
-                let workerName = worker.name
-                group.addTask {
-                    if let proc, proc.isRunning {
-                        await proc.waitForExitWithDeadline(
-                            graceSeconds: grace,
-                            serviceName: workerName,
-                        )
-                    }
-                    await MainActor.run {
-                        worker.process = nil
-                        worker.state = .stopped
-                        self.notifyStateChanged()
-                    }
-                }
-            }
-        }
+        await stopWorkersInParallel(workersToStop)
         if needsGatewayRestart {
             await stopForRelaunch(gatewayService)
         }
@@ -1161,8 +1132,21 @@ class ServiceManager: ObservableObject {
         }
 
         // 5. Recreate workers if preset changed
+        //    Not over a worker whose stop gave up (#890): recreating drops the
+        //    old WorkerService objects, and with them the only reference to a
+        //    process that is still alive. Those stay `errored` and tracked,
+        //    so the next Stop or Restart deals with them. The new preset takes
+        //    effect at the next app launch: saving the same preset again sends
+        //    no `worker_preset` change, so nothing else recreates them.
         if needsWorkerRecreate {
-            recreateWorkers()
+            let stillAlive = allWorkers.filter { $0.holdsLiveProcess }
+            if stillAlive.isEmpty {
+                recreateWorkers()
+            } else {
+                Log.logger("lifecycle").error(
+                    "Not recreating workers for the new preset: \(stillAlive.map(\.name).joined(separator: ", "), privacy: .public) still hold a live process their stop gave up on; Stop or Restart them. The new preset takes effect at the next app launch"
+                )
+            }
         }
 
         // 6. Update environment on all affected python services
@@ -1200,6 +1184,41 @@ class ServiceManager: ObservableObject {
         }
 
         notifyStateChanged()
+    }
+
+    /// SIGTERM every worker, then wait for all of them in parallel, each
+    /// through its own `waitForExit` seam (grace, SIGKILL, bounded wait), so
+    /// one hung worker costs its grace period, not the whole stop. Shared by
+    /// `stopAll()` and `restartForChangedSettings`, which each carried a copy.
+    /// A wait that gave up (#890) leaves that worker `errored` with its
+    /// process tracked; see `PythonService.settleStop`.
+    func stopWorkersInParallel(_ workers: [WorkerService]) async {
+        for worker in workers {
+            worker.state = .stopping
+            worker.process?.terminate()
+        }
+        notifyStateChanged()
+
+        await withTaskGroup(of: Void.self) { group in
+            for worker in workers {
+                let proc = worker.process
+                let grace = worker.shutdownGracePeriod
+                let workerName = worker.name
+                let wait = worker.waitForExit
+                group.addTask {
+                    let exited: Bool
+                    if let proc, proc.isRunning {
+                        exited = await wait(proc, grace, workerName, Process.defaultKillWaitSeconds)
+                    } else {
+                        exited = true
+                    }
+                    await MainActor.run {
+                        worker.settleStop(exited: exited)
+                        self.notifyStateChanged()
+                    }
+                }
+            }
+        }
     }
 
     /// Tear down old workers and create new ones based on current preset.

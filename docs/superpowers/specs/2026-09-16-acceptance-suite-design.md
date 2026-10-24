@@ -104,7 +104,7 @@ release template can be filled from the run.
 | D2 | `GET /api/docs/{id}/content` returns page text matching the source; a `pages` range selects pages |
 | D3 | `GET /api/docs/{id}/entities` finds the named people and organisations planted in the fixture |
 | D4 | The `.eml` fixture's citation is `source_kind=email` with sender or subject in `source_label`. An on-disk `.eml` yields exactly one document: attachments become child documents only through IMAP ingest (`mail/ingest.py:198`), so the attachment's text is checked as part of the email's content, not as its own source |
-| D5 | Every MCP tool payload for fixture documents contains no absolute path: the fixture root string is absent from the serialised JSON, including `kb_get_document` and `kb_ingest_status` for a document whose pipeline error quotes its on-disk path, where the key reads the message with `[path]` in place of the path (#804) |
+| D5 | Every MCP tool payload a key receives for fixture documents contains no absolute path: the fixture root string is absent from the serialised JSON of the search, listing, outline and document tools, including `kb_get_document` and `kb_ingest_status` for a document whose watched file could not be read. Both halves are asserted directly: that document's stored error (read unredacted by the admin) names the errno but no path (#851), and the key still reads a pipeline error and a failed job. The `[path]` redaction of an error that does quote a path (#804) is unit-tested; no failure a live run can inject still records one (#908) |
 | D6 | `GET /api/docs/{id}` and `/content` via an API key of any tier: record that they succeed and that `source_path` (absolute) is present. Tier is enforced only in MCP (`api/deps.py:187`); see open question 1 |
 | D7 | `GET /api/docs` filters narrow the list: `language=fr` returns the French fixture, `mime_type=application/pdf` the two PDFs, `q=` a title match |
 
@@ -146,7 +146,7 @@ release template can be filled from the run.
 
 | ID | Check |
 |---|---|
-| H1 | Soft-deleting a dedicated fixture removes it from REST search (with and without a text filter), Find All, the document list, `kb_search`, and `kb_read_passages` for a folder-scoped key (whose visibility set filters on status); a scoped Ask must not cite it (regression for #621/#622). Reading the deleted chunk by id still succeeds for unscoped principals over REST `passages/read` and MCP `kb_read_passages`: the "#621 follow-up" of the v0.9.2 notes, recorded as strict expected failures H1c/H1d |
+| H1 | Soft-deleting a dedicated fixture removes it from REST search (with and without a text filter), Find All, the document list, `kb_search`, and `kb_read_passages` for a folder-scoped key (whose visibility set filters on status); a scoped Ask must not cite it (regression for #621/#622). Reading the deleted chunk by id is refused too: H1c (REST `passages/read` as admin), H1e (REST, folder-scoped key) and H1d (MCP `kb_read_passages`, unscoped key) are ordinary checks since #909, which closed the "#621 follow-up" of the v0.9.2 notes |
 | H2 | Deleting a folder registered for the check removes its document and the folder, and every request-log row a key wrote against it is still there afterwards |
 
 Claims deliberately not covered here: onboarding routes, Status UI, Research,
@@ -168,7 +168,7 @@ folder at run time:
 | `bail-commercial.txt` | French text | C2, `language=fr` |
 | `invoice-thread.eml` (built with `tests/mail/fixtures/build_eml.py`) with a small `.txt` attachment | email + attachment | D4, `email.from_address` filter |
 | `handbook.docx` (minimal OOXML package written by the renderer) | Office | B2 via Tika |
-| `permission-denied.txt` | plain text, made unreadable after ingest and reprocessed so its pipeline error quotes the absolute path | D5 |
+| `permission-denied.txt` | plain text, made unreadable after ingest and reprocessed so its extract stage fails reading the watched file | D5 |
 | `notes.xyz` | unsupported extension | B5 |
 
 Ground truth records, per fixture, the expected `pipeline_status`, language,

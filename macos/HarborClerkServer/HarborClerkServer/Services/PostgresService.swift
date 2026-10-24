@@ -455,7 +455,7 @@ final class PostgresService: ManagedService {
     /// Extract the major version from the bundled postgres binary (e.g. "18").
     ///
     /// Async because `start()` runs on the MainActor — using
-    /// `Process.runAndAwait` (which uses terminationHandler under the
+    /// `Process.runCapturingOutput` (which uses terminationHandler under the
     /// hood) keeps the wait off-MainActor and dodges the
     /// `waitUntilExit`/short-lived-child race that hangs other call
     /// sites (CLAUDE.md gotcha: "never call proc.waitUntilExit() on
@@ -466,26 +466,15 @@ final class PostgresService: ManagedService {
         proc.executableURL = pgBinDir.appendingPathComponent("postgres")
         proc.arguments = ["--version"]
         proc.environment = pgEnvironment()
-        let pipe = Pipe()
-        proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
-        do {
-            _ = try await proc.runAndAwait()
-        } catch {
-            return ""
-        }
         // `postgres --version` output is ~27 bytes — well under the
         // 64KB pipe buffer, so reading after exit is safe (no need
-        // for concurrent drain).
-        //
-        // Explicitly close the parent's copy of the write end before
-        // reading. The child's copy is already closed (process exited),
-        // and Foundation usually closes the parent's copy too — but
-        // that's undocumented. Without our own close, an unlucky
-        // Foundation regression would leave `readDataToEndOfFile`
-        // waiting for EOF forever, on MainActor.
-        try? pipe.fileHandleForWriting.close()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        // for concurrent drain). `runCapturingOutput` bounds the exit
+        // wait and reads without waiting for EOF, so neither a wedged
+        // child nor a stray copy of the write end can hold this (#890).
+        guard let data = await proc.runCapturingOutput(timeout: Process.probeTimeoutSeconds) else {
+            return ""
+        }
         // Output: "postgres (PostgreSQL) 18.3\n"
         guard let output = String(data: data, encoding: .utf8),
               let versionStr = output.split(separator: " ").last else {

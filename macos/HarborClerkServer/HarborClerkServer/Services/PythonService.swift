@@ -6,7 +6,7 @@ class PythonService: ManagedService {
     let name: String
     var state: ServiceState = .stopped
     var process: Process?
-    var holdsLiveProcess: Bool { process?.isRunning == true }
+    var holdsLiveProcess: Bool { process?.isRunningAndAlive == true }
     var baseEnvironment: [String: String] = [:]
     /// The settings a service's own environment and health check read. A test
     /// points it at a config file of its own; the default is the live app's.
@@ -19,6 +19,9 @@ class PythonService: ManagedService {
     /// Seconds to wait after SIGTERM before sending SIGKILL.
     /// API server needs more time when mid-research (SSE streams, agent threads, DB sessions).
     var shutdownGracePeriod: TimeInterval = 30.0
+    /// The wait `stop()` (and `ServiceManager.stopWorkersInParallel`) runs on
+    /// the signalled process; a test swaps in one that gives up (#890).
+    var waitForExit: ExitWait = Process.realExitWait
     /// Called after process exits unexpectedly and internal restarts are exhausted.
     var onUnexpectedExit: (@MainActor () -> Void)?
 
@@ -54,22 +57,33 @@ class PythonService: ManagedService {
         proc.terminationHandler = { [weak self] p in
             guard let self = self else { return }
             Task { @MainActor in
-                if self.state == .running && self.restartCount < self.maxRestarts {
-                    self.restartCount += 1
-                    let delay = pow(2.0, Double(self.restartCount))
-                    serviceLogger.error("Process exited (\(p.terminationStatus, privacy: .public)), restarting in \(Int(delay), privacy: .public)s (attempt \(self.restartCount, privacy: .public)/\(self.maxRestarts, privacy: .public))")
-                    try? await Task.sleep(for: .seconds(delay))
-                    try? await self.start()
-                } else if self.state == .running {
-                    self.state = .errored
-                    serviceLogger.error("Process exited, max restarts reached")
-                    self.onUnexpectedExit?()
-                }
+                await self.processExited(p, logger: serviceLogger)
             }
         }
 
         try launcher(proc)
         process = proc
+    }
+
+    /// An exit of `p` that no stop asked for: restart, or after `maxRestarts`
+    /// mark the service errored. Only the process this service tracks counts:
+    /// a stop that gave up its wait (#890) can see that process's exit land
+    /// later, after a successor is `running`, and acting on it would restart
+    /// the healthy successor.
+    @MainActor
+    func processExited(_ p: Process, logger: Logger) async {
+        guard process === p else { return }
+        if state == .running && restartCount < maxRestarts {
+            restartCount += 1
+            let delay = pow(2.0, Double(restartCount))
+            logger.error("Process exited (\(p.terminationStatus, privacy: .public)), restarting in \(Int(delay), privacy: .public)s (attempt \(self.restartCount, privacy: .public)/\(self.maxRestarts, privacy: .public))")
+            try? await Task.sleep(for: .seconds(delay))
+            try? await start()
+        } else if state == .running {
+            state = .errored
+            logger.error("Process exited, max restarts reached")
+            onUnexpectedExit?()
+        }
     }
 
     /// The environment the process is launched with: the shared base dict,
@@ -100,12 +114,24 @@ class PythonService: ManagedService {
         // Pipe+waitUntilExit deadlock described in
         // project_menubar_process_management_audit.md), schedules SIGKILL
         // after the grace period, then waits.
-        await proc.waitForExitWithDeadline(
-            graceSeconds: shutdownGracePeriod,
-            serviceName: name,
-        )
-        process = nil
-        state = .stopped
+        let exited = await waitForExit(proc, shutdownGracePeriod, name, Process.defaultKillWaitSeconds)
+        settleStop(exited: exited)
+    }
+
+    /// The end of a stop that signalled the tracked process and waited on it.
+    /// Seen to exit: untrack it and report `stopped`. Not seen to exit (the
+    /// wait gave up, #890): keep it tracked so `holdsLiveProcess` and the
+    /// force-stop pass still see it, and report `errored`, which the relaunch
+    /// paths (`stopForRelaunch`) send back through `stop()`; `stopped` would
+    /// let a start spawn a second one beside it. Also the end of the parallel
+    /// worker stops in `ServiceManager`.
+    func settleStop(exited: Bool) {
+        if exited {
+            process = nil
+            state = .stopped
+        } else {
+            state = .errored
+        }
     }
 
     func healthCheck() async -> Bool {

@@ -253,11 +253,14 @@ final class HealthCheckerTests: XCTestCase {
     @MainActor
     private func bounded(_ what: String, seconds: TimeInterval = 10, _ body: @escaping @MainActor () async -> Void) async {
         let returned = expectation(description: "\(what) returned within \(seconds)s")
+        let finish = ResumeOnce()
         let task = Task { @MainActor in
             await body()
-            returned.fulfill()
+            // Late, after the timeout claimed `finish`: no API-violating fulfil.
+            if finish.claim() { returned.fulfill() }
         }
         await fulfillment(of: [returned], timeout: seconds)
+        _ = finish.claim()
         task.cancel()
     }
 

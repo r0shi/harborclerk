@@ -12,6 +12,8 @@ import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
 import { documentTypeIcon } from '../utils/documentTypeIcon'
 import EmailMetadataSection from '../components/EmailMetadataSection'
+import DocumentErrorNotice from '../components/DocumentErrorNotice'
+import type { ErrorInfo } from '../utils/documentFailure'
 
 interface JobInfo {
   job_id: string
@@ -20,6 +22,7 @@ interface JobInfo {
   progress_current?: number | null
   progress_total?: number | null
   error?: string | null
+  error_info?: ErrorInfo | null
   created_at: string
   started_at?: string | null
   finished_at?: string | null
@@ -42,6 +45,7 @@ interface DocumentDetail {
   size_bytes: number | null
   ocr_languages_used: string[] | null
   error: string | null
+  error_info?: ErrorInfo | null
   created_at: string
   updated_at: string
   jobs: JobInfo[]
@@ -172,13 +176,14 @@ function DocStatusBanner({ doc }: { doc: DocumentDetail }) {
       const status = effectiveJobStatus(j, doc)
       return status === 'done' || status === 'skipped'
     })
-  const hasError = doc.jobs.some((j) => effectiveJobStatus(j, doc) === 'error')
+  const hasError =
+    doc.jobs.some((j) => effectiveJobStatus(j, doc) === 'error') || (doc.pipeline_status === 'error' && !!doc.error)
   const runningJob = doc.jobs.find((j) => {
     const status = effectiveJobStatus(j, doc)
     return status === 'running' || status === 'queued'
   })
 
-  if (doc.pipeline_status === 'ready' || allDone) {
+  if (doc.pipeline_status === 'ready' || (allDone && doc.pipeline_status !== 'error')) {
     return (
       <div className="mb-3 flex items-center gap-2 rounded-lg bg-green-50 dark:bg-green-900/20 px-3 py-2 text-sm text-green-700 dark:text-green-400">
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -190,15 +195,24 @@ function DocStatusBanner({ doc }: { doc: DocumentDetail }) {
   }
 
   if (hasError) {
-    const errorJob = doc.jobs.find((j) => j.status === 'error')
+    // The document's own error is the one that failed the pipeline; a job's covers a
+    // background stage (summarize) that never touches documents.error.
+    const fromDoc = doc.pipeline_status === 'error' && !!doc.error
+    const errorJobs = doc.jobs.filter((j) => j.status === 'error')
+    // Name the stage whose error the notice shows: summarize can fail beside embed in
+    // the same outage, and the jobs arrive in no particular order. A cancel or queue clear
+    // writes one text on every job, summarize included, so among exact matches a gating
+    // stage wins; summarize only when it is the only match.
+    const matches = errorJobs.filter((j) => j.error === doc.error)
+    const errorJob = fromDoc
+      ? (matches.find((j) => j.stage !== 'summarize') ?? matches[0] ?? errorJobs.find((j) => j.stage !== 'summarize'))
+      : errorJobs[0]
     return (
-      <div className="mb-3 flex items-center gap-2 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
-        <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-        </svg>
-        Error in {errorJob?.stage}
-        {errorJob?.error ? `: ${errorJob.error}` : ''}
-      </div>
+      <DocumentErrorNotice
+        info={fromDoc ? doc.error_info : errorJob?.error_info}
+        raw={fromDoc ? doc.error : errorJob?.error}
+        stage={errorJob ? stageName(errorJob.stage) : null}
+      />
     )
   }
 
@@ -728,15 +742,19 @@ function DocumentDetail() {
           job.status = event.status
           if (event.progress !== undefined) job.progress_current = event.progress
           if (event.total !== undefined) job.progress_total = event.total
-          if (event.error) job.error = event.error
+          if (event.error) {
+            job.error = event.error
+            // The explanation is computed server-side; refetch it rather than show a stale one.
+            job.error_info = null
+          }
           if (event.status === 'done') job.finished_at = new Date().toISOString()
           if (event.status === 'running' && !job.started_at) job.started_at = new Date().toISOString()
           jobs[jIdx] = job
         }
 
-        // Check if all jobs are done → refresh from API for final state
+        // All jobs done, or one failed (its explanation is server-side) → refresh from the API
         const allDone = jobs.every((j) => j.status === 'done' || j.status === 'skipped')
-        if (allDone) {
+        if (allDone || event.status === 'error') {
           // Async refresh — won't affect this render, next state update will
           loadDoc()
         }
@@ -971,8 +989,6 @@ function DocumentDetail() {
         </div>
         <JobStatusBadge status={doc.status} />
       </div>
-
-      {doc.error && <div className="mb-2 text-sm text-red-600 dark:text-red-400">Error: {doc.error}</div>}
 
       <div className="text-xs text-gray-400 mb-1">
         {doc.extracted_chars != null && <span>Chars: {doc.extracted_chars} | </span>}

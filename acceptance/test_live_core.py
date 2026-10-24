@@ -327,29 +327,52 @@ def test_d4_email_citation_uses_email_metadata(admin: HarborClerk, corpus: Corpu
 def test_d5_mcp_payloads_never_contain_an_absolute_path(
     corpus: Corpus, keys: KeyFactory, mcp, failed_document: dict
 ) -> None:
-    """Including a document whose pipeline error quotes its on-disk path: the
-    key reads what failed with the path replaced by `[path]` (#804)."""
-    raw = keys.create("d5-full", scope_folder_ids=[corpus.folder_id])["raw_key"]
-    session = mcp.bearer(raw)
+    """No MCP payload a key receives carries an absolute path, including the
+    errors of a document whose watched file could not be read.
+
+    Both halves are asserted directly (#908). The stored error, as the admin
+    reads it unredacted, names what failed but not the path (#851). And every
+    MCP tool that returns document metadata or errors returns no path to a key;
+    the `[path]` redaction of a stored error that does quote one (#804) is
+    covered by unit tests, since no failure a live run can inject still records
+    one."""
     forbidden = (corpus.folder_path, "/Users/", "/private/", "/home/")
     failed_id = failed_document["doc_id"]
+    stored = [("document", failed_document.get("error") or "")] + [
+        (f"job {j['stage']}", j["error"]) for j in failed_document["jobs"] if j.get("error")
+    ]
+    assert stored[0][1], "the failed document has no stored error"
+    leaked = [(where, f) for where, text in stored for f in forbidden if f in text]
+    assert not leaked, f"stored errors quote a path: {leaked}; {stored}"
+
+    # Every doc_id below is a fixture document, inside the key's folder scope.
+    raw = keys.create("d5-full", scope_folder_ids=[corpus.folder_id])["raw_key"]
+    session = mcp.bearer(raw)
     for name, args in (
         ("kb_search", {"query": "Harbourside Lane", "k": 20}),
         ("kb_find_all", {"query": "standing order"}),
+        ("kb_corpus_overview", {}),
+        ("kb_list_recent", {"limit": 100}),
+        ("kb_documents_by_date", {"limit": 50}),
+        ("kb_document_outline", {"doc_id": corpus.doc_id("lease-agreement.pdf")}),
         ("kb_get_document", {"doc_id": corpus.doc_id("lease-agreement.pdf")}),
         ("kb_get_document", {"doc_id": failed_id}),
         ("kb_ingest_status", {"doc_id": failed_id}),
     ):
+        # A denied, rate-limited or removed tool, or a doc the key cannot see,
+        # carries no path either: the scan below only counts on a real payload.
         result = session.call_tool(name, args)
+        payload = tool_json(result)  # raises on an error result
+        assert not (isinstance(payload, dict) and "error" in payload), f"{name} {args}: {payload}"
         text = tool_text(result)
-        assert text, name
         leaked = [f for f in forbidden if f in text]
         assert not leaked, f"{name} payload contains {leaked}"
+    # The key still learns what failed: the error is reported, not dropped.
     detail = tool_json(session.call_tool("kb_get_document", {"doc_id": failed_id}))
     assert detail["pipeline_status"] == "error"
-    assert "[path]" in detail["pipeline_error"], detail["pipeline_error"]
-    job_errors = [j["error"] for j in detail["jobs"] if j["error"]]
-    assert job_errors and all("[path]" in e for e in job_errors), job_errors
+    assert detail.get("pipeline_error"), detail
+    status = tool_json(session.call_tool("kb_ingest_status", {"doc_id": failed_id}))
+    assert any(j["error"] for j in status["jobs"]), status["jobs"]
 
 
 def test_d6_search_tier_key_cannot_read_documents_over_rest(

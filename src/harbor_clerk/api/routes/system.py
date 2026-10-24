@@ -20,14 +20,17 @@ from sqlalchemy.pool import NullPool
 
 from harbor_clerk import query_embed_health as embedder_evidence
 from harbor_clerk.api.deps import Principal, require_admin
+from harbor_clerk.api.schemas.documents import ErrorInfo
 from harbor_clerk.api.schemas.system import (
     DeleteAllRequest,
     RetrievalSettingsResponse,
     RetrievalSettingsUpdate,
 )
+from harbor_clerk.api.scope import redact_paths_for_principal
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import get_settings, sync_native_config
 from harbor_clerk.db import get_session
+from harbor_clerk.document_failure import explain_failure
 from harbor_clerk.embedding_coverage import embedding_coverage_counts
 from harbor_clerk.error_text import HEALTH_DETAIL_LIMIT, describe_error
 from harbor_clerk.models import (
@@ -652,7 +655,7 @@ async def status_summary(
         .all()
     )
     failed_doc_ids = [doc.doc_id for doc in failed_docs]
-    failed_jobs_by_doc: dict[uuid.UUID, IngestionJob] = {}
+    failed_jobs_by_doc: dict[uuid.UUID, list[IngestionJob]] = {}
     if failed_doc_ids:
         error_jobs = (
             (
@@ -671,22 +674,37 @@ async def status_summary(
             .all()
         )
         for job in error_jobs:
-            failed_jobs_by_doc.setdefault(job.doc_id, job)
+            failed_jobs_by_doc.setdefault(job.doc_id, []).append(job)
 
     recent_failed_documents = []
     for doc in failed_docs:
-        failed_job = failed_jobs_by_doc.get(doc.doc_id)
+        # The stage whose error failed the document: summarize runs beside embed and
+        # entities, so the newest error job may be a background stage's (#555).
+        candidates = failed_jobs_by_doc.get(doc.doc_id, [])
+        # A cancel or queue clear writes one text on every job, summarize included, so among
+        # the exact matches a gating stage wins; summarize only when it is the only match.
+        matches = [j for j in candidates if doc.error and j.error == doc.error]
+        gating = [j for j in candidates if j.stage not in _BACKGROUND_JOB_STAGES]
+        failed_job = next(
+            (j for j in matches if j.stage not in _BACKGROUND_JOB_STAGES),
+            matches[0] if matches else (gating[0] if gating else (candidates[0] if candidates else None)),
+        )
+        error = doc.error or (failed_job.error if failed_job else None)
         recent_failed_documents.append(
             {
                 "doc_id": str(doc.doc_id),
                 "title": doc.title,
                 "canonical_filename": doc.canonical_filename,
                 "pipeline_status": doc.pipeline_status.value,
-                "error": doc.error or (failed_job.error if failed_job else None),
+                "error": error,
+                # Every document here is in `error` (the query filters on it): the list's rule.
+                "error_info": ErrorInfo.from_explanation(explain_failure(error)),
                 "failed_stage": failed_job.stage.value if failed_job else None,
                 "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
             }
         )
+    # Admin-only today; redacted like every document-shaped payload all the same.
+    recent_failed_documents = redact_paths_for_principal(recent_failed_documents, _admin)
 
     processing_docs = (
         await session.execute(

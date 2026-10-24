@@ -310,4 +310,63 @@ describe('DocumentsPage', () => {
 
     expect(await screen.findByText(/activate a model\./)).toBeInTheDocument()
   })
+
+  it('explains failed rows by family: pill, one-line notice, and the full notice when expanded', async () => {
+    sessionStorage.setItem('docs-page-state', JSON.stringify(SAVED_STATE)) // doc-1 restored expanded
+    const temporary = {
+      family: 'temporary',
+      message: 'A background service could not be reached while this file was processed.',
+      action: 'Reprocess the document to try again.',
+    }
+    const unreadable = {
+      family: 'unreadable',
+      message: 'This file could not be read.',
+      action: 'Check that the file opens on your computer.',
+    }
+    const row = (doc_id: string, title: string, error: string, error_info: object) => ({
+      doc_id,
+      title,
+      status: 'active',
+      pipeline_status: 'error',
+      created_at: '2026-06-04T12:00:00Z',
+      updated_at: '2026-06-04T12:30:00Z',
+      error,
+      error_info,
+    })
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/filters') {
+        return Promise.resolve({ mime_types: [], doc_types: [], languages: [], entity_types: [] })
+      }
+      if (url === '/api/stats/topics') return Promise.resolve({ clusters: [] })
+      if (url === '/api/watch/folders') return Promise.resolve([])
+      if (url === '/api/docs') {
+        return Promise.resolve({
+          items: [
+            row('doc-1', 'Blip doc', 'ConnectError: [Errno 61] Connection refused', temporary),
+            row('doc-2', 'Broken doc', 'RuntimeError: Tika rejected file (422): POIXMLException', unreadable),
+          ],
+          total: 2,
+          limit: 10,
+          offset: 0,
+        })
+      }
+      if (url.endsWith('/entities')) return Promise.resolve({ entities: [] })
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+
+    renderDocumentsPage()
+
+    expect(await screen.findByText('Blip doc')).toBeInTheDocument()
+    // Status pills follow the family instead of a uniform red "error".
+    expect(screen.getByText('temporary error')).toBeInTheDocument()
+    expect(screen.getByText("can't read file")).toBeInTheDocument()
+    expect(screen.queryByText('error')).not.toBeInTheDocument()
+    // One-line notice in each row, uncropped.
+    expect(screen.getByText(`${temporary.message} ${temporary.action}`)).toHaveAttribute('data-family', 'temporary')
+    expect(screen.getByText(`${unreadable.message} ${unreadable.action}`)).toHaveAttribute('data-family', 'unreadable')
+    // The expanded row (doc-1) carries the full notice with the raw error behind a disclosure.
+    expect(screen.getByText('Temporary problem')).toBeInTheDocument()
+    expect(screen.getByText('ConnectError: [Errno 61] Connection refused').closest('details')).not.toBeNull()
+    expect(screen.queryByText("This file can't be read")).not.toBeInTheDocument() // doc-2 is collapsed
+  })
 })

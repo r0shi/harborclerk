@@ -175,6 +175,30 @@ describe('SystemStatusPage', () => {
     expect(screen.getByText('Still embedding')).toBeInTheDocument()
   })
 
+  it('explains failed documents in plain language, with the raw error behind a details toggle', async () => {
+    const raw = 'RuntimeError: Tika rejected file (422): org.apache.poi.ooxml.POIXMLException'
+    const info = {
+      family: 'unreadable',
+      message: 'This file could not be read.',
+      action: 'Check that the file opens on your computer.',
+    }
+    mockRequests({
+      ...SUMMARY,
+      recent_failed_documents: [{ ...SUMMARY.recent_failed_documents[0], error: raw, error_info: info }],
+    } as unknown as typeof SUMMARY)
+
+    renderStatusPage()
+
+    const line = await screen.findByText(`${info.message} ${info.action}`)
+    expect(line).toHaveAttribute('data-family', 'unreadable')
+    expect(screen.getByText("can't read file")).toBeInTheDocument()
+    // The raw error is no longer the cropped row detail; it sits uncropped in the toggle.
+    const pre = screen.getByText(raw)
+    expect(pre.tagName).toBe('PRE')
+    expect(pre.closest('details')).not.toBeNull()
+    expect(pre.closest('.truncate')).toBeNull()
+  })
+
   it('shows watcher folder notes as information on a healthy Watched folders check', async () => {
     mockRequests({
       ...SUMMARY,

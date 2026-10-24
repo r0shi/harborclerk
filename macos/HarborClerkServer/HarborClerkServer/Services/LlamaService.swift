@@ -14,7 +14,7 @@ final class LlamaService: ManagedService {
 
     /// Expose the child PID for orphan tracking.
     var processIdentifier: Int32? { process?.isRunning == true ? process?.processIdentifier : nil }
-    var holdsLiveProcess: Bool { processIdentifier != nil }
+    var holdsLiveProcess: Bool { process?.isRunningAndAlive == true }
 
     /// The stop in flight, so a second caller joins it instead of racing it.
     /// Two relaunches overlap when config.json changes twice within a few
@@ -32,6 +32,19 @@ final class LlamaService: ManagedService {
     /// unload can be slow, hence 10; a test that needs the stop to stay in
     /// flight for a measurable moment shortens it.
     var stopGraceSeconds: TimeInterval = 10
+    /// Seconds after the SIGKILL before the stop gives up waiting for the
+    /// process to be reported gone (#890). Longer than the 5 s other services
+    /// get: the kernel tears down a SIGKILLed llama-server's Metal buffers and
+    /// unwires a model of up to tens of GB before the exit is reported, and
+    /// giving up early would leave the port held for the next start. Still
+    /// bounded, so a stop costs at most grace + this + the port probe. A test
+    /// shortens it.
+    var stopKillWaitSeconds: TimeInterval = 30
+    /// The wait `performStop` runs on the process it signalled; returns
+    /// whether the exit was seen. The default is the real one. A test swaps in
+    /// a wait that gives up, which no real child can be made to cause on
+    /// demand.
+    var waitForExit: ExitWait = Process.realExitWait
 
     private var llamaBin: URL {
         Bundle.main.resourceURL!.appendingPathComponent("llama/llama-server")
@@ -203,15 +216,25 @@ final class LlamaService: ManagedService {
         let llmLogger = Log.logger("llm")
         proc.terminationHandler = { [weak self] p in
             Task { @MainActor in
-                guard let self, self.state == .running else { return }
-                self.state = .errored
-                llmLogger.error("Process exited unexpectedly (\(p.terminationStatus, privacy: .public))")
-                self.onUnexpectedExit?()
+                guard let self else { return }
+                self.processExited(p, logger: llmLogger)
             }
         }
 
         try proc.runAsProcessGroupLeader()
         process = proc
+    }
+
+    /// An exit of `p` that no stop asked for. Only the process this service
+    /// tracks counts: a stop that gave up its wait (#890) can see that
+    /// process's exit land later, after a successor is `running`, and acting
+    /// on it would mark the healthy successor errored and restart it.
+    @MainActor
+    func processExited(_ p: Process, logger: Logger = Log.logger("llm")) {
+        guard process === p, state == .running else { return }
+        state = .errored
+        logger.error("Process exited unexpectedly (\(p.terminationStatus, privacy: .public))")
+        onUnexpectedExit?()
     }
 
     /// Stop whatever llama-server this service holds, whatever state it
@@ -239,6 +262,7 @@ final class LlamaService: ManagedService {
 
     private func performStop() async {
         stopsPerformed += 1
+        var gaveUp = false
         if let proc = process, proc.isRunning {
             // The whole group, per macos/AGENTS.md; llama-server spawns no
             // children today, so this is the rule rather than a repair.
@@ -255,14 +279,20 @@ final class LlamaService: ManagedService {
             // Pipe+waitUntilExit deadlock pattern (audit memo:
             // project_menubar_process_management_audit.md) can't make this
             // stall the rest of stopAll().
-            await proc.waitForExitWithDeadline(graceSeconds: stopGraceSeconds, serviceName: name)
+            let exited = await waitForExit(proc, stopGraceSeconds, name, stopKillWaitSeconds)
+            gaveUp = !exited
             // Only the process this stop waited on. A start that ran while the
             // wait was in flight (Start or Restart from the status window
             // passes `startService` while the state is `stopping`) has
             // assigned its own child here; clearing that one would leave a
             // live server that `holdsLiveProcess` denies and no relaunch path
             // can reach — the one orphan path the state guards do not close.
-            if process === proc { process = nil }
+            //
+            // And only if it was seen to exit: a wait that gave up (#890)
+            // leaves a process still reported running, which stays tracked so
+            // `holdsLiveProcess` and the force-stop pass still see it, and
+            // the state below says the stop did not complete.
+            if exited, process === proc { process = nil }
         } else if process?.isRunning != true {
             // Re-read rather than reusing the capture above: a concurrent
             // reassignment to a live child between the two must stay.
@@ -279,7 +309,10 @@ final class LlamaService: ManagedService {
         // next start() always begins with a free socket.
         await ensurePortReleased(timeout: 5.0)
 
-        state = .stopped
+        // Not `stopped` over a process the wait gave up on: `errored` with a
+        // live process is what the relaunch paths send back through `stop()`
+        // (`stopForRelaunch`), where `stopped` would let a start spawn beside it.
+        state = gaveUp ? .errored : .stopped
         // Cleared here, under the lock, before the Task's value resumes anyone:
         // cleared by the owner after resuming, a caller could join a finished
         // Task and return with nothing stopped and `stopping` never set.
@@ -313,21 +346,19 @@ final class LlamaService: ManagedService {
 
     /// Return PIDs (if any) currently bound to the LLM port.
     ///
-    /// `runAndAwait` (terminationHandler) rather than `run()` on one thread
-    /// and `waitUntilExit()` on another: lsof is a short-lived child, and that
+    /// terminationHandler rather than `run()` on one thread and
+    /// `waitUntilExit()` on another: lsof is a short-lived child, and that
     /// pattern has missed the exit of exactly those (ProcessAsync.swift). Here
     /// it showed as a stop that took seconds instead of one, and once as one
     /// that never returned, so the same shape as `killStaleProcess(onPort:)`.
+    /// Bounded both ways (`runCapturingOutput`): a stop must not wait on lsof
+    /// forever either (#890).
     private func pidsHoldingPort() async -> [Int32] {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         proc.arguments = ["-ti", "tcp:\(self.port)"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
-        guard (try? await proc.runAndAwait()) != nil else { return [] }
-        try? pipe.fileHandleForWriting.close()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let data = await proc.runCapturingOutput(timeout: Process.probeTimeoutSeconds) else { return [] }
         return (String(data: data, encoding: .utf8) ?? "")
             .split(whereSeparator: \.isNewline)
             .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }

@@ -26,7 +26,9 @@ import os
 ///    sequential; one hung worker stalls the whole shutdown. The
 ///    `waitForExitWithDeadline()` helper folds SIGTERM-grace,
 ///    SIGKILL-on-deadline, and the actual wait into a single call so
-///    callers can compose timeouts predictably.
+///    callers can compose timeouts predictably. The wait after the SIGKILL
+///    is bounded too (#890): a process Foundation never reports as exited
+///    costs `killWaitSeconds`, not the rest of the shutdown.
 extension Process {
     /// Defuse this Process's stdout/stderr Pipes so `waitUntilExit()` no
     /// longer blocks on pipe-close even when the child is hung.
@@ -68,24 +70,43 @@ extension Process {
         }
     }
 
-    /// Wait for this Process to exit, with a bounded grace period.
+    /// How long the wait goes on after the SIGKILL before it gives up. A
+    /// SIGKILLed process is normally gone, and Foundation has noticed, within
+    /// milliseconds; this is the bound for when it has not (#890).
+    static let defaultKillWaitSeconds: TimeInterval = 5
+
+    /// The real wait, in the shape every service's `waitForExit` seam takes.
+    static let realExitWait: ExitWait = {
+        await $0.waitForExitWithDeadline(graceSeconds: $1, serviceName: $2, killWaitSeconds: $3)
+    }
+
+    /// Foundation reports it running and the kernel agrees. `isRunning` alone
+    /// can stay true over a process that is gone, when Foundation never
+    /// noticed the exit (#890); then a stop's wait gave up on it and every
+    /// later start refused it, for good. Used for the stop's exit signal
+    /// (`waitForExitWithDeadline`) and for each service's `holdsLiveProcess`.
+    var isRunningAndAlive: Bool {
+        isRunning && ProcessLiveness.isAlive(processIdentifier)
+    }
+
+    /// Wait for this Process to exit, with a bounded grace period and a
+    /// bounded wait after the SIGKILL.
     ///
     /// Behaviour:
-    ///   1. If the process is not running, returns immediately.
-    ///   2. Otherwise schedules a `SIGKILL` at `now + graceSeconds`. The
-    ///      schedule is fire-and-forget — if the process exits before the
-    ///      deadline, the SIGKILL closure short-circuits via
-    ///      `proc.isRunning` check.
-    ///   3. Blocks (asynchronously) on `waitUntilExit()` until the
-    ///      process actually exits.
+    ///   1. If the process is not running, returns `true` immediately.
+    ///   2. Otherwise polls `isRunning`. At `now + graceSeconds` it sends
+    ///      `SIGKILL` to the process group.
+    ///   3. At `graceSeconds + killWaitSeconds` it stops waiting, logs an
+    ///      error and returns `false`: the process may still be alive, or
+    ///      Foundation may never have noticed its exit. Either way a stop
+    ///      must not wait on it forever (#890: a CI run hung 18 minutes
+    ///      after "sending SIGKILL").
     ///
     /// This is the standard pattern from `PythonService.stop()` (it had it
     /// before this audit) lifted out so `stopAll()` can use it too without
     /// reimplementing — that reimplementation was the bug.
     ///
-    /// Always detaches Pipes first via `detachPipesForShutdown()`. Without
-    /// that, `waitUntilExit` could still hang waiting for the pipe to
-    /// close even after `SIGKILL` arrives.
+    /// Always detaches Pipes first via `detachPipesForShutdown()`.
     ///
     /// - Parameters:
     ///   - graceSeconds: how long after `terminate()` to wait before
@@ -94,62 +115,88 @@ extension Process {
     ///     this helper.
     ///   - serviceName: included in log messages so the "had to SIGKILL
     ///     foo" line is informative.
+    ///   - killWaitSeconds: how long after the SIGKILL to keep waiting.
+    /// - Returns: whether the process was seen to exit. `false` means the
+    ///   caller is still holding a process Foundation reports as running,
+    ///   and must keep it tracked and not report a clean stop. Not
+    ///   discardable, so every caller decides.
     func waitForExitWithDeadline(
         graceSeconds: TimeInterval,
         serviceName: String,
-    ) async {
-        guard self.isRunning else { return }
+        killWaitSeconds: TimeInterval = Process.defaultKillWaitSeconds,
+    ) async -> Bool {
+        guard self.isRunningAndAlive else { return true }
 
         detachPipesForShutdown()
 
-        // Schedule SIGKILL escalation. Fire-and-forget; if the process is
-        // already gone by the deadline, kill(0) is harmless.
         let proc = self
-        let name = serviceName
-        let grace = graceSeconds
-        DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
-            guard proc.isRunning else { return }
-            Log.logger("lifecycle").warning(
-                "[\(name, privacy: .public)] Still running after \(Int(grace), privacy: .public)s — sending SIGKILL"
-            )
-            // killpg targets the entire process group (which the leader's pid
-            // identifies after runAsProcessGroupLeader). Catches grandchildren —
-            // Tika's child JVMs, worker-spawned tesseract/pdftoppm/magick.
-            // Falls back gracefully if the process wasn't launched as a pgid
-            // leader: killpg with a non-leader pid returns -1 ESRCH and we
-            // log it. For belt-and-suspenders we also send a plain kill().
-            if killpg(proc.processIdentifier, SIGKILL) != 0 {
-                // Not a pgid leader (or already dead) — fall back to kill().
-                kill(proc.processIdentifier, SIGKILL)
-            }
-        }
-
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+        return await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
             DispatchQueue.global().async {
-                // Poll rather than `waitUntilExit()`. That call runs its own
-                // runloop waiting for a termination notification, and if the
-                // child exits between the `isRunning` guard above and the call
-                // itself, the notification is already gone and it blocks
-                // forever. Reproduced at 3 of 8 full test-suite runs on
-                // /usr/bin/true, which exits faster than we can get here.
-                //
-                // Nothing rescues it once wedged: the SIGKILL escalation above
-                // opens with `guard proc.isRunning`, sees a process that has
-                // already exited, and returns without resuming anything. So the
-                // continuation is never resumed and shutdown waits forever —
-                // the deadlock #341 bounded for the Pipe case, reached by a
-                // different route.
-                //
-                // `terminationHandler` would be the tidier fix but is not ours
-                // to take: PythonService sets one for its restart logic and
-                // also calls this helper, so assigning here would silently
-                // clobber it.
-                while proc.isRunning {
-                    usleep(20_000)  // 20ms — bounded by the SIGKILL escalation
-                }
-                c.resume()
+                c.resume(returning: Process.pollUntilExited(
+                    isRunning: { proc.isRunningAndAlive },
+                    sendKill: {
+                        // killpg targets the entire process group (which the
+                        // leader's pid identifies after runAsProcessGroupLeader).
+                        // Catches grandchildren — Tika's child JVMs,
+                        // worker-spawned tesseract/pdftoppm/magick. Falls back
+                        // to a plain kill() if the process is not a group
+                        // leader (or is already dead).
+                        if killpg(proc.processIdentifier, SIGKILL) != 0 {
+                            kill(proc.processIdentifier, SIGKILL)
+                        }
+                    },
+                    graceSeconds: graceSeconds,
+                    killWaitSeconds: killWaitSeconds,
+                    serviceName: serviceName
+                ))
             }
         }
+    }
+
+    /// The wait behind `waitForExitWithDeadline`, separated from `Process` so a
+    /// test can drive it with a process that never reports its exit, which no
+    /// real child can be made to do on demand. Blocks the calling thread; run
+    /// it off the cooperative pool.
+    ///
+    /// Polls rather than calling `waitUntilExit()`. That call waits on a
+    /// termination notification, and if the child exits between an
+    /// `isRunning` check and the call, the notification can already be gone
+    /// and it blocks forever. Reproduced at 3 of 8 full test-suite runs on
+    /// /usr/bin/true, which exits faster than we can get here.
+    /// `terminationHandler` would be the tidier signal but is not ours to
+    /// take: PythonService and LlamaService set one for their restart logic
+    /// and also call this helper, so assigning here would clobber it.
+    ///
+    /// Every exit from the loop is on a deadline or an observed exit: there is
+    /// no path that waits on the process alone.
+    static func pollUntilExited(
+        isRunning: () -> Bool,
+        sendKill: () -> Void,
+        graceSeconds: TimeInterval,
+        killWaitSeconds: TimeInterval,
+        serviceName: String,
+        pollInterval: useconds_t = 20_000,
+    ) -> Bool {
+        let killAt = Date().addingTimeInterval(graceSeconds)
+        let giveUpAt = killAt.addingTimeInterval(killWaitSeconds)
+        var killed = false
+        while isRunning() {
+            let now = Date()
+            if !killed, now >= killAt {
+                Log.logger("lifecycle").warning(
+                    "[\(serviceName, privacy: .public)] Still running after \(Int(graceSeconds), privacy: .public)s — sending SIGKILL"
+                )
+                sendKill()
+                killed = true
+            } else if killed, now >= giveUpAt {
+                Log.logger("lifecycle").error(
+                    "[\(serviceName, privacy: .public)] Still reported running \(Int(killWaitSeconds), privacy: .public)s after SIGKILL — giving up the wait"
+                )
+                return false
+            }
+            usleep(pollInterval)
+        }
+        return true
     }
 }
 
@@ -191,5 +238,39 @@ extension Process {
                 "setpgid(\(pid, privacy: .public), 0) failed: errno=\(err, privacy: .public) — grandchildren may leak on force-kill of this pid"
             )
         }
+    }
+}
+
+/// The wait a stop runs on the process it signalled: grace, SIGKILL, bounded
+/// wait; returns whether the exit was seen. Every service that stops a child
+/// takes one as its `waitForExit` seam, defaulting to `Process.realExitWait`,
+/// so a test can stand in a wait that gives up, which no real child can be
+/// made to cause on demand.
+typealias ExitWait = (_ proc: Process, _ grace: TimeInterval, _ name: String, _ killWait: TimeInterval) async -> Bool
+
+/// Whether a pid names a live process, asked of the kernel rather than of
+/// Foundation's bookkeeping.
+enum ProcessLiveness {
+    /// Gone if `kill(pid, 0)` fails with ESRCH (no such process: exited and
+    /// reaped), or if the process is a zombie (exited, not yet reaped by
+    /// Foundation). Alive otherwise, including EPERM (it exists, it is not
+    /// ours to signal). Never reaps: a `waitpid` here would take the exit
+    /// status Foundation is waiting to collect.
+    ///
+    /// The zombie check reads `p_stat` through `sysctl(KERN_PROC_PID)`.
+    /// `proc_pidinfo(PROC_PIDTBSDINFO)` cannot do it: measured on macOS 27, it
+    /// fails with ESRCH on a zombie, while `kill(pid, 0)` still succeeds.
+    static func isAlive(_ pid: pid_t) -> Bool {
+        guard pid > 0 else { return false }
+        if kill(pid, 0) != 0 {
+            return errno != ESRCH
+        }
+        var kp = kinfo_proc()
+        var len = MemoryLayout<kinfo_proc>.size
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        if sysctl(&mib, 4, &kp, &len, nil, 0) == 0, len > 0, kp.kp_proc.p_stat == SZOMB {
+            return false
+        }
+        return true
     }
 }

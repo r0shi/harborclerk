@@ -256,21 +256,23 @@ def _wait_for_injected_failure(admin: HarborClerk, doc_id: str, *, timeout_s: fl
 
 @pytest.fixture(scope="session")
 def failed_document(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[dict[str, Any]]:
-    """A fixture document whose extract stage failed with an error quoting its
-    absolute path, for D5.
+    """A fixture document whose extract stage failed reading its watched file,
+    as the signed-in admin sees it (its stored error, unredacted), for D5.
 
     The file is ingested with the rest of the corpus, then made unreadable and
     reprocessed. The order matters: the watcher hashes a file before it
     registers it, so a file that is unreadable from the start never becomes a
-    document, while the extract stage checks only that the path exists before
-    reading it and fails with ``PermissionError: [Errno 13] Permission denied:
-    '<absolute path>'`` — the text `describe_error` stores on the job and the
-    document. Read permission is restored when the session ends, before the
-    folder and its files are removed. When the worker ignores the mode (a
-    Compose instance with no `user:` runs as root) the document becomes ready
-    again and the check is skipped with that reason; when it fails but the
-    recorded error does not quote the path, the fixture fails rather than
-    yields, since D5 would then prove nothing."""
+    document. The extract stage then fails reading the file in place and stores
+    ``WatchedFileMissing: ... cannot be read in place (EACCES) ...``: since
+    #851 the stored error names the errno and never the path, which goes to the
+    log only. Before #851 it stored the OSError text, which quoted the absolute
+    path; D5 now checks that the stored error and every MCP payload carry no
+    path, rather than relying on MCP to redact one (#908). Read permission is
+    restored when the session ends, before the folder and its files are
+    removed. When the worker ignores the mode (a Compose instance with no
+    `user:` runs as root) the document becomes ready again and the check is
+    skipped with that reason; when it fails with any other error, the fixture
+    fails rather than yields."""
     name = failure_target(corpus.groundtruth)
     path = corpus.fixtures[name].path
     doc_id = corpus.doc_id(name)
@@ -280,8 +282,8 @@ def failed_document(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -
         admin.reprocess_document(doc_id)
         doc = _wait_for_injected_failure(admin, doc_id, timeout_s=cfg.ingest_timeout_s)
         error = doc.get("error") or ""
-        if corpus.folder_path not in error:
-            pytest.fail(f"the failed document's error does not quote its path, so D5 cannot test redaction: {error!r}")
+        if not error.startswith("WatchedFileMissing"):
+            pytest.fail(f"the document failed, but not on the unreadable watched file D5 injected: {error!r}")
         yield doc
     finally:
         # Until here the document sits in pipeline_status=error for the rest of

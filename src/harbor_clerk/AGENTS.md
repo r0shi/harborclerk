@@ -189,8 +189,8 @@ principal.type == "user"`, the test `documents.py` applies to `folder_name`.
 one failed: the chat tools read a top-level `error` key as "the call failed"
 and render it verbatim with no citation (`llm/tools.py::summarize_tool_result`,
 `llm/citations.py`), so no healthy payload may carry a key of that name.
-Acceptance D5 checks the agent branch against a live instance with a document
-whose extract stage failed on a path-quoting OSError.
+Only unit tests reach the `[path]` branch (`test_mcp_source_ref.py`,
+`test_rest_api_key_tier.py`); live D5 checks no stored error has a path (#851).
 
 ## Async gotchas
 

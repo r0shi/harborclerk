@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from harbor_clerk.worker.stages.chunk import (
     _detect_language,
     _find_code_fence_ranges,
@@ -353,3 +355,77 @@ def test_a_small_fence_still_stays_whole():
     ranges = _split_text(text, target=900, overlap=50, code_fence_ranges=[(len(pre), fence_end)])
 
     assert ranges[0][1] == fence_end, "a fence under the hard maximum is not split"
+
+
+# --- no chunk inside another, full coverage, configured overlap (#886) ---
+#
+# The loop used to go on after a chunk that reached the end of the text and emit
+# one more, starting `overlap` before the end: ``"word " * 100`` split into
+# ``[(0, 500), (350, 500)]``. Every document carried a duplicate tail passage.
+
+
+def _page_text(pages: list[str]) -> str:
+    """Join pages the way run_chunk does: a newline after each, trailing whitespace stripped."""
+    return "".join(p + "\n" for p in pages).rstrip()
+
+
+def _assert_well_formed(text: str, ranges: list[tuple[int, int]], overlap: int) -> None:
+    # (a) No chunk is contained in another.
+    for i, (s1, e1) in enumerate(ranges):
+        for j, (s2, e2) in enumerate(ranges):
+            if i != j:
+                assert not (s2 <= s1 and e1 <= e2), f"chunk {i} {(s1, e1)} lies inside chunk {j} {(s2, e2)}"
+    # (b) The chunks cover the whole text, in order, with no gap.
+    assert ranges[0][0] == 0
+    assert ranges[-1][1] == len(text)
+    for (s1, e1), (s2, e2) in zip(ranges, ranges[1:]):
+        assert s1 < s2 <= e1 < e2, f"{(s1, e1)} then {(s2, e2)}: not an ordered, gap-free sequence"
+    # (c) Consecutive chunks overlap by exactly the configured amount.
+    for (_, e1), (s2, _) in zip(ranges, ranges[1:]):
+        assert e1 - s2 == overlap
+
+
+def _inputs() -> list[tuple[str, str]]:
+    sentence = "The quick brown fox jumps over the lazy dog. "
+    paragraph = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 6 + "\n\n"
+    out = [
+        ("issue example", "word " * 100),
+        ("one char", "x"),
+        ("shorter than overlap", "a" * 100),
+        ("shorter than one chunk", sentence * 10),
+        ("no spaces", "z" * 4321),
+        ("whitespace heavy", ("a  \n\n   \t  b " * 400)),
+        ("mostly blank lines", "x" + "\n" * 3000 + "y"),
+        ("paragraphs", paragraph * 40),
+        ("sentences", sentence * 200),
+        ("multi-page", _page_text([f"Page {n}. " + sentence * (5 + 7 * n) for n in range(12)])),
+        ("multi-page short pages", _page_text(["p"] * 500)),
+        ("multi-page with blank pages", _page_text(["", sentence * 30, "   ", sentence * 3, ""] * 6)),
+        ("fenced", "Intro.\n\n```\n" + "code();\n" * 200 + "```\n\n" + sentence * 60),
+    ]
+    # Exact multiples of the stride (target - overlap) and of the target, and one either side.
+    lengths = {base + delta for n in range(1, 6) for base in (n * 850, n * 1000, n * 850 + 150) for delta in (-1, 0, 1)}
+    out.extend((f"length {length}", "y" * length) for length in sorted(lengths))
+    return out
+
+
+@pytest.mark.parametrize(("name", "text"), _inputs(), ids=[name for name, _ in _inputs()])
+def test_split_is_well_formed_at_defaults(name, text):
+    ranges = _split_text(text, target=1000, overlap=150, code_fence_ranges=_find_code_fence_ranges(text))
+    _assert_well_formed(text, ranges, overlap=150)
+
+
+@pytest.mark.parametrize(("target", "overlap"), [(1000, 0), (500, 50), (200, 30), (300, 100), (64, 16)])
+@pytest.mark.parametrize("length", [1, 15, 16, 17, 63, 64, 65, 199, 200, 201, 849, 850, 851, 1700, 2551, 9999])
+def test_split_is_well_formed_across_lengths_and_settings(target, overlap, length):
+    text = ("lorem ipsum dolor sit amet. " * (length // 28 + 1))[:length]
+    _assert_well_formed(text, _split_text(text, target=target, overlap=overlap), overlap=overlap)
+
+
+def test_split_issue_example_has_no_tail_chunk():
+    assert _split_text("word " * 100, target=1000, overlap=150) == [(0, 500)]
+
+
+def test_split_last_chunk_reaching_the_end_is_the_last_chunk():
+    text = "y" * 1700  # chunks (0, 1000) and (850, 1700); nothing after the second
+    assert _split_text(text, target=1000, overlap=150) == [(0, 1000), (850, 1700)]

@@ -19,6 +19,7 @@ from harbor_clerk.api.schemas.documents import (
     DocumentOutlineResponse,
     DocumentSummary,
     EntityOut,
+    ErrorInfo,
     HeadingOut,
     JobInfo,
     PageContent,
@@ -29,6 +30,7 @@ from harbor_clerk.api.scope import apply_key_scope, is_human, redact_paths_for_p
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
+from harbor_clerk.document_failure import explain_failure
 from harbor_clerk.models import (
     Chunk,
     Document,
@@ -200,6 +202,7 @@ async def list_documents(
 
     summaries = []
     for doc in docs:
+        failed_error = doc.error if doc.pipeline_status == PipelineStatus.error else None
         summaries.append(
             DocumentSummary(
                 doc_id=str(doc.doc_id),
@@ -215,6 +218,8 @@ async def list_documents(
                 source_path=doc.source_path,
                 topic_id=doc.topic_id,
                 summarize_job_status=sum_job_status_by_doc.get(str(doc.doc_id)),
+                error=failed_error,
+                error_info=ErrorInfo.from_explanation(explain_failure(failed_error)),
             )
         )
 
@@ -519,6 +524,7 @@ async def get_document(
                 progress_current=j.progress_current,
                 progress_total=j.progress_total,
                 error=error,
+                error_info=ErrorInfo.from_explanation(explain_failure(error)) if job_status == "error" else None,
                 created_at=j.created_at,
                 started_at=j.started_at,
                 finished_at=j.finished_at,
@@ -542,6 +548,10 @@ async def get_document(
         size_bytes=doc.size_bytes,
         ocr_languages_used=doc.ocr_languages_used,
         error=doc.error,
+        # As in the list: a stale documents.error on a reprocessed, now-ready document is not a failure.
+        error_info=ErrorInfo.from_explanation(
+            explain_failure(doc.error if doc.pipeline_status == PipelineStatus.error else None)
+        ),
         created_at=doc.created_at,
         updated_at=doc.updated_at,
         jobs=jobs,

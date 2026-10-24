@@ -50,3 +50,91 @@ extension Process {
         }
     }
 }
+
+extension Process {
+    /// How long a short-lived probe (lsof, `postgres --version`) may run
+    /// before `runCapturingOutput` kills it.
+    static let probeTimeoutSeconds: TimeInterval = 10
+
+    /// Run a short-lived tool to completion and return what it wrote to
+    /// stdout, or `nil` if it could not be launched or had not exited within
+    /// `timeout` (it is then SIGKILLed). The caller sets the executable,
+    /// arguments and stderr; this sets stdout and the `terminationHandler`.
+    ///
+    /// Both waits are bounded, which `runAndAwait()` followed by
+    /// `readDataToEndOfFile()` is not (#890):
+    ///   - the exit wait, by `timeout`: `lsof` can stall in the kernel on a
+    ///     wedged file system, and a stop that probes the port behind it
+    ///     waited on it with no deadline;
+    ///   - the read, by reading only what is already in the pipe. EOF on a
+    ///     pipe needs every write end closed, including copies held by
+    ///     anything the tool spawned (lsof forks a helper for its kernel
+    ///     calls). Once the tool has exited its writes are all in the
+    ///     buffer, so a non-blocking drain gets everything without waiting
+    ///     on a straggler's copy of the write end.
+    ///
+    /// For output under the pipe buffer (64 KB) only: the tool is not drained
+    /// while it runs, so a larger output would block it in `write(2)` until
+    /// the timeout.
+    func runCapturingOutput(timeout: TimeInterval) async -> Data? {
+        let pipe = Pipe()
+        standardOutput = pipe
+        let once = ResumeOnce()
+        let exited: Bool = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+            terminationHandler = { _ in
+                if once.claim() { c.resume(returning: true) }
+            }
+            do {
+                try run()
+            } catch {
+                terminationHandler = nil
+                if once.claim() { c.resume(returning: false) }
+                return
+            }
+            let pid = processIdentifier
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                guard once.claim() else { return }
+                kill(pid, SIGKILL)
+                c.resume(returning: false)
+            }
+        }
+        try? pipe.fileHandleForWriting.close()
+        defer { try? pipe.fileHandleForReading.close() }
+        guard exited else { return nil }
+        return Self.drainWithoutWaiting(pipe.fileHandleForReading.fileDescriptor)
+    }
+
+    /// Everything readable on `fd` right now, without waiting for EOF.
+    static func drainWithoutWaiting(_ fd: Int32) -> Data {
+        let flags = fcntl(fd, F_GETFL)
+        if flags >= 0 { _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK) }
+        var out = Data()
+        var buf = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = read(fd, &buf, buf.count)
+            if n > 0 {
+                out.append(buf, count: n)
+            } else if n < 0, errno == EINTR {
+                continue
+            } else {
+                break  // 0 = EOF, or EAGAIN: nothing more without waiting
+            }
+        }
+        return out
+    }
+}
+
+/// First caller wins; for resuming a continuation from whichever of several
+/// racing paths (exit, timeout) gets there first.
+final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.withLock {
+            if claimed { return false }
+            claimed = true
+            return true
+        }
+    }
+}

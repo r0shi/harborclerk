@@ -126,24 +126,18 @@ def test_h1_soft_deleted_document_leaves_every_retrieval_surface(
     assert err or not tool_json(passages)["passages"], "kb_read_passages (scoped key) returned the deleted chunk"
 
 
-XFAIL_621 = "#621 follow-up (v0.9.2 known limitation): a deleted chunk is still readable by id for unscoped principals"
-
-
-@pytest.mark.xfail(strict=True, reason=XFAIL_621)
 def test_h1c_rest_passages_read_refuses_a_deleted_chunk_for_admin(admin: HarborClerk, corpus: Corpus) -> None:
-    """REST passages/read as admin does not filter on document status. Strict
-    xfail: fixing it turns this into an XPASS failure and the marker comes off."""
+    """REST passages/read as admin omits a deleted document's chunk (#909)."""
     chunk_id = _deleted_chunk_id(admin, corpus)
     resp = admin.request("POST", "/api/passages/read", json={"chunk_ids": [chunk_id]})
     assert resp.status_code >= 400 or not resp.json()["passages"], "REST passages/read (admin) returned it"
 
 
-@pytest.mark.xfail(strict=True, reason=XFAIL_621)
 def test_h1e_rest_passages_read_refuses_a_deleted_chunk_for_a_scoped_key(
     admin: HarborClerk, corpus: Corpus, keys: KeyFactory
 ) -> None:
-    """The REST scoped-key path lacks the status filter too; a separate check
-    so a fix to one path is visible on its own."""
+    """The REST scoped-key path omits it too (#909); a separate check so a
+    regression in one path is visible on its own."""
     chunk_id = _deleted_chunk_id(admin, corpus)
     key = admin.with_key(keys.create("h1e-scoped", scope_folder_ids=[corpus.folder_id])["raw_key"])
     try:
@@ -153,12 +147,11 @@ def test_h1e_rest_passages_read_refuses_a_deleted_chunk_for_a_scoped_key(
     assert resp.status_code >= 400 or not resp.json()["passages"], "REST passages/read (scoped key) returned it"
 
 
-@pytest.mark.xfail(strict=True, reason=XFAIL_621)
 def test_h1d_mcp_read_passages_refuses_a_deleted_chunk_for_an_unscoped_key(
     admin: HarborClerk, corpus: Corpus, keys: KeyFactory, mcp
 ) -> None:
-    """The MCP surface without a folder scope: no visibility set, so no status
-    filter, and the deleted chunk comes back like it does over REST."""
+    """The MCP surface without a folder scope has no visibility set; the chunk
+    query's own status filter omits the deleted chunk (#909)."""
     chunk_id = _deleted_chunk_id(admin, corpus)
     raw = keys.create("h1d-unscoped")["raw_key"]
     passages = mcp.bearer(raw).call_tool("kb_read_passages", {"chunk_ids": [chunk_id]})

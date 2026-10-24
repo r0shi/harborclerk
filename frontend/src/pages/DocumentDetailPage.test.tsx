@@ -1,9 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { get, post, del } from '../api'
 import { useAuth } from '../auth'
-import { useJobEvents } from '../hooks/useJobEvents'
+import { useJobEvents, type JobEvent } from '../hooks/useJobEvents'
 import { useSystemConfig } from '../hooks/useSystemConfig'
 import DocumentDetailPage from './DocumentDetailPage'
 
@@ -140,6 +140,185 @@ describe('DocumentDetailPage', () => {
       if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
       return Promise.reject(new Error(`Unexpected URL: ${url}`))
     })
+  })
+
+  it('names the stage whose error failed the document, not a summarize failure listed first', async () => {
+    const embedError = 'EmbedderUnavailableError: embedder call failed after 7/7 attempts: HTTP 503'
+    const failed = {
+      ...READY_DOC,
+      pipeline_status: 'error',
+      error: embedError,
+      error_info: { family: 'temporary', message: 'The embedding service was unavailable.', action: 'Reprocess.' },
+      jobs: [
+        {
+          job_id: 'job-summarize',
+          stage: 'summarize',
+          status: 'error',
+          error: 'ConnectError: [Errno 61] Connection refused',
+          created_at: '2026-06-04T12:03:00Z',
+        },
+        { job_id: 'job-embed', stage: 'embed', status: 'error', error: embedError, created_at: '2026-06-04T12:04:00Z' },
+      ],
+    }
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') return Promise.resolve(failed)
+      if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
+      return Promise.resolve({})
+    })
+    renderDocumentDetail()
+
+    expect(await screen.findByText('(during Embed)')).toBeInTheDocument()
+    expect(screen.queryByText('(during Summarize)')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    {
+      name: 'a cancel writes one text on every job: the gating stage is named, not summarize',
+      docError: 'Cancelled by user',
+      jobs: [
+        ['summarize', 'Cancelled by user'],
+        ['embed', 'Cancelled by user'],
+      ],
+      expected: 'Embed',
+      notExpected: 'Summarize',
+    },
+    {
+      name: 'two gating stages with different errors: the one matching the document error is named',
+      docError: "KeyError: 'label'",
+      jobs: [
+        ['embed', 'ReadTimeout'],
+        ['entities', "KeyError: 'label'"],
+      ],
+      expected: 'Entities',
+      notExpected: 'Embed',
+    },
+  ])('stage pick: $name', async ({ docError, jobs, expected, notExpected }) => {
+    const failed = {
+      ...READY_DOC,
+      pipeline_status: 'error',
+      error: docError,
+      error_info: { family: 'other', message: 'Processing failed.', action: 'Reprocess.' },
+      jobs: jobs.map(([stage, error]) => ({
+        job_id: `job-${stage}`,
+        stage,
+        status: 'error',
+        error,
+        created_at: '2026-06-04T12:03:00Z',
+      })),
+    }
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') return Promise.resolve(failed)
+      if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
+      return Promise.resolve({})
+    })
+    renderDocumentDetail()
+
+    expect(await screen.findByText(`(during ${expected})`)).toBeInTheDocument()
+    expect(screen.queryByText(`(during ${notExpected})`)).not.toBeInTheDocument()
+  })
+
+  it('explains a failed document in plain language, with the raw error kept once', async () => {
+    const raw = 'ConnectError: [Errno 61] Connection refused'
+    const info = {
+      family: 'temporary',
+      message: 'A background service could not be reached while this file was processed.',
+      action: 'Reprocess the document to try again.',
+    }
+    const failed = {
+      ...READY_DOC,
+      pipeline_status: 'error',
+      error: raw,
+      error_info: info,
+      jobs: [
+        { ...READY_DOC.jobs[0] },
+        {
+          job_id: 'job-embed',
+          stage: 'embed',
+          status: 'error',
+          error: raw,
+          error_info: info,
+          created_at: '2026-06-04T12:04:00Z',
+          finished_at: '2026-06-04T12:04:00Z',
+        },
+      ],
+    }
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') return Promise.resolve(failed)
+      if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
+      return Promise.resolve({})
+    })
+    renderDocumentDetail()
+
+    expect(await screen.findByText(info.message)).toBeInTheDocument()
+    expect(screen.getByText(info.action)).toBeInTheDocument()
+    expect(screen.getByText(info.message).closest('[data-family]')).toHaveAttribute('data-family', 'temporary')
+    // Shown once, behind the disclosure, not as the old red "Error: ..." line.
+    expect(screen.getAllByText(raw)).toHaveLength(1)
+    expect(screen.queryByText(`Error: ${raw}`)).not.toBeInTheDocument()
+  })
+
+  it('explains a pipeline error the document carries even when no job row is in error', async () => {
+    const info = {
+      family: 'unreadable',
+      message: 'The source file could not be read.',
+      action: 'Check that the file is still in the watched folder and can be opened.',
+    }
+    const failed = {
+      ...READY_DOC,
+      pipeline_status: 'error',
+      error: 'WatchedFileMissing: the watched file of doc doc-1 cannot be read in place',
+      error_info: info,
+      jobs: [{ ...READY_DOC.jobs[0] }],
+    }
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') return Promise.resolve(failed)
+      if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
+      return Promise.resolve({})
+    })
+    renderDocumentDetail()
+
+    expect(await screen.findByText(info.message)).toBeInTheDocument()
+    expect(screen.getByText(info.message).closest('[data-family]')).toHaveAttribute('data-family', 'unreadable')
+  })
+
+  it('refetches the document when a live job event reports an error, so its explanation arrives', async () => {
+    let listener: ((event: JobEvent) => void) | undefined
+    useJobEventsMock.mockImplementation((cb) => {
+      listener = cb
+    })
+    const info = {
+      family: 'temporary',
+      message: 'The embedding service was unavailable, so this document could not be indexed.',
+      action: 'Reprocess the document once the embedding service is running again.',
+    }
+    const running = {
+      ...READY_DOC,
+      pipeline_status: 'embedding',
+      jobs: [{ ...READY_DOC.jobs[0] }, { ...READY_DOC.jobs[5], status: 'running', finished_at: null }],
+    }
+    const failed = {
+      ...running,
+      pipeline_status: 'error',
+      error: 'Embedder unavailable: gave up after 6 attempts',
+      error_info: info,
+      jobs: [running.jobs[0], { ...running.jobs[1], status: 'error', error: 'x', error_info: info }],
+    }
+    let detailCalls = 0
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') return Promise.resolve(detailCalls++ === 0 ? running : failed)
+      if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
+      return Promise.resolve({})
+    })
+    renderDocumentDetail()
+    expect(await screen.findByText('Ready document')).toBeInTheDocument()
+    expect(detailCalls).toBe(1)
+
+    act(() => {
+      listener?.({ doc_id: 'doc-1', stage: 'embed', status: 'error', error: 'Embedder unavailable: gave up' })
+    })
+
+    expect(await screen.findByText(info.message)).toBeInTheDocument()
+    expect(detailCalls).toBeGreaterThanOrEqual(2)
   })
 
   it('renders skipped ingestion stages as skipped instead of pending', async () => {

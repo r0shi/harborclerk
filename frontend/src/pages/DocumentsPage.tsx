@@ -9,6 +9,8 @@ import { PageHeader } from '../components/PageHeader'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
 import SummaryChip, { resolveSummaryState } from '../components/SummaryChip'
+import DocumentErrorNotice from '../components/DocumentErrorNotice'
+import { failurePill, type ErrorInfo } from '../utils/documentFailure'
 import { documentTypeIcon } from '../utils/documentTypeIcon'
 import { entityTypeClass } from '../utils/entityTypeColors'
 
@@ -61,6 +63,8 @@ interface DocSummary {
   watch_source_path?: string
   watch_status?: string
   folder_name?: string
+  error?: string | null
+  error_info?: ErrorInfo | null
 }
 
 interface DocEntity {
@@ -1237,6 +1241,9 @@ export default function DocumentsPage() {
                               {doc.canonical_filename && (
                                 <div className="text-xs text-gray-400">{doc.canonical_filename}</div>
                               )}
+                              {doc.pipeline_status === 'error' && (
+                                <DocumentErrorNotice compact info={doc.error_info} raw={doc.error} />
+                              )}
                               {doc.folder_name && (
                                 <div className="mt-0.5 text-xs">
                                   <span className="rounded-md bg-gray-100 dark:bg-gray-700/50 px-1.5 py-0.5 text-[10px] text-gray-600 dark:text-gray-400">
@@ -1251,6 +1258,7 @@ export default function DocumentsPage() {
                           <div className="flex items-center gap-1.5">
                             {(() => {
                               const _pipeline = doc.pipeline_status ?? ''
+                              if (_pipeline === 'error') return <StatusPill {...failurePill(doc.error_info)} />
                               const _pillState = mapDocStatusToPillState(_pipeline)
                               const _pillLabel =
                                 _pillState === 'active'
@@ -1327,6 +1335,9 @@ export default function DocumentsPage() {
                           <td colSpan={6} className="px-4 py-3 pl-14">
                             <div className="grid gap-4 p-3 md:grid-cols-[minmax(0,1fr)_240px]">
                               <div className="min-w-0 space-y-3">
+                                {doc.pipeline_status === 'error' && (
+                                  <DocumentErrorNotice info={doc.error_info} raw={doc.error} />
+                                )}
                                 <div>
                                   <p className="mb-0.5 text-[11px] font-medium uppercase tracking-wide text-(--color-text-secondary)">
                                     Summary

@@ -2127,3 +2127,100 @@ async def test_health_check_falls_back_to_the_package_version_without_a_stamp(cl
     pyproject = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
     assert version == f"{pyproject['project']['version']}+unstamped"
     assert not re.fullmatch(r"\d+\.\d+\.\d+", version), "a bare X.Y.Z is reserved for a stamped release build"
+
+
+async def test_status_summary_explains_failed_documents_and_names_the_failing_stage(
+    client, admin_user, admin_token, db_session
+):
+    """#555: the Status page's failed list carries error_info, and its stage is the one whose error
+    failed the document, not a summarize failure beside it (created later, so newest first)."""
+    now = datetime.now(UTC)
+    embed_error = "EmbedderUnavailableError: embedder call failed after 7/7 attempts: HTTP 503"
+    doc = Document(
+        title="Outage victim",
+        status="active",
+        sha256=b"o" * 32,
+        pipeline_status=PipelineStatus.error,
+        error=embed_error,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.embed,
+                status=JobStatus.error,
+                error=embed_error,
+                created_at=now - timedelta(minutes=5),
+            ),
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.error,
+                error="ConnectError: [Errno 61] Connection refused",
+                created_at=now,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    data = (await client.get("/api/system/status-summary", headers=auth_header(admin_token))).json()
+    (item,) = data["recent_failed_documents"]
+    assert item["failed_stage"] == "embed"
+    assert item["error"] == embed_error
+    assert item["error_info"]["family"] == "temporary"
+    assert item["error_info"]["message"] and item["error_info"]["action"]
+
+
+async def _failed_stage_for(client, admin_token, db_session, doc_error: str, jobs: list[tuple[JobStage, str, int]]):
+    """The Status page's failed_stage for one document in error with ``jobs`` as (stage, error, minutes ago)."""
+    now = datetime.now(UTC)
+    doc = Document(
+        title="Stage pick", status="active", sha256=b"s" * 32, pipeline_status=PipelineStatus.error, error=doc_error
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=stage,
+                status=JobStatus.error,
+                error=error,
+                created_at=now - timedelta(minutes=minutes_ago),
+            )
+            for stage, error, minutes_ago in jobs
+        ]
+    )
+    await db_session.flush()
+    data = (await client.get("/api/system/status-summary", headers=auth_header(admin_token))).json()
+    (item,) = data["recent_failed_documents"]
+    return item["failed_stage"]
+
+
+async def test_status_summary_names_the_gating_stage_on_a_cancel(client, admin_user, admin_token, db_session):
+    """A cancel writes the same text on every job, summarize (newest) included: embed is named."""
+    stage = await _failed_stage_for(
+        client,
+        admin_token,
+        db_session,
+        "Cancelled by user",
+        [(JobStage.embed, "Cancelled by user", 5), (JobStage.summarize, "Cancelled by user", 0)],
+    )
+    assert stage == "embed"
+
+
+async def test_status_summary_names_the_job_whose_error_failed_the_document(
+    client, admin_user, admin_token, db_session
+):
+    """Two gating stages with different errors: the one matching documents.error is named, not the newest."""
+    entities_error = "KeyError: 'label'"
+    stage = await _failed_stage_for(
+        client,
+        admin_token,
+        db_session,
+        entities_error,
+        [(JobStage.entities, entities_error, 5), (JobStage.embed, "ReadTimeout", 0)],
+    )
+    assert stage == "entities"
