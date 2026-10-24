@@ -15,9 +15,14 @@ from pydantic import BaseModel
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Every route here is human-only: folder rows carry absolute on-disk paths and
-# WATCH_ROOT is one, and no MCP tool exposes watched folders to API keys.
-from harbor_clerk.api.deps import get_session, require_human_user
+# Every route here is closed to API keys: folder rows carry absolute on-disk
+# paths and WATCH_ROOT is one, and no MCP tool exposes watched folders to keys.
+# Reads are open to every signed-in human (`require_human_user`); every route
+# that changes what is watched or indexed is admin-only (`require_admin`, #852):
+# a folder added on the Mac app can be any directory the server can read, and its
+# files become searchable by every user. `require_admin` rejects keys too (a
+# key's role is never "admin").
+from harbor_clerk.api.deps import get_session, require_admin, require_human_user
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.file_types import ALLOWED_EXTENSIONS, is_excalidraw
@@ -453,7 +458,7 @@ async def get_folder_progress(
 async def create_folder(
     body: FolderCreate,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_human_user),
+    _: None = Depends(require_admin),
 ):
     settings = get_settings()
     if settings.watch_root:
@@ -470,8 +475,8 @@ async def create_folder(
             ),
         )
 
-    # macOS native deployment: this endpoint requires an authenticated
-    # human admin (`require_human_user`). Admins are trusted to specify
+    # macOS native deployment: this endpoint requires an admin
+    # (`require_admin`, #852). Admins are trusted to specify
     # their own filesystem paths — same trust level as ssh-ing into the
     # box. The is_dir / access checks below operate on user-controlled
     # input by design.
@@ -520,7 +525,7 @@ async def patch_folder(
     folder_id: str,
     body: FolderPatch,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_human_user),
+    _: None = Depends(require_admin),
 ):
     result = await session.execute(
         select(WatchedFolder).where(WatchedFolder.folder_id == _parse_uuid(folder_id, "folder_id"))
@@ -560,7 +565,7 @@ async def patch_folder(
 async def delete_folder(
     folder_id: str,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_human_user),
+    _: None = Depends(require_admin),
 ):
     fid = _parse_uuid(folder_id, "folder_id")
     result = await session.execute(select(WatchedFolder).where(WatchedFolder.folder_id == fid))
@@ -598,7 +603,7 @@ async def delete_folder(
 async def rescan_folder(
     folder_id: str,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_human_user),
+    _: None = Depends(require_admin),
 ):
     result = await session.execute(
         select(WatchedFolder).where(WatchedFolder.folder_id == _parse_uuid(folder_id, "folder_id"))
@@ -616,7 +621,7 @@ async def rescan_folder(
 async def ingest_file(
     body: IngestRequest,
     session: AsyncSession = Depends(get_session),
-    principal=Depends(require_human_user),
+    principal=Depends(require_admin),
 ):
     fid = _parse_uuid(body.folder_id, "folder_id")
     result = await session.execute(select(WatchedFolder).where(WatchedFolder.folder_id == fid))
@@ -759,7 +764,7 @@ async def ingest_file(
 async def remove_file(
     body: RemoveRequest,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_human_user),
+    _: None = Depends(require_admin),
 ):
     fid = _parse_uuid(body.folder_id, "folder_id")
     result = await session.execute(
@@ -794,7 +799,7 @@ async def remove_file(
 async def rename_file(
     body: RenameRequest,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_human_user),
+    _: None = Depends(require_admin),
 ):
     fid = _parse_uuid(body.folder_id, "folder_id")
 

@@ -52,7 +52,7 @@ function renderWizardAtModels(platform: 'macos' | 'docker') {
   render(
     <MemoryRouter initialEntries={['/']}>
       <Routes>
-        <Route path="/" element={<OnboardingWizard onComplete={vi.fn()} />} />
+        <Route path="/" element={<OnboardingWizard onComplete={vi.fn()} isAdmin />} />
       </Routes>
     </MemoryRouter>,
   )

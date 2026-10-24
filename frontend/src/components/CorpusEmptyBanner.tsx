@@ -3,6 +3,8 @@ import type { CorpusBannerState } from '../hooks/useCorpusBannerState'
 
 interface Props {
   state: CorpusBannerState
+  /** Only an admin adds watched folders (#852); a user is told who does. */
+  isAdmin: boolean
 }
 
 /**
@@ -17,12 +19,14 @@ interface Props {
  * Visual treatment matches LLMStatusBanner's subtle rounded-pill aesthetic
  * but pinned at the top of the content area rather than the bottom-right.
  */
-export default function CorpusEmptyBanner({ state }: Props) {
+export default function CorpusEmptyBanner({ state, isAdmin }: Props) {
   if (state === null) return null
 
   const message =
     state === 'no-folders'
-      ? 'No watched folders yet — add one to start indexing documents.'
+      ? isAdmin
+        ? 'No watched folders yet — add one to start indexing documents.'
+        : 'No watched folders yet — an administrator adds them.'
       : 'Your watched folders are empty — drop documents into them to begin indexing.'
   const linkLabel = state === 'no-folders' ? 'Go to Folders' : 'View folders'
 

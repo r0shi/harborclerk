@@ -30,6 +30,8 @@ interface LanguagesListResponse {
 
 interface Props {
   onComplete: () => void
+  /** Adding a watched folder is admin-only (#852); a user gets a note instead of the folder CTA. */
+  isAdmin: boolean
 }
 
 /**
@@ -55,7 +57,7 @@ interface Props {
  * Page 3: optional local AI model setup prompt.
  * Page 4: where-to-watch-progress (menubar status window + Observatory tab).
  */
-export default function OnboardingWizard({ onComplete }: Props) {
+export default function OnboardingWizard({ onComplete, isAdmin }: Props) {
   const navigate = useNavigate()
   const { version } = useSystemConfig()
   const [page, setPage] = useState(1)
@@ -209,12 +211,14 @@ export default function OnboardingWizard({ onComplete }: Props) {
               {isDocker ? (
                 <>
                   Mount a folder of documents under <code>{system?.watch_root}</code>, Harbor Clerk indexes it on this
-                  server, and you can query it from chat or search. To get started, follow the folder setup guide.
+                  server, and you can query it from chat or search.{' '}
+                  {isAdmin ? 'To get started, follow the folder setup guide.' : ''}
                 </>
               ) : isMac ? (
                 <>
                   Drop documents into a folder on this Mac, Harbor Clerk indexes them locally, and you can query them
-                  from chat or search. Your files never leave this machine. To get started, pick a folder to watch.
+                  from chat or search. Your files never leave this machine.{' '}
+                  {isAdmin ? 'To get started, pick a folder to watch.' : ''}
                 </>
               ) : (
                 <>
@@ -229,7 +233,11 @@ export default function OnboardingWizard({ onComplete }: Props) {
               </div>
             )}
             <div className="mb-6">
-              {system?.picker === 'native' ? (
+              {!isAdmin ? (
+                <p className="text-sm text-(--color-text-secondary)">
+                  An administrator adds the folders Harbor Clerk watches.
+                </p>
+              ) : system?.picker === 'native' ? (
                 <button
                   onClick={handlePickFolder}
                   disabled={picking}

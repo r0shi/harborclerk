@@ -11,6 +11,7 @@ import { IconTile } from '../components/IconTile'
 import SummaryChip, { resolveSummaryState } from '../components/SummaryChip'
 import DocumentErrorNotice from '../components/DocumentErrorNotice'
 import { failurePill, type ErrorInfo } from '../utils/documentFailure'
+import ReprocessFailedAction from '../components/ReprocessFailedAction'
 import { documentTypeIcon } from '../utils/documentTypeIcon'
 import { entityTypeClass } from '../utils/entityTypeColors'
 
@@ -1101,13 +1102,28 @@ export default function DocumentsPage() {
       {total === 0 && !hasFilters ? (
         <p className="text-gray-500 dark:text-gray-400">
           No documents yet.{' '}
-          <Link to="/folders" className="text-blue-600 dark:text-blue-400 hover:underline">
-            Add a watched folder
-          </Link>
-          .
+          {isAdmin ? (
+            <>
+              <Link to="/folders" className="text-blue-600 dark:text-blue-400 hover:underline">
+                Add a watched folder
+              </Link>
+              .
+            </>
+          ) : (
+            // Adding a watched folder is admin-only (#852).
+            'An administrator adds the folders Harbor Clerk watches.'
+          )}
         </p>
       ) : (
         <>
+          {/* Admin-only "Reprocess all failed" on the Failed view (#554) */}
+          {isAdmin && pipelineStatusFilter === 'error' && (
+            <ReprocessFailedAction
+              otherFiltersActive={activeFilters.some((f) => f.key !== 'pipeline')}
+              onDone={() => loadDocs(currentPage, pageSize, filter)}
+            />
+          )}
+
           {/* Bulk actions bar */}
           {selected.size > 0 && (
             <BulkActionsBar

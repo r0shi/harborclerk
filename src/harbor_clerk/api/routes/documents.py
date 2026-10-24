@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -946,7 +946,17 @@ DELIBERATELY_STOPPED_ERRORS = ("Cancelled by user", "Queue cleared before pipeli
 
 @router.post("/docs/reprocess-failed", status_code=status.HTTP_202_ACCEPTED)
 async def reprocess_failed_documents(
+    response: Response,
+    # 1000 at once is safe since #619 (#862): the embedder answers 503 past its
+    # encode slots and the worker requeues the embed with a retry_after, so the
+    # queue depth no longer becomes embedder memory as it did for #554's 125.
     limit: int = Query(default=1000, ge=1, le=10000),
+    # Counts what a real call would consider, requeuing nothing: the Documents
+    # page confirms with this number, which its own "Failed" filter cannot give
+    # (that filter also counts cancelled and queue-cleared documents). Answers
+    # 200, not 202, since it does no work, and carries the `limit` a real call
+    # with the same parameters would use, so a client never restates the default.
+    dry_run: bool = Query(default=False),
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -977,8 +987,10 @@ async def reprocess_failed_documents(
             # this text. Requeuing those would restart work an admin deliberately
             # stopped and silently undo the emergency stop — and since they tend
             # to be older, an ordering by age would have requeued them *first*
-            # and spent the whole limit on them.
-            Document.error.not_in(DELIBERATELY_STOPPED_ERRORS),
+            # and spent the whole limit on them. A NULL `error` is a failure
+            # with no text, not a deliberate stop: `NOT IN` alone is never true
+            # for NULL, which silently skipped those documents.
+            or_(Document.error.is_(None), Document.error.not_in(DELIBERATELY_STOPPED_ERRORS)),
         )
         # Most recently failed first, matching the failed-docs query in
         # routes/system.py. The motivating case is an outage that just failed a
@@ -987,6 +999,11 @@ async def reprocess_failed_documents(
         # the same corrupt files and might never reach the ones it wants.
         .order_by(Document.updated_at.desc())
     )
+    if dry_run:
+        matching = await session.scalar(select(func.count()).select_from(failed.subquery())) or 0
+        response.status_code = status.HTTP_200_OK
+        return {"requeued": 0, "remaining": matching, "limit": limit}
+
     doc_ids = list((await session.execute(failed.limit(limit))).scalars().all())
 
     from harbor_clerk.worker.pipeline import reset_and_queue_extract_for_doc

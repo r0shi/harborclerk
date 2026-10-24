@@ -323,11 +323,18 @@ erDiagram
 
 ## Auth Model
 
-The read/write axis is **human versus API key**, not admin versus user. Any
-authenticated human — regardless of role — can create watched folders, ingest,
-and chat; `require_human_user` exists specifically to reject API keys on
-mutating endpoints. `require_admin` gates a genuinely narrower set: user and
-key management, model management, and destructive document operations.
+There are two axes. **Human versus API key** decides who may write at all:
+keys are read-only, and `require_human_user` exists to reject them on mutating
+endpoints and on reads with no MCP counterpart. **Admin versus user** decides
+who may shape the corpus: any signed-in human can upload, chat and research,
+but `require_admin` gates watched-folder management (add, remove, enable,
+disable, rename, rescan, and the file-level `/watch/ingest`, `/remove`, `/rename`),
+mail-account management, document delete, reprocess (per document and
+`/docs/reprocess-failed`), cancel and resummarize, as well as user, key, model
+and system management (#852). A folder added on the Mac app can be any
+directory the server can read, and its files become searchable by every user,
+so adding one is an admin decision. Reads of folders, documents and their
+progress stay open to every signed-in human.
 
 ```mermaid
 graph LR
@@ -343,8 +350,8 @@ graph LR
     hash --> api
     dcr --> api
 
-    api -- "any human" --> write["Read + write<br/>(own conversations, folders, ingest)"]
-    api -- "require_admin" --> admin["Admin<br/>(users, keys, models, destructive ops)"]
+    api -- "any human" --> write["Read + write<br/>(own conversations, research, uploads;<br/>read folders and documents)"]
+    api -- "require_admin" --> admin["Admin<br/>(watched folders, mail accounts,<br/>document delete / reprocess,<br/>users, keys, models, system)"]
     api -- "api key" --> readonly["Read-only, scoped"]
 ```
 
@@ -728,15 +735,15 @@ Queue subscriptions:
 |---|---|---|---|
 | `GET` | `/api/watch/allowed-extensions` | **human only** | Allowed Extensions |
 | `GET` | `/api/watch/folders` | **human only** | List Folders |
-| `POST` | `/api/watch/folders` | **human only** | Create Folder |
+| `POST` | `/api/watch/folders` | **admin** | Create Folder |
 | `GET` | `/api/watch/folders/stream` | **human only** | Folder Progress Stream |
-| `DELETE` | `/api/watch/folders/{folder_id}` | **human only** | Delete Folder |
-| `PATCH` | `/api/watch/folders/{folder_id}` | **human only** | Patch Folder |
+| `DELETE` | `/api/watch/folders/{folder_id}` | **admin** | Delete Folder |
+| `PATCH` | `/api/watch/folders/{folder_id}` | **admin** | Patch Folder |
 | `GET` | `/api/watch/folders/{folder_id}/progress` | **human only** | Get Folder Progress |
-| `POST` | `/api/watch/folders/{folder_id}/rescan` | **human only** | Rescan Folder |
-| `POST` | `/api/watch/ingest` | **human only** | Ingest File |
-| `POST` | `/api/watch/remove` | **human only** | Remove File |
-| `POST` | `/api/watch/rename` | **human only** | Rename File |
+| `POST` | `/api/watch/folders/{folder_id}/rescan` | **admin** | Rescan Folder |
+| `POST` | `/api/watch/ingest` | **admin** | Ingest File |
+| `POST` | `/api/watch/remove` | **admin** | Remove File |
+| `POST` | `/api/watch/rename` | **admin** | Rename File |
 | `GET` | `/api/watch/system` | **human only** | Get System |
 <!-- END GENERATED: rest-endpoints -->
 

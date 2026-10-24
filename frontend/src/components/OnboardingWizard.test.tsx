@@ -29,11 +29,11 @@ function systemConfig(version: string | null): SystemConfig {
   }
 }
 
-function renderWizard(onComplete = vi.fn()) {
+function renderWizard(onComplete = vi.fn(), isAdmin = true) {
   render(
     <MemoryRouter initialEntries={['/']}>
       <Routes>
-        <Route path="/" element={<OnboardingWizard onComplete={onComplete} />} />
+        <Route path="/" element={<OnboardingWizard onComplete={onComplete} isAdmin={isAdmin} />} />
         <Route path="/settings/models" element={<div>Models route</div>} />
       </Routes>
     </MemoryRouter>,
@@ -72,6 +72,14 @@ describe('OnboardingWizard', () => {
 
     expect(onComplete).toHaveBeenCalledOnce()
     expect(screen.getByText('Models route')).toBeInTheDocument()
+  })
+
+  it('a non-admin gets no folder picker on macOS, only a note (#852)', async () => {
+    renderWizard(vi.fn(), false)
+
+    expect(await screen.findByText('An administrator adds the folders Harbor Clerk watches.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Pick a folder to watch' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/pick a folder to watch/i)).not.toBeInTheDocument()
   })
 
   it('on macOS, shows the picker and the Mac copy on every page', async () => {

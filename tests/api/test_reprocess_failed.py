@@ -103,6 +103,74 @@ async def test_limit_reports_what_it_left_behind(client, admin_user, admin_token
     assert resp.json() == {"requeued": 2, "remaining": 3}
 
 
+async def test_dry_run_counts_what_a_real_call_would_requeue_and_changes_nothing(
+    client, admin_user, admin_token, db_session
+):
+    """The Documents page confirms with this number before the real call.
+
+    It must be the endpoint's own filter: the list's "Failed" view also counts
+    cancelled and queue-cleared documents, which a real call leaves alone, so
+    confirming with that count would promise work that will not happen.
+    """
+    failed = [_doc(f"Failed {i}", sha=bytes([i]) * 32) for i in range(3)]
+    cancelled = _doc("Cancelled", sha=b"c" * 32)
+    cancelled.error = "Cancelled by user"
+    db_session.add_all([*failed, cancelled])
+    await db_session.commit()
+
+    resp = await client.post("/api/docs/reprocess-failed?dry_run=true", headers=auth_header(admin_token))
+    assert resp.status_code == 200, f"a dry run does no work, so it is not 202 Accepted: {resp.text}"
+    assert resp.json() == {"requeued": 0, "remaining": 3, "limit": 1000}
+
+    for doc in [*failed, cancelled]:
+        await db_session.refresh(doc)
+        assert doc.pipeline_status == PipelineStatus.error, f"{doc.title} was touched by a dry run"
+        assert doc.pipeline_seq == 3, f"{doc.title} was touched by a dry run"
+
+
+async def test_dry_run_reports_the_limit_the_real_call_will_use(client, admin_user, admin_token, db_session):
+    """The UI's batch wording comes from this, not from a copy of the default."""
+    db_session.add_all([_doc(f"Failed {i}", sha=bytes([i]) * 32) for i in range(5)])
+    await db_session.commit()
+
+    resp = await client.post("/api/docs/reprocess-failed?dry_run=true&limit=2", headers=auth_header(admin_token))
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"requeued": 0, "remaining": 5, "limit": 2}
+
+
+async def test_dry_run_requires_admin(client, regular_user, user_token, db_session):
+    db_session.add(_doc("Failed", sha=b"f" * 32))
+    await db_session.commit()
+
+    resp = await client.post("/api/docs/reprocess-failed?dry_run=true", headers=auth_header(user_token))
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == "Admin access required"
+
+
+async def test_a_failed_document_with_no_error_text_is_counted_and_requeued(
+    client, admin_user, admin_token, db_session
+):
+    """`error NOT IN (...)` is never true for NULL, so these were silently skipped."""
+    silent = _doc("Failed silently", sha=b"n" * 32)
+    silent.error = None
+    cancelled = _doc("Cancelled", sha=b"c" * 32)
+    cancelled.error = "Cancelled by user"
+    db_session.add_all([silent, cancelled])
+    await db_session.commit()
+
+    dry = await client.post("/api/docs/reprocess-failed?dry_run=true", headers=auth_header(admin_token))
+    assert dry.status_code == 200, dry.text
+    assert dry.json()["remaining"] == 1, "the NULL-error document must be counted, the cancelled one not"
+
+    resp = await client.post("/api/docs/reprocess-failed", headers=auth_header(admin_token))
+    assert resp.status_code == 202, resp.text
+    assert resp.json() == {"requeued": 1, "remaining": 0}
+    await db_session.refresh(silent)
+    assert silent.pipeline_status == PipelineStatus.extracting
+    await db_session.refresh(cancelled)
+    assert cancelled.pipeline_status == PipelineStatus.error
+
+
 async def test_no_failed_documents_is_not_an_error(client, admin_user, admin_token, db_session):
     db_session.add(_doc("Ready", sha=b"r" * 32, pipeline_status=PipelineStatus.ready))
     await db_session.commit()

@@ -192,13 +192,13 @@ export default function Layout() {
           </div>
         </nav>
         <main className="mx-auto max-w-7xl px-4 py-6">
-          {showBanner && bannerState && <CorpusEmptyBanner state={bannerState} />}
+          {showBanner && bannerState && <CorpusEmptyBanner state={bannerState} isAdmin={isAdmin} />}
           <BackButton />
           <Outlet />
         </main>
         <QueueTray />
         <LLMStatusBanner />
-        {showWizard && <OnboardingWizard onComplete={handleOnboardingComplete} />}
+        {showWizard && <OnboardingWizard onComplete={handleOnboardingComplete} isAdmin={isAdmin} />}
       </LLMStatusProvider>
     </div>
   )

@@ -370,3 +370,161 @@ describe('DocumentsPage', () => {
     expect(screen.queryByText("This file can't be read")).not.toBeInTheDocument() // doc-2 is collapsed
   })
 })
+
+describe('DocumentsPage "Reprocess all failed" (#554, #852)', () => {
+  function setup(isAdmin: boolean, pipelineStatusFilter: string, extraState: Record<string, string> = {}) {
+    sessionStorage.clear()
+    sessionStorage.setItem(
+      'docs-page-state',
+      JSON.stringify({ ...SAVED_STATE, expanded: [], pipelineStatusFilter, ...extraState }),
+    )
+    useAuthMock.mockReturnValue({
+      user: { user_id: 'u', email: 'u@example.com', role: isAdmin ? 'admin' : 'user', preferences: { page_size: 10 } },
+      token: 'token',
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      logout: vi.fn(),
+      updatePreferences: vi.fn().mockResolvedValue(undefined),
+      isAdmin,
+    } as ReturnType<typeof useAuth>)
+    useJobEventsMock.mockReturnValue(undefined)
+    useSystemConfigMock.mockReturnValue({
+      healthStatus: 'healthy',
+      allowSourceDownload: false,
+      enableCliAccess: false,
+      cliShimInstallStatus: null,
+      localMcpUrl: null,
+      version: null,
+      loaded: true,
+    })
+    useLLMStatusContextMock.mockReturnValue({
+      status: { state: 'ready', model_id: 'qwen3', model_name: 'Qwen3' },
+      markTransitioning: vi.fn(),
+    })
+    getMock.mockReset()
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/filters') {
+        return Promise.resolve({ mime_types: [], doc_types: [], languages: [], entity_types: [] })
+      }
+      if (url === '/api/stats/topics') return Promise.resolve({ clusters: [] })
+      if (url === '/api/watch/folders') return Promise.resolve([])
+      if (url === '/api/docs') {
+        return Promise.resolve({
+          items: [
+            {
+              doc_id: 'doc-1',
+              title: 'Broken doc',
+              canonical_filename: 'broken.pdf',
+              status: 'active',
+              pipeline_status: 'error',
+              created_at: '2026-06-04T12:00:00Z',
+              updated_at: '2026-06-04T12:30:00Z',
+              summary: null,
+              summary_model: null,
+              doc_type: null,
+            },
+          ],
+          total: 1,
+          limit: 10,
+          offset: 0,
+        })
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+    renderDocumentsPage()
+  }
+
+  it('an admin on the Failed view gets the action', async () => {
+    setup(true, 'error')
+    expect(await screen.findByText('Broken doc')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reprocess all failed' })).toBeInTheDocument()
+  })
+
+  it('a non-admin on the Failed view does not', async () => {
+    setup(false, 'error')
+    expect(await screen.findByText('Broken doc')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reprocess all failed' })).not.toBeInTheDocument()
+  })
+
+  it('an admin on any other view does not', async () => {
+    setup(true, '')
+    expect(await screen.findByText('Broken doc')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reprocess all failed' })).not.toBeInTheDocument()
+  })
+
+  it('with another filter active, the confirmation says it covers the whole library', async () => {
+    postMock.mockReset()
+    postMock.mockResolvedValue({ requeued: 0, remaining: 500, limit: 1000 })
+    setup(true, 'error', { mimeFilter: 'application/pdf' })
+    expect(await screen.findByText('Broken doc')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reprocess all failed' }))
+    expect(await screen.findByText(/Reprocess all 500 failed documents in the library\?/)).toHaveTextContent(
+      'Your other filters do not apply: this covers every failed document.',
+    )
+  })
+
+  it('with only the Failed filter, makes no claim about other filters', async () => {
+    postMock.mockReset()
+    postMock.mockResolvedValue({ requeued: 0, remaining: 500, limit: 1000 })
+    setup(true, 'error')
+    expect(await screen.findByText('Broken doc')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reprocess all failed' }))
+    expect(await screen.findByText(/Reprocess all 500 failed documents in the library\?/)).toBeInTheDocument()
+    expect(screen.queryByText(/other filters do not apply/)).not.toBeInTheDocument()
+  })
+})
+
+describe('DocumentsPage empty corpus (#852)', () => {
+  function renderEmpty(isAdmin: boolean) {
+    sessionStorage.clear()
+    useAuthMock.mockReturnValue({
+      user: { user_id: 'u', email: 'u@example.com', role: isAdmin ? 'admin' : 'user', preferences: { page_size: 10 } },
+      token: 'token',
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      logout: vi.fn(),
+      updatePreferences: vi.fn().mockResolvedValue(undefined),
+      isAdmin,
+    } as ReturnType<typeof useAuth>)
+    useJobEventsMock.mockReturnValue(undefined)
+    useSystemConfigMock.mockReturnValue({
+      healthStatus: 'healthy',
+      allowSourceDownload: false,
+      enableCliAccess: false,
+      cliShimInstallStatus: null,
+      localMcpUrl: null,
+      version: null,
+      loaded: true,
+    })
+    useLLMStatusContextMock.mockReturnValue({
+      status: { state: 'ready', model_id: 'qwen3', model_name: 'Qwen3' },
+      markTransitioning: vi.fn(),
+    })
+    getMock.mockReset()
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/filters') {
+        return Promise.resolve({ mime_types: [], doc_types: [], languages: [], entity_types: [] })
+      }
+      if (url === '/api/stats/topics') return Promise.resolve({ clusters: [] })
+      if (url === '/api/watch/folders') return Promise.resolve([])
+      if (url === '/api/docs') return Promise.resolve({ items: [], total: 0, limit: 10, offset: 0 })
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+    renderDocumentsPage()
+  }
+
+  it('an admin gets the link to add a watched folder', async () => {
+    renderEmpty(true)
+    expect(await screen.findByRole('link', { name: 'Add a watched folder' })).toHaveAttribute('href', '/folders')
+  })
+
+  it('a non-admin gets a note instead of the link', async () => {
+    renderEmpty(false)
+    expect(await screen.findByText(/An administrator adds the folders Harbor Clerk watches\./)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Add a watched folder' })).not.toBeInTheDocument()
+  })
+})
