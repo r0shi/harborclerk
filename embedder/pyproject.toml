@@ -2,7 +2,10 @@
 name = "harbor-clerk-embedder"
 version = "0.1.0"
 description = "Embedding model server for Harbor Clerk"
-requires-python = ">=3.12"
+# Capped below 3.15 until torch ships cp315 wheels: without the cap uv picks a
+# newer installed interpreter and the sync fails on torch (#931). Shipped
+# builds use 3.12 (macos/scripts/build-venv.sh, the Docker images).
+requires-python = ">=3.12,<3.15"
 dependencies = [
     "fastapi>=0.138.2",
     "uvicorn[standard]>=0.32.0",
