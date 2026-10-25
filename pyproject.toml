@@ -90,3 +90,8 @@ ignore = [
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.uv]
+# preshed 3.0.14 breaks spacy.load (OverflowError in Language.from_disk), so the
+# worker's NER models would fail to load. Lift once a fixed release is out (#934).
+constraint-dependencies = ["preshed<3.0.14"]
