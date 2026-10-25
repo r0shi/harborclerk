@@ -23,6 +23,9 @@ dependencies = [
     "pypdfium2>=4",
     "Pillow>=13",
     "spacy>=3.7",
+    # preshed 3.0.14 breaks spacy.load (OverflowError in Language.from_disk), #934.
+    # This project's uv.lock is not committed, so CI resolves fresh and needs the cap.
+    "preshed<3.0.14",
     "huggingface_hub>=0.25",
     "pyarrow>=21",
 ]
