@@ -10,7 +10,7 @@ Harbor Clerk turns watched folders into a private, searchable document archive.
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Release](https://img.shields.io/badge/release-v1.0.1-blue)
-![Python](https://img.shields.io/badge/python-3.12+-blue)
+![Python](https://img.shields.io/badge/python-3.12--3.14-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Docker-lightgrey)
 
 ---
@@ -430,7 +430,7 @@ cd macos
 make all
 ```
 
-This builds both apps into `macos/build/output/`. Requires Xcode command-line tools, Python 3.12+, and Homebrew (for Tesseract).
+This builds both apps into `macos/build/output/`. Requires Xcode command-line tools, Python 3.12–3.14, and Homebrew (for Tesseract).
 
 ### Frontend
 
